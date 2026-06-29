@@ -1,0 +1,59 @@
+export type TemplateType = "txt2img" | "img2img" | "ipadapter" | "controlnet" | "hybrid";
+
+export type RoundStatus = "pending" | "running" | "completed" | "failed" | "interrupted";
+
+export type GenerationMode =
+  | "txt2img"
+  | "img2img"
+  | "ipadapter"
+  | "controlnet"
+  | "seed_reuse"
+  | "prompt_reuse"
+  | "upscale"
+  | "detail";
+
+export type AssetStatus = "generated" | "selected" | "rejected" | "favorite" | "archived" | "failed";
+
+export type SelectionAction = "select" | "unselect" | "reject" | "unreject" | "favorite" | "unfavorite";
+
+export type ParentRelation =
+  | "img2img"
+  | "ipadapter_reference"
+  | "controlnet_reference"
+  | "seed_reuse"
+  | "prompt_reuse"
+  | "upscale"
+  | "detailer"
+  | "manual";
+
+export interface ComfySettings {
+  baseUrl: string;
+  websocketUrl: string;
+  timeoutSeconds: number;
+  imageFetchMode: "view";
+  storageDir: string;
+}
+
+export interface GenerationRequest {
+  templateId: string;
+  prompt: string;
+  negativePrompt: string;
+  seed: number | null;
+  seedMode: "fixed" | "random" | "increment" | "reuse_parent_seed";
+  batchSize: number;
+  steps: number;
+  cfg: number;
+  sampler: string;
+  scheduler: string;
+  denoise: number;
+  width: number;
+  height: number;
+  generationMode: GenerationMode;
+  parentAssetId?: string | null;
+  relationType?: ParentRelation | null;
+}
+
+export interface ApiErrorBody {
+  error: string;
+  details?: unknown;
+}
