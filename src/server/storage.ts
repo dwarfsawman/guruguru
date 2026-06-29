@@ -1,0 +1,107 @@
+import { createReadStream, mkdirSync } from "node:fs";
+import { copyFile, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { dataRoot } from "./db";
+
+export interface StoredImage {
+  imagePath: string;
+  thumbnailSmallPath: string;
+  thumbnailMediumPath: string;
+  width: number | null;
+  height: number | null;
+}
+
+export function ensureProjectStorage(projectId: string) {
+  const projectRoot = join(dataRoot, "projects", projectId);
+  const paths = {
+    projectRoot,
+    original: join(projectRoot, "assets", "original"),
+    thumbnails: join(projectRoot, "assets", "thumbnails"),
+    workflows: join(projectRoot, "workflows"),
+    exports: join(projectRoot, "exports")
+  };
+
+  for (const path of Object.values(paths)) {
+    mkdirSync(path, { recursive: true });
+  }
+
+  return paths;
+}
+
+export async function storeImage(projectId: string, roundId: string, batchIndex: number, sourceName: string, bytes: Buffer): Promise<StoredImage> {
+  const storage = ensureProjectStorage(projectId);
+  const ext = normalizeImageExtension(sourceName);
+  const baseName = `${roundId}_${String(batchIndex).padStart(3, "0")}_${sanitizeBaseName(basename(sourceName, ext))}${ext}`;
+  const imagePath = join(storage.original, baseName);
+  const thumbnailSmallPath = join(storage.thumbnails, `small_${baseName}`);
+  const thumbnailMediumPath = join(storage.thumbnails, `medium_${baseName}`);
+
+  await writeFile(imagePath, bytes);
+  await copyFile(imagePath, thumbnailSmallPath);
+  await copyFile(imagePath, thumbnailMediumPath);
+
+  const size = readImageSize(bytes);
+  return {
+    imagePath,
+    thumbnailSmallPath,
+    thumbnailMediumPath,
+    width: size?.width ?? null,
+    height: size?.height ?? null
+  };
+}
+
+export function safeFileStream(path: string) {
+  const resolved = resolve(path);
+  const root = resolve(dataRoot);
+  if (!resolved.toLowerCase().startsWith(root.toLowerCase())) {
+    throw new Error("File is outside the data directory");
+  }
+  return createReadStream(resolved);
+}
+
+export function ensureParentDir(path: string) {
+  mkdirSync(dirname(path), { recursive: true });
+}
+
+function normalizeImageExtension(fileName: string): string {
+  const ext = extname(fileName).toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext)) {
+    return ext;
+  }
+  return ".png";
+}
+
+function sanitizeBaseName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "image";
+}
+
+function readImageSize(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length >= 24 && bytes.toString("ascii", 1, 4) === "PNG") {
+    return {
+      width: bytes.readUInt32BE(16),
+      height: bytes.readUInt32BE(20)
+    };
+  }
+
+  if (bytes.length >= 10 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let offset = 2;
+    while (offset < bytes.length) {
+      if (bytes[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+
+      const marker = bytes[offset + 1];
+      const length = bytes.readUInt16BE(offset + 2);
+      if (marker >= 0xc0 && marker <= 0xc3) {
+        return {
+          height: bytes.readUInt16BE(offset + 5),
+          width: bytes.readUInt16BE(offset + 7)
+        };
+      }
+      offset += 2 + length;
+    }
+  }
+
+  return null;
+}
