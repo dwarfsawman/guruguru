@@ -616,6 +616,24 @@ h3 {
   gap: 12px;
 }
 
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.section-header-row .section-kicker {
+  margin-bottom: 0;
+}
+
+.mini-button {
+  min-height: 28px;
+  padding: 5px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .sidebar-section + .sidebar-section,
 .sidebar-section + details,
 details + .sidebar-section,
