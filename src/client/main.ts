@@ -140,6 +140,11 @@ interface InpaintDraft {
   eraser: boolean;
 }
 
+interface ScrollPosition {
+  left: number;
+  top: number;
+}
+
 interface TemplateGenerationDefaults {
   prompt?: string;
   negativePrompt?: string;
@@ -211,6 +216,7 @@ const state: {
   message: string;
   generationDraft: GenerationDraft | null;
   inpaintDrafts: Record<string, InpaintDraft>;
+  iterationScroll: ScrollPosition | null;
   maskEditMode: boolean;
   deletePreviewRoundId: string | null;
 } = {
@@ -236,6 +242,7 @@ const state: {
   },
   generationDraft: null,
   inpaintDrafts: {},
+  iterationScroll: null,
   maskEditMode: false,
   deletePreviewRoundId: null
 };
@@ -570,13 +577,13 @@ function selectRound(roundId: string) {
   state.deletePreviewRoundId = null;
   state.generationDraft = null;
   state.maskEditMode = false;
-  render();
+  render(false);
 }
 
 function openAssetDetail(assetId: string) {
   state.activeAssetId = assetId;
   state.maskEditMode = false;
-  render();
+  render(false);
 }
 
 function closeAssetDetail() {
@@ -1293,14 +1300,40 @@ function swapResolution() {
   captureGenerationDraft();
 }
 
-function render() {
+function render(preserveIterationScroll = true) {
+  if (preserveIterationScroll) {
+    captureIterationScrollPosition();
+  } else {
+    state.iterationScroll = null;
+  }
   app.innerHTML = `
     ${renderHeader()}
     ${state.message ? `<pre class="message">${escapeHtml(state.message)}</pre>` : ""}
     ${state.detail ? renderProjectDetail(state.detail) : renderHome()}
     ${renderAssetModal()}
   `;
+  restoreIterationScrollPosition();
   syncAssetModalMaskCanvas();
+}
+
+function captureIterationScrollPosition() {
+  const tracker = document.querySelector<HTMLElement>(".iteration-tracker");
+  if (!tracker) {
+    return;
+  }
+  state.iterationScroll = {
+    left: tracker.scrollLeft,
+    top: tracker.scrollTop
+  };
+}
+
+function restoreIterationScrollPosition() {
+  const tracker = document.querySelector<HTMLElement>(".iteration-tracker");
+  if (!tracker || !state.iterationScroll) {
+    return;
+  }
+  tracker.scrollLeft = state.iterationScroll.left;
+  tracker.scrollTop = state.iterationScroll.top;
 }
 
 function syncAssetModalMaskCanvas() {
