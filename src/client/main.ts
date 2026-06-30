@@ -2220,11 +2220,16 @@ function toggleMaskEditor() {
   if (state.maskEditMode) {
     commitActiveMaskCanvas();
     state.maskEditMode = false;
+    // 通常表示に戻すときはプロンプト・設定を見せるため展開する
+    state.maskToolbarMinimized = false;
   } else if (state.activeAssetId) {
     ensureInpaintDraft(state.activeAssetId);
     state.maskEditMode = true;
+    // マスク編集に入った直後はツールバーを最小化し、キャンバスを即座に描画可能にする。
+    // 縦長画像では展開済みツールバーが画像全体を覆い、プロンプト等の文字要素が選択されてしまうため。
+    state.maskToolbarMinimized = true;
   }
-  state.maskToolbarMinimized = false;
+  state.maskToolbarPos = null;
   render();
 }
 
