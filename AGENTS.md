@@ -6,6 +6,8 @@
 - Commands or tests that initialize the database must use a test database by setting `GURUGURU_TEST_DB=1`. Use `GURUGURU_TEST_DATA_DIR` for an explicit temporary test location when needed.
 - Never run tests, checks, scripts, or local experiments against the production user database.
 - Do not create or use a project-local runtime database. If a command refuses a repository-local data directory, fix the environment to use an external or test data directory.
+- Reserve the default app port `5177` for user-run instances such as `npm start`. When Codex starts the app for validation or debugging, set an explicit non-5177 `PORT` and run with `GURUGURU_TEST_DB=1`; use `GURUGURU_TEST_DATA_DIR` outside the repository when a stable test data directory is needed.
+- Do not run multiple GURUGURU instances against the same production data directory. Multi-instance testing is acceptable only when each instance uses a separate port and a separate external test data directory.
 
 ## Documentation and Git
 
