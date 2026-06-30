@@ -279,6 +279,13 @@ function bindEvents() {
       return;
     }
 
+    const iterationDot = target.closest<HTMLElement>(".iteration-dot");
+    if (iterationDot?.dataset.id && event.detail >= 2) {
+      event.preventDefault();
+      previewRoundDeletion(iterationDot.dataset.id);
+      return;
+    }
+
     const actionTarget = target.closest<HTMLElement>("[data-action]");
     if (!actionTarget) {
       return;
@@ -299,8 +306,7 @@ function bindEvents() {
       return;
     }
     event.preventDefault();
-    state.deletePreviewRoundId = dot.dataset.id;
-    render();
+    previewRoundDeletion(dot.dataset.id);
   });
 
   app.addEventListener("change", (event) => {
@@ -405,6 +411,11 @@ function bindEvents() {
       }
     }
   });
+}
+
+function previewRoundDeletion(roundId: string) {
+  state.deletePreviewRoundId = roundId;
+  render();
 }
 
 async function handleAction(action: string, id: string, target: HTMLElement) {
