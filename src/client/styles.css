@@ -324,7 +324,7 @@ h3 {
 .iteration-forest {
   --iteration-dot-size: 32px;
   --iteration-row-gap: 20px;
-  --iteration-link-short: clamp(72px, 7vw, 140px);
+  --iteration-link-short: clamp(48px, 4.5vw, 96px);
   --iteration-link-long: calc(var(--iteration-link-short) * 2);
   display: flex;
   width: max-content;
