@@ -577,13 +577,13 @@ function selectRound(roundId: string) {
   state.deletePreviewRoundId = null;
   state.generationDraft = null;
   state.maskEditMode = false;
-  render(false);
+  render();
 }
 
 function openAssetDetail(assetId: string) {
   state.activeAssetId = assetId;
   state.maskEditMode = false;
-  render(false);
+  render();
 }
 
 function closeAssetDetail() {
@@ -699,6 +699,7 @@ async function loadHome() {
   state.inpaintDrafts = {};
   state.maskEditMode = false;
   state.deletePreviewRoundId = null;
+  state.iterationScroll = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
   state.projects = (await api<{ projects: ProjectSummary[] }>("/api/projects")).projects;
@@ -717,6 +718,7 @@ async function openProject(projectId: string) {
   state.inpaintDrafts = {};
   state.maskEditMode = false;
   state.deletePreviewRoundId = null;
+  state.iterationScroll = null;
   render();
 }
 
@@ -1300,7 +1302,12 @@ function swapResolution() {
   captureGenerationDraft();
 }
 
-function render(preserveIterationScroll = true) {
+type RenderOptions = {
+  preserveIterationScroll?: boolean;
+};
+
+function render(options: RenderOptions = {}) {
+  const preserveIterationScroll = options.preserveIterationScroll ?? true;
   if (preserveIterationScroll) {
     captureIterationScrollPosition();
   } else {
@@ -1313,6 +1320,11 @@ function render(preserveIterationScroll = true) {
     ${renderAssetModal()}
   `;
   restoreIterationScrollPosition();
+  if (preserveIterationScroll) {
+    requestAnimationFrame(() => {
+      restoreIterationScrollPosition();
+    });
+  }
   syncAssetModalMaskCanvas();
 }
 
