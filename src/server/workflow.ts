@@ -81,36 +81,95 @@ function patchImg2ImgLatentPath(workflow: JsonObject, roleMap: Record<string, un
   const loadImageNodeId =
     stringRole(roleMap.load_image_node) ??
     nodeIdFromRolePath(roleMap.load_image_input) ??
-    findNodeIdByClass(workflow, ["LoadImage"]);
-  if (!loadImageNodeId) {
-    throw new Error("img2img workflow requires a LoadImage node or load_image_input role map entry");
-  }
+    findNodeIdByClass(workflow, ["LoadImage"]) ??
+    addLoadImageNode(workflow, uploadedImageName);
 
   setNodeInput(workflow, loadImageNodeId, ["image"], uploadedImageName);
 
   const vaeEncodeNodeId =
     stringRole(roleMap.vae_encode_node) ??
     nodeIdFromRolePath(roleMap.vae_encode_image_input) ??
-    findNodeIdByClass(workflow, ["VAEEncode"]);
-  if (!vaeEncodeNodeId) {
-    throw new Error("img2img workflow requires a VAEEncode node or vae_encode_node role map entry");
-  }
+    findNodeIdByClass(workflow, ["VAEEncode"]) ??
+    addVaeEncodeNode(workflow, findVaeConnection(workflow));
 
   const ksamplerNodeId =
     stringRole(roleMap.ksampler_node) ??
     nodeIdFromRolePath(roleMap.ksampler_latent_image_input) ??
-    findNodeIdByClass(workflow, ["KSampler"]);
+    findNodeIdWithInput(workflow, "latent_image") ??
+    findNodeIdByClass(workflow, ["KSampler", "SamplerCustomAdvanced"]);
   if (!ksamplerNodeId) {
-    throw new Error("img2img workflow requires a KSampler node or ksampler_node role map entry");
+    throw new Error("img2img workflow requires a sampler node with a latent_image input");
   }
 
   const imageConnection = [loadImageNodeId, 0];
   setRolePath(workflow, roleMap.vae_encode_image_input, imageConnection);
   setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], imageConnection);
+  setNodeInput(workflow, vaeEncodeNodeId, ["vae"], findVaeConnection(workflow));
 
   const latentConnection = [vaeEncodeNodeId, 0];
   setRolePath(workflow, roleMap.ksampler_latent_image_input, latentConnection);
   setNodeInput(workflow, ksamplerNodeId, ["latent_image"], latentConnection);
+}
+
+function addLoadImageNode(workflow: JsonObject, uploadedImageName: string): string {
+  const nodeId = nextNodeId(workflow);
+  workflow[nodeId] = {
+    inputs: {
+      image: uploadedImageName
+    },
+    class_type: "LoadImage",
+    _meta: {
+      title: "GURUGURU img2img Load Image"
+    }
+  };
+  return nodeId;
+}
+
+function addVaeEncodeNode(workflow: JsonObject, vaeConnection: unknown[]): string {
+  const nodeId = nextNodeId(workflow);
+  workflow[nodeId] = {
+    inputs: {
+      pixels: null,
+      vae: vaeConnection
+    },
+    class_type: "VAEEncode",
+    _meta: {
+      title: "GURUGURU img2img VAE Encode"
+    }
+  };
+  return nodeId;
+}
+
+function findVaeConnection(workflow: JsonObject): unknown[] {
+  const vaeLoaderNodeId = findNodeIdByClass(workflow, ["VAELoader"]);
+  if (vaeLoaderNodeId) {
+    return [vaeLoaderNodeId, 0];
+  }
+
+  for (const rawNode of Object.values(workflow)) {
+    if (!isObject(rawNode) || typeof rawNode.class_type !== "string" || !isObject(rawNode.inputs)) {
+      continue;
+    }
+    if (!rawNode.class_type.toLowerCase().includes("vaedecode")) {
+      continue;
+    }
+    const vae = rawNode.inputs.vae;
+    if (isConnection(vae)) {
+      return [...vae];
+    }
+  }
+
+  for (const rawNode of Object.values(workflow)) {
+    if (!isObject(rawNode) || !isObject(rawNode.inputs)) {
+      continue;
+    }
+    const vae = rawNode.inputs.vae;
+    if (isConnection(vae)) {
+      return [...vae];
+    }
+  }
+
+  throw new Error("img2img derivation requires an existing VAE connection or VAELoader node");
 }
 
 export function normalizeRoleMap(value: unknown): Record<string, unknown> {
@@ -201,6 +260,37 @@ function findNodeIdByClass(workflow: JsonObject, classFragments: string[]): stri
     }
   }
   return null;
+}
+
+function findNodeIdWithInput(workflow: JsonObject, inputName: string): string | null {
+  for (const [nodeId, rawNode] of Object.entries(workflow)) {
+    if (!isObject(rawNode) || !isObject(rawNode.inputs)) {
+      continue;
+    }
+    if (inputName in rawNode.inputs) {
+      return nodeId;
+    }
+  }
+  return null;
+}
+
+function nextNodeId(workflow: JsonObject): string {
+  const numericIds = Object.keys(workflow)
+    .map((nodeId) => Number(nodeId))
+    .filter((nodeId) => Number.isInteger(nodeId) && nodeId >= 0);
+  if (numericIds.length > 0) {
+    return String(Math.max(...numericIds) + 1);
+  }
+
+  let index = 1;
+  while (`guruguru_${index}` in workflow) {
+    index += 1;
+  }
+  return `guruguru_${index}`;
+}
+
+function isConnection(value: unknown): value is unknown[] {
+  return Array.isArray(value) && typeof value[0] === "string" && typeof value[1] === "number";
 }
 
 function stableStringify(value: unknown): string {

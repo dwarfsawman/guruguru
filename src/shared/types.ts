@@ -10,7 +10,8 @@ export type GenerationMode =
   | "seed_reuse"
   | "prompt_reuse"
   | "upscale"
-  | "detail";
+  | "detail"
+  | "manual_upload";
 
 export type AssetStatus = "generated" | "selected" | "rejected" | "favorite" | "archived" | "failed";
 

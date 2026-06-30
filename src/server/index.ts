@@ -16,6 +16,9 @@ const port = Number(process.env.PORT ?? 5177);
 let isShuttingDown = false;
 
 type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
+type BranchAssignment = { colorIndex: number; reason: string; key: string };
+
+const maxSourceImageBytes = 16 * 1024 * 1024;
 
 initializeDb();
 
@@ -127,6 +130,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const generateMatch = path.match(/^\/api\/projects\/([^/]+)\/rounds$/);
   if (method === "POST" && generateMatch) {
     sendJson(res, 201, await createGenerationRound(generateMatch[1]!, await readJson<GenerationRequest>(req)));
+    return;
+  }
+
+  const sourceAssetMatch = path.match(/^\/api\/projects\/([^/]+)\/source-assets$/);
+  if (method === "POST" && sourceAssetMatch) {
+    sendJson(res, 201, await createSourceAsset(sourceAssetMatch[1]!, await readJson(req)));
     return;
   }
 
@@ -340,28 +349,43 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
     throw new HttpError(400, "WorkflowTemplate was not found");
   }
 
-  const parentAsset = requestBody.parentAssetId
-    ? getRow<Record<string, unknown>>("SELECT * FROM assets WHERE id = ? AND project_id = ?", [requestBody.parentAssetId, projectId])
+  const generationMode = (requestBody.generationMode ?? "txt2img") as GenerationMode;
+  const requestedParentAssetId = generationMode === "txt2img" ? null : stringOrNull(requestBody.parentAssetId);
+  const parentAsset = requestedParentAssetId
+    ? getRow<Record<string, unknown>>("SELECT * FROM assets WHERE id = ? AND project_id = ?", [requestedParentAssetId, projectId])
     : null;
 
-  if (requestBody.parentAssetId && !parentAsset) {
+  if (requestedParentAssetId && !parentAsset) {
     throw new HttpError(400, "Parent Asset was not found in this Project");
   }
+  if (shouldUploadParent(generationMode) && !parentAsset) {
+    throw new HttpError(400, `${generationMode} generation requires a parent Asset`);
+  }
 
-  const roundIndex =
-    (getRow<{ next_index: number }>("SELECT COALESCE(MAX(round_index), 0) + 1 AS next_index FROM generation_rounds WHERE project_id = ?", [
-      projectId
-    ])?.next_index ?? 1);
+  const roundIndex = nextRoundIndex(projectId);
   const roundId = createId("round");
   const parentRoundId = typeof parentAsset?.round_id === "string" ? parentAsset.round_id : null;
   const seed = resolveSeed(requestBody, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
-  const request: GenerationRequest = normalizeGenerationRequest({ ...requestBody, seed });
+  const request: GenerationRequest = normalizeGenerationRequest({ ...requestBody, generationMode, parentAssetId: requestedParentAssetId, seed });
+  const branch = branchAssignmentForRound(projectId, parentAsset, roundId, "txt2img_root");
 
   runSql(
     `INSERT INTO generation_rounds
-      (id, project_id, template_id, parent_round_id, round_index, status, generation_mode, request_json)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
-    [roundId, projectId, request.templateId, parentRoundId, roundIndex, request.generationMode, JSON.stringify(request)]
+      (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
+       branch_color_index, branch_reason, branch_key, request_json)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+    [
+      roundId,
+      projectId,
+      request.templateId,
+      parentRoundId,
+      roundIndex,
+      request.generationMode,
+      branch.colorIndex,
+      branch.reason,
+      branch.key,
+      JSON.stringify(request)
+    ]
   );
 
   try {
@@ -396,6 +420,209 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
     );
     throw error;
   }
+}
+
+async function createSourceAsset(projectId: string, body: unknown) {
+  const project = getRow<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!project) {
+    throw new HttpError(404, "Project was not found");
+  }
+
+  const input = objectBody(body);
+  const templateId = requiredString(input.templateId ?? input.template_id, "templateId");
+  const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [templateId]);
+  if (!template) {
+    throw new HttpError(400, "WorkflowTemplate was not found. Select a template before uploading a source image.");
+  }
+
+  const image = decodeImageDataUrl(input.dataUrl ?? input.data_url);
+  const filename = normalizedUploadFileName(stringOr(input.filename, "source"), image.mimeType);
+  const roundIndex = nextRoundIndex(projectId);
+  const roundId = createId("round");
+  const assetId = createId("asset");
+  const branch = branchAssignmentForRound(projectId, null, roundId, "manual_upload");
+  const request: GenerationRequest = normalizeGenerationRequest({
+    templateId,
+    prompt: stringOr(input.prompt, ""),
+    negativePrompt: stringOr(input.negativePrompt ?? input.negative_prompt, ""),
+    seed: typeof input.seed === "number" ? input.seed : null,
+    seedMode: stringOr(input.seedMode ?? input.seed_mode, "random") as GenerationRequest["seedMode"],
+    batchSize: numberOr(input.batchSize ?? input.batch_size, 1),
+    steps: numberOr(input.steps, 20),
+    cfg: numberOr(input.cfg, 7),
+    sampler: stringOr(input.sampler, "euler"),
+    scheduler: stringOr(input.scheduler, "normal"),
+    denoise: numberOr(input.denoise, 0.35),
+    width: numberOr(input.width, 1024),
+    height: numberOr(input.height, 1024),
+    generationMode: "manual_upload",
+    parentAssetId: null,
+    relationType: "manual"
+  });
+  const stored = await storeImage(projectId, roundId, 0, filename, image.bytes);
+
+  runSql(
+    `INSERT INTO generation_rounds
+      (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
+       branch_color_index, branch_reason, branch_key, request_json, completed_at)
+     VALUES (?, ?, ?, NULL, ?, 'completed', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    [
+      roundId,
+      projectId,
+      templateId,
+      roundIndex,
+      request.generationMode,
+      branch.colorIndex,
+      branch.reason,
+      `asset:${assetId}`,
+      JSON.stringify(request)
+    ]
+  );
+
+  runSql(
+    `INSERT INTO assets
+      (id, project_id, round_id, prompt_id, batch_index, image_path, thumbnail_small_path, thumbnail_medium_path,
+       width, height, prompt, negative_prompt, seed, sampler, scheduler, steps, cfg, denoise,
+       workflow_template_id, workflow_template_version, workflow_snapshot_hash, comfy_output_node_id, status)
+     VALUES (?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'selected')`,
+    [
+      assetId,
+      projectId,
+      roundId,
+      stored.imagePath,
+      stored.thumbnailSmallPath,
+      stored.thumbnailMediumPath,
+      stored.width,
+      stored.height,
+      request.prompt,
+      request.negativePrompt,
+      request.seed,
+      request.sampler,
+      request.scheduler,
+      request.steps,
+      request.cfg,
+      request.denoise,
+      template.id,
+      template.version,
+      template.workflow_hash
+    ]
+  );
+
+  runSql(
+    `INSERT INTO selection_events (id, project_id, round_id, asset_id, action, note)
+     VALUES (?, ?, ?, ?, 'select', ?)`,
+    [createId("selection"), projectId, roundId, assetId, "uploaded source asset"]
+  );
+  runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [projectId]);
+
+  return {
+    round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])),
+    asset: decorateAsset(toApiRow(getRow("SELECT * FROM assets WHERE id = ?", [assetId]))!)
+  };
+}
+
+function nextRoundIndex(projectId: string) {
+  return getRow<{ next_index: number }>(
+    "SELECT COALESCE(MAX(round_index), 0) + 1 AS next_index FROM generation_rounds WHERE project_id = ?",
+    [projectId]
+  )?.next_index ?? 1;
+}
+
+function branchAssignmentForRound(
+  projectId: string,
+  parentAsset: Record<string, unknown> | null,
+  roundId: string,
+  rootReason: string
+): BranchAssignment {
+  if (parentAsset) {
+    const key = `asset:${parentAsset.id}`;
+    const existing = getRow<{ branch_color_index: number }>(
+      `SELECT branch_color_index
+       FROM generation_rounds
+       WHERE project_id = ? AND branch_key = ?
+       ORDER BY round_index ASC
+       LIMIT 1`,
+      [projectId, key]
+    );
+    if (existing) {
+      return {
+        colorIndex: Number(existing.branch_color_index) || 0,
+        reason: "parent_asset",
+        key
+      };
+    }
+    return {
+      colorIndex: nextBranchColorIndex(projectId),
+      reason: "parent_asset",
+      key
+    };
+  }
+
+  return {
+    colorIndex: nextBranchColorIndex(projectId),
+    reason: rootReason,
+    key: `root:${roundId}`
+  };
+}
+
+function nextBranchColorIndex(projectId: string) {
+  return getRow<{ next_index: number }>(
+    "SELECT COALESCE(MAX(branch_color_index), -1) + 1 AS next_index FROM generation_rounds WHERE project_id = ?",
+    [projectId]
+  )?.next_index ?? 0;
+}
+
+function decodeImageDataUrl(rawValue: unknown): { mimeType: string; bytes: Buffer } {
+  const dataUrl = requiredString(rawValue, "dataUrl");
+  if (dataUrl.length > Math.ceil(maxSourceImageBytes * 1.4) + 128) {
+    throw new HttpError(413, `Source image is too large. The maximum upload size is ${formatBytes(maxSourceImageBytes)}.`);
+  }
+
+  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/i.exec(dataUrl);
+  if (!match) {
+    throw new HttpError(400, "dataUrl must be a base64 data URL for image/png, image/jpeg, or image/webp.");
+  }
+
+  const mimeType = match[1]!.toLowerCase();
+  const bytes = Buffer.from(match[2]!, "base64");
+  if (bytes.length === 0) {
+    throw new HttpError(400, "Source image is empty.");
+  }
+  if (bytes.length > maxSourceImageBytes) {
+    throw new HttpError(413, `Source image is too large. The maximum upload size is ${formatBytes(maxSourceImageBytes)}.`);
+  }
+  if (!bytesMatchMimeType(bytes, mimeType)) {
+    throw new HttpError(400, "dataUrl content does not match the declared image MIME type.");
+  }
+
+  return { mimeType, bytes };
+}
+
+function bytesMatchMimeType(bytes: Buffer, mimeType: string) {
+  if (mimeType === "image/png") {
+    return bytes.length >= 8 && bytes.toString("ascii", 1, 4) === "PNG";
+  }
+  if (mimeType === "image/jpeg") {
+    return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+  if (mimeType === "image/webp") {
+    return bytes.length >= 12 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP";
+  }
+  return false;
+}
+
+function normalizedUploadFileName(filename: string, mimeType: string) {
+  const trimmed = filename.trim() || "source";
+  if (/\.(png|jpe?g|webp)$/i.test(trimmed)) {
+    return trimmed;
+  }
+  const ext = mimeType === "image/jpeg" ? ".jpg" : mimeType === "image/webp" ? ".webp" : ".png";
+  return `${trimmed}${ext}`;
+}
+
+function formatBytes(bytes: number) {
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
 async function collectRound(roundId: string) {
