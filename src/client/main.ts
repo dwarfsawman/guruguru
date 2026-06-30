@@ -1040,7 +1040,6 @@ function render() {
 }
 
 function renderHeader() {
-  const detail = state.detail;
   const connection = getConnectionView();
   return `
     <header class="app-header">
@@ -1054,7 +1053,6 @@ function renderHeader() {
           </span>
         </button>
       </div>
-      ${detail ? renderIterationTracker(detail) : renderStarterIterationTracker()}
       <div class="header-right">
         <div class="connection">
           <span class="status-dot ${connection.className}"></span>
@@ -1084,7 +1082,7 @@ function getConnectionView() {
 function renderIterationTracker(detail: ProjectDetail) {
   const rounds = sortRoundsAsc(detail.rounds);
   if (!rounds.length) {
-    return `<div class="iteration-tracker"><span class="iteration-empty">No iterations</span></div>`;
+    return `<div class="iteration-tracker empty-tracker"><span class="iteration-empty">No iterations</span></div>`;
   }
   const forest = buildRoundForest(rounds);
   return `
@@ -1094,10 +1092,6 @@ function renderIterationTracker(detail: ProjectDetail) {
       </div>
     </div>
   `;
-}
-
-function renderStarterIterationTracker() {
-  return `<div class="iteration-tracker tracker-spacer" aria-hidden="true"></div>`;
 }
 
 function buildRoundForest(rounds: Round[]) {
@@ -1126,12 +1120,12 @@ function renderRoundTreeNode(round: Round, children: Map<string, Round[]>) {
   const dotClass = active ? "active" : completed ? "completed" : "pending";
   const hue = branchHue(round);
   return `
-    <div class="iteration-node" style="--branch-hue: ${hue}">
+    <div class="iteration-node ${childRounds.length ? "has-children" : ""}" style="--branch-hue: ${hue}">
       <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" type="button" title="${escapeAttr(iterationTitle(round))}">
         <span>${round.roundIndex}</span>
       </button>
       ${childRounds.length ? `
-        <div class="iteration-children ${childRounds.length > 1 ? "has-siblings" : ""}">
+        <div class="iteration-children ${childRounds.length > 1 ? "has-siblings" : "single-child"}">
           ${childRounds.map((child, index) => `
             <div class="iteration-child ${index === 0 ? "first" : ""} ${index === childRounds.length - 1 ? "last" : ""}">
               ${renderRoundTreeNode(child, children)}
@@ -1343,6 +1337,7 @@ function renderProjectDetail(detail: ProjectDetail) {
             ${assets.length ? assets.map(renderAssetTile).join("") : renderEmptyGallery(activeRound)}
           </div>
         </div>
+        ${renderIterationTracker(detail)}
         ${renderBottomActionBar(selectedAssets, activeRound)}
       </main>
     </div>
