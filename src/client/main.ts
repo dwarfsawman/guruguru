@@ -192,6 +192,7 @@ const state: {
   busy: boolean;
   message: string;
   generationDraft: GenerationDraft | null;
+  deletePreviewRoundId: string | null;
 } = {
   settings: null,
   projects: [],
@@ -213,7 +214,8 @@ const state: {
     messageValue = value;
     scheduleMessageClear(value);
   },
-  generationDraft: null
+  generationDraft: null,
+  deletePreviewRoundId: null
 };
 
 const defaultPrompt =
@@ -290,6 +292,17 @@ function bindEvents() {
     void handleAction(action, id, actionTarget);
   });
 
+  app.addEventListener("dblclick", (event) => {
+    const target = event.target as HTMLElement;
+    const dot = target.closest<HTMLElement>(".iteration-dot");
+    if (!dot?.dataset.id) {
+      return;
+    }
+    event.preventDefault();
+    state.deletePreviewRoundId = dot.dataset.id;
+    render();
+  });
+
   app.addEventListener("change", (event) => {
     const target = event.target as HTMLInputElement | HTMLSelectElement;
     if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.sourceUpload) {
@@ -356,7 +369,10 @@ function bindEvents() {
     }
 
     if (event.key === "Escape") {
-      if (state.activeAssetId) {
+      if (state.deletePreviewRoundId) {
+        state.deletePreviewRoundId = null;
+        render();
+      } else if (state.activeAssetId) {
         captureGenerationDraft();
         state.activeAssetId = null;
         render();
@@ -419,10 +435,16 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     } else if (action === "select-round") {
       state.activeRoundId = id;
       state.activeAssetId = null;
+      state.deletePreviewRoundId = null;
       state.generationDraft = null;
       render();
     } else if (action === "collect-round") {
       await collectRound(id);
+    } else if (action === "delete-round") {
+      await deleteRoundTree(id);
+    } else if (action === "cancel-delete-round") {
+      state.deletePreviewRoundId = null;
+      render();
     } else if (action === "generate-round") {
       await generateRound(null);
     } else if (action === "img2img-next") {
@@ -484,6 +506,7 @@ async function loadHome() {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   state.generationDraft = null;
+  state.deletePreviewRoundId = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
   state.projects = (await api<{ projects: ProjectSummary[] }>("/api/projects")).projects;
@@ -499,6 +522,7 @@ async function openProject(projectId: string) {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   state.generationDraft = null;
+  state.deletePreviewRoundId = null;
   render();
 }
 
@@ -916,6 +940,27 @@ async function collectRound(roundId: string) {
   render();
 }
 
+async function deleteRoundTree(roundId: string) {
+  if (!state.currentProjectId) {
+    return;
+  }
+
+  const result = await api<{ deleted: boolean; roundIds: string[]; deletedCount: number }>(`/api/rounds/${roundId}`, {
+    method: "DELETE"
+  });
+  const deletedRoundIds = new Set(result.roundIds);
+  for (const deletedRoundId of deletedRoundIds) {
+    pendingAutoCollectRoundIds.delete(deletedRoundId);
+  }
+
+  const keepRoundId = state.activeRoundId && !deletedRoundIds.has(state.activeRoundId) ? state.activeRoundId : null;
+  state.activeAssetId = null;
+  state.deletePreviewRoundId = null;
+  await refreshProject(keepRoundId, null);
+  state.message = `${result.deletedCount}件のイテレーションを削除しました。`;
+  render();
+}
+
 async function pollCollectRound(roundId: string, projectId: string | null) {
   if (!projectId || pendingAutoCollectRoundIds.has(roundId)) {
     return;
@@ -1105,10 +1150,13 @@ function renderIterationTracker(detail: ProjectDetail) {
     return `<div class="iteration-tracker empty-tracker"><span class="iteration-empty">No iterations</span></div>`;
   }
   const forest = buildRoundForest(rounds);
+  const deleteTargetIds = state.deletePreviewRoundId
+    ? collectRoundSubtreeIds(state.deletePreviewRoundId, forest.children)
+    : new Set<string>();
   return `
     <div class="iteration-tracker" aria-label="イテレーション">
       <div class="iteration-forest">
-        ${forest.roots.map((round) => renderRoundTreeNode(round, forest.children)).join("")}
+        ${forest.roots.map((round) => renderRoundTreeNode(round, forest.children, deleteTargetIds)).join("")}
       </div>
     </div>
   `;
@@ -1133,22 +1181,41 @@ function buildRoundForest(rounds: Round[]) {
   return { roots, children };
 }
 
-function renderRoundTreeNode(round: Round, children: Map<string, Round[]>) {
+function collectRoundSubtreeIds(rootRoundId: string, children: Map<string, Round[]>) {
+  const ids = new Set<string>();
+  const visit = (roundId: string) => {
+    ids.add(roundId);
+    for (const child of children.get(roundId) ?? []) {
+      visit(child.id);
+    }
+  };
+  visit(rootRoundId);
+  return ids;
+}
+
+function renderRoundTreeNode(round: Round, children: Map<string, Round[]>, deleteTargetIds: Set<string>) {
   const childRounds = children.get(round.id) ?? [];
   const active = round.id === state.activeRoundId;
   const completed = round.status === "completed";
   const dotClass = active ? "active" : completed ? "completed" : "pending";
   const hue = branchHue(round);
+  const isDeleteRoot = state.deletePreviewRoundId === round.id;
+  const isDeleteTarget = deleteTargetIds.has(round.id);
   return `
-    <div class="iteration-node ${childRounds.length ? "has-children" : ""}" style="--branch-hue: ${hue}">
+    <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="--branch-hue: ${hue}">
       <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" type="button" title="${escapeAttr(iterationTitle(round))}">
         <span>${round.roundIndex}</span>
       </button>
+      ${isDeleteTarget ? `
+        <button class="iteration-delete-mark" type="button" data-action="delete-round" data-id="${state.deletePreviewRoundId ?? round.id}" title="削除">
+          ${iconClose()}
+        </button>
+      ` : ""}
       ${childRounds.length ? `
         <div class="iteration-children ${childRounds.length > 1 ? "has-siblings" : "single-child"}">
           ${childRounds.map((child, index) => `
             <div class="iteration-child ${index === 0 ? "first" : ""} ${index === childRounds.length - 1 ? "last" : ""}">
-              ${renderRoundTreeNode(child, children)}
+              ${renderRoundTreeNode(child, children, deleteTargetIds)}
             </div>
           `).join("")}
         </div>
