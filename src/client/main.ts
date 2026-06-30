@@ -51,6 +51,9 @@ interface Round {
   promptId?: string | null;
   status: string;
   generationMode: string;
+  branchColorIndex: number;
+  branchReason?: string | null;
+  branchKey?: string | null;
   request: GenerationRequest;
   createdAt: string;
   completedAt?: string | null;
@@ -150,6 +153,7 @@ interface TemplateModelDefaults {
 
 const generationDraftFields = [
   "templateId",
+  "img2imgTemplateId",
   "prompt",
   "negativePrompt",
   "seed",
@@ -262,6 +266,14 @@ function bindEvents() {
 
   app.addEventListener("change", (event) => {
     const target = event.target as HTMLInputElement | HTMLSelectElement;
+    if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.sourceUpload) {
+      void uploadSourceAsset(target).catch((error) => {
+        state.busy = false;
+        state.message = error instanceof Error ? error.message : String(error);
+        render();
+      });
+      return;
+    }
     if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.fileTarget) {
       void loadWorkflowFile(target);
       return;
@@ -603,6 +615,76 @@ async function loadWorkflowFile(input: HTMLInputElement) {
   }
 }
 
+async function uploadSourceAsset(input: HTMLInputElement) {
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file || !state.currentProjectId) {
+    return;
+  }
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+    state.message = "source asset は PNG / JPEG / WebP 画像を選択してください。";
+    render();
+    return;
+  }
+
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  if (!form) {
+    throw new Error("生成フォームが見つかりません。Projectを開いてから画像をアップロードしてください。");
+  }
+
+  const draft = generationDraftFromForm(form);
+  const templateId = draft.img2imgTemplateId || draft.templateId || "";
+  if (!templateId) {
+    throw new Error("WorkflowTemplateを選択してから画像をアップロードしてください。");
+  }
+
+  const denoise = normalizeDenoiseForMode(
+    Number(draft.denoise || defaultDenoiseForMode("img2img")),
+    "img2img"
+  );
+  const dataUrl = await fileToDataUrl(file);
+  const requestBody = {
+    filename: file.name,
+    mimeType: file.type,
+    dataUrl,
+    templateId,
+    prompt: draft.prompt ?? "",
+    negativePrompt: draft.negativePrompt ?? "",
+    seed: draft.seed ? Number(draft.seed) : null,
+    seedMode: draft.seedMode ?? "random",
+    batchSize: Number(draft.batchSize || 1),
+    steps: Number(draft.steps || 20),
+    cfg: Number(draft.cfg || 7),
+    sampler: draft.sampler || "euler",
+    scheduler: draft.scheduler || "normal",
+    denoise,
+    width: Number(draft.width || 1024),
+    height: Number(draft.height || 1024)
+  };
+
+  state.busy = true;
+  state.message = "source asset をアップロードしています。";
+  render();
+
+  const response = await api<{ round: Round; asset: Asset }>(`/api/projects/${state.currentProjectId}/source-assets`, {
+    method: "POST",
+    body: JSON.stringify(requestBody)
+  });
+
+  state.busy = false;
+  state.generationDraft = {
+    ...draft,
+    templateId: draft.templateId || templateId,
+    img2imgTemplateId: templateId,
+    denoise: String(denoise),
+    generationMode: "img2img"
+  };
+  applyAssetDimensionsToDraft(response.asset);
+  state.message = "画像を source asset として登録し、親画像に設定しました。";
+  await refreshProject(response.round.id, null);
+  render();
+}
+
 function exportWorkflowTemplate(target: HTMLElement, kind: "template" | "workflow") {
   const template = findTemplateFromActionTarget(target);
   if (!template) {
@@ -646,6 +728,15 @@ function downloadJson(filename: string, value: unknown) {
   link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("画像ファイルを読み込めませんでした。")));
+    reader.readAsDataURL(file);
+  });
 }
 
 function slugify(value: string) {
@@ -720,8 +811,12 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
 
   const form = readForm("generation-form");
   const generationMode = overrideMode ?? form.generationMode ?? "txt2img";
-  const parentAssetId = parentAsset?.id ?? form.parentAssetId ?? null;
-  const template = resolveTemplateForGeneration(form.templateId, generationMode);
+  const resolvedParentAsset = resolveParentAssetForGeneration(parentAsset, generationMode, form.parentAssetId);
+  const parentAssetId = resolvedParentAsset?.id ?? null;
+  const requestedTemplateId = generationMode === "img2img"
+    ? form.img2imgTemplateId || form.templateId
+    : form.templateId;
+  const template = resolveTemplateForGeneration(requestedTemplateId, generationMode);
   const denoise = normalizeDenoiseForMode(
     Number(form.denoise || defaultDenoiseForMode(generationMode)),
     generationMode
@@ -742,9 +837,9 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     height: Number(form.height || 1024),
     generationMode,
     parentAssetId,
-    relationType: parentAsset ? relationForMode(generationMode) : null
+    relationType: resolvedParentAsset ? relationForMode(generationMode) : null
   };
-  setGenerationDraftValue("templateId", template.id);
+  setGenerationDraftValue(generationMode === "img2img" ? "img2imgTemplateId" : "templateId", template.id);
   setGenerationDraftValue("generationMode", generationMode);
 
   state.busy = true;
@@ -771,6 +866,16 @@ async function generateFromSelected(mode: string) {
   }
   prepareGenerationFormForParent(asset, mode);
   await generateRound(asset, mode);
+}
+
+function resolveParentAssetForGeneration(parentAsset: Asset | null, generationMode: string, formParentAssetId: string | null | undefined) {
+  if (parentAsset) {
+    return parentAsset;
+  }
+  if (!requiresParentAsset(generationMode)) {
+    return null;
+  }
+  return findAsset(formParentAssetId ?? "");
 }
 
 async function collectRound(roundId: string) {
@@ -981,23 +1086,70 @@ function renderIterationTracker(detail: ProjectDetail) {
   if (!rounds.length) {
     return `<div class="iteration-tracker"><span class="iteration-empty">No iterations</span></div>`;
   }
+  const forest = buildRoundForest(rounds);
   return `
     <div class="iteration-tracker" aria-label="イテレーション">
-      ${rounds.map((round, index) => {
-        const active = round.id === state.activeRoundId;
-        const completed = round.status === "completed";
-        const dotClass = active ? "active" : completed ? "completed" : "pending";
-        return `
-          <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" type="button" title="Iteration ${round.roundIndex}">${round.roundIndex}</button>
-          ${index < rounds.length - 1 ? `<span class="iteration-connector ${completed ? "completed" : ""}"></span>` : ""}
-        `;
-      }).join("")}
+      <div class="iteration-forest">
+        ${forest.roots.map((round) => renderRoundTreeNode(round, forest.children)).join("")}
+      </div>
     </div>
   `;
 }
 
 function renderStarterIterationTracker() {
-  return `<div class="iteration-tracker"><span class="iteration-empty">Project未選択</span></div>`;
+  return `<div class="iteration-tracker tracker-spacer" aria-hidden="true"></div>`;
+}
+
+function buildRoundForest(rounds: Round[]) {
+  const byId = new Map(rounds.map((round) => [round.id, round]));
+  const children = new Map<string, Round[]>();
+  const roots: Round[] = [];
+
+  for (const round of rounds) {
+    const parentId = round.parentRoundId && byId.has(round.parentRoundId) ? round.parentRoundId : null;
+    if (!parentId) {
+      roots.push(round);
+      continue;
+    }
+    const siblings = children.get(parentId) ?? [];
+    siblings.push(round);
+    children.set(parentId, siblings);
+  }
+
+  return { roots, children };
+}
+
+function renderRoundTreeNode(round: Round, children: Map<string, Round[]>) {
+  const childRounds = children.get(round.id) ?? [];
+  const active = round.id === state.activeRoundId;
+  const completed = round.status === "completed";
+  const dotClass = active ? "active" : completed ? "completed" : "pending";
+  const hue = branchHue(round);
+  return `
+    <div class="iteration-node" style="--branch-hue: ${hue}">
+      <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" type="button" title="${escapeAttr(iterationTitle(round))}">
+        <span>${round.roundIndex}</span>
+      </button>
+      ${childRounds.length ? `
+        <div class="iteration-children ${childRounds.length > 1 ? "has-siblings" : ""}">
+          ${childRounds.map((child, index) => `
+            <div class="iteration-child ${index === 0 ? "first" : ""} ${index === childRounds.length - 1 ? "last" : ""}">
+              ${renderRoundTreeNode(child, children)}
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+function branchHue(round: Round) {
+  return ((round.branchColorIndex ?? 0) * 57) % 360;
+}
+
+function iterationTitle(round: Round) {
+  const parent = round.parentRoundId ? ` / parent ${round.parentRoundId}` : " / root";
+  return `Round ${round.roundIndex} / ${generationModeLabel(round.generationMode)} / ${round.status}${parent}`;
 }
 
 function renderHome() {
@@ -1027,6 +1179,7 @@ function renderHome() {
       </section>
       <div class="home-side">
         ${renderSettingsPanel()}
+        ${renderWorkflowImportPanel()}
         ${renderTemplatePanel()}
       </div>
     </main>
@@ -1076,7 +1229,7 @@ function renderSettingsPanel() {
   `;
 }
 
-function renderTemplatePanel() {
+function renderWorkflowImportPanel() {
   const roleMapExample = `{
   "positive_prompt_node": "6",
   "negative_prompt_node": "7",
@@ -1093,12 +1246,38 @@ function renderTemplatePanel() {
   "vae_encode_image_input": "13.inputs.pixels",
   "save_image_node": "9"
 }`;
-  const selectedTemplateId = state.templates[0]?.id ?? "";
-  const templateOptions = state.templates.length
-    ? state.templates
-      .map((template) => `<option value="${template.id}" ${selectedTemplateId === template.id ? "selected" : ""}>${escapeHtml(template.name)} v${template.version}</option>`)
-      .join("")
-    : `<option value="">登録済みテンプレートなし</option>`;
+  return `
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <p class="section-kicker">Workflow Import</p>
+          <h2>テンプレート登録</h2>
+        </div>
+      </div>
+      <form id="template-form" class="form-stack workflow-import-form">
+        <label>JSONファイル
+          <input data-file-target="workflowJson" type="file" accept=".json,application/json" />
+        </label>
+        <label>名前<input name="name" placeholder="txt2img_16grid" /></label>
+        <label>説明<input name="description" /></label>
+        <label>種別
+          <select name="type">
+            <option value="txt2img">txt2img</option>
+            <option value="img2img">img2img</option>
+            <option value="ipadapter">IP-Adapter</option>
+            <option value="controlnet">ControlNet</option>
+            <option value="hybrid">Hybrid</option>
+          </select>
+        </label>
+        <label>API形式workflow JSON<textarea name="workflowJson" rows="8" spellcheck="false">{}</textarea></label>
+        <label>role map<textarea name="roleMap" rows="8" spellcheck="false">${escapeHtml(roleMapExample)}</textarea></label>
+        <button class="button-primary" type="button" data-action="create-template">${iconPlus()}テンプレート登録</button>
+      </form>
+    </section>
+  `;
+}
+
+function renderTemplatePanel() {
   return `
     <section class="panel">
       <div class="panel-heading">
@@ -1107,38 +1286,21 @@ function renderTemplatePanel() {
           <h2>WorkflowTemplate</h2>
         </div>
       </div>
-      <div class="workflow-toolbar">
-        <select id="workflow-template-select" class="workflow-select">${templateOptions}</select>
-        <div class="button-row">
-          <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-source="workflow-template-select">${iconDownload()}raw export</button>
-          <button class="button-secondary compact" type="button" data-action="export-template" data-template-source="workflow-template-select">${iconDownload()}template export</button>
-          <button class="button-danger compact" type="button" data-action="delete-template" data-template-source="workflow-template-select" ${state.templates.length ? "" : "disabled"}>${iconTrash()}削除</button>
-        </div>
-      </div>
-      <details class="workflow-dropdown">
-        <summary><span>${iconPlus()}インポート / エクスポート</span>${iconChevron()}</summary>
-        <form id="template-form" class="form-stack workflow-import-form">
-          <label>JSONファイル
-            <input data-file-target="workflowJson" type="file" accept=".json,application/json" />
-          </label>
-          <label>名前<input name="name" placeholder="txt2img_16grid" /></label>
-          <label>説明<input name="description" /></label>
-          <label>種別
-            <select name="type">
-              <option value="txt2img">txt2img</option>
-              <option value="img2img">img2img</option>
-              <option value="ipadapter">IP-Adapter</option>
-              <option value="controlnet">ControlNet</option>
-              <option value="hybrid">Hybrid</option>
-            </select>
-          </label>
-          <label>API形式workflow JSON<textarea name="workflowJson" rows="8" spellcheck="false">{}</textarea></label>
-          <label>role map<textarea name="roleMap" rows="8" spellcheck="false">${escapeHtml(roleMapExample)}</textarea></label>
-          <button class="button-primary" type="button" data-action="create-template">${iconPlus()}テンプレート登録</button>
-        </form>
-      </details>
       <div class="template-list">
-        ${state.templates.map((template) => `<div><strong>${escapeHtml(template.name)} v${template.version}</strong><span>${escapeHtml(template.type)}</span></div>`).join("") || "登録済みテンプレートはありません。"}
+        ${state.templates.map((template) => `
+          <article class="template-row">
+            <div class="template-row-main">
+              <strong>${escapeHtml(template.name)} v${template.version}</strong>
+              <span>${escapeHtml(template.type)}</span>
+              ${template.description ? `<small>${escapeHtml(template.description)}</small>` : ""}
+            </div>
+            <div class="template-row-actions">
+              <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${template.id}">${iconDownload()}raw export</button>
+              <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${template.id}">${iconDownload()}template export</button>
+              <button class="button-danger compact" type="button" data-action="delete-template" data-template-id="${template.id}">${iconTrash()}削除</button>
+            </div>
+          </article>
+        `).join("") || `<div class="empty">登録済みテンプレートはありません。</div>`}
       </div>
     </section>
   `;
@@ -1160,7 +1322,7 @@ function renderProjectDetail(detail: ProjectDetail) {
       <main class="studio-main">
         <div class="round-toolbar">
           <div>
-            <h1>イテレーション ${activeRound ? `#${activeRound.roundIndex}` : ""}<span class="tag">${iconDot()}${escapeHtml(mode)}</span></h1>
+            <h1>イテレーション ${activeRound ? `#${activeRound.roundIndex}` : ""}<span class="tag">${iconDot()}${escapeHtml(generationModeLabel(mode))}</span></h1>
             <p>${activeRound ? `${activeRound.assetCount ?? 0}枚生成・${selectedAssets.length}枚選択中・${escapeHtml(activeRound.status)}` : "新規Roundを生成してください。"}</p>
           </div>
           <div class="toolbar-actions">
@@ -1189,15 +1351,36 @@ function renderProjectDetail(detail: ProjectDetail) {
 
 function renderEmptyGallery(activeRound: Round | null) {
   if (!activeRound) {
-    return `<div class="empty wide">Projectを作成し、WorkflowTemplateを選んで初回生成してください。</div>`;
+    return renderSourceUploadEmptyState();
   }
   if (activeRound.status === "running" || activeRound.status === "pending") {
     return `<div class="empty wide">生成結果はまだありません。ComfyUIで生成完了後に「生成結果取得」を押すとグリッドを作成します。</div>`;
   }
   if (activeRound.status === "failed") {
-    return `<div class="empty wide">このイテレーションは失敗しました。接続設定とworkflowを確認して再生成してください。</div>`;
+    return `<div class="empty wide">このイテレーションは失敗しました。接続設定とworkflowを確認してブランチングしてください。</div>`;
   }
   return `<div class="empty wide">取り込み済みの画像はありません。「生成結果取得」を押すと、完了済み画像だけをグリッド表示します。</div>`;
+}
+
+function renderSourceUploadEmptyState() {
+  return `
+    <div class="empty wide source-upload-empty">
+      <div>
+        <strong>画像をアップロードして親画像にする</strong>
+        <p>初回生成前でも source asset を登録して、img2img のブランチングを開始できます。</p>
+      </div>
+      ${renderSourceUploadButton("画像を選択")}
+    </div>
+  `;
+}
+
+function renderSourceUploadButton(label: string) {
+  return `
+    <label class="button-secondary source-upload-button">
+      ${iconPlus()}${escapeHtml(label)}
+      <input data-source-upload="1" type="file" accept="image/png,image/jpeg,image/webp" />
+    </label>
+  `;
 }
 
 function renderAssetTile(asset: Asset) {
@@ -1238,15 +1421,15 @@ function renderBottomActionBar(selectedAssets: Asset[], activeRound: Round | nul
             ${selectedAssets.slice(0, 5).map((asset) => `<img src="${asset.thumbnailUrl}" alt="" />`).join("")}
             ${selectedAssets.length > 5 ? `<span>+${selectedAssets.length - 5}</span>` : ""}
           </div>
-          <span class="selected-label">${selectedAssets.length}枚の画像を次のイテレーションに使用</span>
+          <span class="selected-label">${selectedAssets.length}枚の画像を次のブランチングに使用</span>
         `}
       </div>
       <div class="bottom-actions">
         <button class="button-danger" type="button" data-action="reset-session">${iconTrash()}リセット</button>
         <button class="button-secondary" type="button" data-action="export-selected">${iconDownload()}保存</button>
-        <button class="button-primary" type="button" data-action="generate-round">${iconPlay()}${activeRound ? "再生成" : "初回生成"}</button>
+        <button class="button-primary" type="button" data-action="generate-round">${iconPlay()}${activeRound ? "ブランチング" : "初回生成"}</button>
         <button class="button-primary" type="button" data-action="img2img-next" ${selectedAssets.length === 0 ? "disabled" : ""}>
-          ${iconLoopArrows()}選択してループ実行 <span class="button-count">${selectedAssets.length}</span>
+          ${iconLoopArrows()}選択画像でブランチング <span class="button-count">${selectedAssets.length}</span>
         </button>
       </div>
     </div>
@@ -1275,6 +1458,7 @@ function generationDraftFromForm(form: HTMLFormElement): GenerationDraft {
 function generationDraftFromRequest(request: GenerationRequest): GenerationDraft {
   return {
     templateId: request.templateId,
+    img2imgTemplateId: request.generationMode === "img2img" ? request.templateId : "",
     prompt: request.prompt,
     negativePrompt: request.negativePrompt,
     seed: request.seed === null ? "" : String(request.seed),
@@ -1305,6 +1489,11 @@ function draftNumber(draft: GenerationDraft | null, field: GenerationDraftField)
   }
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function assetDimension(asset: Asset | null, key: "width" | "height") {
+  const value = asset?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function resetGenerationParamsToTemplateDefaults() {
@@ -1339,12 +1528,20 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
   const activeRound = getActiveRound(detail);
   const previous = activeAsset ?? getPreferredParentAsset();
   const request = activeRound?.request;
+  const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
   const draft = state.generationDraft;
   const selectedTemplateId = draft?.templateId ?? request?.templateId ?? detail.project.defaultTemplateId ?? detail.templates[0]?.id ?? "";
+  const selectedImg2ImgTemplateId =
+    draft?.img2imgTemplateId ??
+    (request?.generationMode === "img2img" ? request.templateId : selectedTemplateId);
   const selectedTemplate = detail.templates.find((template) => template.id === selectedTemplateId) ?? null;
-  const selectedMode = draft?.generationMode ?? request?.generationMode ?? defaultModeForTemplate(selectedTemplate);
-  const defaults = templateGenerationDefaults(selectedTemplate);
-  const canGenerate = selectedTemplate !== null;
+  const selectedMode = draft?.generationMode ?? requestMode ?? defaultModeForTemplate(selectedTemplate);
+  const selectedImg2ImgTemplate =
+    detail.templates.find((template) => template.id === selectedImg2ImgTemplateId) ??
+    selectedTemplate;
+  const activeTemplateForMode = selectedMode === "img2img" ? selectedImg2ImgTemplate : selectedTemplate;
+  const defaults = templateGenerationDefaults(activeTemplateForMode);
+  const canGenerate = activeTemplateForMode !== null && (!requiresParentAsset(selectedMode) || previous !== null);
   const promptValue = draft?.prompt ?? request?.prompt ?? previous?.prompt ?? defaults.prompt ?? defaultPrompt;
   const negativePromptValue = draft?.negativePrompt ?? request?.negativePrompt ?? previous?.negativePrompt ?? defaults.negativePrompt ?? defaultNegativePrompt;
   const batchSizeValue = draftNumber(draft, "batchSize") ?? request?.batchSize ?? defaults.batchSize ?? 16;
@@ -1354,15 +1551,20 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
     draftNumber(draft, "denoise") ??
     request?.denoise ??
     normalizeDenoiseForMode(defaults.denoise ?? defaultDenoiseForMode(selectedMode), selectedMode);
-  const widthValue = draftNumber(draft, "width") ?? request?.width ?? defaults.width ?? 512;
-  const heightValue = draftNumber(draft, "height") ?? request?.height ?? defaults.height ?? 768;
+  const widthValue = draftNumber(draft, "width") ?? assetDimension(previous, "width") ?? request?.width ?? defaults.width ?? 512;
+  const heightValue = draftNumber(draft, "height") ?? assetDimension(previous, "height") ?? request?.height ?? defaults.height ?? 768;
   const seedValue = draft?.seed ?? String(request?.seed ?? previous?.seed ?? defaults.seed ?? -1);
   const seedModeValue = draft?.seedMode ?? request?.seedMode ?? "random";
   const samplerValue = draft?.sampler ?? request?.sampler ?? defaults.sampler ?? "euler";
   const schedulerValue = draft?.scheduler ?? request?.scheduler ?? defaults.scheduler ?? "normal";
   const templateOptions = detail.templates.length
     ? detail.templates
-      .map((template) => `<option value="${template.id}" ${selectedTemplateId === template.id ? "selected" : ""}>${escapeHtml(template.name)} v${template.version}</option>`)
+      .map((template) => renderTemplateOption(template, selectedTemplateId))
+      .join("")
+    : `<option value="">未登録</option>`;
+  const img2imgTemplateOptions = detail.templates.length
+    ? detail.templates
+      .map((template) => renderTemplateOption(template, selectedImg2ImgTemplateId))
       .join("")
     : `<option value="">未登録</option>`;
 
@@ -1371,7 +1573,12 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
       <input type="hidden" name="parentAssetId" value="${previous?.id ?? ""}" />
       <section class="sidebar-section">
         <p class="section-kicker">ワークフロー</p>
-        <select id="generation-template-select" class="workflow-select" name="templateId">${templateOptions}</select>
+        <label>txt2img WorkflowTemplate
+          <select id="generation-template-select" class="workflow-select" name="templateId">${templateOptions}</select>
+        </label>
+        <label>img2img WorkflowTemplate
+          <select id="generation-img2img-template-select" class="workflow-select" name="img2imgTemplateId">${img2imgTemplateOptions}</select>
+        </label>
         <details class="workflow-dropdown compact-dropdown">
           <summary><span>${iconPlus()}Workflow操作</span>${iconChevron()}</summary>
           <div class="workflow-export-menu">
@@ -1381,6 +1588,11 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
             <button class="button-secondary compact" type="button" data-action="home">${iconSettings()}Workflow管理を開く</button>
           </div>
         </details>
+      </section>
+
+      <section class="sidebar-section">
+        <p class="section-kicker">親画像</p>
+        ${renderSourceUploadButton("source asset をアップロード")}
       </section>
 
       <section class="sidebar-section">
@@ -1443,7 +1655,7 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
 
       <section class="sidebar-section">
         <p class="section-kicker">ループ設定</p>
-        <label class="toggle-row"><span>選択画像をimg2imgで再生成</span><input type="checkbox" checked /></label>
+        <label class="toggle-row"><span>選択画像からブランチング</span><input type="checkbox" checked /></label>
         <label class="toggle-row"><span>シードバリエーション使用</span><input type="checkbox" /></label>
         <label class="toggle-row"><span>プロンプト自動調整</span><input type="checkbox" /></label>
         ${renderRangeControl("maxLoop", "ループ上限回数", 10, 1, 20, 1, "maxLoopValue", false)}
@@ -1455,8 +1667,8 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
       </details>
 
       <div class="sidebar-actions">
-        <button class="button-primary" type="button" data-action="generate-round" ${canGenerate ? "" : "disabled"}>${iconPlay()}生成開始</button>
-        <button class="button-secondary" type="button" data-action="img2img-next" ${selectedCount === 0 && !previous ? "disabled" : ""}>${iconLoopArrows()}次へ</button>
+        <button class="button-primary" type="button" data-action="generate-round" ${canGenerate ? "" : "disabled"}>${iconPlay()}ブランチング開始</button>
+        <button class="button-secondary" type="button" data-action="img2img-next" ${selectedCount === 0 && !previous ? "disabled" : ""}>${iconLoopArrows()}ブランチング</button>
       </div>
     </form>
   `;
@@ -1486,6 +1698,11 @@ function renderOptions(options: string[], selectedValue: string) {
   return values
     .map((value) => `<option value="${escapeAttr(value)}" ${selectedValue === value ? "selected" : ""}>${escapeHtml(value)}</option>`)
     .join("");
+}
+
+function renderTemplateOption(template: WorkflowTemplate, selectedTemplateId: string) {
+  const selected = selectedTemplateId === template.id ? "selected" : "";
+  return `<option value="${escapeAttr(template.id)}" ${selected}>${escapeHtml(template.name)} v${template.version} (${escapeHtml(template.type)})</option>`;
 }
 
 function renderModelReadout(model: TemplateModelDefaults) {
@@ -1541,6 +1758,10 @@ function defaultModeForTemplate(template: WorkflowTemplate | null) {
   return "txt2img";
 }
 
+function generationModeLabel(mode: string) {
+  return mode === "manual_upload" ? "source" : mode;
+}
+
 function defaultDenoiseForMode(mode: string) {
   if (requiresFullDenoise(mode)) {
     return 1;
@@ -1560,6 +1781,10 @@ function normalizeDenoiseForMode(value: number, mode: string) {
 
 function requiresFullDenoise(mode: string) {
   return mode === "txt2img" || mode === "seed_reuse" || mode === "prompt_reuse";
+}
+
+function requiresParentAsset(mode: string) {
+  return mode === "img2img" || mode === "ipadapter" || mode === "controlnet";
 }
 
 function templateGenerationDefaults(template: WorkflowTemplate | null): TemplateGenerationDefaults {
@@ -1721,7 +1946,7 @@ function renderAssetModal() {
           </div>
           <div class="preview-actions">
             <button class="button-secondary" type="button" data-action="toggle-select" data-id="${asset.id}">選択切替</button>
-            <button class="button-primary" type="button" data-action="generate-from-preview" data-id="${asset.id}" data-mode="img2img">この画像からimg2img生成</button>
+            <button class="button-primary" type="button" data-action="generate-from-preview" data-id="${asset.id}" data-mode="img2img">この画像からブランチング</button>
           </div>
         </div>
       </div>
@@ -1786,6 +2011,7 @@ function fillGenerationFormFromAsset(asset: Asset, mode: string) {
   setFormValue(form, "negativePrompt", asset.negativePrompt);
   setFormValue(form, "seed", String(asset.seed ?? ""));
   setFormValue(form, "seedMode", "random");
+  applyAssetDimensionsToForm(form, asset);
   if (!requiresFullDenoise(mode)) {
     setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
   }
@@ -1802,12 +2028,31 @@ function prepareGenerationFormForParent(asset: Asset, mode: string) {
   const denoise = form.elements.namedItem("denoise") as HTMLInputElement | null;
   setFormValue(form, "parentAssetId", asset.id);
   setFormValue(form, "generationMode", mode);
+  applyAssetDimensionsToForm(form, asset);
 
   if (denoise && requiresFullDenoise(previousMode) && Number(denoise.value) >= 1 && !requiresFullDenoise(mode)) {
     setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
   }
 
   captureGenerationDraft();
+}
+
+function applyAssetDimensionsToForm(form: HTMLFormElement, asset: Asset) {
+  if (typeof asset.width === "number" && Number.isFinite(asset.width)) {
+    setFormValue(form, "width", String(asset.width));
+  }
+  if (typeof asset.height === "number" && Number.isFinite(asset.height)) {
+    setFormValue(form, "height", String(asset.height));
+  }
+}
+
+function applyAssetDimensionsToDraft(asset: Asset) {
+  if (typeof asset.width === "number" && Number.isFinite(asset.width)) {
+    setGenerationDraftValue("width", String(asset.width));
+  }
+  if (typeof asset.height === "number" && Number.isFinite(asset.height)) {
+    setGenerationDraftValue("height", String(asset.height));
+  }
 }
 
 function setFormValue(form: HTMLFormElement, name: string, value: string) {
@@ -1835,52 +2080,10 @@ function pickJsonObject(source: Json, key: string) {
 
 function resolveTemplateForGeneration(templateId: string, mode: string) {
   const current = state.templates.find((template) => template.id === templateId) ?? null;
-  if (!requiresImageWorkflow(mode)) {
-    if (!current) {
-      throw new Error("WorkflowTemplateが選択されていません。");
-    }
-    return current;
+  if (!current) {
+    throw new Error(`${mode}用WorkflowTemplateが選択されていません。`);
   }
-
-  if (current && templateSupportsImageWorkflow(current, mode)) {
-    return current;
-  }
-
-  const fallback =
-    state.templates.find((template) => template.type === mode && templateSupportsImageWorkflow(template, mode)) ??
-    state.templates.find((template) => templateSupportsImageWorkflow(template, mode));
-  if (fallback) {
-    return fallback;
-  }
-
-  throw new Error(`${mode}用WorkflowTemplateがありません。LoadImageとVAEEncodeを含む${mode}テンプレートを登録してください。`);
-}
-
-function requiresImageWorkflow(mode: string) {
-  return mode === "img2img";
-}
-
-function templateSupportsImageWorkflow(template: WorkflowTemplate, mode: string) {
-  if (mode !== "img2img") {
-    return true;
-  }
-  const roleMap = template.roleMap;
-  const hasImageInput = Boolean(
-    roleMap.load_image_input ||
-    roleMap.load_image_node ||
-    workflowHasClass(template.workflowJson, "LoadImage")
-  );
-  const hasVaeEncode = Boolean(roleMap.vae_encode_node || workflowHasClass(template.workflowJson, "VAEEncode"));
-  return hasImageInput && hasVaeEncode;
-}
-
-function workflowHasClass(workflow: Json, classFragment: string) {
-  return Object.values(workflow).some((node) => {
-    if (!isJsonObject(node) || typeof node.class_type !== "string") {
-      return false;
-    }
-    return node.class_type.toLowerCase().includes(classFragment.toLowerCase());
-  });
+  return current;
 }
 
 function relationForMode(mode: string) {

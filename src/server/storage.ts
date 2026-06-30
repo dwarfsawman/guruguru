@@ -112,6 +112,30 @@ function readImageSize(bytes: Buffer): { width: number; height: number } | null 
     }
   }
 
+  if (bytes.length >= 30 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") {
+    const chunkType = bytes.toString("ascii", 12, 16);
+    if (chunkType === "VP8X" && bytes.length >= 30) {
+      return {
+        width: 1 + bytes.readUIntLE(24, 3),
+        height: 1 + bytes.readUIntLE(27, 3)
+      };
+    }
+
+    if (chunkType === "VP8 " && bytes.length >= 30) {
+      return {
+        width: bytes.readUInt16LE(26) & 0x3fff,
+        height: bytes.readUInt16LE(28) & 0x3fff
+      };
+    }
+
+    if (chunkType === "VP8L" && bytes.length >= 25) {
+      return {
+        width: 1 + (((bytes[22]! & 0x3f) << 8) | bytes[21]!),
+        height: 1 + (((bytes[24]! & 0x0f) << 10) | (bytes[23]! << 2) | ((bytes[22]! & 0xc0) >> 6))
+      };
+    }
+  }
+
   return null;
 }
 

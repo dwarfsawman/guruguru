@@ -78,6 +78,9 @@ export function initializeDb() {
       prompt_id TEXT,
       status TEXT NOT NULL,
       generation_mode TEXT NOT NULL,
+      branch_color_index INTEGER NOT NULL DEFAULT 0,
+      branch_reason TEXT,
+      branch_key TEXT,
       preset_id TEXT,
       request_json TEXT NOT NULL,
       patched_workflow_json TEXT,
@@ -164,6 +167,9 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_asset_parents_child ON asset_parents(child_asset_id);
   `);
   ensureColumn("workflow_templates", "deleted_at", "TEXT");
+  ensureColumn("generation_rounds", "branch_color_index", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("generation_rounds", "branch_reason", "TEXT");
+  ensureColumn("generation_rounds", "branch_key", "TEXT");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {
