@@ -191,6 +191,7 @@ const messageAutoClearMs = 30_000;
 let messageValue = "";
 let messageClearTimer: ReturnType<typeof window.setTimeout> | null = null;
 let pendingAssetCardSelect: { assetId: string; timer: ReturnType<typeof window.setTimeout> } | null = null;
+let pendingIterationDotSelect: { timer: ReturnType<typeof window.setTimeout> } | null = null;
 let activeMaskStroke: { pointerId: number; x: number; y: number } | null = null;
 
 const state: {
@@ -306,7 +307,14 @@ function bindEvents() {
     const iterationDot = target.closest<HTMLElement>(".iteration-dot");
     if (iterationDot?.dataset.id && event.detail >= 2) {
       event.preventDefault();
-      previewRoundDeletion(iterationDot.dataset.id);
+      clearPendingIterationDotSelect();
+      state.deletePreviewRoundId = null;
+      render();
+      return;
+    }
+    if (iterationDot?.dataset.id) {
+      event.preventDefault();
+      scheduleIterationDotSelect(iterationDot.dataset.id);
       return;
     }
 
@@ -351,7 +359,9 @@ function bindEvents() {
       return;
     }
     event.preventDefault();
-    previewRoundDeletion(dot.dataset.id);
+    clearPendingIterationDotSelect();
+    state.deletePreviewRoundId = null;
+    render();
   });
 
   app.addEventListener("change", (event) => {
@@ -526,8 +536,31 @@ function clearPendingAssetCardSelect() {
   pendingAssetCardSelect = null;
 }
 
-function previewRoundDeletion(roundId: string) {
-  state.deletePreviewRoundId = roundId;
+function scheduleIterationDotSelect(roundId: string) {
+  clearPendingIterationDotSelect();
+  pendingIterationDotSelect = {
+    timer: window.setTimeout(() => {
+      pendingIterationDotSelect = null;
+      captureGenerationDraft();
+      selectRound(roundId);
+    }, 220)
+  };
+}
+
+function clearPendingIterationDotSelect() {
+  if (!pendingIterationDotSelect) {
+    return;
+  }
+  window.clearTimeout(pendingIterationDotSelect.timer);
+  pendingIterationDotSelect = null;
+}
+
+function selectRound(roundId: string) {
+  state.activeRoundId = roundId;
+  state.activeAssetId = null;
+  state.deletePreviewRoundId = null;
+  state.generationDraft = null;
+  state.maskEditMode = false;
   render();
 }
 
@@ -571,12 +604,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     } else if (action === "delete-project") {
       await deleteProject(id);
     } else if (action === "select-round") {
-      state.activeRoundId = id;
-      state.activeAssetId = null;
-      state.deletePreviewRoundId = null;
-      state.generationDraft = null;
-      state.maskEditMode = false;
-      render();
+      selectRound(id);
     } else if (action === "collect-round") {
       await collectRound(id);
     } else if (action === "delete-round") {
