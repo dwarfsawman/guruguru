@@ -454,6 +454,11 @@ h3 {
   line-height: 1.45;
 }
 
+.project-actions {
+  display: grid;
+  gap: 8px;
+}
+
 .template-list {
   display: grid;
   gap: 8px;
@@ -680,6 +685,35 @@ details + details {
 .range-control {
   display: grid;
   gap: 8px;
+}
+
+.model-readout {
+  display: grid;
+  gap: 8px;
+}
+
+.model-readout-row {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.model-readout-row span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.model-readout-row strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .range-label,
@@ -1417,6 +1451,11 @@ input[type="range"]::-webkit-slider-thumb {
 
   .project-card > .button-secondary {
     grid-column: 1 / -1;
+  }
+
+  .project-actions {
+    grid-column: 1 / -1;
+    grid-template-columns: 1fr 1fr;
   }
 
   .project-thumb {
