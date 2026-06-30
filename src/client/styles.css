@@ -322,9 +322,9 @@ h3 {
 }
 
 .iteration-forest {
-  --iteration-dot-size: 48px;
+  --iteration-dot-size: 32px;
   --iteration-row-gap: 20px;
-  --iteration-link-short: clamp(120px, 11.25vw, 230px);
+  --iteration-link-short: clamp(72px, 7vw, 140px);
   --iteration-link-long: calc(var(--iteration-link-short) * 2);
   display: flex;
   width: max-content;
@@ -398,7 +398,7 @@ h3 {
   border-radius: 999px;
   background: radial-gradient(circle at 34% 30%, hsl(var(--branch-hue), 86%, 68%), hsl(var(--branch-hue), 74%, 46%));
   color: white;
-  font-size: 22px;
+  font-size: 15px;
   font-weight: 800;
   line-height: 1;
   box-shadow:
