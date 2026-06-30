@@ -1,4 +1,5 @@
 import { inferRoleMap } from "../shared/workflowRoleMap";
+import type { InpaintArea, InpaintOptions, MaskedContent } from "../shared/types";
 
 type Json = Record<string, unknown>;
 
@@ -126,6 +127,17 @@ interface GenerationRequest {
   generationMode: string;
   parentAssetId?: string | null;
   relationType?: string | null;
+  inpaint?: InpaintOptions | null;
+}
+
+interface InpaintDraft {
+  parentAssetId: string;
+  maskDataUrl: string;
+  maskedContent: MaskedContent;
+  inpaintArea: InpaintArea;
+  onlyMaskedPadding: number;
+  brushSize: number;
+  eraser: boolean;
 }
 
 interface TemplateGenerationDefaults {
@@ -154,6 +166,7 @@ interface TemplateModelDefaults {
 const generationDraftFields = [
   "templateId",
   "img2imgTemplateId",
+  "parentAssetId",
   "prompt",
   "negativePrompt",
   "seed",
@@ -169,13 +182,16 @@ const generationDraftFields = [
   "generationMode"
 ] as const;
 type GenerationDraftField = typeof generationDraftFields[number];
-type GenerationDraft = Partial<Record<GenerationDraftField, string>>;
+type GenerationDraft = Partial<Record<GenerationDraftField, string>> & {
+  inpaint?: InpaintDraft | null;
+};
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const messageAutoClearMs = 30_000;
 let messageValue = "";
 let messageClearTimer: ReturnType<typeof window.setTimeout> | null = null;
 let pendingAssetCardSelect: { assetId: string; timer: ReturnType<typeof window.setTimeout> } | null = null;
+let activeMaskStroke: { pointerId: number; x: number; y: number } | null = null;
 
 const state: {
   settings: ComfySettings | null;
@@ -193,6 +209,7 @@ const state: {
   busy: boolean;
   message: string;
   generationDraft: GenerationDraft | null;
+  maskEditMode: boolean;
   deletePreviewRoundId: string | null;
 } = {
   settings: null,
@@ -216,6 +233,7 @@ const state: {
     scheduleMessageClear(value);
   },
   generationDraft: null,
+  maskEditMode: false,
   deletePreviewRoundId: null
 };
 
@@ -245,6 +263,12 @@ const samplerOptions = [
   "uni_pc_bh2"
 ];
 const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
+const maskedContentOptions: Array<{ value: MaskedContent; label: string }> = [
+  { value: "fill", label: "fill" },
+  { value: "original", label: "original" },
+  { value: "latent_noise", label: "latent noise" },
+  { value: "latent_nothing", label: "latent nothing" }
+];
 
 void boot();
 
@@ -275,8 +299,7 @@ function bindEvents() {
     const target = event.target as HTMLElement;
     if (target.classList.contains("preview-modal")) {
       captureGenerationDraft();
-      state.activeAssetId = null;
-      render();
+      closeAssetDetail();
       return;
     }
 
@@ -358,6 +381,10 @@ function bindEvents() {
     if (target.name === "generationMode") {
       updateDenoiseControlForMode(target.value);
     }
+    if (target.dataset.inpaintField) {
+      updateInpaintDraftFromControl(target);
+      return;
+    }
     if (target.closest("#generation-form")) {
       captureGenerationDraft();
     }
@@ -366,6 +393,9 @@ function bindEvents() {
   app.addEventListener("input", (event) => {
     const target = event.target as HTMLInputElement | HTMLTextAreaElement;
     const valueId = target instanceof HTMLInputElement ? target.dataset.valueTarget : undefined;
+    if (target.dataset.inpaintField) {
+      updateInpaintDraftFromControl(target);
+    }
     if (!valueId) {
       if (target.closest("#generation-form")) {
         captureGenerationDraft();
@@ -374,7 +404,8 @@ function bindEvents() {
     }
     const valueTarget = document.getElementById(valueId);
     if (valueTarget) {
-      valueTarget.textContent = formatSliderValue(target);
+      const suffix = target.dataset.inpaintField === "onlyMaskedPadding" || target.dataset.inpaintField === "brushSize" ? "px" : "";
+      valueTarget.textContent = `${formatSliderValue(target)}${suffix}`;
     }
     if (target.closest("#generation-form")) {
       captureGenerationDraft();
@@ -402,8 +433,7 @@ function bindEvents() {
         render();
       } else if (state.activeAssetId) {
         captureGenerationDraft();
-        state.activeAssetId = null;
-        render();
+        closeAssetDetail();
       } else if (state.sidebarOpen) {
         captureGenerationDraft();
         state.sidebarOpen = false;
@@ -431,6 +461,48 @@ function bindEvents() {
       if (asset) {
         fillGenerationFormFromAsset(asset, "img2img");
       }
+    }
+  });
+
+  app.addEventListener("pointerdown", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.id !== "maskCanvas") {
+      return;
+    }
+    event.preventDefault();
+    beginMaskStroke(event, target as HTMLCanvasElement);
+  });
+
+  app.addEventListener("pointermove", (event) => {
+    if (!activeMaskStroke) {
+      return;
+    }
+    const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+    if (!canvas || event.pointerId !== activeMaskStroke.pointerId) {
+      return;
+    }
+    event.preventDefault();
+    continueMaskStroke(event, canvas);
+  });
+
+  app.addEventListener("pointerup", (event) => {
+    if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
+      return;
+    }
+    const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+    if (canvas) {
+      event.preventDefault();
+      finishMaskStroke(canvas);
+    }
+  });
+
+  app.addEventListener("pointercancel", (event) => {
+    if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
+      return;
+    }
+    const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+    if (canvas) {
+      finishMaskStroke(canvas);
     }
   });
 }
@@ -461,6 +533,15 @@ function previewRoundDeletion(roundId: string) {
 
 function openAssetDetail(assetId: string) {
   state.activeAssetId = assetId;
+  state.maskEditMode = false;
+  render();
+}
+
+function closeAssetDetail() {
+  commitActiveMaskCanvas();
+  activeMaskStroke = null;
+  state.activeAssetId = null;
+  state.maskEditMode = false;
   render();
 }
 
@@ -494,6 +575,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       state.activeAssetId = null;
       state.deletePreviewRoundId = null;
       state.generationDraft = null;
+      state.maskEditMode = false;
       render();
     } else if (action === "collect-round") {
       await collectRound(id);
@@ -507,6 +589,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     } else if (action === "img2img-next") {
       await generateFromSelected("img2img");
     } else if (action === "generate-from-preview") {
+      commitActiveMaskCanvas();
       const asset = findAsset(id);
       if (asset) {
         await generateRound(asset, target.dataset.mode ?? "img2img");
@@ -514,8 +597,15 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     } else if (action === "asset-detail") {
       openAssetDetail(id);
     } else if (action === "close-detail") {
-      state.activeAssetId = null;
-      render();
+      closeAssetDetail();
+    } else if (action === "toggle-mask-editor") {
+      toggleMaskEditor();
+    } else if (action === "mask-tool") {
+      setMaskTool(target.dataset.tool === "eraser");
+    } else if (action === "clear-mask") {
+      clearActiveMaskCanvas();
+    } else if (action === "clear-inpaint") {
+      clearInpaintDraft();
     } else if (action === "asset-selected") {
       await setAssetStatus(id, "selected");
     } else if (action === "asset-rejected") {
@@ -562,6 +652,7 @@ async function loadHome() {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   state.generationDraft = null;
+  state.maskEditMode = false;
   state.deletePreviewRoundId = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
@@ -578,6 +669,7 @@ async function openProject(projectId: string) {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   state.generationDraft = null;
+  state.maskEditMode = false;
   state.deletePreviewRoundId = null;
   render();
 }
@@ -592,6 +684,9 @@ async function refreshProject(keepRoundId = state.activeRoundId, keepAssetId = s
     ? keepRoundId
     : state.detail.rounds[0]?.id ?? null;
   state.activeAssetId = state.detail.assets.some((asset) => asset.id === keepAssetId) ? keepAssetId : null;
+  if (!state.activeAssetId) {
+    state.maskEditMode = false;
+  }
 }
 
 async function saveSettings() {
@@ -927,6 +1022,7 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     Number(form.denoise || defaultDenoiseForMode(generationMode)),
     generationMode
   );
+  const inpaint = inpaintRequestForParent(parentAssetId, generationMode);
   const request: GenerationRequest = {
     templateId: template.id,
     prompt: form.prompt,
@@ -945,6 +1041,9 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     parentAssetId,
     relationType: resolvedParentAsset ? relationForMode(generationMode) : null
   };
+  if (inpaint) {
+    request.inpaint = inpaint;
+  }
   setGenerationDraftValue(generationMode === "img2img" ? "img2imgTemplateId" : "templateId", template.id);
   setGenerationDraftValue("generationMode", generationMode);
 
@@ -955,7 +1054,11 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     body: JSON.stringify(request)
   });
   const roundId = response.round.id;
+  const previousInpaint = state.generationDraft?.inpaint ?? null;
   state.generationDraft = generationDraftFromRequest(response.round.request);
+  if (previousInpaint && inpaint && previousInpaint.parentAssetId === parentAssetId) {
+    state.generationDraft.inpaint = previousInpaint;
+  }
   state.message = `ComfyUIに送信しました。prompt_id: ${response.promptId}`;
   state.busy = false;
   await refreshProject(roundId, null);
@@ -1158,6 +1261,166 @@ function render() {
     ${state.detail ? renderProjectDetail(state.detail) : renderHome()}
     ${renderAssetModal()}
   `;
+  syncAssetModalMaskCanvas();
+}
+
+function syncAssetModalMaskCanvas() {
+  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+  const image = document.querySelector<HTMLImageElement>("#previewImage");
+  if (!canvas || !image) {
+    return;
+  }
+
+  const sync = () => {
+    const asset = findAsset(canvas.dataset.assetId ?? "");
+    const width = image.naturalWidth || assetDimension(asset, "width") || Math.max(1, Math.round(image.clientWidth));
+    const height = image.naturalHeight || assetDimension(asset, "height") || Math.max(1, Math.round(image.clientHeight));
+    if (!width || !height) {
+      return;
+    }
+
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    context?.clearRect(0, 0, width, height);
+
+    const draft = inpaintDraftForAsset(canvas.dataset.assetId);
+    if (!hasMaskData(draft) || !context) {
+      return;
+    }
+
+    const mask = new Image();
+    mask.addEventListener("load", () => {
+      if (!canvas.isConnected || canvas.dataset.assetId !== draft.parentAssetId) {
+        return;
+      }
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(mask, 0, 0, canvas.width, canvas.height);
+    }, { once: true });
+    mask.src = draft.maskDataUrl;
+  };
+
+  if (image.complete && image.naturalWidth > 0) {
+    sync();
+  } else {
+    image.addEventListener("load", sync, { once: true });
+  }
+}
+
+function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  ensureInpaintDraft(assetId);
+  canvas.setPointerCapture(event.pointerId);
+  const point = pointerToMaskCanvasPoint(canvas, event);
+  activeMaskStroke = {
+    pointerId: event.pointerId,
+    x: point.x,
+    y: point.y
+  };
+  drawMaskSegment(canvas, point, point);
+  commitMaskCanvas(canvas);
+}
+
+function continueMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
+  if (!activeMaskStroke) {
+    return;
+  }
+  const point = pointerToMaskCanvasPoint(canvas, event);
+  drawMaskSegment(canvas, activeMaskStroke, point);
+  activeMaskStroke = {
+    pointerId: event.pointerId,
+    x: point.x,
+    y: point.y
+  };
+}
+
+function finishMaskStroke(canvas: HTMLCanvasElement) {
+  if (activeMaskStroke) {
+    try {
+      canvas.releasePointerCapture(activeMaskStroke.pointerId);
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+  }
+  activeMaskStroke = null;
+  commitActiveMaskCanvas();
+}
+
+function pointerToMaskCanvasPoint(canvas: HTMLCanvasElement, event: PointerEvent) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
+  const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
+  return {
+    x: (event.clientX - rect.left) * scaleX,
+    y: (event.clientY - rect.top) * scaleY
+  };
+}
+
+function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }) {
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  const draft = inpaintDraftForAsset(assetId) ?? (assetId ? ensureInpaintDraft(assetId) : null);
+  const context = canvas.getContext("2d");
+  if (!draft || !context) {
+    return;
+  }
+
+  context.save();
+  context.globalCompositeOperation = draft.eraser ? "destination-out" : "source-over";
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.lineWidth = draft.brushSize;
+  context.strokeStyle = "rgba(255, 255, 255, 1)";
+  context.fillStyle = "rgba(255, 255, 255, 1)";
+
+  if (from.x === to.x && from.y === to.y) {
+    context.beginPath();
+    context.arc(to.x, to.y, draft.brushSize / 2, 0, Math.PI * 2);
+    context.fill();
+  } else {
+    context.beginPath();
+    context.moveTo(from.x, from.y);
+    context.lineTo(to.x, to.y);
+    context.stroke();
+  }
+  context.restore();
+}
+
+function commitActiveMaskCanvas() {
+  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+  if (canvas) {
+    commitMaskCanvas(canvas);
+  }
+}
+
+function commitMaskCanvas(canvas: HTMLCanvasElement) {
+  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
+  if (!canvas || !assetId) {
+    return;
+  }
+
+  const draft = ensureInpaintDraft(assetId);
+  setInpaintDraft({
+    ...draft,
+    maskDataUrl: canvasHasMaskPixels(canvas) ? canvas.toDataURL("image/png") : ""
+  });
+}
+
+function canvasHasMaskPixels(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d");
+  if (!context || canvas.width <= 0 || canvas.height <= 0) {
+    return false;
+  }
+
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  for (let index = 3; index < pixels.length; index += 4) {
+    if (pixels[index]! > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function renderHeader() {
@@ -1583,7 +1846,9 @@ function captureGenerationDraft() {
 }
 
 function generationDraftFromForm(form: HTMLFormElement): GenerationDraft {
-  const draft: GenerationDraft = {};
+  const draft: GenerationDraft = {
+    inpaint: state.generationDraft?.inpaint ?? null
+  };
   for (const field of generationDraftFields) {
     const control = form.elements.namedItem(field) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
     if (control) {
@@ -1597,6 +1862,7 @@ function generationDraftFromRequest(request: GenerationRequest): GenerationDraft
   return {
     templateId: request.templateId,
     img2imgTemplateId: request.generationMode === "img2img" ? request.templateId : "",
+    parentAssetId: request.parentAssetId ?? "",
     prompt: request.prompt,
     negativePrompt: request.negativePrompt,
     seed: request.seed === null ? "" : String(request.seed),
@@ -1609,7 +1875,8 @@ function generationDraftFromRequest(request: GenerationRequest): GenerationDraft
     denoise: String(request.denoise),
     width: String(request.width),
     height: String(request.height),
-    generationMode: request.generationMode
+    generationMode: request.generationMode,
+    inpaint: null
   };
 }
 
@@ -1627,6 +1894,147 @@ function draftNumber(draft: GenerationDraft | null, field: GenerationDraftField)
   }
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function defaultInpaintDraft(assetId: string): InpaintDraft {
+  return {
+    parentAssetId: assetId,
+    maskDataUrl: "",
+    maskedContent: "fill",
+    inpaintArea: "only_masked",
+    onlyMaskedPadding: 32,
+    brushSize: 48,
+    eraser: false
+  };
+}
+
+function inpaintDraftForAsset(assetId: string | null | undefined) {
+  const draft = state.generationDraft?.inpaint;
+  if (!assetId || !draft || draft.parentAssetId !== assetId) {
+    return null;
+  }
+  return draft;
+}
+
+function setInpaintDraft(draft: InpaintDraft | null) {
+  state.generationDraft = {
+    ...(state.generationDraft ?? {}),
+    inpaint: draft
+  };
+}
+
+function ensureInpaintDraft(assetId: string) {
+  const draft = inpaintDraftForAsset(assetId) ?? defaultInpaintDraft(assetId);
+  state.generationDraft = {
+    ...(state.generationDraft ?? {}),
+    parentAssetId: assetId,
+    generationMode: "img2img",
+    inpaint: draft
+  };
+  return draft;
+}
+
+function hasMaskData(draft: InpaintDraft | null | undefined) {
+  return !!draft?.maskDataUrl && draft.maskDataUrl.startsWith("data:image/png;base64,");
+}
+
+function updateInpaintDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
+  const field = control.dataset.inpaintField;
+  if (!field) {
+    return;
+  }
+
+  const assetId = state.generationDraft?.inpaint?.parentAssetId ?? state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+
+  const current = ensureInpaintDraft(assetId);
+  const next: InpaintDraft = { ...current };
+  if (field === "maskedContent" && isMaskedContent(control.value)) {
+    next.maskedContent = control.value;
+  } else if (field === "inpaintArea") {
+    next.inpaintArea = "only_masked";
+  } else if (field === "onlyMaskedPadding") {
+    next.onlyMaskedPadding = clampNumber(Number(control.value), 0, 512, 32);
+  } else if (field === "brushSize") {
+    next.brushSize = clampNumber(Number(control.value), 1, 256, 48);
+  }
+  setInpaintDraft(next);
+}
+
+function inpaintRequestForParent(parentAssetId: string | null, generationMode: string): InpaintOptions | null {
+  if (generationMode !== "img2img" || !parentAssetId) {
+    return null;
+  }
+  const draft = inpaintDraftForAsset(parentAssetId);
+  if (!hasMaskData(draft)) {
+    return null;
+  }
+  return {
+    maskDataUrl: draft.maskDataUrl,
+    maskedContent: draft.maskedContent,
+    inpaintArea: draft.inpaintArea,
+    onlyMaskedPadding: draft.onlyMaskedPadding
+  };
+}
+
+function toggleMaskEditor() {
+  if (state.maskEditMode) {
+    commitActiveMaskCanvas();
+    state.maskEditMode = false;
+  } else if (state.activeAssetId) {
+    ensureInpaintDraft(state.activeAssetId);
+    state.maskEditMode = true;
+  }
+  render();
+}
+
+function setMaskTool(eraser: boolean) {
+  if (!state.activeAssetId) {
+    return;
+  }
+  const draft = ensureInpaintDraft(state.activeAssetId);
+  setInpaintDraft({
+    ...draft,
+    eraser
+  });
+  render();
+}
+
+function clearActiveMaskCanvas() {
+  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  if (canvas) {
+    const context = canvas.getContext("2d");
+    context?.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  const draft = ensureInpaintDraft(assetId);
+  setInpaintDraft({
+    ...draft,
+    maskDataUrl: ""
+  });
+  render();
+}
+
+function clearInpaintDraft() {
+  activeMaskStroke = null;
+  setInpaintDraft(null);
+  render();
+}
+
+function isMaskedContent(value: string): value is MaskedContent {
+  return maskedContentOptions.some((option) => option.value === value);
+}
+
+function clampNumber(value: number, min: number, max: number, fallback: number) {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 function assetDimension(asset: Asset | null, key: "width" | "height") {
@@ -1664,10 +2072,11 @@ function resetGenerationParamsToTemplateDefaults() {
 
 function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null) {
   const activeRound = getActiveRound(detail);
-  const previous = activeAsset ?? getPreferredParentAsset();
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
   const draft = state.generationDraft;
+  const draftParent = findAsset(draft?.parentAssetId ?? "");
+  const previous = activeAsset ?? draftParent ?? getPreferredParentAsset();
   const selectedTemplateId = draft?.templateId ?? request?.templateId ?? detail.project.defaultTemplateId ?? detail.templates[0]?.id ?? "";
   const selectedImg2ImgTemplateId =
     draft?.img2imgTemplateId ??
@@ -1694,6 +2103,7 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null)
   const seedModeValue = draft?.seedMode ?? request?.seedMode ?? "random";
   const samplerValue = draft?.sampler ?? request?.sampler ?? defaults.sampler ?? "euler";
   const schedulerValue = draft?.scheduler ?? request?.scheduler ?? defaults.scheduler ?? "normal";
+  const activeInpaint = previous?.id ? inpaintDraftForAsset(previous.id) : null;
   const templateOptions = detail.templates.length
     ? detail.templates
       .map((template) => renderTemplateOption(template, selectedTemplateId))
@@ -1790,11 +2200,42 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null)
         </label>
       </section>
 
+      ${hasMaskData(activeInpaint) ? renderInpaintSidebarSection(activeInpaint) : ""}
+
       <details class="sidebar-section collapsible">
         <summary><span class="section-kicker">モデル</span>${iconChevron()}</summary>
         ${renderModelReadout(defaults.model)}
       </details>
     </form>
+  `;
+}
+
+function renderInpaintSidebarSection(inpaint: InpaintDraft) {
+  return `
+    <section class="sidebar-section mask-sidebar-section">
+      <div class="section-header-row">
+        <p class="section-kicker">マスク処理</p>
+        <span class="mask-status">有効</span>
+      </div>
+      <label>Masked content
+        <select class="workflow-select" data-inpaint-field="maskedContent">
+          ${maskedContentOptions.map((option) => `
+            <option value="${option.value}" ${inpaint.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
+          `).join("")}
+        </select>
+      </label>
+      <label>Inpaint area
+        <select class="workflow-select" data-inpaint-field="inpaintArea">
+          <option value="only_masked" selected>Only masked</option>
+        </select>
+      </label>
+      <div class="range-control">
+        <div class="range-label"><span>Only masked padding</span><strong id="sidebarMaskPaddingValue">${formatNumber(inpaint.onlyMaskedPadding)}px</strong></div>
+        <input type="range" min="0" max="512" step="1" value="${inpaint.onlyMaskedPadding}" data-value-target="sidebarMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
+        <div class="range-minmax"><span>0px</span><span>512px</span></div>
+      </div>
+      <button class="button-danger compact" type="button" data-action="clear-inpaint">${iconTrash()}マスクを解除</button>
+    </section>
   `;
 }
 
@@ -2060,11 +2501,17 @@ function renderAssetModal() {
   if (!asset) {
     return "";
   }
+  const inpaint = inpaintDraftForAsset(asset.id);
+  const editing = state.maskEditMode;
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
   return `
     <div class="preview-modal" role="dialog" aria-modal="true">
-      <div class="preview-content">
-        <img id="previewImage" src="${asset.imageUrl}" alt="" />
+      <div class="preview-content ${editing ? "mask-mode" : ""}">
+        <div class="preview-media">
+          <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
+          ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>` : ""}
+        </div>
+        ${renderMaskToolbar(asset, inpaint, editing)}
         <button class="preview-close" type="button" data-action="close-detail" aria-label="閉じる">${iconClose()}</button>
         <div class="preview-footer">
           <div class="preview-info">
@@ -2077,6 +2524,50 @@ function renderAssetModal() {
           </div>
         </div>
       </div>
+    </div>
+  `;
+}
+
+function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: boolean) {
+  const draft = inpaint ?? defaultInpaintDraft(asset.id);
+  const active = hasMaskData(inpaint);
+  return `
+    <div class="mask-toolbar">
+      <div class="mask-toolbar-row">
+        <button class="button-secondary compact" type="button" data-action="toggle-mask-editor">
+          ${editing ? "通常表示" : "マスク編集"}
+        </button>
+        <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
+      </div>
+      ${editing ? `
+        <div class="mask-toolbar-row">
+          <button class="mask-tool-button ${draft.eraser ? "" : "active"}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ">${iconBrush()}</button>
+          <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム">${iconEraser()}</button>
+          <button class="button-secondary compact" type="button" data-action="clear-mask">${iconReset()}クリア</button>
+        </div>
+        <div class="range-control mask-brush-control">
+          <div class="range-label"><span>Brush size</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
+          <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
+        </div>
+        <div class="mask-options-grid">
+          <label>Masked content
+            <select class="workflow-select" data-inpaint-field="maskedContent">
+              ${maskedContentOptions.map((option) => `
+                <option value="${option.value}" ${draft.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
+              `).join("")}
+            </select>
+          </label>
+          <label>Inpaint area
+            <select class="workflow-select" data-inpaint-field="inpaintArea">
+              <option value="only_masked" selected>Only masked</option>
+            </select>
+          </label>
+          <div class="range-control mask-padding-control">
+            <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
+            <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
+          </div>
+        </div>
+      ` : ""}
     </div>
   `;
 }
@@ -2360,4 +2851,12 @@ function iconChevron() {
 
 function iconDot() {
   return `<svg viewBox="0 0 16 16" aria-hidden="true" class="tag-dot"><circle cx="8" cy="8" r="6"></circle></svg>`;
+}
+
+function iconBrush() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.4 3.6a2.1 2.1 0 0 1 3 3L10.5 17.5l-4 1 1-4L18.4 3.6Z"></path><path d="M6.5 18.5c-1.8 0-3 1.2-3 3 1.8 0 3-.4 4-1.4"></path></svg>`;
+}
+
+function iconEraser() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 21-5-5L14.5 3.5a3 3 0 0 1 4.2 0l1.8 1.8a3 3 0 0 1 0 4.2L9 21H7Z"></path><path d="m5 13 6 6"></path><path d="M14 21h7"></path></svg>`;
 }

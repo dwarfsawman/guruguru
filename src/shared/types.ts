@@ -27,6 +27,20 @@ export type ParentRelation =
   | "detailer"
   | "manual";
 
+export type MaskedContent = "fill" | "original" | "latent_noise" | "latent_nothing";
+
+export type InpaintArea = "only_masked";
+
+export interface InpaintOptions {
+  maskedContent: MaskedContent;
+  inpaintArea: InpaintArea;
+  onlyMaskedPadding: number;
+  maskDataUrl?: string | null;
+  maskPath?: string | null;
+  maskWidth?: number | null;
+  maskHeight?: number | null;
+}
+
 export interface ComfySettings {
   baseUrl: string;
   websocketUrl: string;
@@ -52,6 +66,7 @@ export interface GenerationRequest {
   generationMode: GenerationMode;
   parentAssetId?: string | null;
   relationType?: ParentRelation | null;
+  inpaint?: InpaintOptions | null;
 }
 
 export interface ApiErrorBody {
