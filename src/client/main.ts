@@ -172,6 +172,9 @@ type GenerationDraftField = typeof generationDraftFields[number];
 type GenerationDraft = Partial<Record<GenerationDraftField, string>>;
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
+const messageAutoClearMs = 30_000;
+let messageValue = "";
+let messageClearTimer: ReturnType<typeof window.setTimeout> | null = null;
 
 const state: {
   settings: ComfySettings | null;
@@ -203,7 +206,13 @@ const state: {
   comfyConnection: "unknown",
   comfyStatusText: "未確認",
   busy: false,
-  message: "",
+  get message() {
+    return messageValue;
+  },
+  set message(value: string) {
+    messageValue = value;
+    scheduleMessageClear(value);
+  },
   generationDraft: null
 };
 
@@ -235,6 +244,23 @@ const samplerOptions = [
 const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
 
 void boot();
+
+function scheduleMessageClear(value: string) {
+  if (messageClearTimer) {
+    window.clearTimeout(messageClearTimer);
+    messageClearTimer = null;
+  }
+  if (!value) {
+    return;
+  }
+
+  messageClearTimer = window.setTimeout(() => {
+    if (messageValue === value) {
+      messageValue = "";
+      render();
+    }
+  }, messageAutoClearMs);
+}
 
 async function boot() {
   await loadHome();
@@ -897,7 +923,7 @@ async function pollCollectRound(roundId: string, projectId: string | null) {
   pendingAutoCollectRoundIds.add(roundId);
 
   try {
-    for (let attempt = 0; attempt < 80; attempt += 1) {
+    while (true) {
       await delay(1500);
       if (state.currentProjectId !== projectId) {
         return;
@@ -915,12 +941,6 @@ async function pollCollectRound(roundId: string, projectId: string | null) {
         render();
         return;
       }
-    }
-
-    if (state.currentProjectId === projectId) {
-      state.message = "生成結果の自動取得が時間内に完了しませんでした。「生成結果取得」を押して再取得できます。";
-      await refreshProject(roundId, state.activeAssetId);
-      render();
     }
   } catch (error) {
     if (state.currentProjectId === projectId) {
