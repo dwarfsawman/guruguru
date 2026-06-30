@@ -1409,7 +1409,7 @@ function renderProjectDetail(detail: ProjectDetail) {
     <div class="studio-shell">
       <div class="sidebar-overlay ${state.sidebarOpen ? "active" : ""}" data-action="toggle-sidebar"></div>
       <aside class="studio-sidebar ${state.sidebarOpen ? "open" : ""}">
-        ${renderGenerationPanel(detail, activeAsset, selectedAssets.length)}
+        ${renderGenerationPanel(detail, activeAsset)}
       </aside>
       <main class="studio-main">
         <div class="round-toolbar">
@@ -1617,7 +1617,7 @@ function resetGenerationParamsToTemplateDefaults() {
   render();
 }
 
-function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null, selectedCount: number) {
+function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null) {
   const activeRound = getActiveRound(detail);
   const previous = activeAsset ?? getPreferredParentAsset();
   const request = activeRound?.request;
@@ -1634,7 +1634,6 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
     selectedTemplate;
   const activeTemplateForMode = selectedMode === "img2img" ? selectedImg2ImgTemplate : selectedTemplate;
   const defaults = templateGenerationDefaults(activeTemplateForMode);
-  const canGenerate = activeTemplateForMode !== null && (!requiresParentAsset(selectedMode) || previous !== null);
   const promptValue = draft?.prompt ?? request?.prompt ?? previous?.prompt ?? defaults.prompt ?? defaultPrompt;
   const negativePromptValue = draft?.negativePrompt ?? request?.negativePrompt ?? previous?.negativePrompt ?? defaults.negativePrompt ?? defaultNegativePrompt;
   const batchSizeValue = draftNumber(draft, "batchSize") ?? request?.batchSize ?? defaults.batchSize ?? 16;
@@ -1746,23 +1745,10 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
         </label>
       </section>
 
-      <section class="sidebar-section">
-        <p class="section-kicker">ループ設定</p>
-        <label class="toggle-row"><span>選択画像からブランチング</span><input type="checkbox" checked /></label>
-        <label class="toggle-row"><span>シードバリエーション使用</span><input type="checkbox" /></label>
-        <label class="toggle-row"><span>プロンプト自動調整</span><input type="checkbox" /></label>
-        ${renderRangeControl("maxLoop", "ループ上限回数", 10, 1, 20, 1, "maxLoopValue", false)}
-      </section>
-
       <details class="sidebar-section collapsible">
         <summary><span class="section-kicker">モデル</span>${iconChevron()}</summary>
         ${renderModelReadout(defaults.model)}
       </details>
-
-      <div class="sidebar-actions">
-        <button class="button-primary" type="button" data-action="generate-round" ${canGenerate ? "" : "disabled"}>${iconPlay()}ブランチング開始</button>
-        <button class="button-secondary" type="button" data-action="img2img-next" ${selectedCount === 0 && !previous ? "disabled" : ""}>${iconLoopArrows()}ブランチング</button>
-      </div>
     </form>
   `;
 }
