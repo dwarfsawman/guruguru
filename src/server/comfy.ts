@@ -56,6 +56,27 @@ export async function testComfyConnection() {
   return result;
 }
 
+export async function getComfyStatus() {
+  const settings = getComfySettings();
+  try {
+    await comfyFetchJson("/queue", {}, 1500);
+    return {
+      ok: true,
+      state: "connected",
+      baseUrl: settings.baseUrl,
+      checkedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      state: "disconnected",
+      baseUrl: settings.baseUrl,
+      checkedAt: new Date().toISOString(),
+      error: errorMessage(error)
+    };
+  }
+}
+
 export async function queuePrompt(workflow: unknown) {
   const body = await comfyFetchJson("/prompt", {
     method: "POST",
@@ -125,8 +146,8 @@ export async function uploadImageToComfy(imagePath: string) {
   };
 }
 
-async function comfyFetchJson(path: string, init: RequestInit = {}) {
-  const response = await comfyFetch(path, init);
+async function comfyFetchJson(path: string, init: RequestInit = {}, timeoutMs?: number) {
+  const response = await comfyFetch(path, init, timeoutMs);
   const text = await response.text();
   const json = text ? JSON.parse(text) : null;
 
@@ -137,10 +158,10 @@ async function comfyFetchJson(path: string, init: RequestInit = {}) {
   return json;
 }
 
-async function comfyFetch(path: string, init: RequestInit = {}) {
+async function comfyFetch(path: string, init: RequestInit = {}, timeoutMs?: number) {
   const settings = getComfySettings();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), settings.timeoutSeconds * 1000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs ?? settings.timeoutSeconds * 1000);
 
   try {
     const base = settings.baseUrl.replace(/\/+$/, "");

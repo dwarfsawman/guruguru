@@ -3,8 +3,8 @@ import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createId, dataRoot, getRow, getRows, initializeDb, runSql, setSetting, toApiRow, toApiRows } from "./db";
-import { fetchViewImage, getHistory, queuePrompt, testComfyConnection, uploadImageToComfy } from "./comfy";
+import { createId, dataRoot, dbPath, getRow, getRows, initializeDb, runSql, setSetting, toApiRow, toApiRows } from "./db";
+import { fetchViewImage, getComfyStatus, getHistory, queuePrompt, testComfyConnection, uploadImageToComfy } from "./comfy";
 import { ensureProjectStorage, safeFileStream, storeImage } from "./storage";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
 import type { AssetStatus, ComfySettings, GenerationMode, GenerationRequest, ParentRelation, SelectionAction } from "../shared/types";
@@ -35,6 +35,7 @@ const server = createServer(async (req, res) => {
 server.listen(port, () => {
   console.log(`GURUGURU listening on http://127.0.0.1:${port}`);
   console.log(`Data directory: ${dataRoot}`);
+  console.log(`Database path: ${dbPath}`);
 });
 
 async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
@@ -60,7 +61,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       websocketUrl: stringOr(body.websocketUrl, "ws://127.0.0.1:8188/ws"),
       timeoutSeconds: numberOr(body.timeoutSeconds, 60),
       imageFetchMode: "view",
-      storageDir: stringOr(body.storageDir, dataRoot)
+      storageDir: dataRoot
     };
     setSetting("comfy", settings);
     sendJson(res, 200, settings);
@@ -69,6 +70,11 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "POST" && path === "/api/comfy/test") {
     sendJson(res, 200, await testComfyConnection());
+    return;
+  }
+
+  if (method === "GET" && path === "/api/comfy/status") {
+    sendJson(res, 200, await getComfyStatus());
     return;
   }
 
