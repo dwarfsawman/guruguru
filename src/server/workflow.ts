@@ -66,7 +66,7 @@ export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unk
     setNodeInput(workflow, roleMap.ipadapter_image_node, ["image"], context.uploadedImageName);
     setNodeInput(workflow, roleMap.controlnet_image_node, ["image"], context.uploadedImageName);
     if (request.generationMode === "img2img") {
-      patchImg2ImgLatentPath(workflow, roleMap, context.uploadedImageName);
+      patchImg2ImgLatentPath(workflow, roleMap, context.uploadedImageName, request.batchSize);
     }
   }
 
@@ -77,7 +77,12 @@ export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unk
   return workflow;
 }
 
-function patchImg2ImgLatentPath(workflow: JsonObject, roleMap: Record<string, unknown>, uploadedImageName: string) {
+function patchImg2ImgLatentPath(
+  workflow: JsonObject,
+  roleMap: Record<string, unknown>,
+  uploadedImageName: string,
+  batchSize: number
+) {
   const loadImageNodeId =
     stringRole(roleMap.load_image_node) ??
     nodeIdFromRolePath(roleMap.load_image_input) ??
@@ -107,8 +112,53 @@ function patchImg2ImgLatentPath(workflow: JsonObject, roleMap: Record<string, un
   setNodeInput(workflow, vaeEncodeNodeId, ["vae"], findVaeConnection(workflow));
 
   const latentConnection = [vaeEncodeNodeId, 0];
-  setRolePath(workflow, roleMap.ksampler_latent_image_input, latentConnection);
-  setNodeInput(workflow, ksamplerNodeId, ["latent_image"], latentConnection);
+  const batchedLatentConnection = repeatLatentForBatchSize(workflow, roleMap, latentConnection, batchSize);
+  setRolePath(workflow, roleMap.ksampler_latent_image_input, batchedLatentConnection);
+  setNodeInput(workflow, ksamplerNodeId, ["latent_image"], batchedLatentConnection);
+}
+
+function repeatLatentForBatchSize(
+  workflow: JsonObject,
+  roleMap: Record<string, unknown>,
+  latentConnection: unknown[],
+  batchSize: number
+): unknown[] {
+  const amount = Number.isFinite(batchSize) ? Math.max(1, Math.trunc(batchSize)) : 1;
+  if (amount <= 1) {
+    return latentConnection;
+  }
+
+  const repeatNodeId = findRepeatLatentBatchNode(workflow, roleMap) ?? addRepeatLatentBatchNode(workflow);
+  setRolePath(workflow, roleMap.repeat_latent_batch_samples_input, latentConnection);
+  setRolePath(workflow, roleMap.repeat_latent_batch_amount_input ?? repeatLatentAmountPath(workflow, roleMap), amount);
+  setNodeInput(workflow, repeatNodeId, ["samples"], latentConnection);
+  setNodeInput(workflow, repeatNodeId, ["amount"], amount);
+  return [repeatNodeId, 0];
+}
+
+function findRepeatLatentBatchNode(workflow: JsonObject, roleMap: Record<string, unknown>): string | null {
+  const roleNodeId =
+    stringRole(roleMap.repeat_latent_batch_node) ??
+    nodeIdFromRolePath(roleMap.repeat_latent_batch_samples_input) ??
+    nodeIdFromRolePath(roleMap.repeat_latent_batch_amount_input);
+  if (roleNodeId && nodeClassIncludes(workflow, roleNodeId, ["RepeatLatentBatch"])) {
+    return roleNodeId;
+  }
+
+  const batchSizeNodeId = nodeIdFromRolePath(roleMap.batch_size_input);
+  if (batchSizeNodeId && nodeClassIncludes(workflow, batchSizeNodeId, ["RepeatLatentBatch"])) {
+    return batchSizeNodeId;
+  }
+
+  return findNodeIdByClass(workflow, ["RepeatLatentBatch"]);
+}
+
+function repeatLatentAmountPath(workflow: JsonObject, roleMap: Record<string, unknown>): unknown {
+  const batchSizeNodeId = nodeIdFromRolePath(roleMap.batch_size_input);
+  if (batchSizeNodeId && nodeClassIncludes(workflow, batchSizeNodeId, ["RepeatLatentBatch"])) {
+    return roleMap.batch_size_input;
+  }
+  return undefined;
 }
 
 function addLoadImageNode(workflow: JsonObject, uploadedImageName: string): string {
@@ -135,6 +185,21 @@ function addVaeEncodeNode(workflow: JsonObject, vaeConnection: unknown[]): strin
     class_type: "VAEEncode",
     _meta: {
       title: "GURUGURU img2img VAE Encode"
+    }
+  };
+  return nodeId;
+}
+
+function addRepeatLatentBatchNode(workflow: JsonObject): string {
+  const nodeId = nextNodeId(workflow);
+  workflow[nodeId] = {
+    inputs: {
+      samples: null,
+      amount: 1
+    },
+    class_type: "RepeatLatentBatch",
+    _meta: {
+      title: "GURUGURU img2img Batch"
     }
   };
   return nodeId;
@@ -260,6 +325,15 @@ function findNodeIdByClass(workflow: JsonObject, classFragments: string[]): stri
     }
   }
   return null;
+}
+
+function nodeClassIncludes(workflow: JsonObject, nodeId: string, classFragments: string[]): boolean {
+  const node = workflow[nodeId];
+  if (!isObject(node) || typeof node.class_type !== "string") {
+    return false;
+  }
+  const classType = node.class_type.toLowerCase();
+  return classFragments.some((fragment) => classType.includes(fragment.toLowerCase()));
 }
 
 function findNodeIdWithInput(workflow: JsonObject, inputName: string): string | null {

@@ -1793,7 +1793,10 @@ function templateGenerationDefaults(template: WorkflowTemplate | null): Template
     prompt: stringFromNodeInput(workflow, roleMap.positive_prompt_node, ["text", "prompt", "positive"]),
     negativePrompt: stringFromNodeInput(workflow, roleMap.negative_prompt_node, ["text", "prompt", "negative"]),
     seed: numberFromPath(workflow, roleMap.seed_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["seed"]),
-    batchSize: numberFromPath(workflow, roleMap.batch_size_input) ?? numberFromNodeInput(workflow, roleMap.empty_latent_node, ["batch_size"]),
+    batchSize:
+      numberFromPath(workflow, roleMap.batch_size_input ?? roleMap.repeat_latent_batch_amount_input) ??
+      numberFromNodeInput(workflow, roleMap.empty_latent_node, ["batch_size"]) ??
+      numberFromNodeInput(workflow, roleMap.repeat_latent_batch_node, ["amount"]),
     steps: numberFromPath(workflow, roleMap.steps_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["steps"]),
     cfg: numberFromPath(workflow, roleMap.cfg_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["cfg"]),
     sampler:

@@ -28,16 +28,24 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
   addInputPath(roleMap, "cfg_input", findInput(nodes, ["cfg"], ["KSampler", "CFGGuider"]));
   addInputPath(roleMap, "steps_input", findInput(nodes, ["steps"], ["KSampler", "BasicScheduler"]));
   addInputPath(roleMap, "denoise_input", findInput(nodes, ["denoise"], ["KSampler", "BasicScheduler"]));
-  addInputPath(roleMap, "batch_size_input", findInput(nodes, ["batch_size"], ["EmptyLatent", "EmptySD3Latent"]));
+  const latentBatchSize = findInput(nodes, ["batch_size"], ["EmptyLatent", "EmptySD3Latent"]);
+  const repeatLatentBatchAmount = findInput(nodes, ["amount"], ["RepeatLatentBatch"]);
+  addInputPath(roleMap, "batch_size_input", latentBatchSize ?? repeatLatentBatchAmount);
+  addInputPath(roleMap, "repeat_latent_batch_amount_input", repeatLatentBatchAmount);
   addInputPath(roleMap, "sampler_input", findInput(nodes, ["sampler_name", "sampler"], ["KSampler", "KSamplerSelect"]));
   addInputPath(roleMap, "scheduler_input", findInput(nodes, ["scheduler"], ["KSampler", "BasicScheduler"]));
   addInputPath(roleMap, "ksampler_latent_image_input", findInput(nodes, ["latent_image"], ["KSampler"]));
+  addInputPath(roleMap, "repeat_latent_batch_samples_input", findInput(nodes, ["samples"], ["RepeatLatentBatch"]));
   addInputPath(roleMap, "width_input", findInput(nodes, ["width"], ["EmptyLatent", "EmptySD3Latent"]));
   addInputPath(roleMap, "height_input", findInput(nodes, ["height"], ["EmptyLatent", "EmptySD3Latent"]));
   addInputPath(roleMap, "load_image_input", findInput(nodes, ["image"], ["LoadImage"]));
   const vaeEncode = findNode(nodes, ["VAEEncode"]);
   if (vaeEncode) {
     roleMap.vae_encode_node = vaeEncode.id;
+  }
+  const repeatLatentBatch = findNode(nodes, ["RepeatLatentBatch"]);
+  if (repeatLatentBatch) {
+    roleMap.repeat_latent_batch_node = repeatLatentBatch.id;
   }
   addInputPath(roleMap, "vae_encode_image_input", findInput(nodes, ["pixels", "image"], ["VAEEncode"]));
   const saveImage = findNode(nodes, ["SaveImage"]);
