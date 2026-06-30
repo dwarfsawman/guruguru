@@ -507,6 +507,9 @@ function bindEvents() {
       }
       const toolbar = handle.closest<HTMLElement>(".mask-toolbar");
       if (toolbar) {
+        if (toolbar.classList.contains("minimized")) {
+          return;
+        }
         event.preventDefault();
         beginMaskToolbarDrag(event, toolbar);
       }
@@ -2755,6 +2758,8 @@ function renderAssetModal() {
           <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
           ${editing ? `<canvas id="maskCanvas" class="mask-canvas${state.maskToolbarMinimized ? "" : " mask-locked"}" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>` : ""}
         </div>
+        ${renderMaskToggleButton(editing)}
+        ${editing ? renderMaskModeIndicator(inpaint) : ""}
         ${renderMaskToolbar(asset, inpaint, editing, promptValue)}
         <button class="preview-close" type="button" data-action="close-detail" aria-label="閉じる">${iconClose()}</button>
         <div class="preview-footer">
@@ -2772,12 +2777,35 @@ function renderAssetModal() {
   `;
 }
 
+function renderMaskToggleButton(editing: boolean) {
+  return `
+    <button class="preview-mask-toggle ${editing ? "active" : ""}" type="button" data-action="toggle-mask-editor" aria-pressed="${editing}" title="${editing ? "マスク編集を終了" : "マスク編集を開始"}">
+      ${iconMask()}<span>マスク編集 ${editing ? "ON" : "OFF"}</span>
+    </button>
+  `;
+}
+
+function renderMaskModeIndicator(inpaint: InpaintDraft | null) {
+  const draft = inpaint ?? (state.activeAssetId ? defaultInpaintDraft(state.activeAssetId) : null);
+  const toolLabel = draft?.eraser ? "消しゴム" : "ブラシ";
+  const sizeLabel = draft ? `${formatNumber(draft.brushSize)}px` : "-";
+  return `
+    <div class="mask-mode-indicator" aria-live="polite">
+      <span>${iconMask()}マスク編集モード</span>
+      <small>${escapeHtml(toolLabel)} / ${escapeHtml(sizeLabel)}</small>
+    </div>
+  `;
+}
+
 function currentPositivePromptValue(asset: Asset) {
   const activeRound = state.detail ? getActiveRound(state.detail) : null;
   return state.generationDraft?.prompt ?? activeRound?.request?.prompt ?? asset.prompt ?? defaultPrompt;
 }
 
 function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: boolean, promptValue: string) {
+  if (!editing) {
+    return "";
+  }
   const draft = inpaint ?? defaultInpaintDraft(asset.id);
   const active = hasMaskData(inpaint);
   const minimized = state.maskToolbarMinimized;
@@ -2789,48 +2817,43 @@ function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: 
   return `
     <div class="mask-toolbar${minimized ? " minimized" : ""}"${styleAttr}>
       <div class="mask-toolbar-header" data-mask-toolbar-handle title="ドラッグで移動">
-        <span class="mask-toolbar-title">${editing ? "マスク・プロンプト" : "プレビュー"}</span>
+        <span class="mask-toolbar-title">マスク・プロンプト</span>
         ${minimizeButton}
       </div>
       ${minimized ? "" : `
         <div class="mask-toolbar-row">
-          <button class="button-secondary compact" type="button" data-action="toggle-mask-editor">
-            ${editing ? "通常表示" : "マスク編集"}
-          </button>
           <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
         </div>
-        ${editing ? `
-          <div class="mask-toolbar-row">
-            <button class="mask-tool-button ${draft.eraser ? "" : "active"}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ">${iconBrush()}</button>
-            <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム">${iconEraser()}</button>
-            <button class="button-secondary compact" type="button" data-action="clear-mask">${iconReset()}クリア</button>
+        <div class="mask-toolbar-row">
+          <button class="mask-tool-button ${draft.eraser ? "" : "active"}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ">${iconBrush()}</button>
+          <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム">${iconEraser()}</button>
+          <button class="button-secondary compact" type="button" data-action="clear-mask">${iconReset()}クリア</button>
+        </div>
+        <div class="range-control mask-brush-control">
+          <div class="range-label"><span>Brush size</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
+          <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
+        </div>
+        <div class="mask-options-grid">
+          <label class="mask-prompt-field">Positive prompt
+            <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
+          </label>
+          <label>Masked content
+            <select class="workflow-select" data-inpaint-field="maskedContent">
+              ${maskedContentOptions.map((option) => `
+                <option value="${option.value}" ${draft.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
+              `).join("")}
+            </select>
+          </label>
+          <label>Inpaint area
+            <select class="workflow-select" data-inpaint-field="inpaintArea">
+              <option value="only_masked" selected>Only masked</option>
+            </select>
+          </label>
+          <div class="range-control mask-padding-control">
+            <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
+            <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
           </div>
-          <div class="range-control mask-brush-control">
-            <div class="range-label"><span>Brush size</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
-            <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
-          </div>
-          <div class="mask-options-grid">
-            <label class="mask-prompt-field">Positive prompt
-              <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
-            </label>
-            <label>Masked content
-              <select class="workflow-select" data-inpaint-field="maskedContent">
-                ${maskedContentOptions.map((option) => `
-                  <option value="${option.value}" ${draft.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
-                `).join("")}
-              </select>
-            </label>
-            <label>Inpaint area
-              <select class="workflow-select" data-inpaint-field="inpaintArea">
-                <option value="only_masked" selected>Only masked</option>
-              </select>
-            </label>
-            <div class="range-control mask-padding-control">
-              <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
-              <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
-            </div>
-          </div>
-        ` : ""}
+        </div>
       `}
     </div>
   `;

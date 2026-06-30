@@ -1491,6 +1491,79 @@ input[type="range"]::-webkit-slider-thumb {
   user-select: none;
 }
 
+.preview-mask-toggle {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  border-color: rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.62);
+  color: rgba(255, 255, 255, 0.86);
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+  backdrop-filter: blur(14px);
+}
+
+.preview-mask-toggle.active {
+  border-color: rgba(52, 211, 153, 0.52);
+  background: rgba(6, 78, 59, 0.74);
+  color: white;
+}
+
+.preview-mask-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.mask-mode-indicator {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(360px, calc(100vw - 32px));
+  min-height: 40px;
+  border: 1px solid rgba(52, 211, 153, 0.48);
+  border-radius: 8px;
+  background: rgba(5, 46, 36, 0.78);
+  color: white;
+  padding: 8px 12px;
+  pointer-events: none;
+  transform: translateX(-50%);
+  backdrop-filter: blur(14px);
+}
+
+.mask-mode-indicator span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.mask-mode-indicator small {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mask-mode-indicator svg {
+  width: 16px;
+  height: 16px;
+}
+
 .mask-canvas {
   position: absolute;
   inset: 0;
@@ -1526,7 +1599,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .mask-toolbar {
   position: absolute;
-  top: 14px;
+  top: 66px;
   left: 14px;
   z-index: 3;
   display: grid;
@@ -1593,11 +1666,21 @@ input[type="range"]::-webkit-slider-thumb {
   max-height: none;
   overflow: visible;
   padding: 8px 10px;
+  pointer-events: none;
 }
 
 .mask-toolbar.minimized .mask-toolbar-header {
   border-bottom: 0;
+  cursor: default;
   padding: 0;
+}
+
+.mask-toolbar.minimized .mask-toolbar-title {
+  pointer-events: none;
+}
+
+.mask-toolbar.minimized .mask-toolbar-icon-button {
+  pointer-events: auto;
 }
 
 .mask-toolbar-row {
@@ -1873,6 +1956,18 @@ input[type="range"]::-webkit-slider-thumb {
 
   .preview-info {
     max-width: 100%;
+  }
+
+  .mask-mode-indicator {
+    top: 62px;
+    right: 14px;
+    left: 14px;
+    max-width: none;
+    transform: none;
+  }
+
+  .mask-toolbar {
+    top: 110px;
   }
 }
 
