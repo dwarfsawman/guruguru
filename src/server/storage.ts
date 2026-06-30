@@ -11,12 +11,19 @@ export interface StoredImage {
   height: number | null;
 }
 
+export interface StoredMask {
+  maskPath: string;
+  width: number | null;
+  height: number | null;
+}
+
 export function ensureProjectStorage(projectId: string) {
   const projectRoot = join(dataRoot, "projects", projectId);
   const paths = {
     projectRoot,
     original: join(projectRoot, "assets", "original"),
     thumbnails: join(projectRoot, "assets", "thumbnails"),
+    masks: join(projectRoot, "masks"),
     workflows: join(projectRoot, "workflows"),
     exports: join(projectRoot, "exports")
   };
@@ -45,6 +52,26 @@ export async function storeImage(projectId: string, roundId: string, batchIndex:
     imagePath,
     thumbnailSmallPath,
     thumbnailMediumPath,
+    width: size?.width ?? null,
+    height: size?.height ?? null
+  };
+}
+
+export async function storeMaskImage(projectId: string, roundId: string, bytes: Buffer): Promise<StoredMask> {
+  const storage = ensureProjectStorage(projectId);
+  const baseName = `${sanitizeBaseName(roundId)}_mask.png`;
+  const maskPath = join(storage.masks, baseName);
+  const resolvedMaskPath = resolve(maskPath);
+  const resolvedProjectRoot = resolve(storage.projectRoot);
+
+  if (!isPathInside(resolvedMaskPath, resolvedProjectRoot)) {
+    throw new Error("Mask storage path is outside the project directory");
+  }
+
+  await writeFile(resolvedMaskPath, bytes);
+  const size = readImageSize(bytes);
+  return {
+    maskPath: resolvedMaskPath,
     width: size?.width ?? null,
     height: size?.height ?? null
   };
@@ -84,7 +111,7 @@ function sanitizeBaseName(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "image";
 }
 
-function readImageSize(bytes: Buffer): { width: number; height: number } | null {
+export function readImageSize(bytes: Buffer): { width: number; height: number } | null {
   if (bytes.length >= 24 && bytes.toString("ascii", 1, 4) === "PNG") {
     return {
       width: bytes.readUInt32BE(16),

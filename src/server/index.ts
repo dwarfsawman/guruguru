@@ -5,10 +5,10 @@ import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createId, dataRoot, dbPath, getRow, getRows, initializeDb, runSql, setSetting, toApiRow, toApiRows } from "./db";
 import { fetchViewImage, getComfyStatus, getHistory, queuePrompt, testComfyConnection, uploadImageToComfy } from "./comfy";
-import { deleteProjectStorage, ensureProjectStorage, safeFileStream, storeImage } from "./storage";
+import { deleteProjectStorage, ensureProjectStorage, readImageSize, safeFileStream, storeImage, storeMaskImage } from "./storage";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
 import { validateRoleMapReferences } from "../shared/workflowRoleMap";
-import type { AssetStatus, ComfySettings, GenerationMode, GenerationRequest, ParentRelation, SelectionAction } from "../shared/types";
+import type { AssetStatus, ComfySettings, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ParentRelation, SelectionAction } from "../shared/types";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(__dirname, "..", "public");
@@ -19,6 +19,7 @@ type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type
 type BranchAssignment = { colorIndex: number; reason: string; key: string };
 
 const maxSourceImageBytes = 16 * 1024 * 1024;
+const maxMaskImageBytes = 8 * 1024 * 1024;
 
 initializeDb();
 
@@ -372,7 +373,8 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
   const roundId = createId("round");
   const parentRoundId = typeof parentAsset?.round_id === "string" ? parentAsset.round_id : null;
   const seed = resolveSeed(requestBody, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
-  const request: GenerationRequest = normalizeGenerationRequest({ ...requestBody, generationMode, parentAssetId: requestedParentAssetId, seed });
+  let request: GenerationRequest = normalizeGenerationRequest({ ...requestBody, generationMode, parentAssetId: requestedParentAssetId, seed });
+  request = await prepareInpaintRequest(projectId, roundId, parentAsset, requestBody, request);
   const branch = branchAssignmentForRound(projectId, parentAsset, roundId, "txt2img_root");
 
   runSql(
@@ -400,11 +402,15 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
     const uploaded = parentAsset && shouldUploadParent(request.generationMode)
       ? await uploadImageToComfy(String(parentAsset.image_path))
       : null;
+    const uploadedMask = request.inpaint?.maskPath
+      ? await uploadImageToComfy(request.inpaint.maskPath)
+      : null;
     const patchedWorkflow = patchWorkflow(workflow, roleMap, {
       projectId,
       roundIndex,
       request,
-      uploadedImageName: uploaded?.name ?? null
+      uploadedImageName: uploaded?.name ?? null,
+      uploadedMaskName: uploadedMask?.name ?? null
     });
 
     runSql(
@@ -576,6 +582,135 @@ function nextBranchColorIndex(projectId: string) {
     "SELECT COALESCE(MAX(branch_color_index), -1) + 1 AS next_index FROM generation_rounds WHERE project_id = ?",
     [projectId]
   )?.next_index ?? 0;
+}
+
+async function prepareInpaintRequest(
+  projectId: string,
+  roundId: string,
+  parentAsset: Record<string, unknown> | null,
+  rawRequest: GenerationRequest,
+  normalizedRequest: GenerationRequest
+): Promise<GenerationRequest> {
+  const rawInpaint = isJsonObject((rawRequest as Record<string, unknown>).inpaint)
+    ? (rawRequest as Record<string, unknown>).inpaint as Record<string, unknown>
+    : null;
+  const hasMaskDataUrl = typeof rawInpaint?.maskDataUrl === "string" && rawInpaint.maskDataUrl.trim() !== "";
+
+  if (!hasMaskDataUrl) {
+    return {
+      ...normalizedRequest,
+      inpaint: null
+    };
+  }
+
+  if (normalizedRequest.generationMode !== "img2img") {
+    throw new HttpError(400, "Inpaint masks are supported only for img2img generation.");
+  }
+  if (!parentAsset) {
+    throw new HttpError(400, "Inpaint generation requires a parent Asset.");
+  }
+
+  const mask = decodeMaskDataUrl(rawInpaint.maskDataUrl);
+  const maskSize = readImageSize(mask.bytes);
+  if (!maskSize) {
+    throw new HttpError(400, "Mask PNG dimensions could not be read.");
+  }
+
+  const parentSize = await parentAssetDimensions(parentAsset);
+  if (!parentSize) {
+    throw new HttpError(400, "Parent Asset dimensions could not be read.");
+  }
+  if (maskSize.width !== parentSize.width || maskSize.height !== parentSize.height) {
+    throw new HttpError(
+      400,
+      `Mask size ${maskSize.width}x${maskSize.height} does not match parent image size ${parentSize.width}x${parentSize.height}.`
+    );
+  }
+
+  const options = normalizeInpaintOptions(rawInpaint);
+  const storedMask = await storeMaskImage(projectId, roundId, mask.bytes);
+
+  return {
+    ...normalizedRequest,
+    width: parentSize.width,
+    height: parentSize.height,
+    inpaint: {
+      ...options,
+      maskPath: storedMask.maskPath,
+      maskWidth: storedMask.width,
+      maskHeight: storedMask.height
+    }
+  };
+}
+
+function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): InpaintOptions {
+  const maskedContent = normalizeMaskedContent(rawInpaint.maskedContent ?? rawInpaint.masked_content);
+  const inpaintArea = stringOr(rawInpaint.inpaintArea ?? rawInpaint.inpaint_area, "only_masked");
+  if (inpaintArea !== "only_masked") {
+    throw new HttpError(400, "Only inpaintArea='only_masked' is supported.");
+  }
+
+  return {
+    maskedContent,
+    inpaintArea: "only_masked",
+    onlyMaskedPadding: clampInteger(numberOr(rawInpaint.onlyMaskedPadding ?? rawInpaint.only_masked_padding, 32), 0, 512),
+    maskDataUrl: null
+  };
+}
+
+function normalizeMaskedContent(value: unknown): MaskedContent {
+  const maskedContent = stringOr(value, "fill");
+  if (maskedContent === "fill" || maskedContent === "original" || maskedContent === "latent_noise" || maskedContent === "latent_nothing") {
+    return maskedContent;
+  }
+  throw new HttpError(400, "Unsupported maskedContent value.");
+}
+
+function decodeMaskDataUrl(rawValue: unknown): { bytes: Buffer } {
+  const dataUrl = requiredString(rawValue, "inpaint.maskDataUrl");
+  if (dataUrl.length > Math.ceil(maxMaskImageBytes * 1.4) + 128) {
+    throw new HttpError(413, `Mask image is too large. The maximum upload size is ${formatBytes(maxMaskImageBytes)}.`);
+  }
+
+  const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/i.exec(dataUrl);
+  if (!match) {
+    throw new HttpError(400, "inpaint.maskDataUrl must be a base64 PNG data URL.");
+  }
+
+  const bytes = Buffer.from(match[1]!, "base64");
+  if (bytes.length === 0) {
+    throw new HttpError(400, "Mask image is empty.");
+  }
+  if (bytes.length > maxMaskImageBytes) {
+    throw new HttpError(413, `Mask image is too large. The maximum upload size is ${formatBytes(maxMaskImageBytes)}.`);
+  }
+  if (!bytesMatchMimeType(bytes, "image/png")) {
+    throw new HttpError(400, "Mask data URL content is not a PNG image.");
+  }
+
+  return { bytes };
+}
+
+async function parentAssetDimensions(parentAsset: Record<string, unknown>): Promise<{ width: number; height: number } | null> {
+  const width = typeof parentAsset.width === "number" && Number.isFinite(parentAsset.width) ? Math.trunc(parentAsset.width) : null;
+  const height = typeof parentAsset.height === "number" && Number.isFinite(parentAsset.height) ? Math.trunc(parentAsset.height) : null;
+  if (width && height) {
+    return { width, height };
+  }
+
+  const imagePath = typeof parentAsset.image_path === "string" ? parentAsset.image_path : "";
+  if (!imagePath) {
+    return null;
+  }
+  const size = readImageSize(await readFile(imagePath));
+  return size ? { width: size.width, height: size.height } : null;
+}
+
+function clampInteger(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
 function decodeImageDataUrl(rawValue: unknown): { mimeType: string; bytes: Buffer } {
