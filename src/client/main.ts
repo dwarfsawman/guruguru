@@ -175,6 +175,7 @@ const app = document.querySelector<HTMLDivElement>("#app")!;
 const messageAutoClearMs = 30_000;
 let messageValue = "";
 let messageClearTimer: ReturnType<typeof window.setTimeout> | null = null;
+let pendingAssetCardSelect: { assetId: string; timer: ReturnType<typeof window.setTimeout> } | null = null;
 
 const state: {
   settings: ComfySettings | null;
@@ -286,6 +287,18 @@ function bindEvents() {
       return;
     }
 
+    const assetCardMain = target.closest<HTMLElement>(".asset-card-main");
+    if (assetCardMain?.dataset.id) {
+      if (event.detail >= 2) {
+        event.preventDefault();
+        clearPendingAssetCardSelect();
+        return;
+      }
+      captureGenerationDraft();
+      scheduleAssetCardSelect(assetCardMain.dataset.id);
+      return;
+    }
+
     const actionTarget = target.closest<HTMLElement>("[data-action]");
     if (!actionTarget) {
       return;
@@ -301,6 +314,15 @@ function bindEvents() {
 
   app.addEventListener("dblclick", (event) => {
     const target = event.target as HTMLElement;
+    const assetCardMain = target.closest<HTMLElement>(".asset-card-main");
+    if (assetCardMain?.dataset.id) {
+      event.preventDefault();
+      clearPendingAssetCardSelect();
+      captureGenerationDraft();
+      openAssetDetail(assetCardMain.dataset.id);
+      return;
+    }
+
     const dot = target.closest<HTMLElement>(".iteration-dot");
     if (!dot?.dataset.id) {
       return;
@@ -413,8 +435,32 @@ function bindEvents() {
   });
 }
 
+function scheduleAssetCardSelect(assetId: string) {
+  clearPendingAssetCardSelect();
+  pendingAssetCardSelect = {
+    assetId,
+    timer: window.setTimeout(() => {
+      pendingAssetCardSelect = null;
+      void toggleSelect(assetId);
+    }, 220)
+  };
+}
+
+function clearPendingAssetCardSelect() {
+  if (!pendingAssetCardSelect) {
+    return;
+  }
+  window.clearTimeout(pendingAssetCardSelect.timer);
+  pendingAssetCardSelect = null;
+}
+
 function previewRoundDeletion(roundId: string) {
   state.deletePreviewRoundId = roundId;
+  render();
+}
+
+function openAssetDetail(assetId: string) {
+  state.activeAssetId = assetId;
   render();
 }
 
@@ -466,8 +512,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
         await generateRound(asset, target.dataset.mode ?? "img2img");
       }
     } else if (action === "asset-detail") {
-      state.activeAssetId = id;
-      render();
+      openAssetDetail(id);
     } else if (action === "close-detail") {
       state.activeAssetId = null;
       render();
@@ -1482,7 +1527,7 @@ function renderAssetTile(asset: Asset) {
   const rejected = asset.status === "rejected";
   return `
     <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""}">
-      <button class="asset-card-main" data-action="asset-detail" data-id="${asset.id}" type="button" aria-label="Asset #${asset.batchIndex + 1}">
+      <button class="asset-card-main" data-id="${asset.id}" type="button" aria-label="Asset #${asset.batchIndex + 1}">
         <img class="gen-image" src="${asset.thumbnailMediumUrl || asset.thumbnailUrl}" alt="" loading="lazy" />
       </button>
       <button class="select-badge" data-action="toggle-select" data-id="${asset.id}" type="button" aria-label="選択切替">
