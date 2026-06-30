@@ -1502,6 +1502,11 @@ input[type="range"]::-webkit-slider-thumb {
   touch-action: none;
 }
 
+.mask-canvas.mask-locked {
+  pointer-events: none;
+  cursor: default;
+}
+
 .preview-close {
   position: absolute;
   top: 14px;
@@ -1534,6 +1539,65 @@ input[type="range"]::-webkit-slider-thumb {
   background: rgba(7, 7, 12, 0.74);
   padding: 10px;
   backdrop-filter: blur(16px);
+}
+
+.mask-toolbar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 4px;
+  cursor: grab;
+  user-select: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mask-toolbar-header:active {
+  cursor: grabbing;
+}
+
+.mask-toolbar-title {
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mask-toolbar-icon-button {
+  display: grid;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.mask-toolbar-icon-button:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+}
+
+.mask-toolbar-icon-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.mask-toolbar.minimized {
+  width: auto;
+  max-height: none;
+  overflow: visible;
+  padding: 8px 10px;
+}
+
+.mask-toolbar.minimized .mask-toolbar-header {
+  border-bottom: 0;
+  padding: 0;
 }
 
 .mask-toolbar-row {

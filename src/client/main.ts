@@ -198,6 +198,7 @@ let messageClearTimer: ReturnType<typeof window.setTimeout> | null = null;
 let pendingAssetCardSelect: { assetId: string; timer: ReturnType<typeof window.setTimeout> } | null = null;
 let pendingIterationDotSelect: { timer: ReturnType<typeof window.setTimeout> } | null = null;
 let activeMaskStroke: { pointerId: number; x: number; y: number } | null = null;
+let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
 
 const state: {
   settings: ComfySettings | null;
@@ -218,6 +219,8 @@ const state: {
   inpaintDrafts: Record<string, InpaintDraft>;
   iterationScroll: ScrollPosition | null;
   maskEditMode: boolean;
+  maskToolbarMinimized: boolean;
+  maskToolbarPos: { left: number; top: number } | null;
   deletePreviewRoundId: string | null;
 } = {
   settings: null,
@@ -244,6 +247,8 @@ const state: {
   inpaintDrafts: {},
   iterationScroll: null,
   maskEditMode: false,
+  maskToolbarMinimized: false,
+  maskToolbarPos: null,
   deletePreviewRoundId: null
 };
 
@@ -307,6 +312,11 @@ async function boot() {
 function bindEvents() {
   app.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
+    if (state.activeAssetId && !state.maskToolbarMinimized && !target.closest(".mask-toolbar") && !target.closest("[data-action]")) {
+      state.maskToolbarMinimized = true;
+      render();
+      return;
+    }
     if (target.classList.contains("preview-modal")) {
       captureGenerationDraft();
       closeAssetDetail();
@@ -317,8 +327,7 @@ function bindEvents() {
     if (iterationDot?.dataset.id && event.detail >= 2) {
       event.preventDefault();
       clearPendingIterationDotSelect();
-      state.deletePreviewRoundId = null;
-      render();
+      previewRoundDeletion(iterationDot.dataset.id);
       return;
     }
     if (iterationDot?.dataset.id) {
@@ -369,8 +378,7 @@ function bindEvents() {
     }
     event.preventDefault();
     clearPendingIterationDotSelect();
-    state.deletePreviewRoundId = null;
-    render();
+    previewRoundDeletion(dot.dataset.id);
   });
 
   app.addEventListener("change", (event) => {
@@ -492,7 +500,22 @@ function bindEvents() {
 
   app.addEventListener("pointerdown", (event) => {
     const target = event.target as HTMLElement;
+    const handle = target.closest<HTMLElement>("[data-mask-toolbar-handle]");
+    if (handle) {
+      if (target.closest("button")) {
+        return;
+      }
+      const toolbar = handle.closest<HTMLElement>(".mask-toolbar");
+      if (toolbar) {
+        event.preventDefault();
+        beginMaskToolbarDrag(event, toolbar);
+      }
+      return;
+    }
     if (target.id !== "maskCanvas") {
+      return;
+    }
+    if (!state.maskToolbarMinimized) {
       return;
     }
     event.preventDefault();
@@ -500,6 +523,17 @@ function bindEvents() {
   });
 
   app.addEventListener("pointermove", (event) => {
+    if (maskToolbarDrag) {
+      if (event.pointerId !== maskToolbarDrag.pointerId) {
+        return;
+      }
+      const toolbar = document.querySelector<HTMLElement>(".mask-toolbar");
+      if (toolbar) {
+        event.preventDefault();
+        moveMaskToolbarDrag(event, toolbar);
+      }
+      return;
+    }
     if (!activeMaskStroke) {
       return;
     }
@@ -512,6 +546,10 @@ function bindEvents() {
   });
 
   app.addEventListener("pointerup", (event) => {
+    if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
+      finishMaskToolbarDrag();
+      return;
+    }
     if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
       return;
     }
@@ -523,6 +561,10 @@ function bindEvents() {
   });
 
   app.addEventListener("pointercancel", (event) => {
+    if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
+      maskToolbarDrag = null;
+      return;
+    }
     if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
       return;
     }
@@ -571,6 +613,11 @@ function clearPendingIterationDotSelect() {
   pendingIterationDotSelect = null;
 }
 
+function previewRoundDeletion(roundId: string) {
+  state.deletePreviewRoundId = roundId;
+  render();
+}
+
 function selectRound(roundId: string) {
   state.activeRoundId = roundId;
   state.activeAssetId = null;
@@ -583,6 +630,8 @@ function selectRound(roundId: string) {
 function openAssetDetail(assetId: string) {
   state.activeAssetId = assetId;
   state.maskEditMode = false;
+  state.maskToolbarMinimized = false;
+  state.maskToolbarPos = null;
   render();
 }
 
@@ -591,6 +640,9 @@ function closeAssetDetail() {
   activeMaskStroke = null;
   state.activeAssetId = null;
   state.maskEditMode = false;
+  state.maskToolbarMinimized = false;
+  state.maskToolbarPos = null;
+  maskToolbarDrag = null;
   render();
 }
 
@@ -644,6 +696,12 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       closeAssetDetail();
     } else if (action === "toggle-mask-editor") {
       toggleMaskEditor();
+    } else if (action === "minimize-mask-toolbar") {
+      state.maskToolbarMinimized = true;
+      render();
+    } else if (action === "restore-mask-toolbar") {
+      state.maskToolbarMinimized = false;
+      render();
     } else if (action === "mask-tool") {
       setMaskTool(target.dataset.tool === "eraser");
     } else if (action === "clear-mask") {
@@ -1391,6 +1449,59 @@ function syncAssetModalMaskCanvas() {
   }
 }
 
+function beginMaskToolbarDrag(event: PointerEvent, toolbar: HTMLElement) {
+  const rect = toolbar.getBoundingClientRect();
+  maskToolbarDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    originLeft: rect.left,
+    originTop: rect.top
+  };
+  try {
+    toolbar.setPointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture may fail if the element is not focusable; drag still works via app-level listeners.
+  }
+  toolbar.style.position = "fixed";
+  toolbar.style.left = `${rect.left}px`;
+  toolbar.style.top = `${rect.top}px`;
+  toolbar.style.right = "auto";
+}
+
+function moveMaskToolbarDrag(event: PointerEvent, toolbar: HTMLElement) {
+  if (!maskToolbarDrag) {
+    return;
+  }
+  const dx = event.clientX - maskToolbarDrag.startX;
+  const dy = event.clientY - maskToolbarDrag.startY;
+  let left = maskToolbarDrag.originLeft + dx;
+  let top = maskToolbarDrag.originTop + dy;
+  const maxLeft = Math.max(0, window.innerWidth - toolbar.offsetWidth);
+  const maxTop = Math.max(0, window.innerHeight - toolbar.offsetHeight);
+  left = Math.max(0, Math.min(maxLeft, left));
+  top = Math.max(0, Math.min(maxTop, top));
+  toolbar.style.left = `${left}px`;
+  toolbar.style.top = `${top}px`;
+}
+
+function finishMaskToolbarDrag() {
+  const toolbar = document.querySelector<HTMLElement>(".mask-toolbar");
+  if (toolbar) {
+    if (maskToolbarDrag) {
+      try {
+        toolbar.releasePointerCapture(maskToolbarDrag.pointerId);
+      } catch {
+        // Capture may already be released.
+      }
+    }
+    const left = parseFloat(toolbar.style.left) || 0;
+    const top = parseFloat(toolbar.style.top) || 0;
+    state.maskToolbarPos = { left, top };
+  }
+  maskToolbarDrag = null;
+}
+
 function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
   const assetId = canvas.dataset.assetId ?? state.activeAssetId;
   if (!assetId) {
@@ -2113,6 +2224,7 @@ function toggleMaskEditor() {
     ensureInpaintDraft(state.activeAssetId);
     state.maskEditMode = true;
   }
+  state.maskToolbarMinimized = false;
   render();
 }
 
@@ -2636,7 +2748,7 @@ function renderAssetModal() {
       <div class="preview-content ${editing ? "mask-mode" : ""}">
         <div class="preview-media">
           <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
-          ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>` : ""}
+          ${editing ? `<canvas id="maskCanvas" class="mask-canvas${state.maskToolbarMinimized ? "" : " mask-locked"}" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>` : ""}
         </div>
         ${renderMaskToolbar(asset, inpaint, editing, promptValue)}
         <button class="preview-close" type="button" data-action="close-detail" aria-label="閉じる">${iconClose()}</button>
@@ -2663,46 +2775,58 @@ function currentPositivePromptValue(asset: Asset) {
 function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: boolean, promptValue: string) {
   const draft = inpaint ?? defaultInpaintDraft(asset.id);
   const active = hasMaskData(inpaint);
+  const minimized = state.maskToolbarMinimized;
+  const pos = state.maskToolbarPos;
+  const styleAttr = pos ? ` style="position: fixed; left: ${pos.left}px; top: ${pos.top}px; right: auto;"` : "";
+  const minimizeButton = minimized
+    ? `<button class="mask-toolbar-icon-button" type="button" data-action="restore-mask-toolbar" aria-label="ダイアログを展開" title="展開">${iconExpand()}</button>`
+    : `<button class="mask-toolbar-icon-button" type="button" data-action="minimize-mask-toolbar" aria-label="ダイアログを最小化" title="最小化">${iconMinimize()}</button>`;
   return `
-    <div class="mask-toolbar">
-      <div class="mask-toolbar-row">
-        <button class="button-secondary compact" type="button" data-action="toggle-mask-editor">
-          ${editing ? "通常表示" : "マスク編集"}
-        </button>
-        <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
+    <div class="mask-toolbar${minimized ? " minimized" : ""}"${styleAttr}>
+      <div class="mask-toolbar-header" data-mask-toolbar-handle title="ドラッグで移動">
+        <span class="mask-toolbar-title">${editing ? "マスク・プロンプト" : "プレビュー"}</span>
+        ${minimizeButton}
       </div>
-      ${editing ? `
+      ${minimized ? "" : `
         <div class="mask-toolbar-row">
-          <button class="mask-tool-button ${draft.eraser ? "" : "active"}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ">${iconBrush()}</button>
-          <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム">${iconEraser()}</button>
-          <button class="button-secondary compact" type="button" data-action="clear-mask">${iconReset()}クリア</button>
+          <button class="button-secondary compact" type="button" data-action="toggle-mask-editor">
+            ${editing ? "通常表示" : "マスク編集"}
+          </button>
+          <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
         </div>
-        <div class="range-control mask-brush-control">
-          <div class="range-label"><span>Brush size</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
-          <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
-        </div>
-        <div class="mask-options-grid">
-          <label class="mask-prompt-field">Positive prompt
-            <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
-          </label>
-          <label>Masked content
-            <select class="workflow-select" data-inpaint-field="maskedContent">
-              ${maskedContentOptions.map((option) => `
-                <option value="${option.value}" ${draft.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
-              `).join("")}
-            </select>
-          </label>
-          <label>Inpaint area
-            <select class="workflow-select" data-inpaint-field="inpaintArea">
-              <option value="only_masked" selected>Only masked</option>
-            </select>
-          </label>
-          <div class="range-control mask-padding-control">
-            <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
-            <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
+        ${editing ? `
+          <div class="mask-toolbar-row">
+            <button class="mask-tool-button ${draft.eraser ? "" : "active"}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ">${iconBrush()}</button>
+            <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム">${iconEraser()}</button>
+            <button class="button-secondary compact" type="button" data-action="clear-mask">${iconReset()}クリア</button>
           </div>
-        </div>
-      ` : ""}
+          <div class="range-control mask-brush-control">
+            <div class="range-label"><span>Brush size</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
+            <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
+          </div>
+          <div class="mask-options-grid">
+            <label class="mask-prompt-field">Positive prompt
+              <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
+            </label>
+            <label>Masked content
+              <select class="workflow-select" data-inpaint-field="maskedContent">
+                ${maskedContentOptions.map((option) => `
+                  <option value="${option.value}" ${draft.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
+                `).join("")}
+              </select>
+            </label>
+            <label>Inpaint area
+              <select class="workflow-select" data-inpaint-field="inpaintArea">
+                <option value="only_masked" selected>Only masked</option>
+              </select>
+            </label>
+            <div class="range-control mask-padding-control">
+              <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
+              <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
+            </div>
+          </div>
+        ` : ""}
+      `}
     </div>
   `;
 }
@@ -2998,4 +3122,12 @@ function iconEraser() {
 
 function iconMask() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7c3-3 13-3 16 0v5c0 5-4 8-8 8s-8-3-8-8V7Z"></path><path d="M8.5 12h.01"></path><path d="M15.5 12h.01"></path><path d="M9 16c1.8 1.2 4.2 1.2 6 0"></path></svg>`;
+}
+
+function iconMinimize() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path></svg>`;
+}
+
+function iconExpand() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"></path></svg>`;
 }
