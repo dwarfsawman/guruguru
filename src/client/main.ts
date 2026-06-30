@@ -210,6 +210,7 @@ const state: {
   busy: boolean;
   message: string;
   generationDraft: GenerationDraft | null;
+  inpaintDrafts: Record<string, InpaintDraft>;
   maskEditMode: boolean;
   deletePreviewRoundId: string | null;
 } = {
@@ -234,6 +235,7 @@ const state: {
     scheduleMessageClear(value);
   },
   generationDraft: null,
+  inpaintDrafts: {},
   maskEditMode: false,
   deletePreviewRoundId: null
 };
@@ -403,12 +405,19 @@ function bindEvents() {
   app.addEventListener("input", (event) => {
     const target = event.target as HTMLInputElement | HTMLTextAreaElement;
     const valueId = target instanceof HTMLInputElement ? target.dataset.valueTarget : undefined;
+    if (target.dataset.generationField === "prompt") {
+      setPositivePromptDraft(target.value);
+      return;
+    }
     if (target.dataset.inpaintField) {
       updateInpaintDraftFromControl(target);
     }
     if (!valueId) {
       if (target.closest("#generation-form")) {
         captureGenerationDraft();
+        if (target.name === "prompt") {
+          syncPreviewPromptControl(target.value);
+        }
       }
       return;
     }
@@ -680,6 +689,7 @@ async function loadHome() {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   state.generationDraft = null;
+  state.inpaintDrafts = {};
   state.maskEditMode = false;
   state.deletePreviewRoundId = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
@@ -697,6 +707,7 @@ async function openProject(projectId: string) {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   state.generationDraft = null;
+  state.inpaintDrafts = {};
   state.maskEditMode = false;
   state.deletePreviewRoundId = null;
   render();
@@ -1082,7 +1093,7 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     body: JSON.stringify(request)
   });
   const roundId = response.round.id;
-  const previousInpaint = state.generationDraft?.inpaint ?? null;
+  const previousInpaint = parentAssetId ? inpaintDraftForAsset(parentAssetId) : null;
   state.generationDraft = generationDraftFromRequest(response.round.request);
   if (previousInpaint && inpaint && previousInpaint.parentAssetId === parentAssetId) {
     state.generationDraft.inpaint = previousInpaint;
@@ -1816,8 +1827,9 @@ function renderAssetTile(asset: Asset) {
   const selected = asset.status === "selected";
   const favorite = asset.status === "favorite";
   const rejected = asset.status === "rejected";
+  const masked = assetHasMaskIndicator(asset);
   return `
-    <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""}">
+    <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""} ${masked ? "masked" : ""}">
       <button class="asset-card-main" data-id="${asset.id}" type="button" aria-label="Asset #${asset.batchIndex + 1}">
         <img class="gen-image" src="${asset.thumbnailMediumUrl || asset.thumbnailUrl}" alt="" loading="lazy" />
       </button>
@@ -1831,9 +1843,18 @@ function renderAssetTile(asset: Asset) {
         ${iconZoom()}
       </button>
       <span class="card-number">#${asset.batchIndex + 1}</span>
+      ${masked ? `<span class="mask-badge">${iconMask()}mask</span>` : ""}
       <span class="seed-chip">seed ${asset.seed ?? "-"}</span>
     </article>
   `;
+}
+
+function assetHasMaskIndicator(asset: Asset) {
+  if (hasMaskData(inpaintDraftForAsset(asset.id))) {
+    return true;
+  }
+  const round = state.detail?.rounds.find((item) => item.id === asset.roundId);
+  return !!round?.request?.inpaint;
 }
 
 function renderBottomActionBar(selectedAssets: Asset[], activeRound: Round | null) {
@@ -1875,7 +1896,7 @@ function captureGenerationDraft() {
 
 function generationDraftFromForm(form: HTMLFormElement): GenerationDraft {
   const draft: GenerationDraft = {
-    inpaint: state.generationDraft?.inpaint ?? null
+    inpaint: null
   };
   for (const field of generationDraftFields) {
     const control = form.elements.namedItem(field) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
@@ -1883,6 +1904,7 @@ function generationDraftFromForm(form: HTMLFormElement): GenerationDraft {
       draft[field] = control.value;
     }
   }
+  draft.inpaint = inpaintDraftForAsset(draft.parentAssetId) ?? null;
   return draft;
 }
 
@@ -1937,14 +1959,28 @@ function defaultInpaintDraft(assetId: string): InpaintDraft {
 }
 
 function inpaintDraftForAsset(assetId: string | null | undefined) {
+  const stored = assetId ? state.inpaintDrafts[assetId] : null;
+  if (stored) {
+    return stored;
+  }
   const draft = state.generationDraft?.inpaint;
   if (!assetId || !draft || draft.parentAssetId !== assetId) {
     return null;
   }
+  state.inpaintDrafts[assetId] = draft;
   return draft;
 }
 
 function setInpaintDraft(draft: InpaintDraft | null) {
+  const previousAssetId =
+    state.generationDraft?.inpaint?.parentAssetId ??
+    state.generationDraft?.parentAssetId ??
+    state.activeAssetId;
+  if (draft) {
+    state.inpaintDrafts[draft.parentAssetId] = draft;
+  } else if (previousAssetId) {
+    delete state.inpaintDrafts[previousAssetId];
+  }
   state.generationDraft = {
     ...(state.generationDraft ?? {}),
     inpaint: draft
@@ -1953,6 +1989,7 @@ function setInpaintDraft(draft: InpaintDraft | null) {
 
 function ensureInpaintDraft(assetId: string) {
   const draft = inpaintDraftForAsset(assetId) ?? defaultInpaintDraft(assetId);
+  state.inpaintDrafts[assetId] = draft;
   state.generationDraft = {
     ...(state.generationDraft ?? {}),
     parentAssetId: assetId,
@@ -1960,6 +1997,22 @@ function ensureInpaintDraft(assetId: string) {
     inpaint: draft
   };
   return draft;
+}
+
+function setPositivePromptDraft(value: string) {
+  setGenerationDraftValue("prompt", value);
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  if (form) {
+    setFormValue(form, "prompt", value);
+  }
+  syncPreviewPromptControl(value);
+}
+
+function syncPreviewPromptControl(value: string) {
+  const control = document.querySelector<HTMLTextAreaElement>("[data-generation-field='prompt']");
+  if (control && control.value !== value) {
+    control.value = value;
+  }
 }
 
 function hasMaskData(draft: InpaintDraft | null | undefined) {
@@ -2531,6 +2584,7 @@ function renderAssetModal() {
   }
   const inpaint = inpaintDraftForAsset(asset.id);
   const editing = state.maskEditMode;
+  const promptValue = currentPositivePromptValue(asset);
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
   return `
     <div class="preview-modal" role="dialog" aria-modal="true">
@@ -2539,7 +2593,7 @@ function renderAssetModal() {
           <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
           ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>` : ""}
         </div>
-        ${renderMaskToolbar(asset, inpaint, editing)}
+        ${renderMaskToolbar(asset, inpaint, editing, promptValue)}
         <button class="preview-close" type="button" data-action="close-detail" aria-label="閉じる">${iconClose()}</button>
         <div class="preview-footer">
           <div class="preview-info">
@@ -2556,7 +2610,12 @@ function renderAssetModal() {
   `;
 }
 
-function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: boolean) {
+function currentPositivePromptValue(asset: Asset) {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return state.generationDraft?.prompt ?? activeRound?.request?.prompt ?? asset.prompt ?? defaultPrompt;
+}
+
+function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: boolean, promptValue: string) {
   const draft = inpaint ?? defaultInpaintDraft(asset.id);
   const active = hasMaskData(inpaint);
   return `
@@ -2578,6 +2637,9 @@ function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: 
           <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
         </div>
         <div class="mask-options-grid">
+          <label class="mask-prompt-field">Positive prompt
+            <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
+          </label>
           <label>Masked content
             <select class="workflow-select" data-inpaint-field="maskedContent">
               ${maskedContentOptions.map((option) => `
@@ -2887,4 +2949,8 @@ function iconBrush() {
 
 function iconEraser() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 21-5-5L14.5 3.5a3 3 0 0 1 4.2 0l1.8 1.8a3 3 0 0 1 0 4.2L9 21H7Z"></path><path d="m5 13 6 6"></path><path d="M14 21h7"></path></svg>`;
+}
+
+function iconMask() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7c3-3 13-3 16 0v5c0 5-4 8-8 8s-8-3-8-8V7Z"></path><path d="M8.5 12h.01"></path><path d="M15.5 12h.01"></path><path d="M9 16c1.8 1.2 4.2 1.2 6 0"></path></svg>`;
 }

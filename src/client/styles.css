@@ -1153,6 +1153,10 @@ input[type="range"]::-webkit-slider-thumb {
   opacity: 0.68;
 }
 
+.image-card.masked {
+  border-color: rgba(52, 211, 153, 0.46);
+}
+
 .asset-card-main {
   display: block;
   width: 100%;
@@ -1245,7 +1249,8 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .card-number,
-.seed-chip {
+.seed-chip,
+.mask-badge {
   position: absolute;
   z-index: 9;
   border-radius: 5px;
@@ -1274,6 +1279,23 @@ input[type="range"]::-webkit-slider-thumb {
 
 .image-card:hover .seed-chip {
   opacity: 1;
+}
+
+.mask-badge {
+  right: 8px;
+  bottom: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(6, 78, 59, 0.78);
+  color: #bbf7d0;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
+.mask-badge svg {
+  width: 13px;
+  height: 13px;
 }
 
 .placeholder-pattern {
@@ -1563,6 +1585,16 @@ input[type="range"]::-webkit-slider-thumb {
 .mask-options-grid {
   display: grid;
   gap: 10px;
+}
+
+.mask-prompt-field {
+  display: grid;
+  gap: 6px;
+}
+
+.mask-prompt-input {
+  min-height: 92px;
+  resize: vertical;
 }
 
 .mask-brush-control,
