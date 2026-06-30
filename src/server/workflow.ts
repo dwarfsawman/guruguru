@@ -2,6 +2,7 @@ import { createHash, randomInt } from "node:crypto";
 import type { GenerationRequest } from "../shared/types";
 
 type JsonObject = Record<string, unknown>;
+const GENERATED_MASK_CHANNEL = "red";
 
 export interface PatchContext {
   projectId: string;
@@ -145,7 +146,7 @@ function patchInpaintLatentPath(
     findNodeIdByExactClass(workflow, "LoadImageMask") ??
     addLoadImageMaskNode(workflow, uploadedMaskName);
   setNodeInput(workflow, loadMaskNodeId, ["image"], uploadedMaskName);
-  setNodeInput(workflow, loadMaskNodeId, ["channel"], "alpha");
+  setNodeInput(workflow, loadMaskNodeId, ["channel"], GENERATED_MASK_CHANNEL);
 
   const imageConnection = [loadImageNodeId, 0];
   const baseMaskConnection = [loadMaskNodeId, 0];
@@ -272,7 +273,8 @@ function addLoadImageMaskNode(workflow: JsonObject, uploadedMaskName: string): s
   workflow[nodeId] = {
     inputs: {
       image: uploadedMaskName,
-      channel: "alpha"
+      // ComfyUI's LoadImageMask alpha output is inverted; generated masks are white-on-transparent.
+      channel: GENERATED_MASK_CHANNEL
     },
     class_type: "LoadImageMask",
     _meta: {
