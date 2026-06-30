@@ -65,6 +65,9 @@ export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unk
     setNodeInput(workflow, roleMap.load_image_node, ["image"], context.uploadedImageName);
     setNodeInput(workflow, roleMap.ipadapter_image_node, ["image"], context.uploadedImageName);
     setNodeInput(workflow, roleMap.controlnet_image_node, ["image"], context.uploadedImageName);
+    if (request.generationMode === "img2img") {
+      patchImg2ImgLatentPath(workflow, roleMap, context.uploadedImageName);
+    }
   }
 
   const savePrefix = `guruguru/${context.projectId}/round_${String(context.roundIndex).padStart(3, "0")}`;
@@ -72,6 +75,42 @@ export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unk
   setNodeInput(workflow, roleMap.save_image_node, ["filename_prefix"], savePrefix);
 
   return workflow;
+}
+
+function patchImg2ImgLatentPath(workflow: JsonObject, roleMap: Record<string, unknown>, uploadedImageName: string) {
+  const loadImageNodeId =
+    stringRole(roleMap.load_image_node) ??
+    nodeIdFromRolePath(roleMap.load_image_input) ??
+    findNodeIdByClass(workflow, ["LoadImage"]);
+  if (!loadImageNodeId) {
+    throw new Error("img2img workflow requires a LoadImage node or load_image_input role map entry");
+  }
+
+  setNodeInput(workflow, loadImageNodeId, ["image"], uploadedImageName);
+
+  const vaeEncodeNodeId =
+    stringRole(roleMap.vae_encode_node) ??
+    nodeIdFromRolePath(roleMap.vae_encode_image_input) ??
+    findNodeIdByClass(workflow, ["VAEEncode"]);
+  if (!vaeEncodeNodeId) {
+    throw new Error("img2img workflow requires a VAEEncode node or vae_encode_node role map entry");
+  }
+
+  const ksamplerNodeId =
+    stringRole(roleMap.ksampler_node) ??
+    nodeIdFromRolePath(roleMap.ksampler_latent_image_input) ??
+    findNodeIdByClass(workflow, ["KSampler"]);
+  if (!ksamplerNodeId) {
+    throw new Error("img2img workflow requires a KSampler node or ksampler_node role map entry");
+  }
+
+  const imageConnection = [loadImageNodeId, 0];
+  setRolePath(workflow, roleMap.vae_encode_image_input, imageConnection);
+  setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], imageConnection);
+
+  const latentConnection = [vaeEncodeNodeId, 0];
+  setRolePath(workflow, roleMap.ksampler_latent_image_input, latentConnection);
+  setNodeInput(workflow, ksamplerNodeId, ["latent_image"], latentConnection);
 }
 
 export function normalizeRoleMap(value: unknown): Record<string, unknown> {
@@ -138,6 +177,30 @@ function setNodeInput(workflow: JsonObject, rawNodeId: unknown, candidateInputs:
 
   inputs[candidateInputs[0]!] = value;
   return true;
+}
+
+function stringRole(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function nodeIdFromRolePath(rawPath: unknown): string | null {
+  if (typeof rawPath !== "string" || rawPath.trim() === "") {
+    return null;
+  }
+  return rawPath.split(".").filter(Boolean)[0] ?? null;
+}
+
+function findNodeIdByClass(workflow: JsonObject, classFragments: string[]): string | null {
+  for (const [nodeId, rawNode] of Object.entries(workflow)) {
+    if (!isObject(rawNode) || typeof rawNode.class_type !== "string") {
+      continue;
+    }
+    const classType = rawNode.class_type.toLowerCase();
+    if (classFragments.some((fragment) => classType.includes(fragment.toLowerCase()))) {
+      return nodeId;
+    }
+  }
+  return null;
 }
 
 function stableStringify(value: unknown): string {

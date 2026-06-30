@@ -148,6 +148,25 @@ interface TemplateModelDefaults {
   loras: string[];
 }
 
+const generationDraftFields = [
+  "templateId",
+  "prompt",
+  "negativePrompt",
+  "seed",
+  "seedMode",
+  "batchSize",
+  "steps",
+  "cfg",
+  "sampler",
+  "scheduler",
+  "denoise",
+  "width",
+  "height",
+  "generationMode"
+] as const;
+type GenerationDraftField = typeof generationDraftFields[number];
+type GenerationDraft = Partial<Record<GenerationDraftField, string>>;
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
 const state: {
@@ -165,6 +184,7 @@ const state: {
   comfyStatusText: string;
   busy: boolean;
   message: string;
+  generationDraft: GenerationDraft | null;
 } = {
   settings: null,
   projects: [],
@@ -179,7 +199,8 @@ const state: {
   comfyConnection: "unknown",
   comfyStatusText: "未確認",
   busy: false,
-  message: ""
+  message: "",
+  generationDraft: null
 };
 
 const defaultPrompt =
@@ -208,6 +229,7 @@ const samplerOptions = [
   "uni_pc_bh2"
 ];
 const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
+
 void boot();
 
 async function boot() {
@@ -219,6 +241,7 @@ function bindEvents() {
   app.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
     if (target.classList.contains("preview-modal")) {
+      captureGenerationDraft();
       state.activeAssetId = null;
       render();
       return;
@@ -230,6 +253,9 @@ function bindEvents() {
     }
 
     const action = actionTarget.dataset.action!;
+    if (action !== "reset-generation-params") {
+      captureGenerationDraft();
+    }
     const id = actionTarget.dataset.id ?? "";
     void handleAction(action, id, actionTarget);
   });
@@ -253,17 +279,26 @@ function bindEvents() {
     if (target.name === "generationMode") {
       updateDenoiseControlForMode(target.value);
     }
+    if (target.closest("#generation-form")) {
+      captureGenerationDraft();
+    }
   });
 
   app.addEventListener("input", (event) => {
-    const target = event.target as HTMLInputElement;
-    const valueId = target.dataset.valueTarget;
+    const target = event.target as HTMLInputElement | HTMLTextAreaElement;
+    const valueId = target instanceof HTMLInputElement ? target.dataset.valueTarget : undefined;
     if (!valueId) {
+      if (target.closest("#generation-form")) {
+        captureGenerationDraft();
+      }
       return;
     }
     const valueTarget = document.getElementById(valueId);
     if (valueTarget) {
       valueTarget.textContent = formatSliderValue(target);
+    }
+    if (target.closest("#generation-form")) {
+      captureGenerationDraft();
     }
   });
 
@@ -284,9 +319,11 @@ function bindEvents() {
 
     if (event.key === "Escape") {
       if (state.activeAssetId) {
+        captureGenerationDraft();
         state.activeAssetId = null;
         render();
       } else if (state.sidebarOpen) {
+        captureGenerationDraft();
         state.sidebarOpen = false;
         render();
       }
@@ -344,6 +381,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     } else if (action === "select-round") {
       state.activeRoundId = id;
       state.activeAssetId = null;
+      state.generationDraft = null;
       render();
     } else if (action === "collect-round") {
       await collectRound(id);
@@ -382,6 +420,8 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       exportSelected();
     } else if (action === "reset-session") {
       await resetActiveRoundMarks();
+    } else if (action === "reset-generation-params") {
+      resetGenerationParamsToTemplateDefaults();
     } else if (action === "random-seed") {
       randomSeed();
     } else if (action === "swap-resolution") {
@@ -405,6 +445,7 @@ async function loadHome() {
   state.activeRoundId = null;
   state.activeAssetId = null;
   state.sidebarOpen = false;
+  state.generationDraft = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
   state.projects = (await api<{ projects: ProjectSummary[] }>("/api/projects")).projects;
@@ -419,6 +460,7 @@ async function openProject(projectId: string) {
   state.activeRoundId = state.detail.rounds[0]?.id ?? null;
   state.activeAssetId = null;
   state.sidebarOpen = false;
+  state.generationDraft = null;
   render();
 }
 
@@ -679,12 +721,13 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
   const form = readForm("generation-form");
   const generationMode = overrideMode ?? form.generationMode ?? "txt2img";
   const parentAssetId = parentAsset?.id ?? form.parentAssetId ?? null;
+  const template = resolveTemplateForGeneration(form.templateId, generationMode);
   const denoise = normalizeDenoiseForMode(
     Number(form.denoise || defaultDenoiseForMode(generationMode)),
     generationMode
   );
   const request: GenerationRequest = {
-    templateId: form.templateId,
+    templateId: template.id,
     prompt: form.prompt,
     negativePrompt: form.negativePrompt,
     seed: form.seed ? Number(form.seed) : null,
@@ -701,6 +744,8 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     parentAssetId,
     relationType: parentAsset ? relationForMode(generationMode) : null
   };
+  setGenerationDraftValue("templateId", template.id);
+  setGenerationDraftValue("generationMode", generationMode);
 
   state.busy = true;
   render();
@@ -709,6 +754,7 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     body: JSON.stringify(request)
   });
   const roundId = response.round.id;
+  state.generationDraft = generationDraftFromRequest(response.round.request);
   state.message = `ComfyUIに送信しました。prompt_id: ${response.promptId}`;
   state.busy = false;
   await refreshProject(roundId, null);
@@ -723,7 +769,7 @@ async function generateFromSelected(mode: string) {
   if (!asset) {
     throw new Error("selected画像、または詳細表示中の画像がありません。");
   }
-  fillGenerationFormFromAsset(asset, mode);
+  prepareGenerationFormForParent(asset, mode);
   await generateRound(asset, mode);
 }
 
@@ -864,6 +910,7 @@ function randomSeed() {
   if (seedMode) {
     seedMode.value = "fixed";
   }
+  captureGenerationDraft();
 }
 
 function swapResolution() {
@@ -875,6 +922,7 @@ function swapResolution() {
   const nextWidth = height.value;
   height.value = width.value;
   width.value = nextWidth;
+  captureGenerationDraft();
 }
 
 function render() {
@@ -1037,8 +1085,12 @@ function renderTemplatePanel() {
   "cfg_input": "3.inputs.cfg",
   "steps_input": "3.inputs.steps",
   "denoise_input": "3.inputs.denoise",
+  "ksampler_latent_image_input": "3.inputs.latent_image",
   "batch_size_input": "5.inputs.batch_size",
   "load_image_node": "12",
+  "load_image_input": "12.inputs.image",
+  "vae_encode_node": "13",
+  "vae_encode_image_input": "13.inputs.pixels",
   "save_image_node": "9"
 }`;
   const selectedTemplateId = state.templates[0]?.id ?? "";
@@ -1201,26 +1253,113 @@ function renderBottomActionBar(selectedAssets: Asset[], activeRound: Round | nul
   `;
 }
 
+function captureGenerationDraft() {
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  if (!form) {
+    return;
+  }
+  state.generationDraft = generationDraftFromForm(form);
+}
+
+function generationDraftFromForm(form: HTMLFormElement): GenerationDraft {
+  const draft: GenerationDraft = {};
+  for (const field of generationDraftFields) {
+    const control = form.elements.namedItem(field) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
+    if (control) {
+      draft[field] = control.value;
+    }
+  }
+  return draft;
+}
+
+function generationDraftFromRequest(request: GenerationRequest): GenerationDraft {
+  return {
+    templateId: request.templateId,
+    prompt: request.prompt,
+    negativePrompt: request.negativePrompt,
+    seed: request.seed === null ? "" : String(request.seed),
+    seedMode: request.seedMode,
+    batchSize: String(request.batchSize),
+    steps: String(request.steps),
+    cfg: String(request.cfg),
+    sampler: request.sampler,
+    scheduler: request.scheduler,
+    denoise: String(request.denoise),
+    width: String(request.width),
+    height: String(request.height),
+    generationMode: request.generationMode
+  };
+}
+
+function setGenerationDraftValue(field: GenerationDraftField, value: string) {
+  state.generationDraft = {
+    ...(state.generationDraft ?? {}),
+    [field]: value
+  };
+}
+
+function draftNumber(draft: GenerationDraft | null, field: GenerationDraftField) {
+  const value = draft?.[field];
+  if (value === undefined || value.trim() === "") {
+    return undefined;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function resetGenerationParamsToTemplateDefaults() {
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  if (!form) {
+    return;
+  }
+
+  const templateId = (form.elements.namedItem("templateId") as HTMLSelectElement | null)?.value ?? "";
+  const template = state.templates.find((item) => item.id === templateId) ?? null;
+  const defaults = templateGenerationDefaults(template);
+  const mode = defaultModeForTemplate(template);
+
+  setFormValue(form, "batchSize", String(defaults.batchSize ?? 16));
+  setFormValue(form, "steps", String(defaults.steps ?? 20));
+  setFormValue(form, "cfg", String(defaults.cfg ?? 7));
+  setFormValue(form, "denoise", String(normalizeDenoiseForMode(defaults.denoise ?? defaultDenoiseForMode(mode), mode)));
+  setFormValue(form, "width", String(defaults.width ?? 512));
+  setFormValue(form, "height", String(defaults.height ?? 768));
+  setFormValue(form, "seed", String(defaults.seed ?? -1));
+  setFormValue(form, "seedMode", "random");
+  setFormValue(form, "sampler", defaults.sampler ?? "euler");
+  setFormValue(form, "scheduler", defaults.scheduler ?? "normal");
+  setFormValue(form, "generationMode", mode);
+
+  captureGenerationDraft();
+  state.message = "生成パラメータをWorkflow JSONの初期値に戻しました。";
+  render();
+}
+
 function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null, selectedCount: number) {
   const activeRound = getActiveRound(detail);
   const previous = activeAsset ?? getPreferredParentAsset();
   const request = activeRound?.request;
-  const selectedTemplateId = request?.templateId ?? detail.project.defaultTemplateId ?? detail.templates[0]?.id ?? "";
+  const draft = state.generationDraft;
+  const selectedTemplateId = draft?.templateId ?? request?.templateId ?? detail.project.defaultTemplateId ?? detail.templates[0]?.id ?? "";
   const selectedTemplate = detail.templates.find((template) => template.id === selectedTemplateId) ?? null;
-  const selectedMode = request?.generationMode ?? defaultModeForTemplate(selectedTemplate);
+  const selectedMode = draft?.generationMode ?? request?.generationMode ?? defaultModeForTemplate(selectedTemplate);
   const defaults = templateGenerationDefaults(selectedTemplate);
-  const canGenerate = selectedTemplateId !== "";
-  const promptValue = request?.prompt ?? previous?.prompt ?? defaults.prompt ?? defaultPrompt;
-  const negativePromptValue = request?.negativePrompt ?? previous?.negativePrompt ?? defaults.negativePrompt ?? defaultNegativePrompt;
-  const batchSizeValue = request?.batchSize ?? defaults.batchSize ?? 16;
-  const stepsValue = request?.steps ?? defaults.steps ?? 20;
-  const cfgValue = request?.cfg ?? defaults.cfg ?? 7;
-  const denoiseValue = request?.denoise ?? normalizeDenoiseForMode(defaults.denoise ?? defaultDenoiseForMode(selectedMode), selectedMode);
-  const widthValue = request?.width ?? defaults.width ?? 512;
-  const heightValue = request?.height ?? defaults.height ?? 768;
-  const seedValue = request?.seed ?? previous?.seed ?? defaults.seed ?? -1;
-  const samplerValue = request?.sampler ?? defaults.sampler ?? "euler";
-  const schedulerValue = request?.scheduler ?? defaults.scheduler ?? "normal";
+  const canGenerate = selectedTemplate !== null;
+  const promptValue = draft?.prompt ?? request?.prompt ?? previous?.prompt ?? defaults.prompt ?? defaultPrompt;
+  const negativePromptValue = draft?.negativePrompt ?? request?.negativePrompt ?? previous?.negativePrompt ?? defaults.negativePrompt ?? defaultNegativePrompt;
+  const batchSizeValue = draftNumber(draft, "batchSize") ?? request?.batchSize ?? defaults.batchSize ?? 16;
+  const stepsValue = draftNumber(draft, "steps") ?? request?.steps ?? defaults.steps ?? 20;
+  const cfgValue = draftNumber(draft, "cfg") ?? request?.cfg ?? defaults.cfg ?? 7;
+  const denoiseValue =
+    draftNumber(draft, "denoise") ??
+    request?.denoise ??
+    normalizeDenoiseForMode(defaults.denoise ?? defaultDenoiseForMode(selectedMode), selectedMode);
+  const widthValue = draftNumber(draft, "width") ?? request?.width ?? defaults.width ?? 512;
+  const heightValue = draftNumber(draft, "height") ?? request?.height ?? defaults.height ?? 768;
+  const seedValue = draft?.seed ?? String(request?.seed ?? previous?.seed ?? defaults.seed ?? -1);
+  const seedModeValue = draft?.seedMode ?? request?.seedMode ?? "random";
+  const samplerValue = draft?.sampler ?? request?.sampler ?? defaults.sampler ?? "euler";
+  const schedulerValue = draft?.scheduler ?? request?.scheduler ?? defaults.scheduler ?? "normal";
   const templateOptions = detail.templates.length
     ? detail.templates
       .map((template) => `<option value="${template.id}" ${selectedTemplateId === template.id ? "selected" : ""}>${escapeHtml(template.name)} v${template.version}</option>`)
@@ -1255,7 +1394,10 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
       </details>
 
       <section class="sidebar-section">
-        <p class="section-kicker">生成パラメータ</p>
+        <div class="section-header-row">
+          <p class="section-kicker">生成パラメータ</p>
+          <button class="button-secondary compact mini-button" type="button" data-action="reset-generation-params">${iconReset()}JSON初期値</button>
+        </div>
         ${renderRangeControl("batchSize", "バッチサイズ", batchSizeValue, 1, 32, 1, "batchValue")}
         ${renderRangeControl("steps", "ステップ数", stepsValue, 1, 50, 1, "stepsValue")}
         ${renderRangeControl("cfg", "CFGスケール", cfgValue, 1, 20, 0.5, "cfgValue")}
@@ -1276,7 +1418,7 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
 
         <label>seed mode
           <select class="workflow-select" name="seedMode">
-            ${["random", "fixed", "increment", "reuse_parent_seed"].map((mode) => `<option value="${mode}" ${request?.seedMode === mode ? "selected" : ""}>${mode}</option>`).join("")}
+            ${["random", "fixed", "increment", "reuse_parent_seed"].map((mode) => `<option value="${mode}" ${seedModeValue === mode ? "selected" : ""}>${mode}</option>`).join("")}
           </select>
         </label>
 
@@ -1383,14 +1525,13 @@ function updateDenoiseControlForMode(mode: string) {
     return;
   }
 
-  const value = defaultDenoiseForMode(mode);
-  control.value = String(value);
-  if (control.dataset.valueTarget) {
-    const valueTarget = document.getElementById(control.dataset.valueTarget);
-    if (valueTarget) {
-      valueTarget.textContent = formatNumber(value);
-    }
-  }
+  const current = Number(control.value);
+  const value = requiresFullDenoise(mode)
+    ? 1
+    : !Number.isFinite(current) || current >= 1
+      ? defaultDenoiseForMode(mode)
+      : current;
+  setFormValue(form, "denoise", String(value));
 }
 
 function defaultModeForTemplate(template: WorkflowTemplate | null) {
@@ -1580,7 +1721,7 @@ function renderAssetModal() {
           </div>
           <div class="preview-actions">
             <button class="button-secondary" type="button" data-action="toggle-select" data-id="${asset.id}">選択切替</button>
-            <button class="button-primary" type="button" data-action="generate-from-preview" data-id="${asset.id}" data-mode="img2img">この画像で再生成</button>
+            <button class="button-primary" type="button" data-action="generate-from-preview" data-id="${asset.id}" data-mode="img2img">この画像からimg2img生成</button>
           </div>
         </div>
       </div>
@@ -1645,14 +1786,41 @@ function fillGenerationFormFromAsset(asset: Asset, mode: string) {
   setFormValue(form, "negativePrompt", asset.negativePrompt);
   setFormValue(form, "seed", String(asset.seed ?? ""));
   setFormValue(form, "seedMode", "random");
-  setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
-  updateDenoiseControlForMode(mode);
+  if (!requiresFullDenoise(mode)) {
+    setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
+  }
+  captureGenerationDraft();
+}
+
+function prepareGenerationFormForParent(asset: Asset, mode: string) {
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  if (!form) {
+    return;
+  }
+
+  const previousMode = (form.elements.namedItem("generationMode") as HTMLSelectElement | null)?.value ?? "txt2img";
+  const denoise = form.elements.namedItem("denoise") as HTMLInputElement | null;
+  setFormValue(form, "parentAssetId", asset.id);
+  setFormValue(form, "generationMode", mode);
+
+  if (denoise && requiresFullDenoise(previousMode) && Number(denoise.value) >= 1 && !requiresFullDenoise(mode)) {
+    setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
+  }
+
+  captureGenerationDraft();
 }
 
 function setFormValue(form: HTMLFormElement, name: string, value: string) {
   const control = form.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
   if (control) {
     control.value = value;
+    const valueTargetId = (control as HTMLElement).dataset.valueTarget;
+    if (valueTargetId && control instanceof HTMLInputElement) {
+      const valueTarget = document.getElementById(valueTargetId);
+      if (valueTarget) {
+        valueTarget.textContent = formatSliderValue(control);
+      }
+    }
   }
 }
 
@@ -1663,6 +1831,56 @@ function isJsonObject(value: unknown): value is Json {
 function pickJsonObject(source: Json, key: string) {
   const value = source[key];
   return isJsonObject(value) ? value : null;
+}
+
+function resolveTemplateForGeneration(templateId: string, mode: string) {
+  const current = state.templates.find((template) => template.id === templateId) ?? null;
+  if (!requiresImageWorkflow(mode)) {
+    if (!current) {
+      throw new Error("WorkflowTemplateが選択されていません。");
+    }
+    return current;
+  }
+
+  if (current && templateSupportsImageWorkflow(current, mode)) {
+    return current;
+  }
+
+  const fallback =
+    state.templates.find((template) => template.type === mode && templateSupportsImageWorkflow(template, mode)) ??
+    state.templates.find((template) => templateSupportsImageWorkflow(template, mode));
+  if (fallback) {
+    return fallback;
+  }
+
+  throw new Error(`${mode}用WorkflowTemplateがありません。LoadImageとVAEEncodeを含む${mode}テンプレートを登録してください。`);
+}
+
+function requiresImageWorkflow(mode: string) {
+  return mode === "img2img";
+}
+
+function templateSupportsImageWorkflow(template: WorkflowTemplate, mode: string) {
+  if (mode !== "img2img") {
+    return true;
+  }
+  const roleMap = template.roleMap;
+  const hasImageInput = Boolean(
+    roleMap.load_image_input ||
+    roleMap.load_image_node ||
+    workflowHasClass(template.workflowJson, "LoadImage")
+  );
+  const hasVaeEncode = Boolean(roleMap.vae_encode_node || workflowHasClass(template.workflowJson, "VAEEncode"));
+  return hasImageInput && hasVaeEncode;
+}
+
+function workflowHasClass(workflow: Json, classFragment: string) {
+  return Object.values(workflow).some((node) => {
+    if (!isJsonObject(node) || typeof node.class_type !== "string") {
+      return false;
+    }
+    return node.class_type.toLowerCase().includes(classFragment.toLowerCase());
+  });
 }
 
 function relationForMode(mode: string) {
@@ -1796,6 +2014,10 @@ function iconTrash() {
 
 function iconShuffle() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"></path></svg>`;
+}
+
+function iconReset() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v6h6"></path></svg>`;
 }
 
 function iconSwap() {
