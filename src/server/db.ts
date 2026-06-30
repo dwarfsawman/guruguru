@@ -1,13 +1,17 @@
 import { mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ComfySettings } from "../shared/types";
 
-export const dataRoot = resolve(process.env.GURUGURU_DATA_DIR ?? "data");
+const isTestDataMode = process.env.GURUGURU_TEST_DB === "1" || process.env.NODE_ENV === "test";
+
+export const dataRoot = resolveDataRoot();
+assertDataRootIsNotProjectLocal(dataRoot);
 mkdirSync(dataRoot, { recursive: true });
 
-const dbPath = join(dataRoot, "app.db");
+export const dbPath = join(dataRoot, "app.db");
 mkdirSync(dirname(dbPath), { recursive: true });
 
 export const db = new DatabaseSync(dbPath);
@@ -159,9 +163,15 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_asset_parents_child ON asset_parents(child_asset_id);
   `);
 
-  const existing = getSetting<ComfySettings>("comfy");
+  const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {
     setSetting("comfy", defaultComfySettings);
+  } else if (existing.storageDir !== dataRoot) {
+    setSetting("comfy", {
+      ...defaultComfySettings,
+      ...existing,
+      storageDir: dataRoot
+    });
   }
 }
 
@@ -232,4 +242,48 @@ function parseJsonColumn(value: string): unknown {
   } catch {
     return value;
   }
+}
+
+function resolveDataRoot(): string {
+  const explicitDataDir = process.env.GURUGURU_DATA_DIR?.trim();
+  if (explicitDataDir) {
+    return resolve(explicitDataDir);
+  }
+
+  if (isTestDataMode) {
+    return resolve(process.env.GURUGURU_TEST_DATA_DIR?.trim() || join(tmpdir(), "guruguru-test", `pid-${process.pid}`));
+  }
+
+  return defaultUserDataRoot();
+}
+
+function defaultUserDataRoot(): string {
+  if (process.platform === "win32") {
+    return join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "GURUGURU");
+  }
+
+  if (process.platform === "darwin") {
+    return join(homedir(), "Library", "Application Support", "GURUGURU");
+  }
+
+  return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "guruguru");
+}
+
+function assertDataRootIsNotProjectLocal(root: string) {
+  if (isTestDataMode) {
+    return;
+  }
+
+  const projectRoot = resolve(".");
+  if (isPathInside(root, projectRoot)) {
+    throw new Error(
+      `Refusing to use a GURUGURU data directory inside the current project: ${root}. ` +
+        "Set GURUGURU_DATA_DIR outside the repository, or set GURUGURU_TEST_DB=1 for test databases."
+    );
+  }
+}
+
+function isPathInside(target: string, parent: string): boolean {
+  const pathFromParent = relative(resolve(parent), resolve(target));
+  return pathFromParent === "" || (!!pathFromParent && !pathFromParent.startsWith("..") && !isAbsolute(pathFromParent));
 }
