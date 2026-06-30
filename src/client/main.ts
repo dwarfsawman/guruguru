@@ -1520,7 +1520,7 @@ function renderBottomActionBar(selectedAssets: Asset[], activeRound: Round | nul
       <div class="bottom-actions">
         <button class="button-danger" type="button" data-action="reset-session">${iconTrash()}リセット</button>
         <button class="button-secondary" type="button" data-action="export-selected">${iconDownload()}保存</button>
-        <button class="button-primary" type="button" data-action="generate-round">${iconPlay()}${activeRound ? "ブランチング" : "初回生成"}</button>
+        <button class="button-primary" type="button" data-action="generate-round">${iconPlay()}${activeRound ? "画像無しで生成" : "初回生成"}</button>
         <button class="button-primary" type="button" data-action="img2img-next" ${selectedAssets.length === 0 ? "disabled" : ""}>
           ${iconLoopArrows()}選択画像でブランチング <span class="button-count">${selectedAssets.length}</span>
         </button>
