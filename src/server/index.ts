@@ -5,13 +5,17 @@ import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createId, dataRoot, dbPath, getRow, getRows, initializeDb, runSql, setSetting, toApiRow, toApiRows } from "./db";
 import { fetchViewImage, getComfyStatus, getHistory, queuePrompt, testComfyConnection, uploadImageToComfy } from "./comfy";
-import { ensureProjectStorage, safeFileStream, storeImage } from "./storage";
+import { deleteProjectStorage, ensureProjectStorage, safeFileStream, storeImage } from "./storage";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
+import { validateRoleMapReferences } from "../shared/workflowRoleMap";
 import type { AssetStatus, ComfySettings, GenerationMode, GenerationRequest, ParentRelation, SelectionAction } from "../shared/types";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(__dirname, "..", "public");
 const port = Number(process.env.PORT ?? 5177);
+let isShuttingDown = false;
+
+type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
 
 initializeDb();
 
@@ -36,7 +40,12 @@ server.listen(port, () => {
   console.log(`GURUGURU listening on http://127.0.0.1:${port}`);
   console.log(`Data directory: ${dataRoot}`);
   console.log(`Database path: ${dbPath}`);
+  if (process.stdin.isTTY) {
+    console.log("Press q or Ctrl+C to stop GURUGURU.");
+  }
 });
+
+setupShutdownHandlers();
 
 async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const method = req.method ?? "GET";
@@ -88,6 +97,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
+  const templateDeleteMatch = path.match(/^\/api\/templates\/([^/]+)$/);
+  if (method === "DELETE" && templateDeleteMatch) {
+    sendJson(res, 200, deleteTemplate(templateDeleteMatch[1]!));
+    return;
+  }
+
   if (method === "GET" && path === "/api/projects") {
     sendJson(res, 200, { projects: listProjects() });
     return;
@@ -101,6 +116,11 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const projectDetailMatch = path.match(/^\/api\/projects\/([^/]+)$/);
   if (method === "GET" && projectDetailMatch) {
     sendJson(res, 200, getProjectDetail(projectDetailMatch[1]!));
+    return;
+  }
+
+  if (method === "DELETE" && projectDetailMatch) {
+    sendJson(res, 200, await deleteProject(projectDetailMatch[1]!));
     return;
   }
 
@@ -137,6 +157,7 @@ function listTemplates() {
     getRows(
       `SELECT *
        FROM workflow_templates
+       WHERE deleted_at IS NULL
        ORDER BY updated_at DESC, name ASC`
     )
   );
@@ -150,8 +171,14 @@ function createTemplate(body: unknown) {
   const workflow = parseJsonInput(input.workflowJson ?? input.workflow_json, "workflowJson");
   const roleMap = parseJsonInput(input.roleMap ?? input.role_map_json, "roleMap");
 
-  ensureWorkflowObject(workflow);
-  normalizeRoleMap(roleMap);
+  let normalizedRoleMap: Record<string, unknown>;
+  try {
+    ensureWorkflowObject(workflow);
+    normalizedRoleMap = normalizeRoleMap(roleMap);
+    validateRoleMapReferences(workflow, normalizedRoleMap);
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : String(error));
+  }
 
   const version =
     (getRow<{ version: number }>("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM workflow_templates WHERE name = ?", [name])?.version ?? 1);
@@ -162,10 +189,30 @@ function createTemplate(body: unknown) {
     `INSERT INTO workflow_templates
       (id, name, description, type, version, workflow_json, role_map_json, workflow_hash)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, name, description, type, version, JSON.stringify(workflow), JSON.stringify(roleMap), workflowHash]
+    [id, name, description, type, version, JSON.stringify(workflow), JSON.stringify(normalizedRoleMap), workflowHash]
   );
 
   return toApiRow(getRow("SELECT * FROM workflow_templates WHERE id = ?", [id]));
+}
+
+function deleteTemplate(templateId: string) {
+  const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [templateId]);
+  if (!template) {
+    throw new HttpError(404, "WorkflowTemplate was not found");
+  }
+
+  runSql(
+    "UPDATE workflow_templates SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [templateId]
+  );
+  runSql(
+    "UPDATE projects SET default_template_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE default_template_id = ?",
+    [templateId]
+  );
+
+  return {
+    template: toApiRow(getRow("SELECT * FROM workflow_templates WHERE id = ?", [templateId]))
+  };
 }
 
 function listProjects() {
@@ -194,6 +241,12 @@ function createProject(body: unknown) {
   const name = requiredString(input.name, "name");
   const description = stringOr(input.description, "");
   const defaultTemplateId = stringOrNull(input.defaultTemplateId ?? input.default_template_id);
+  if (defaultTemplateId) {
+    const template = getRow("SELECT id FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [defaultTemplateId]);
+    if (!template) {
+      throw new HttpError(400, "Default WorkflowTemplate was not found");
+    }
+  }
   const storage = ensureProjectStorage(id);
 
   runSql(
@@ -203,6 +256,34 @@ function createProject(body: unknown) {
   );
 
   return toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [id]));
+}
+
+async function deleteProject(projectId: string) {
+  const project = getRow<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
+  if (!project) {
+    throw new HttpError(404, "Project was not found");
+  }
+
+  runSql("UPDATE generation_rounds SET parent_round_id = NULL WHERE project_id = ?", [projectId]);
+  runSql("DELETE FROM projects WHERE id = ?", [projectId]);
+
+  let storageDeleted = false;
+  let storageError: string | undefined;
+  if (typeof project.storage_dir === "string" && project.storage_dir.trim()) {
+    try {
+      await deleteProjectStorage(project.storage_dir);
+      storageDeleted = true;
+    } catch (error) {
+      storageError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  return {
+    deleted: true,
+    projectId,
+    storageDeleted,
+    storageError
+  };
 }
 
 function getProjectDetail(projectId: string) {
@@ -254,7 +335,7 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
     throw new HttpError(404, "Project was not found");
   }
 
-  const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ?", [requestBody.templateId]);
+  const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [requestBody.templateId]);
   if (!template) {
     throw new HttpError(400, "WorkflowTemplate was not found");
   }
@@ -339,23 +420,26 @@ async function collectRound(roundId: string) {
     throw new HttpError(400, "Round does not have a ComfyUI prompt_id yet");
   }
 
+  const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ?", [round.template_id]);
+  if (!template) {
+    throw new HttpError(500, "Round template was not found");
+  }
+
   const history = await getHistory(round.prompt_id);
   const entry = extractHistoryEntry(history, round.prompt_id);
-  const images = extractImages(entry);
+  const roleMap = parseStoredJsonObject(template.role_map_json);
+  const workflowForOutputSelection =
+    parseStoredJsonObject(round.patched_workflow_json) ?? parseStoredJsonObject(template.workflow_json);
+  const images = selectFinalImages(extractImages(entry), roleMap, workflowForOutputSelection);
 
   if (images.length === 0) {
     return {
       statusCode: 202,
       body: {
         round: toApiRow(round),
-        message: "ComfyUI history is reachable, but no output images are available yet."
+        message: "ComfyUI history is reachable, but no final output images are available yet."
       }
     };
-  }
-
-  const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ?", [round.template_id]);
-  if (!template) {
-    throw new HttpError(500, "Round template was not found");
   }
 
   const request = JSON.parse(String(round.request_json)) as GenerationRequest;
@@ -497,13 +581,13 @@ function extractHistoryEntry(history: unknown, promptId: string) {
   return history;
 }
 
-function extractImages(entry: unknown): Array<{ nodeId: string; filename: string; subfolder?: string; type?: string }> {
+function extractImages(entry: unknown): HistoryImage[] {
   const output = entry && typeof entry === "object" ? (entry as Record<string, unknown>).outputs : null;
   if (!output || typeof output !== "object") {
     return [];
   }
 
-  const images: Array<{ nodeId: string; filename: string; subfolder?: string; type?: string }> = [];
+  const images: HistoryImage[] = [];
   for (const [nodeId, nodeOutput] of Object.entries(output as Record<string, unknown>)) {
     if (!nodeOutput || typeof nodeOutput !== "object") {
       continue;
@@ -533,7 +617,85 @@ function extractImages(entry: unknown): Array<{ nodeId: string; filename: string
   return images;
 }
 
+function selectFinalImages(images: HistoryImage[], roleMap: Record<string, unknown> | null, workflow: Record<string, unknown> | null): HistoryImage[] {
+  if (images.length <= 1) {
+    return images;
+  }
+
+  const finalNodeIds = finalImageNodeIds(roleMap, workflow);
+  const finalNodeImages = images.filter((image) => finalNodeIds.has(image.nodeId));
+  if (finalNodeImages.length > 0) {
+    return finalNodeImages;
+  }
+
+  const outputImages = images.filter((image) => (image.type ?? "output") === "output");
+  if (outputImages.length > 0) {
+    return outputImages;
+  }
+
+  const nonTempImages = images.filter((image) => image.type !== "temp");
+  return nonTempImages.length > 0 ? nonTempImages : images;
+}
+
+function finalImageNodeIds(roleMap: Record<string, unknown> | null, workflow: Record<string, unknown> | null): Set<string> {
+  const nodeIds = new Set<string>();
+  addRoleNodeId(nodeIds, roleMap?.save_image_node);
+  addRoleNodeId(nodeIds, nodeIdFromRolePath(roleMap?.save_prefix_input));
+
+  if (!workflow) {
+    return nodeIds;
+  }
+
+  for (const [nodeId, rawNode] of Object.entries(workflow)) {
+    if (!isJsonObject(rawNode)) {
+      continue;
+    }
+    const classType = typeof rawNode.class_type === "string" ? rawNode.class_type : "";
+    if (isFinalImageOutputClass(classType)) {
+      nodeIds.add(nodeId);
+    }
+  }
+
+  return nodeIds;
+}
+
+function isFinalImageOutputClass(classType: string): boolean {
+  const normalized = classType.replace(/[\s_-]+/g, "").toLowerCase();
+  if (normalized.includes("preview")) {
+    return false;
+  }
+  return normalized.includes("saveimage") || (normalized.includes("image") && normalized.includes("save"));
+}
+
+function addRoleNodeId(nodeIds: Set<string>, rawNodeId: unknown) {
+  if (typeof rawNodeId === "string" && rawNodeId.trim()) {
+    nodeIds.add(rawNodeId.trim());
+  }
+}
+
+function nodeIdFromRolePath(rawPath: unknown): string | null {
+  if (typeof rawPath !== "string" || rawPath.trim() === "") {
+    return null;
+  }
+  return rawPath.split(".").filter(Boolean)[0] ?? null;
+}
+
+function parseStoredJsonObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return isJsonObject(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeGenerationRequest(input: GenerationRequest): GenerationRequest {
+  const sampling = normalizeSampling(input.sampler, input.scheduler);
+  const generationMode = (input.generationMode ?? "txt2img") as GenerationMode;
+
   return {
     templateId: requiredString(input.templateId, "templateId"),
     prompt: stringOr(input.prompt, ""),
@@ -543,15 +705,45 @@ function normalizeGenerationRequest(input: GenerationRequest): GenerationRequest
     batchSize: numberOr(input.batchSize, 16),
     steps: numberOr(input.steps, 20),
     cfg: numberOr(input.cfg, 6),
-    sampler: stringOr(input.sampler, "euler"),
-    scheduler: stringOr(input.scheduler, "normal"),
-    denoise: numberOr(input.denoise, 0.45),
+    sampler: sampling.sampler,
+    scheduler: sampling.scheduler,
+    denoise: normalizeDenoise(input.denoise, generationMode),
     width: numberOr(input.width, 1024),
     height: numberOr(input.height, 1024),
-    generationMode: (input.generationMode ?? "txt2img") as GenerationMode,
+    generationMode,
     parentAssetId: stringOrNull(input.parentAssetId),
-    relationType: (stringOrNull(input.relationType) as ParentRelation | null) ?? relationFromMode(input.generationMode ?? "txt2img")
+    relationType: (stringOrNull(input.relationType) as ParentRelation | null) ?? relationFromMode(generationMode)
   };
+}
+
+function normalizeSampling(rawSampler: unknown, rawScheduler: unknown) {
+  const sampler = stringOr(rawSampler, "euler");
+  const scheduler = stringOr(rawScheduler, "normal");
+
+  if (sampler.endsWith("_karras")) {
+    return {
+      sampler: sampler.slice(0, -"_karras".length),
+      scheduler: scheduler === "normal" ? "karras" : scheduler
+    };
+  }
+
+  return { sampler, scheduler };
+}
+
+function normalizeDenoise(rawDenoise: unknown, mode: GenerationMode) {
+  if (requiresFullDenoise(mode)) {
+    return 1;
+  }
+  const value = numberOr(rawDenoise, defaultDenoiseForMode(mode));
+  return Math.min(1, Math.max(0, value));
+}
+
+function defaultDenoiseForMode(mode: GenerationMode) {
+  return mode === "img2img" ? 0.35 : 0.45;
+}
+
+function requiresFullDenoise(mode: GenerationMode) {
+  return mode === "txt2img" || mode === "seed_reuse" || mode === "prompt_reuse";
 }
 
 function shouldUploadParent(mode: GenerationMode) {
@@ -633,6 +825,10 @@ function objectBody(value: unknown): Record<string, unknown> {
     throw new HttpError(400, "Request body must be a JSON object");
   }
   return value as Record<string, unknown>;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requiredString(value: unknown, name: string): string {
@@ -732,4 +928,39 @@ class HttpError extends Error {
   ) {
     super(message);
   }
+}
+
+function setupShutdownHandlers() {
+  process.on("SIGINT", () => shutdownServer("SIGINT"));
+  process.on("SIGTERM", () => shutdownServer("SIGTERM"));
+
+  if (!process.stdin.isTTY) {
+    return;
+  }
+
+  process.stdin.setEncoding("utf8");
+  if (typeof process.stdin.setRawMode === "function") {
+    process.stdin.setRawMode(true);
+  }
+  process.stdin.resume();
+  process.stdin.on("data", (chunk) => {
+    const command = chunk.trim().toLowerCase();
+    if (chunk === "\u0003" || command === "q" || command === "quit" || command === "exit") {
+      shutdownServer("terminal command");
+    }
+  });
+}
+
+function shutdownServer(reason: string) {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+  console.log(`Stopping GURUGURU (${reason})...`);
+  server.close(() => {
+    process.exit(0);
+  });
+  setTimeout(() => {
+    process.exit(0);
+  }, 3000).unref();
 }

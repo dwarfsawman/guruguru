@@ -65,7 +65,8 @@ export function initializeDb() {
       role_map_json TEXT NOT NULL,
       workflow_hash TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      deleted_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS generation_rounds (
@@ -162,6 +163,7 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_asset_parents_parent ON asset_parents(parent_asset_id);
     CREATE INDEX IF NOT EXISTS idx_asset_parents_child ON asset_parents(child_asset_id);
   `);
+  ensureColumn("workflow_templates", "deleted_at", "TEXT");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {
@@ -173,6 +175,14 @@ export function initializeDb() {
       storageDir: dataRoot
     });
   }
+}
+
+function ensureColumn(tableName: string, columnName: string, definition: string) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
 }
 
 export function getSetting<T>(key: string): T | null {

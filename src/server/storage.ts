@@ -1,6 +1,6 @@
 import { createReadStream, mkdirSync } from "node:fs";
-import { copyFile, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { copyFile, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { dataRoot } from "./db";
 
 export interface StoredImage {
@@ -59,6 +59,15 @@ export function safeFileStream(path: string) {
   return createReadStream(resolved);
 }
 
+export async function deleteProjectStorage(projectRoot: string) {
+  const resolvedProjectRoot = resolve(projectRoot);
+  const projectsRoot = resolve(dataRoot, "projects");
+  if (!isPathInside(resolvedProjectRoot, projectsRoot)) {
+    throw new Error("Project storage path is outside the data directory");
+  }
+  await rm(resolvedProjectRoot, { recursive: true, force: true });
+}
+
 export function ensureParentDir(path: string) {
   mkdirSync(dirname(path), { recursive: true });
 }
@@ -104,4 +113,9 @@ function readImageSize(bytes: Buffer): { width: number; height: number } | null 
   }
 
   return null;
+}
+
+function isPathInside(target: string, parent: string): boolean {
+  const pathFromParent = relative(resolve(parent), resolve(target));
+  return pathFromParent !== "" && !pathFromParent.startsWith("..") && !isAbsolute(pathFromParent);
 }

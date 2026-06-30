@@ -1,3 +1,5 @@
+import { inferRoleMap } from "../shared/workflowRoleMap";
+
 type Json = Record<string, unknown>;
 
 interface ComfySettings {
@@ -123,6 +125,29 @@ interface GenerationRequest {
   relationType?: string | null;
 }
 
+interface TemplateGenerationDefaults {
+  prompt?: string;
+  negativePrompt?: string;
+  seed?: number;
+  batchSize?: number;
+  steps?: number;
+  cfg?: number;
+  sampler?: string;
+  scheduler?: string;
+  denoise?: number;
+  width?: number;
+  height?: number;
+  model: TemplateModelDefaults;
+}
+
+interface TemplateModelDefaults {
+  checkpoint?: string;
+  diffusionModel?: string;
+  textEncoders: string[];
+  vae?: string;
+  loras: string[];
+}
+
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
 const state: {
@@ -160,6 +185,29 @@ const state: {
 const defaultPrompt =
   "masterpiece, best quality, 1girl, beautiful detailed eyes, flowing hair, fantasy landscape, dramatic lighting, ethereal atmosphere";
 const defaultNegativePrompt = "low quality, worst quality, blurry, deformed";
+const pendingAutoCollectRoundIds = new Set<string>();
+const samplerOptions = [
+  "euler",
+  "euler_ancestral",
+  "heun",
+  "dpm_2",
+  "dpm_2_ancestral",
+  "lms",
+  "dpm_fast",
+  "dpm_adaptive",
+  "dpmpp_2s_ancestral",
+  "dpmpp_sde",
+  "dpmpp_sde_gpu",
+  "dpmpp_2m",
+  "dpmpp_2m_sde",
+  "dpmpp_2m_sde_gpu",
+  "dpmpp_3m_sde",
+  "dpmpp_3m_sde_gpu",
+  "ddim",
+  "uni_pc",
+  "uni_pc_bh2"
+];
+const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
 void boot();
 
 async function boot() {
@@ -170,6 +218,12 @@ async function boot() {
 function bindEvents() {
   app.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
+    if (target.classList.contains("preview-modal")) {
+      state.activeAssetId = null;
+      render();
+      return;
+    }
+
     const actionTarget = target.closest<HTMLElement>("[data-action]");
     if (!actionTarget) {
       return;
@@ -194,6 +248,10 @@ function bindEvents() {
     if (target.id === "grid-cols") {
       state.gridCols = Number(target.value) as typeof state.gridCols;
       render();
+      return;
+    }
+    if (target.name === "generationMode") {
+      updateDenoiseControlForMode(target.value);
     }
   });
 
@@ -275,10 +333,14 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       exportWorkflowTemplate(target, "template");
     } else if (action === "export-workflow") {
       exportWorkflowTemplate(target, "workflow");
+    } else if (action === "delete-template") {
+      await deleteWorkflowTemplate(target);
     } else if (action === "create-project") {
       await createProject();
     } else if (action === "open-project") {
       await openProject(id);
+    } else if (action === "delete-project") {
+      await deleteProject(id);
     } else if (action === "select-round") {
       state.activeRoundId = id;
       state.activeAssetId = null;
@@ -471,12 +533,21 @@ async function loadWorkflowFile(input: HTMLInputElement) {
   }
 
   const workflowJson = pickJsonObject(parsed, "workflowJson") ?? pickJsonObject(parsed, "workflow_json") ?? parsed;
-  const roleMap = pickJsonObject(parsed, "roleMap") ?? pickJsonObject(parsed, "role_map") ?? pickJsonObject(parsed, "role_map_json");
+  const importedRoleMap =
+    pickJsonObject(parsed, "roleMap") ??
+    pickJsonObject(parsed, "role_map") ??
+    pickJsonObject(parsed, "role_map_json");
+  const roleMap =
+    importedRoleMap ??
+    inferRoleMap(workflowJson);
 
   setFormValue(form, "workflowJson", JSON.stringify(workflowJson, null, 2));
-  if (roleMap) {
+  if (Object.keys(roleMap).length > 0) {
     setFormValue(form, "roleMap", JSON.stringify(roleMap, null, 2));
   }
+  state.message = importedRoleMap
+    ? "workflow JSONとrole mapを読み込みました。"
+    : "workflow JSONを読み込み、role mapを自動設定しました。必要に応じて内容を確認してください。";
   if (typeof parsed.name === "string") {
     setFormValue(form, "name", parsed.name);
   } else if (!((form.elements.namedItem("name") as HTMLInputElement | null)?.value)) {
@@ -554,12 +625,64 @@ async function createProject() {
   await openProject(result.project.id);
 }
 
+async function deleteProject(projectId: string) {
+  const project = state.projects.find((item) => item.id === projectId) ?? state.detail?.project ?? null;
+  const projectName = project?.name ?? "このProject";
+  if (!window.confirm(`Project "${projectName}" を削除します。生成画像とイテレーションも削除しますか？`)) {
+    return;
+  }
+
+  const result = await api<{ deleted: boolean; storageDeleted: boolean; storageError?: string }>(`/api/projects/${projectId}`, {
+    method: "DELETE"
+  });
+
+  if (state.currentProjectId === projectId) {
+    state.message = result.storageError
+      ? `Projectを削除しました。保存ディレクトリの削除に失敗しました: ${result.storageError}`
+      : "Projectを削除しました。";
+    await loadHome();
+    return;
+  }
+
+  state.projects = state.projects.filter((item) => item.id !== projectId);
+  state.message = result.storageError
+    ? `Projectを削除しました。保存ディレクトリの削除に失敗しました: ${result.storageError}`
+    : "Projectを削除しました。";
+  render();
+}
+
+async function deleteWorkflowTemplate(target: HTMLElement) {
+  const template = findTemplateFromActionTarget(target);
+  if (!template) {
+    state.message = "削除するWorkflowTemplateがありません。";
+    render();
+    return;
+  }
+  if (!window.confirm(`WorkflowTemplate "${template.name}" v${template.version} を削除しますか？既存の生成履歴は残ります。`)) {
+    return;
+  }
+
+  await api(`/api/templates/${template.id}`, { method: "DELETE" });
+  state.templates = state.templates.filter((item) => item.id !== template.id);
+  if (state.detail) {
+    await refreshProject(state.activeRoundId, state.activeAssetId);
+  }
+  state.message = `WorkflowTemplate "${template.name}" を削除しました。`;
+  render();
+}
+
 async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
   if (!state.currentProjectId) {
     return;
   }
 
   const form = readForm("generation-form");
+  const generationMode = overrideMode ?? form.generationMode ?? "txt2img";
+  const parentAssetId = parentAsset?.id ?? form.parentAssetId ?? null;
+  const denoise = normalizeDenoiseForMode(
+    Number(form.denoise || defaultDenoiseForMode(generationMode)),
+    generationMode
+  );
   const request: GenerationRequest = {
     templateId: form.templateId,
     prompt: form.prompt,
@@ -571,24 +694,28 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     cfg: Number(form.cfg || 6),
     sampler: form.sampler || "euler",
     scheduler: form.scheduler || "normal",
-    denoise: Number(form.denoise || 0.45),
+    denoise,
     width: Number(form.width || 1024),
     height: Number(form.height || 1024),
-    generationMode: overrideMode ?? form.generationMode,
-    parentAssetId: parentAsset?.id ?? form.parentAssetId ?? null,
-    relationType: parentAsset ? relationForMode(overrideMode ?? form.generationMode) : null
+    generationMode,
+    parentAssetId,
+    relationType: parentAsset ? relationForMode(generationMode) : null
   };
 
   state.busy = true;
   render();
-  const response = await api<{ promptId: string }>(`/api/projects/${state.currentProjectId}/rounds`, {
+  const response = await api<{ promptId: string; round: Round }>(`/api/projects/${state.currentProjectId}/rounds`, {
     method: "POST",
     body: JSON.stringify(request)
   });
+  const roundId = response.round.id;
   state.message = `ComfyUIに送信しました。prompt_id: ${response.promptId}`;
   state.busy = false;
-  await refreshProject(null, null);
+  await refreshProject(roundId, null);
   render();
+  if (roundId) {
+    void pollCollectRound(roundId, state.currentProjectId);
+  }
 }
 
 async function generateFromSelected(mode: string) {
@@ -610,6 +737,48 @@ async function collectRound(roundId: string) {
     : String(result.message ?? "まだ出力画像はありません。");
   await refreshProject(roundId, state.activeAssetId);
   render();
+}
+
+async function pollCollectRound(roundId: string, projectId: string | null) {
+  if (!projectId || pendingAutoCollectRoundIds.has(roundId)) {
+    return;
+  }
+  pendingAutoCollectRoundIds.add(roundId);
+
+  try {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      await delay(1500);
+      if (state.currentProjectId !== projectId) {
+        return;
+      }
+
+      const result = await api<Json>(`/api/rounds/${roundId}/collect`, {
+        method: "POST",
+        body: "{}"
+      });
+
+      if ("assets" in result) {
+        const count = (result.assets as unknown[]).length;
+        state.message = `生成画像を自動で取り込みました。${count}件`;
+        await refreshProject(roundId, state.activeAssetId);
+        render();
+        return;
+      }
+    }
+
+    if (state.currentProjectId === projectId) {
+      state.message = "生成結果の自動取得が時間内に完了しませんでした。「生成結果取得」を押して再取得できます。";
+      await refreshProject(roundId, state.activeAssetId);
+      render();
+    }
+  } catch (error) {
+    if (state.currentProjectId === projectId) {
+      state.message = error instanceof Error ? error.message : String(error);
+      render();
+    }
+  } finally {
+    pendingAutoCollectRoundIds.delete(roundId);
+  }
 }
 
 async function setAssetStatus(assetId: string, status: string, refresh = true) {
@@ -738,7 +907,6 @@ function renderHeader() {
           <span class="status-dot ${connection.className}"></span>
           <span title="${escapeAttr(state.comfyStatusText)}">${escapeHtml(connection.label)}</span>
         </div>
-        <button class="icon-button" type="button" aria-label="設定">${iconSettings()}</button>
       </div>
     </header>
   `;
@@ -828,7 +996,10 @@ function renderProjectCard(project: ProjectSummary) {
         <p>${escapeHtml(project.description || "説明なし")}</p>
         <div class="meta-line">Rounds ${project.roundCount ?? 0} / Assets ${project.assetCount ?? 0} / Updated ${formatDate(project.updatedAt)}</div>
       </div>
-      <button class="button-secondary" type="button" data-action="open-project" data-id="${project.id}">開く</button>
+      <div class="project-actions">
+        <button class="button-secondary" type="button" data-action="open-project" data-id="${project.id}">開く</button>
+        <button class="button-danger" type="button" data-action="delete-project" data-id="${project.id}">${iconTrash()}削除</button>
+      </div>
     </article>
   `;
 }
@@ -889,6 +1060,7 @@ function renderTemplatePanel() {
         <div class="button-row">
           <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-source="workflow-template-select">${iconDownload()}raw export</button>
           <button class="button-secondary compact" type="button" data-action="export-template" data-template-source="workflow-template-select">${iconDownload()}template export</button>
+          <button class="button-danger compact" type="button" data-action="delete-template" data-template-source="workflow-template-select" ${state.templates.length ? "" : "disabled"}>${iconTrash()}削除</button>
         </div>
       </div>
       <details class="workflow-dropdown">
@@ -1034,7 +1206,21 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
   const previous = activeAsset ?? getPreferredParentAsset();
   const request = activeRound?.request;
   const selectedTemplateId = request?.templateId ?? detail.project.defaultTemplateId ?? detail.templates[0]?.id ?? "";
+  const selectedTemplate = detail.templates.find((template) => template.id === selectedTemplateId) ?? null;
+  const selectedMode = request?.generationMode ?? defaultModeForTemplate(selectedTemplate);
+  const defaults = templateGenerationDefaults(selectedTemplate);
   const canGenerate = selectedTemplateId !== "";
+  const promptValue = request?.prompt ?? previous?.prompt ?? defaults.prompt ?? defaultPrompt;
+  const negativePromptValue = request?.negativePrompt ?? previous?.negativePrompt ?? defaults.negativePrompt ?? defaultNegativePrompt;
+  const batchSizeValue = request?.batchSize ?? defaults.batchSize ?? 16;
+  const stepsValue = request?.steps ?? defaults.steps ?? 20;
+  const cfgValue = request?.cfg ?? defaults.cfg ?? 7;
+  const denoiseValue = request?.denoise ?? normalizeDenoiseForMode(defaults.denoise ?? defaultDenoiseForMode(selectedMode), selectedMode);
+  const widthValue = request?.width ?? defaults.width ?? 512;
+  const heightValue = request?.height ?? defaults.height ?? 768;
+  const seedValue = request?.seed ?? previous?.seed ?? defaults.seed ?? -1;
+  const samplerValue = request?.sampler ?? defaults.sampler ?? "euler";
+  const schedulerValue = request?.scheduler ?? defaults.scheduler ?? "normal";
   const templateOptions = detail.templates.length
     ? detail.templates
       .map((template) => `<option value="${template.id}" ${selectedTemplateId === template.id ? "selected" : ""}>${escapeHtml(template.name)} v${template.version}</option>`)
@@ -1052,6 +1238,7 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
           <div class="workflow-export-menu">
             <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-source="generation-template-select">${iconDownload()}raw workflow export</button>
             <button class="button-secondary compact" type="button" data-action="export-template" data-template-source="generation-template-select">${iconDownload()}template export</button>
+            <button class="button-danger compact" type="button" data-action="delete-template" data-template-source="generation-template-select" ${detail.templates.length ? "" : "disabled"}>${iconTrash()}workflow削除</button>
             <button class="button-secondary compact" type="button" data-action="home">${iconSettings()}Workflow管理を開く</button>
           </div>
         </details>
@@ -1059,30 +1246,30 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
 
       <section class="sidebar-section">
         <p class="section-kicker">プロンプト</p>
-        <textarea class="input-field prompt-input" name="prompt" placeholder="プロンプトを入力...">${escapeHtml(request?.prompt ?? previous?.prompt ?? defaultPrompt)}</textarea>
+        <textarea class="input-field prompt-input" name="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
       </section>
 
       <details class="sidebar-section collapsible" open>
         <summary><span class="section-kicker">ネガティブプロンプト</span>${iconChevron()}</summary>
-        <textarea class="input-field" name="negativePrompt" rows="3" placeholder="ネガティブプロンプト...">${escapeHtml(request?.negativePrompt ?? previous?.negativePrompt ?? defaultNegativePrompt)}</textarea>
+        <textarea class="input-field" name="negativePrompt" rows="3" placeholder="ネガティブプロンプト...">${escapeHtml(negativePromptValue)}</textarea>
       </details>
 
       <section class="sidebar-section">
         <p class="section-kicker">生成パラメータ</p>
-        ${renderRangeControl("batchSize", "バッチサイズ", request?.batchSize ?? 16, 4, 32, 4, "batchValue")}
-        ${renderRangeControl("steps", "ステップ数", request?.steps ?? 20, 1, 50, 1, "stepsValue")}
-        ${renderRangeControl("cfg", "CFGスケール", request?.cfg ?? 7, 1, 20, 0.5, "cfgValue")}
-        ${renderRangeControl("denoise", "デノイズ強度", request?.denoise ?? 0.6, 0, 1, 0.05, "denoiseValue")}
+        ${renderRangeControl("batchSize", "バッチサイズ", batchSizeValue, 1, 32, 1, "batchValue")}
+        ${renderRangeControl("steps", "ステップ数", stepsValue, 1, 50, 1, "stepsValue")}
+        ${renderRangeControl("cfg", "CFGスケール", cfgValue, 1, 20, 0.5, "cfgValue")}
+        ${renderRangeControl("denoise", "デノイズ強度", denoiseValue, 0, 1, 0.05, "denoiseValue")}
 
         <div class="resolution-row">
-          <label>幅<input class="input-field center" name="width" type="number" step="64" value="${request?.width ?? 512}" /></label>
+          <label>幅<input class="input-field center" name="width" type="number" step="64" value="${widthValue}" /></label>
           <button class="icon-button swap-button" data-action="swap-resolution" type="button" aria-label="幅と高さを入れ替え">${iconSwap()}</button>
-          <label>高さ<input class="input-field center" name="height" type="number" step="64" value="${request?.height ?? 768}" /></label>
+          <label>高さ<input class="input-field center" name="height" type="number" step="64" value="${heightValue}" /></label>
         </div>
 
         <label>シード
           <div class="seed-row">
-            <input class="input-field mono" name="seed" type="number" value="${request?.seed ?? previous?.seed ?? -1}" />
+            <input class="input-field mono" name="seed" type="number" value="${seedValue}" />
             <button class="icon-button" data-action="random-seed" type="button" aria-label="ランダムseed">${iconShuffle()}</button>
           </div>
         </label>
@@ -1095,19 +1282,19 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
 
         <label>サンプラー
           <select class="workflow-select" name="sampler">
-            ${["euler_ancestral", "euler", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_3m_sde", "dpmpp_2m_sde_karras"].map((sampler) => `<option value="${sampler}" ${(request?.sampler ?? "dpmpp_2m_sde_karras") === sampler ? "selected" : ""}>${sampler}</option>`).join("")}
+            ${renderOptions(samplerOptions, samplerValue)}
           </select>
         </label>
 
         <label>scheduler
           <select class="workflow-select" name="scheduler">
-            ${["normal", "karras", "exponential", "sgm_uniform"].map((scheduler) => `<option value="${scheduler}" ${(request?.scheduler ?? "normal") === scheduler ? "selected" : ""}>${scheduler}</option>`).join("")}
+            ${renderOptions(schedulerOptions, schedulerValue)}
           </select>
         </label>
 
         <label>mode
           <select class="workflow-select" name="generationMode">
-            ${["txt2img", "img2img", "ipadapter", "controlnet", "seed_reuse", "prompt_reuse"].map((mode) => `<option value="${mode}" ${request?.generationMode === mode ? "selected" : ""}>${mode}</option>`).join("")}
+            ${["txt2img", "img2img", "ipadapter", "controlnet", "seed_reuse", "prompt_reuse"].map((mode) => `<option value="${mode}" ${selectedMode === mode ? "selected" : ""}>${mode}</option>`).join("")}
           </select>
         </label>
       </section>
@@ -1122,19 +1309,7 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null,
 
       <details class="sidebar-section collapsible">
         <summary><span class="section-kicker">モデル</span>${iconChevron()}</summary>
-        <label>チェックポイント
-          <select class="workflow-select">
-            <option>animagine-xl-3.1.safetensors</option>
-            <option>sd_xl_base_1.0.safetensors</option>
-            <option>realvisxlV40.safetensors</option>
-          </select>
-        </label>
-        <label>VAE
-          <select class="workflow-select">
-            <option>sdxl_vae.safetensors</option>
-            <option>auto</option>
-          </select>
-        </label>
+        ${renderModelReadout(defaults.model)}
       </details>
 
       <div class="sidebar-actions">
@@ -1162,6 +1337,226 @@ function renderRangeControl(
       <div class="range-minmax"><span>${min}</span><span>${max}</span></div>
     </div>
   `;
+}
+
+function renderOptions(options: string[], selectedValue: string) {
+  const values = options.includes(selectedValue) ? options : [selectedValue, ...options];
+  return values
+    .map((value) => `<option value="${escapeAttr(value)}" ${selectedValue === value ? "selected" : ""}>${escapeHtml(value)}</option>`)
+    .join("");
+}
+
+function renderModelReadout(model: TemplateModelDefaults) {
+  const rows: Array<[string, string]> = [];
+  if (model.checkpoint) {
+    rows.push(["checkpoint", model.checkpoint]);
+  }
+  if (model.diffusionModel) {
+    rows.push(["diffusion model", model.diffusionModel]);
+  }
+  model.textEncoders.forEach((value, index) => rows.push([`text encoder ${index + 1}`, value]));
+  if (model.vae) {
+    rows.push(["VAE", model.vae]);
+  }
+  model.loras.forEach((value, index) => rows.push([`LoRA ${index + 1}`, value]));
+
+  if (rows.length === 0) {
+    rows.push(["workflow", "-"]);
+  }
+
+  return `
+    <div class="model-readout">
+      ${rows.map(([label, value]) => `
+        <div class="model-readout-row">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function updateDenoiseControlForMode(mode: string) {
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  const control = form?.elements.namedItem("denoise") as HTMLInputElement | null;
+  if (!control) {
+    return;
+  }
+
+  const value = defaultDenoiseForMode(mode);
+  control.value = String(value);
+  if (control.dataset.valueTarget) {
+    const valueTarget = document.getElementById(control.dataset.valueTarget);
+    if (valueTarget) {
+      valueTarget.textContent = formatNumber(value);
+    }
+  }
+}
+
+function defaultModeForTemplate(template: WorkflowTemplate | null) {
+  if (template && ["txt2img", "img2img", "ipadapter", "controlnet"].includes(template.type)) {
+    return template.type;
+  }
+  return "txt2img";
+}
+
+function defaultDenoiseForMode(mode: string) {
+  if (requiresFullDenoise(mode)) {
+    return 1;
+  }
+  return mode === "img2img" ? 0.35 : 0.45;
+}
+
+function normalizeDenoiseForMode(value: number, mode: string) {
+  if (requiresFullDenoise(mode)) {
+    return 1;
+  }
+  if (!Number.isFinite(value)) {
+    return defaultDenoiseForMode(mode);
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function requiresFullDenoise(mode: string) {
+  return mode === "txt2img" || mode === "seed_reuse" || mode === "prompt_reuse";
+}
+
+function templateGenerationDefaults(template: WorkflowTemplate | null): TemplateGenerationDefaults {
+  if (!template) {
+    return { model: emptyModelDefaults() };
+  }
+
+  const workflow = template.workflowJson;
+  const roleMap = template.roleMap;
+  return {
+    prompt: stringFromNodeInput(workflow, roleMap.positive_prompt_node, ["text", "prompt", "positive"]),
+    negativePrompt: stringFromNodeInput(workflow, roleMap.negative_prompt_node, ["text", "prompt", "negative"]),
+    seed: numberFromPath(workflow, roleMap.seed_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["seed"]),
+    batchSize: numberFromPath(workflow, roleMap.batch_size_input) ?? numberFromNodeInput(workflow, roleMap.empty_latent_node, ["batch_size"]),
+    steps: numberFromPath(workflow, roleMap.steps_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["steps"]),
+    cfg: numberFromPath(workflow, roleMap.cfg_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["cfg"]),
+    sampler:
+      stringFromPath(workflow, roleMap.sampler_input ?? roleMap.sampler_name_input) ??
+      stringFromNodeInput(workflow, roleMap.ksampler_node, ["sampler_name", "sampler"]),
+    scheduler:
+      stringFromPath(workflow, roleMap.scheduler_input) ??
+      stringFromNodeInput(workflow, roleMap.ksampler_node, ["scheduler"]),
+    denoise: numberFromPath(workflow, roleMap.denoise_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["denoise"]),
+    width: numberFromPath(workflow, roleMap.width_input) ?? numberFromNodeInput(workflow, roleMap.empty_latent_node, ["width"]),
+    height: numberFromPath(workflow, roleMap.height_input) ?? numberFromNodeInput(workflow, roleMap.empty_latent_node, ["height"]),
+    model: modelDefaultsFromWorkflow(workflow)
+  };
+}
+
+function emptyModelDefaults(): TemplateModelDefaults {
+  return {
+    textEncoders: [],
+    loras: []
+  };
+}
+
+function modelDefaultsFromWorkflow(workflow: Json): TemplateModelDefaults {
+  const model = emptyModelDefaults();
+
+  for (const rawNode of Object.values(workflow)) {
+    if (!isJsonObject(rawNode) || !isJsonObject(rawNode.inputs)) {
+      continue;
+    }
+
+    const classType = typeof rawNode.class_type === "string" ? rawNode.class_type : "";
+    const inputs = rawNode.inputs;
+
+    model.checkpoint ??= firstStringInput(inputs, ["ckpt_name", "checkpoint_name"]);
+    model.diffusionModel ??= firstStringInput(inputs, ["unet_name", "diffusion_model_name", "model_name"]);
+
+    if (classType.includes("CLIP") || hasAnyInput(inputs, ["clip_name", "clip_name1", "clip_name2", "clip_name3"])) {
+      appendUnique(model.textEncoders, firstStringInput(inputs, ["clip_name"]));
+      appendUnique(model.textEncoders, firstStringInput(inputs, ["clip_name1"]));
+      appendUnique(model.textEncoders, firstStringInput(inputs, ["clip_name2"]));
+      appendUnique(model.textEncoders, firstStringInput(inputs, ["clip_name3"]));
+    }
+
+    if (classType.includes("VAE") || "vae_name" in inputs) {
+      model.vae ??= firstStringInput(inputs, ["vae_name"]);
+    }
+
+    appendUnique(model.loras, firstStringInput(inputs, ["lora_name"]));
+  }
+
+  return model;
+}
+
+function firstStringInput(inputs: Json, names: string[]) {
+  for (const name of names) {
+    const value = inputs[name];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function hasAnyInput(inputs: Json, names: string[]) {
+  return names.some((name) => name in inputs);
+}
+
+function appendUnique(values: string[], value: string | undefined) {
+  if (value && !values.includes(value)) {
+    values.push(value);
+  }
+}
+
+function stringFromPath(source: Json, rawPath: unknown) {
+  const value = valueFromPath(source, rawPath);
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function numberFromPath(source: Json, rawPath: unknown) {
+  const value = valueFromPath(source, rawPath);
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringFromNodeInput(source: Json, rawNodeId: unknown, inputNames: string[]) {
+  const value = valueFromNodeInput(source, rawNodeId, inputNames);
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+function numberFromNodeInput(source: Json, rawNodeId: unknown, inputNames: string[]) {
+  const value = valueFromNodeInput(source, rawNodeId, inputNames);
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function valueFromNodeInput(source: Json, rawNodeId: unknown, inputNames: string[]) {
+  if (typeof rawNodeId !== "string") {
+    return undefined;
+  }
+
+  const node = source[rawNodeId];
+  if (!isJsonObject(node) || !isJsonObject(node.inputs)) {
+    return undefined;
+  }
+
+  for (const inputName of inputNames) {
+    if (inputName in node.inputs) {
+      return node.inputs[inputName];
+    }
+  }
+  return undefined;
+}
+
+function valueFromPath(source: Json, rawPath: unknown) {
+  if (typeof rawPath !== "string" || rawPath.trim() === "") {
+    return undefined;
+  }
+
+  let cursor: unknown = source;
+  for (const part of rawPath.split(".").filter(Boolean)) {
+    if (!isJsonObject(cursor) || !(part in cursor)) {
+      return undefined;
+    }
+    cursor = cursor[part];
+  }
+  return cursor;
 }
 
 function renderAssetModal() {
@@ -1250,7 +1645,8 @@ function fillGenerationFormFromAsset(asset: Asset, mode: string) {
   setFormValue(form, "negativePrompt", asset.negativePrompt);
   setFormValue(form, "seed", String(asset.seed ?? ""));
   setFormValue(form, "seedMode", "random");
-  setFormValue(form, "denoise", mode === "img2img" ? "0.35" : "0.45");
+  setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
+  updateDenoiseControlForMode(mode);
 }
 
 function setFormValue(form: HTMLFormElement, name: string, value: string) {
@@ -1310,6 +1706,10 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(body.error ?? `Request failed with ${response.status}`);
   }
   return body as T;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function formatDate(value: string) {
