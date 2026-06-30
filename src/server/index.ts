@@ -146,6 +146,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
+  const roundDeleteMatch = path.match(/^\/api\/rounds\/([^/]+)$/);
+  if (method === "DELETE" && roundDeleteMatch) {
+    sendJson(res, 200, deleteRoundTree(roundDeleteMatch[1]!));
+    return;
+  }
+
   const assetStatusMatch = path.match(/^\/api\/assets\/([^/]+)\/status$/);
   if (method === "POST" && assetStatusMatch) {
     sendJson(res, 200, updateAssetStatus(assetStatusMatch[1]!, await readJson(req)));
@@ -743,6 +749,43 @@ async function collectRound(roundId: string) {
       round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])),
       assets: createdAssets
     }
+  };
+}
+
+function deleteRoundTree(roundId: string) {
+  const round = getRow<Record<string, unknown>>("SELECT * FROM generation_rounds WHERE id = ?", [roundId]);
+  if (!round) {
+    throw new HttpError(404, "Round was not found");
+  }
+
+  const rows = getRows<{ id: string; depth: number }>(
+    `WITH RECURSIVE round_tree(id, depth) AS (
+       SELECT id, 0 FROM generation_rounds WHERE id = ?
+       UNION ALL
+       SELECT child.id, round_tree.depth + 1
+       FROM generation_rounds child
+       JOIN round_tree ON child.parent_round_id = round_tree.id
+     )
+     SELECT id, depth FROM round_tree ORDER BY depth DESC`,
+    [roundId]
+  );
+
+  runSql("BEGIN");
+  try {
+    for (const row of rows) {
+      runSql("DELETE FROM generation_rounds WHERE id = ?", [row.id]);
+    }
+    runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [round.project_id]);
+    runSql("COMMIT");
+  } catch (error) {
+    runSql("ROLLBACK");
+    throw error;
+  }
+
+  return {
+    deleted: true,
+    roundIds: rows.map((row) => row.id),
+    deletedCount: rows.length
   };
 }
 
