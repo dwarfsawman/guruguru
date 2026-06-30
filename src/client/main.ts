@@ -2754,12 +2754,14 @@ function renderAssetModal() {
   return `
     <div class="preview-modal" role="dialog" aria-modal="true">
       <div class="preview-content ${editing ? "mask-mode" : ""}">
+        <div class="preview-top-controls">
+          ${renderMaskToggleButton(editing)}
+          ${editing ? renderMaskModeIndicator(inpaint) : ""}
+        </div>
         <div class="preview-media">
           <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
           ${editing ? `<canvas id="maskCanvas" class="mask-canvas${state.maskToolbarMinimized ? "" : " mask-locked"}" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>` : ""}
         </div>
-        ${renderMaskToggleButton(editing)}
-        ${editing ? renderMaskModeIndicator(inpaint) : ""}
         ${renderMaskToolbar(asset, inpaint, editing, promptValue)}
         <button class="preview-close" type="button" data-action="close-detail" aria-label="閉じる">${iconClose()}</button>
         <div class="preview-footer">
