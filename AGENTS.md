@@ -6,3 +6,10 @@
 - Commands or tests that initialize the database must use a test database by setting `GURUGURU_TEST_DB=1`. Use `GURUGURU_TEST_DATA_DIR` for an explicit temporary test location when needed.
 - Never run tests, checks, scripts, or local experiments against the production user database.
 - Do not create or use a project-local runtime database. If a command refuses a repository-local data directory, fix the environment to use an external or test data directory.
+
+## Documentation and Git
+
+- Keep repository operation notes, usage steps, and recurring cautions in `操作メモ.md`.
+- When new procedures or cautions are discovered, add them to `操作メモ.md` instead of recreating a broad specification document.
+- When updating repository Markdown, also add a concise entry to the relevant change history section.
+- After making coherent edits to this repository, proactively create a git commit when the change has been checked. Keep commits scoped and do not include unrelated user changes.
