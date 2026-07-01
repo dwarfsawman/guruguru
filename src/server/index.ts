@@ -1,8 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { extname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createId, dataRoot, dbPath, getRow, getRows, initializeDb, runSql, setSetting, toApiRow, toApiRows } from "./db";
 import {
   deleteQueuedPrompts,
@@ -16,8 +13,8 @@ import {
   testComfyConnection,
   uploadImageToComfy
 } from "./comfy";
-import { deleteProjectStorage, ensureProjectStorage, readImageSize, safeFileStream, storeImage, storeMaskImage } from "./storage";
-import { isPathInside } from "./paths";
+import { deleteProjectStorage, ensureProjectStorage, readImageSize, storeImage, storeMaskImage } from "./storage";
+import { serveStatic, streamFile } from "./files";
 import { HttpError, readJson, sendJson } from "./http";
 import { isJsonObject, nonEmptyStringOr, numberOr, objectBody, positiveIntegerOr, requiredString, stringOrNull, stringOr } from "./validate";
 import { patchWorkflow, resolveSeed } from "./workflow";
@@ -31,8 +28,6 @@ import {
 } from "../shared/generationMode";
 import type { AssetStatus, ComfySettings, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ParentRelation, SelectionAction } from "../shared/types";
 
-const __dirname = fileURLToPath(new URL(".", import.meta.url));
-const publicDir = resolve(__dirname, "..", "public");
 const port = Number(process.env.PORT ?? 5177);
 let isShuttingDown = false;
 
@@ -1827,57 +1822,6 @@ function errorToJson(error: unknown) {
     message: error instanceof Error ? error.message : String(error),
     stack: error instanceof Error ? error.stack : undefined
   };
-}
-
-async function serveStatic(res: ServerResponse, pathname: string) {
-  const normalizedPath = pathname === "/" ? "/index.html" : pathname;
-  const filePath = resolve(join(publicDir, normalizedPath));
-  if (!isPathInside(filePath, publicDir) || !existsSync(filePath)) {
-    const indexHtml = await readFile(join(publicDir, "index.html"), "utf8");
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(indexHtml);
-    return;
-  }
-  streamFile(res, filePath);
-}
-
-function streamFile(res: ServerResponse, filePath: string) {
-  const stream = isPathInside(filePath, dataRoot) ? safeFileStream(filePath) : createReadStream(filePath);
-  stream.on("error", () => sendJson(res, 404, { error: "File was not found" }));
-  res.writeHead(200, { "content-type": contentTypeFor(filePath) });
-  stream.pipe(res);
-}
-
-function contentTypeFor(path: string) {
-  const ext = extname(path).toLowerCase();
-  if (ext === ".html") {
-    return "text/html; charset=utf-8";
-  }
-  if (ext === ".js") {
-    return "text/javascript; charset=utf-8";
-  }
-  if (ext === ".mjs") {
-    return "text/javascript; charset=utf-8";
-  }
-  if (ext === ".css") {
-    return "text/css; charset=utf-8";
-  }
-  if (ext === ".wasm") {
-    return "application/wasm";
-  }
-  if (ext === ".onnx" || ext === ".ort") {
-    return "application/octet-stream";
-  }
-  if (ext === ".png") {
-    return "image/png";
-  }
-  if (ext === ".jpg" || ext === ".jpeg") {
-    return "image/jpeg";
-  }
-  if (ext === ".webp") {
-    return "image/webp";
-  }
-  return "application/octet-stream";
 }
 
 function setupShutdownHandlers() {
