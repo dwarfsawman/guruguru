@@ -140,6 +140,7 @@ interface GenerationRequest {
 interface InpaintDraft {
   parentAssetId: string;
   maskDataUrl: string;
+  enabled: boolean;
   maskedContent: MaskedContent;
   inpaintArea: InpaintArea;
   onlyMaskedPadding: number;
@@ -2156,18 +2157,14 @@ function renderAssetTile(asset: Asset) {
         ${iconZoom()}
       </button>
       <span class="card-number">#${asset.batchIndex + 1}</span>
-      ${masked ? `<span class="mask-badge">${iconMask()}mask</span>` : ""}
+      ${masked ? `<span class="mask-badge">${iconMask()}MASK</span>` : ""}
       <span class="seed-chip">seed ${asset.seed ?? "-"}</span>
     </article>
   `;
 }
 
 function assetHasMaskIndicator(asset: Asset) {
-  if (hasMaskData(inpaintDraftForAsset(asset.id))) {
-    return true;
-  }
-  const round = state.detail?.rounds.find((item) => item.id === asset.roundId);
-  return !!round?.request?.inpaint;
+  return hasActiveMaskData(inpaintDraftForAsset(asset.id));
 }
 
 function renderBottomActionBar(selectedAssets: Asset[], activeRound: Round | null) {
@@ -2263,6 +2260,7 @@ function defaultInpaintDraft(assetId: string): InpaintDraft {
   return {
     parentAssetId: assetId,
     maskDataUrl: "",
+    enabled: false,
     maskedContent: "fill",
     inpaintArea: "only_masked",
     onlyMaskedPadding: 32,
@@ -2340,6 +2338,10 @@ function hasMaskData(draft: InpaintDraft | null | undefined) {
   return !!draft?.maskDataUrl && draft.maskDataUrl.startsWith("data:image/png;base64,");
 }
 
+function hasActiveMaskData(draft: InpaintDraft | null | undefined) {
+  return draft?.enabled === true && hasMaskData(draft);
+}
+
 function updateInpaintDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
   const field = control.dataset.inpaintField;
   if (!field) {
@@ -2370,7 +2372,7 @@ function inpaintRequestForParent(parentAssetId: string | null, generationMode: s
     return null;
   }
   const draft = inpaintDraftForAsset(parentAssetId);
-  if (!hasMaskData(draft)) {
+  if (!hasActiveMaskData(draft)) {
     return null;
   }
   return {
@@ -2384,11 +2386,22 @@ function inpaintRequestForParent(parentAssetId: string | null, generationMode: s
 function toggleMaskEditor() {
   if (state.maskEditMode) {
     commitActiveMaskCanvas();
+    const draft = inpaintDraftForAsset(state.activeAssetId);
+    if (draft) {
+      setInpaintDraft({
+        ...draft,
+        enabled: false
+      });
+    }
     state.maskEditMode = false;
     // 通常表示に戻すときはプロンプト・設定を見せるため展開する
     state.maskToolbarMinimized = false;
   } else if (state.activeAssetId) {
-    ensureInpaintDraft(state.activeAssetId);
+    const draft = ensureInpaintDraft(state.activeAssetId);
+    setInpaintDraft({
+      ...draft,
+      enabled: true
+    });
     state.maskEditMode = true;
     // マスク編集に入った直後はツールバーを最小化し、キャンバスを即座に描画可能にする。
     // 縦長画像では展開済みツールバーが画像全体を覆い、プロンプト等の文字要素が選択されてしまうため。
@@ -2612,7 +2625,7 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null)
         </label>
       </section>
 
-      ${hasMaskData(activeInpaint) ? renderInpaintSidebarSection(activeInpaint) : ""}
+      ${hasActiveMaskData(activeInpaint) ? renderInpaintSidebarSection(activeInpaint) : ""}
 
       <details class="sidebar-section collapsible">
         <summary><span class="section-kicker">モデル</span>${iconChevron()}</summary>
@@ -2981,7 +2994,7 @@ function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: 
   }
   const draft = inpaint ?? defaultInpaintDraft(asset.id);
   const batchSizeValue = currentBatchSizeValue();
-  const active = hasMaskData(inpaint);
+  const active = hasActiveMaskData(inpaint);
   const minimized = state.maskToolbarMinimized;
   const pos = state.maskToolbarPos;
   const styleAttr = pos ? ` style="position: fixed; left: ${pos.left}px; top: ${pos.top}px; right: auto;"` : "";
