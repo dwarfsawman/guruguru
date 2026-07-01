@@ -7,6 +7,7 @@ const GENERATED_MASK_CHANNEL = "red";
 export interface PatchContext {
   projectId: string;
   roundIndex: number;
+  batchIndex?: number | null;
   request: GenerationRequest;
   uploadedImageName?: string | null;
   uploadedMaskName?: string | null;
@@ -74,7 +75,9 @@ export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unk
     }
   }
 
-  const savePrefix = `guruguru/${context.projectId}/round_${String(context.roundIndex).padStart(3, "0")}`;
+  const savePrefix = typeof context.batchIndex === "number"
+    ? `guruguru/${context.projectId}/round_${String(context.roundIndex).padStart(3, "0")}/job_${String(context.batchIndex).padStart(3, "0")}`
+    : `guruguru/${context.projectId}/round_${String(context.roundIndex).padStart(3, "0")}`;
   setRolePath(workflow, roleMap.save_prefix_input, savePrefix);
   setNodeInput(workflow, roleMap.save_image_node, ["filename_prefix"], savePrefix);
 

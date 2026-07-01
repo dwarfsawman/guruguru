@@ -110,6 +110,13 @@ interface ProjectDetail {
   templates: WorkflowTemplate[];
 }
 
+interface CollectRoundResponse {
+  round?: Round;
+  assets?: Asset[];
+  message?: string;
+  jobStats?: Json;
+}
+
 interface GenerationRequest {
   templateId: string;
   prompt: string;
@@ -695,6 +702,8 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       selectRound(id);
     } else if (action === "collect-round") {
       await collectRound(id);
+    } else if (action === "interrupt-round") {
+      await interruptRound(id);
     } else if (action === "delete-round") {
       await deleteRoundTree(id);
     } else if (action === "cancel-delete-round") {
@@ -798,6 +807,7 @@ async function openProject(projectId: string) {
   state.deletePreviewRoundId = null;
   state.iterationScroll = null;
   render();
+  resumeAutoCollectForActiveRounds();
 }
 
 async function refreshProject(keepRoundId = state.activeRoundId, keepAssetId = state.activeAssetId) {
@@ -813,6 +823,39 @@ async function refreshProject(keepRoundId = state.activeRoundId, keepAssetId = s
   if (!state.activeAssetId) {
     state.maskEditMode = false;
   }
+  resumeAutoCollectForActiveRounds();
+}
+
+function resumeAutoCollectForActiveRounds() {
+  if (!state.currentProjectId || !state.detail) {
+    return;
+  }
+  for (const round of state.detail.rounds) {
+    if (isRoundActive(round)) {
+      void pollCollectRound(round.id, state.currentProjectId);
+    }
+  }
+}
+
+function isRoundActive(round: Round | null | undefined) {
+  return !!round && isRoundActiveStatus(round.status);
+}
+
+function isRoundActiveStatus(status: string) {
+  return status === "pending" || status === "running";
+}
+
+function terminalRoundMessage(status: string) {
+  if (status === "completed") {
+    return "生成が完了しました。";
+  }
+  if (status === "interrupted") {
+    return "生成は停止済みです。保存済みの画像はこのままブランチングに使えます。";
+  }
+  if (status === "failed") {
+    return "生成に失敗しました。保存済みの画像があればこのままブランチングに使えます。";
+  }
+  return `生成状態: ${status}`;
 }
 
 async function saveSettings() {
@@ -1214,13 +1257,31 @@ function resolveParentAssetForGeneration(parentAsset: Asset | null, generationMo
 }
 
 async function collectRound(roundId: string) {
-  const result = await api<Json>(`/api/rounds/${roundId}/collect`, {
+  const result = await api<CollectRoundResponse>(`/api/rounds/${roundId}/collect`, {
     method: "POST",
     body: "{}"
   });
-  state.message = "assets" in result
-    ? `生成画像を取り込みました。${(result.assets as unknown[]).length}件`
+  const count = result.assets?.length ?? 0;
+  state.message = count > 0
+    ? `生成画像を取り込みました。${count}件`
     : String(result.message ?? "まだ出力画像はありません。");
+  await refreshProject(roundId, state.activeAssetId);
+  render();
+}
+
+async function interruptRound(roundId: string) {
+  const result = await api<Json>(`/api/rounds/${roundId}/interrupt`, {
+    method: "POST",
+    body: "{}"
+  });
+  pendingAutoCollectRoundIds.delete(roundId);
+  if (result.deleteError || result.interruptError) {
+    state.message = `停止要求を完了できませんでした: ${String(result.deleteError ?? result.interruptError)}`;
+  } else {
+    state.message = result.interrupted
+    ? "生成を停止しました。保存済みの画像はこのままブランチングに使えます。"
+    : "未実行の生成を停止しました。保存済みの画像はこのままブランチングに使えます。";
+  }
   await refreshProject(roundId, state.activeAssetId);
   render();
 }
@@ -1259,16 +1320,25 @@ async function pollCollectRound(roundId: string, projectId: string | null) {
         return;
       }
 
-      const result = await api<Json>(`/api/rounds/${roundId}/collect`, {
+      const result = await api<CollectRoundResponse>(`/api/rounds/${roundId}/collect`, {
         method: "POST",
         body: "{}"
       });
 
-      if ("assets" in result) {
-        const count = (result.assets as unknown[]).length;
+      const count = result.assets?.length ?? 0;
+      const status = result.round?.status;
+      if (count > 0) {
         state.message = `生成画像を自動で取り込みました。${count}件`;
         await refreshProject(roundId, state.activeAssetId);
         render();
+      } else if (status && !isRoundActiveStatus(status)) {
+        state.message = terminalRoundMessage(status);
+        await refreshProject(roundId, state.activeAssetId);
+        render();
+        return;
+      }
+
+      if (status && !isRoundActiveStatus(status)) {
         return;
       }
     }
@@ -1927,6 +1997,7 @@ function renderProjectDetail(detail: ProjectDetail) {
   const selectedAssets = getActiveRoundAssets().filter((asset) => asset.status === "selected");
   const activeAsset = state.activeAssetId ? findAsset(state.activeAssetId) : null;
   const mode = activeRound?.generationMode ?? "txt2img";
+  const roundActive = isRoundActive(activeRound);
 
   return `
     <div class="studio-shell">
@@ -1950,6 +2021,7 @@ function renderProjectDetail(detail: ProjectDetail) {
               <option value="3" ${state.gridCols === 3 ? "selected" : ""}>3列</option>
               <option value="2" ${state.gridCols === 2 ? "selected" : ""}>2列</option>
             </select>
+            ${roundActive ? `<button class="button-danger compact" type="button" data-action="interrupt-round" data-id="${activeRound!.id}">${iconStop()}停止</button>` : ""}
             ${activeRound ? `<button class="button-secondary compact" type="button" data-action="collect-round" data-id="${activeRound.id}">${iconDownload()}生成結果取得</button>` : ""}
           </div>
         </div>
@@ -1970,10 +2042,13 @@ function renderEmptyGallery(activeRound: Round | null) {
     return renderSourceUploadEmptyState();
   }
   if (activeRound.status === "running" || activeRound.status === "pending") {
-    return `<div class="empty wide">生成結果はまだありません。ComfyUIで生成完了後に「生成結果取得」を押すとグリッドを作成します。</div>`;
+    return `<div class="empty wide">生成中です。画像ができた順にここへ表示されます。</div>`;
   }
   if (activeRound.status === "failed") {
     return `<div class="empty wide">このイテレーションは失敗しました。接続設定とworkflowを確認してブランチングしてください。</div>`;
+  }
+  if (activeRound.status === "interrupted") {
+    return `<div class="empty wide">停止済みです。保存済みの画像があればここに表示されます。</div>`;
   }
   return `<div class="empty wide">取り込み済みの画像はありません。「生成結果取得」を押すと、完了済み画像だけをグリッド表示します。</div>`;
 }
@@ -3148,6 +3223,10 @@ function iconDownload() {
 
 function iconPlay() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7Z"></path></svg>`;
+}
+
+function iconStop() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>`;
 }
 
 function iconLoopArrows() {
