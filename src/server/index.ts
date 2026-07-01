@@ -13,13 +13,14 @@ import {
   testComfyConnection,
   uploadImageToComfy
 } from "./comfy";
-import { deleteProjectStorage, ensureProjectStorage, readImageSize, storeImage, storeMaskImage } from "./storage";
+import { readImageSize, storeImage, storeMaskImage } from "./storage";
 import { serveStatic } from "./files";
 import { HttpError, readJson, sendJson } from "./http";
 import { isJsonObject, nonEmptyStringOr, numberOr, objectBody, positiveIntegerOr, requiredString, stringOrNull, stringOr } from "./validate";
 import { patchWorkflow, resolveSeed } from "./workflow";
 import { createTemplate, deleteTemplate, listTemplates } from "./templates";
 import { decorateAsset, serveAssetFile, updateAssetStatus } from "./assets";
+import { createProject, deleteProject, getProjectDetail, listProjects } from "./projects";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL, GITHUB_WEB_SAM_RELEASE_API_URL } from "../shared/constants";
 import {
   defaultDenoiseForMode,
@@ -177,7 +178,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   const projectDetailMatch = path.match(/^\/api\/projects\/([^/]+)$/);
   if (method === "GET" && projectDetailMatch) {
-    sendJson(res, 200, getProjectDetail(projectDetailMatch[1]!));
+    sendJson(res, 200, getProjectDetail(projectDetailMatch[1]!, { ensureRoundMonitor }));
     return;
   }
 
@@ -230,126 +231,6 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
 
   sendJson(res, 404, { error: "Not found" });
-}
-
-function listProjects() {
-  const rows = getRows<Record<string, unknown>>(
-    `SELECT
-       p.*,
-       (SELECT COUNT(*) FROM generation_rounds r WHERE r.project_id = p.id) AS round_count,
-       (SELECT COUNT(*) FROM assets a WHERE a.project_id = p.id) AS asset_count,
-       (SELECT a.id FROM assets a WHERE a.project_id = p.id AND a.status IN ('selected', 'favorite') ORDER BY a.created_at DESC LIMIT 1) AS representative_asset_id
-     FROM projects p
-     ORDER BY p.updated_at DESC`
-  );
-
-  return rows.map((row) => {
-    const item = toApiRow(row)!;
-    if (typeof item.representativeAssetId === "string") {
-      item.representativeThumbnailUrl = `/api/assets/${item.representativeAssetId}/thumbnail?size=small`;
-    }
-    return item;
-  });
-}
-
-function createProject(body: unknown) {
-  const input = objectBody(body);
-  const id = createId("project");
-  const name = requiredString(input.name, "name");
-  const description = stringOr(input.description, "");
-  const defaultTemplateId = stringOrNull(input.defaultTemplateId ?? input.default_template_id);
-  if (defaultTemplateId) {
-    const template = getRow("SELECT id FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [defaultTemplateId]);
-    if (!template) {
-      throw new HttpError(400, "Default WorkflowTemplate was not found");
-    }
-  }
-  const storage = ensureProjectStorage(id);
-
-  runSql(
-    `INSERT INTO projects (id, name, description, default_template_id, storage_dir)
-     VALUES (?, ?, ?, ?, ?)`,
-    [id, name, description, defaultTemplateId, storage.projectRoot]
-  );
-
-  return toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [id]));
-}
-
-async function deleteProject(projectId: string) {
-  const project = getRow<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
-  if (!project) {
-    throw new HttpError(404, "Project was not found");
-  }
-
-  runSql("UPDATE generation_rounds SET parent_round_id = NULL WHERE project_id = ?", [projectId]);
-  runSql("DELETE FROM projects WHERE id = ?", [projectId]);
-
-  let storageDeleted = false;
-  let storageError: string | undefined;
-  if (typeof project.storage_dir === "string" && project.storage_dir.trim()) {
-    try {
-      await deleteProjectStorage(project.storage_dir);
-      storageDeleted = true;
-    } catch (error) {
-      storageError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  return {
-    deleted: true,
-    projectId,
-    storageDeleted,
-    storageError
-  };
-}
-
-function getProjectDetail(projectId: string) {
-  const project = toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [projectId]));
-  if (!project) {
-    throw new HttpError(404, "Project was not found");
-  }
-
-  const rounds = toApiRows(
-    getRows(
-      `SELECT r.*,
-        (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id) AS asset_count,
-        (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id AND a.status = 'selected') AS selected_count,
-        (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id AND a.status = 'rejected') AS rejected_count
-       FROM generation_rounds r
-       WHERE r.project_id = ?
-       ORDER BY r.round_index DESC`,
-      [projectId]
-    )
-  );
-
-  const assets = toApiRows(
-    getRows("SELECT * FROM assets WHERE project_id = ? ORDER BY round_id ASC, batch_index ASC", [projectId])
-  ).map(decorateAsset);
-
-  const parents = toApiRows(
-    getRows(
-      `SELECT ap.*
-       FROM asset_parents ap
-       JOIN assets child ON child.id = ap.child_asset_id
-       WHERE child.project_id = ?
-       ORDER BY ap.created_at ASC`,
-      [projectId]
-    )
-  );
-
-  for (const round of rounds) {
-    if ((round.status === "running" || round.status === "pending") && typeof round.id === "string") {
-      ensureRoundMonitor(round.id);
-    }
-  }
-
-  return {
-    project,
-    rounds,
-    assets,
-    assetParents: parents,
-    templates: listTemplates()
-  };
 }
 
 function getRoundForApi(roundId: string) {
