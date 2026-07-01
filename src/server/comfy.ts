@@ -77,7 +77,7 @@ export async function getComfyStatus() {
   }
 }
 
-export async function queuePrompt(workflow: unknown) {
+export async function queuePrompt(workflow: unknown, clientId = `guruguru-${randomUUID()}`) {
   const body = await comfyFetchJson("/prompt", {
     method: "POST",
     headers: {
@@ -85,7 +85,7 @@ export async function queuePrompt(workflow: unknown) {
     },
     body: JSON.stringify({
       prompt: workflow,
-      client_id: `guruguru-${randomUUID()}`
+      client_id: clientId
     })
   });
 
@@ -98,6 +98,42 @@ export async function queuePrompt(workflow: unknown) {
 
 export async function getHistory(promptId: string) {
   return comfyFetchJson(`/history/${encodeURIComponent(promptId)}`);
+}
+
+export async function getQueue() {
+  return comfyFetchJson("/queue");
+}
+
+export async function deleteQueuedPrompts(promptIds: string[]) {
+  if (promptIds.length === 0) {
+    return null;
+  }
+  return comfyFetchJson("/queue", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      delete: promptIds
+    })
+  });
+}
+
+export async function interruptComfy() {
+  return comfyFetchJson("/interrupt", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: "{}"
+  });
+}
+
+export function openComfyWebSocket(clientId: string): WebSocket {
+  const settings = getComfySettings();
+  const url = new URL(settings.websocketUrl);
+  url.searchParams.set("clientId", clientId);
+  return new WebSocket(url.toString());
 }
 
 export async function fetchViewImage(info: ComfyImageInfo): Promise<Buffer> {

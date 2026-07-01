@@ -4,7 +4,18 @@ import { readFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createId, dataRoot, dbPath, getRow, getRows, initializeDb, runSql, setSetting, toApiRow, toApiRows } from "./db";
-import { fetchViewImage, getComfyStatus, getHistory, queuePrompt, testComfyConnection, uploadImageToComfy } from "./comfy";
+import {
+  deleteQueuedPrompts,
+  fetchViewImage,
+  getComfyStatus,
+  getHistory,
+  getQueue,
+  interruptComfy,
+  openComfyWebSocket,
+  queuePrompt,
+  testComfyConnection,
+  uploadImageToComfy
+} from "./comfy";
 import { deleteProjectStorage, ensureProjectStorage, readImageSize, safeFileStream, storeImage, storeMaskImage } from "./storage";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
 import { validateRoleMapReferences } from "../shared/workflowRoleMap";
@@ -17,9 +28,40 @@ let isShuttingDown = false;
 
 type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
 type BranchAssignment = { colorIndex: number; reason: string; key: string };
+type GenerationJobStatus = "pending" | "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled";
+type GenerationJob = {
+  id: string;
+  project_id: string;
+  round_id: string;
+  batch_index: number;
+  prompt_id?: string | null;
+  client_id: string;
+  seed?: number | null;
+  status: GenerationJobStatus;
+  last_error_json?: string | null;
+};
+type CollectRoundResult = { statusCode: number; body: Record<string, unknown> };
+type JobStats = {
+  total: number;
+  pending: number;
+  queued: number;
+  running: number;
+  completed: number;
+  failed: number;
+  interrupted: number;
+  cancelled: number;
+  active: number;
+  terminal: number;
+};
 
 const maxSourceImageBytes = 16 * 1024 * 1024;
 const maxMaskImageBytes = 8 * 1024 * 1024;
+const maxBatchSize = 32;
+const terminalJobStatuses = new Set<GenerationJobStatus>(["completed", "failed", "interrupted", "cancelled"]);
+const activeJobStatuses = new Set<GenerationJobStatus>(["pending", "queued", "running"]);
+const terminalRoundStatuses = new Set(["completed", "failed", "interrupted"]);
+const activeRoundMonitors = new Map<string, { socket: WebSocket; clientId: string }>();
+const roundCollectionLocks = new Map<string, Promise<CollectRoundResult>>();
 
 initializeDb();
 
@@ -144,6 +186,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (method === "POST" && collectMatch) {
     const result = await collectRound(collectMatch[1]!);
     sendJson(res, result.statusCode, result.body);
+    return;
+  }
+
+  const roundInterruptMatch = path.match(/^\/api\/rounds\/([^/]+)\/interrupt$/);
+  if (method === "POST" && roundInterruptMatch) {
+    sendJson(res, 200, await interruptRound(roundInterruptMatch[1]!));
     return;
   }
 
@@ -336,6 +384,12 @@ function getProjectDetail(projectId: string) {
     )
   );
 
+  for (const round of rounds) {
+    if ((round.status === "running" || round.status === "pending") && typeof round.id === "string") {
+      ensureRoundMonitor(round.id);
+    }
+  }
+
   return {
     project,
     rounds,
@@ -396,6 +450,7 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
     ]
   );
 
+  const queuedPromptIds: string[] = [];
   try {
     const workflow = JSON.parse(String(template.workflow_json));
     const roleMap = JSON.parse(String(template.role_map_json));
@@ -405,31 +460,84 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
     const uploadedMask = request.inpaint?.maskPath
       ? await uploadImageToComfy(request.inpaint.maskPath)
       : null;
-    const patchedWorkflow = patchWorkflow(workflow, roleMap, {
-      projectId,
-      roundIndex,
-      request,
-      uploadedImageName: uploaded?.name ?? null,
-      uploadedMaskName: uploadedMask?.name ?? null
-    });
+    const clientId = createId("comfy_client");
+    const jobCount = clampInteger(request.batchSize, 1, maxBatchSize);
+    const firstSeed = typeof request.seed === "number" ? request.seed : resolveSeed(request, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
+    request = {
+      ...request,
+      batchSize: jobCount,
+      seed: firstSeed
+    };
+    runSql("UPDATE generation_rounds SET request_json = ? WHERE id = ?", [JSON.stringify(request), roundId]);
 
     runSql(
-      "UPDATE generation_rounds SET patched_workflow_json = ?, status = 'running' WHERE id = ?",
-      [JSON.stringify(patchedWorkflow), roundId]
+      "UPDATE generation_rounds SET status = 'running' WHERE id = ?",
+      [roundId]
     );
 
-    const promptId = await queuePrompt(patchedWorkflow);
-    runSql("UPDATE generation_rounds SET prompt_id = ?, status = 'running' WHERE id = ?", [promptId, roundId]);
+    let firstPromptId: string | null = null;
+    let firstPatchedWorkflow: unknown = null;
+    for (let batchIndex = 0; batchIndex < jobCount; batchIndex += 1) {
+      const jobId = createId("job");
+      const jobRequest = requestForBatchJob(request, batchIndex);
+      const patchedWorkflow = patchWorkflow(workflow, roleMap, {
+        projectId,
+        roundIndex,
+        batchIndex,
+        request: jobRequest,
+        uploadedImageName: uploaded?.name ?? null,
+        uploadedMaskName: uploadedMask?.name ?? null
+      });
+
+      if (!firstPatchedWorkflow) {
+        firstPatchedWorkflow = patchedWorkflow;
+      }
+
+      runSql(
+        `INSERT INTO generation_jobs
+          (id, project_id, round_id, batch_index, client_id, seed, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+        [jobId, projectId, roundId, batchIndex, clientId, jobRequest.seed]
+      );
+
+      const promptId = await queuePrompt(patchedWorkflow, clientId);
+      queuedPromptIds.push(promptId);
+      if (!firstPromptId) {
+        firstPromptId = promptId;
+      }
+      runSql(
+        "UPDATE generation_jobs SET prompt_id = ?, status = 'queued', queued_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [promptId, jobId]
+      );
+      if (batchIndex === 0) {
+        ensureRoundMonitor(roundId);
+      }
+    }
+
+    runSql(
+      "UPDATE generation_rounds SET prompt_id = ?, patched_workflow_json = ?, status = 'running' WHERE id = ?",
+      [firstPromptId, JSON.stringify(firstPatchedWorkflow), roundId]
+    );
+    ensureRoundMonitor(roundId);
 
     return {
       round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])),
-      promptId
+      promptId: firstPromptId
     };
   } catch (error) {
     runSql(
       "UPDATE generation_rounds SET status = 'failed', last_error_json = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
       [JSON.stringify(errorToJson(error)), roundId]
     );
+    runSql(
+      "UPDATE generation_jobs SET status = 'failed', last_error_json = ?, completed_at = CURRENT_TIMESTAMP WHERE round_id = ? AND status IN ('pending', 'queued', 'running')",
+      [JSON.stringify(errorToJson(error)), roundId]
+    );
+    try {
+      await deleteQueuedPrompts(queuedPromptIds);
+    } catch {
+      // The original queuing error is more useful for the caller.
+    }
     throw error;
   }
 }
@@ -766,12 +874,103 @@ function formatBytes(bytes: number) {
   return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
-async function collectRound(roundId: string) {
+async function collectRound(roundId: string): Promise<CollectRoundResult> {
+  const existingLock = roundCollectionLocks.get(roundId);
+  if (existingLock) {
+    return existingLock;
+  }
+
+  const lock = collectRoundUnlocked(roundId).finally(() => {
+    roundCollectionLocks.delete(roundId);
+  });
+  roundCollectionLocks.set(roundId, lock);
+  return lock;
+}
+
+async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult> {
   const round = getRow<Record<string, unknown>>("SELECT * FROM generation_rounds WHERE id = ?", [roundId]);
   if (!round) {
     throw new HttpError(404, "Round was not found");
   }
 
+  const jobs = getGenerationJobs(roundId);
+  if (jobs.length === 0) {
+    return collectLegacyRound(round);
+  }
+
+  const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ?", [round.template_id]);
+  if (!template) {
+    throw new HttpError(500, "Round template was not found");
+  }
+
+  const request = JSON.parse(String(round.request_json)) as GenerationRequest;
+  const roleMap = parseStoredJsonObject(template.role_map_json);
+  const workflowForOutputSelection =
+    parseStoredJsonObject(round.patched_workflow_json) ?? parseStoredJsonObject(template.workflow_json);
+  const createdAssets: Record<string, unknown>[] = [];
+
+  for (const job of jobs) {
+    if (!job.prompt_id || job.status === "cancelled" || job.status === "failed") {
+      continue;
+    }
+    if (hasAssetsForPrompt(roundId, job.prompt_id)) {
+      if (job.status !== "completed") {
+        runSql(
+          "UPDATE generation_jobs SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ?",
+          [job.id]
+        );
+      }
+      continue;
+    }
+
+    const images = await historyImagesForPrompt(job.prompt_id, roleMap, workflowForOutputSelection);
+    if (images.length === 0) {
+      continue;
+    }
+
+    for (const image of images) {
+      const asset = await storeGeneratedAsset({
+        round,
+        template,
+        request,
+        image,
+        promptId: job.prompt_id ?? null,
+        seed: typeof job.seed === "number" ? job.seed : request.seed
+      });
+      createdAssets.push(asset);
+    }
+    runSql(
+      "UPDATE generation_jobs SET status = 'completed', completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [job.id]
+    );
+  }
+
+  const updatedRound = updateRoundStatusFromJobs(roundId);
+  const stats = jobStats(roundId);
+  const isTerminal = typeof updatedRound.status === "string" && terminalRoundStatuses.has(updatedRound.status);
+  if (!isTerminal && stats.active > 0) {
+    ensureRoundMonitor(roundId);
+  }
+
+  if (createdAssets.length > 0) {
+    runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [round.project_id]);
+  }
+
+  return {
+    statusCode: isTerminal ? 200 : 202,
+    body: {
+      round: toApiRow(updatedRound),
+      assets: createdAssets,
+      jobStats: stats,
+      message: createdAssets.length > 0
+        ? `${createdAssets.length} generated image(s) were collected.`
+        : "No new generated images are available yet."
+    }
+  };
+}
+
+async function collectLegacyRound(round: Record<string, unknown>): Promise<CollectRoundResult> {
+  const roundId = String(round.id);
   const existingCount =
     getRow<{ count: number }>("SELECT COUNT(*) AS count FROM assets WHERE round_id = ?", [roundId])?.count ?? 0;
   if (existingCount > 0 && round.status === "completed") {
@@ -812,64 +1011,17 @@ async function collectRound(roundId: string) {
 
   const request = JSON.parse(String(round.request_json)) as GenerationRequest;
   const createdAssets: Record<string, unknown>[] = [];
-  const startingIndex =
-    getRow<{ next_index: number }>("SELECT COALESCE(MAX(batch_index), -1) + 1 AS next_index FROM assets WHERE round_id = ?", [roundId])
-      ?.next_index ?? 0;
 
-  let batchIndex = startingIndex;
   for (const image of images) {
-    const bytes = await fetchViewImage(image);
-    const stored = await storeImage(String(round.project_id), roundId, batchIndex, image.filename, bytes);
-    const assetId = createId("asset");
-
-    runSql(
-      `INSERT INTO assets
-        (id, project_id, round_id, prompt_id, batch_index, image_path, thumbnail_small_path, thumbnail_medium_path,
-         width, height, prompt, negative_prompt, seed, sampler, scheduler, steps, cfg, denoise,
-         workflow_template_id, workflow_template_version, workflow_snapshot_hash, comfy_output_node_id, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated')`,
-      [
-        assetId,
-        round.project_id,
-        roundId,
-        round.prompt_id,
-        batchIndex,
-        stored.imagePath,
-        stored.thumbnailSmallPath,
-        stored.thumbnailMediumPath,
-        stored.width,
-        stored.height,
-        request.prompt,
-        request.negativePrompt,
-        request.seed,
-        request.sampler,
-        request.scheduler,
-        request.steps,
-        request.cfg,
-        request.denoise,
-        template.id,
-        template.version,
-        template.workflow_hash,
-        image.nodeId
-      ]
-    );
-
-    if (request.parentAssetId) {
-      runSql(
-        `INSERT INTO asset_parents (id, parent_asset_id, child_asset_id, relation_type, strength)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
-          createId("parent"),
-          request.parentAssetId,
-          assetId,
-          request.relationType ?? relationFromMode(request.generationMode),
-          request.denoise
-        ]
-      );
-    }
-
-    createdAssets.push(decorateAsset(toApiRow(getRow("SELECT * FROM assets WHERE id = ?", [assetId]))!));
-    batchIndex += 1;
+    const asset = await storeGeneratedAsset({
+      round,
+      template,
+      request,
+      image,
+      promptId: typeof round.prompt_id === "string" ? round.prompt_id : null,
+      seed: request.seed
+    });
+    createdAssets.push(asset);
   }
 
   runSql(
@@ -885,6 +1037,465 @@ async function collectRound(roundId: string) {
       assets: createdAssets
     }
   };
+}
+
+async function historyImagesForPrompt(
+  promptId: string,
+  roleMap: Record<string, unknown> | null,
+  workflow: Record<string, unknown> | null
+) {
+  try {
+    const history = await getHistory(promptId);
+    const entry = extractHistoryEntry(history, promptId);
+    return selectFinalImages(extractImages(entry), roleMap, workflow);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("404")) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+async function storeGeneratedAsset({
+  round,
+  template,
+  request,
+  image,
+  promptId,
+  seed
+}: {
+  round: Record<string, unknown>;
+  template: Record<string, unknown>;
+  request: GenerationRequest;
+  image: HistoryImage;
+  promptId: string | null;
+  seed: number | null;
+}) {
+  const roundId = String(round.id);
+  const batchIndex = nextAssetBatchIndex(roundId);
+  const bytes = await fetchViewImage(image);
+  const stored = await storeImage(String(round.project_id), roundId, batchIndex, image.filename, bytes);
+  const assetId = createId("asset");
+
+  runSql(
+    `INSERT INTO assets
+      (id, project_id, round_id, prompt_id, batch_index, image_path, thumbnail_small_path, thumbnail_medium_path,
+       width, height, prompt, negative_prompt, seed, sampler, scheduler, steps, cfg, denoise,
+       workflow_template_id, workflow_template_version, workflow_snapshot_hash, comfy_output_node_id, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated')`,
+    [
+      assetId,
+      round.project_id,
+      roundId,
+      promptId,
+      batchIndex,
+      stored.imagePath,
+      stored.thumbnailSmallPath,
+      stored.thumbnailMediumPath,
+      stored.width,
+      stored.height,
+      request.prompt,
+      request.negativePrompt,
+      seed,
+      request.sampler,
+      request.scheduler,
+      request.steps,
+      request.cfg,
+      request.denoise,
+      template.id,
+      template.version,
+      template.workflow_hash,
+      image.nodeId
+    ]
+  );
+
+  if (request.parentAssetId) {
+    runSql(
+      `INSERT INTO asset_parents (id, parent_asset_id, child_asset_id, relation_type, strength)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        createId("parent"),
+        request.parentAssetId,
+        assetId,
+        request.relationType ?? relationFromMode(request.generationMode),
+        request.denoise
+      ]
+    );
+  }
+
+  return decorateAsset(toApiRow(getRow("SELECT * FROM assets WHERE id = ?", [assetId]))!);
+}
+
+function nextAssetBatchIndex(roundId: string) {
+  return getRow<{ next_index: number }>(
+    "SELECT COALESCE(MAX(batch_index), -1) + 1 AS next_index FROM assets WHERE round_id = ?",
+    [roundId]
+  )?.next_index ?? 0;
+}
+
+function hasAssetsForPrompt(roundId: string, promptId: string) {
+  return (getRow<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM assets WHERE round_id = ? AND prompt_id = ?",
+    [roundId, promptId]
+  )?.count ?? 0) > 0;
+}
+
+function getGenerationJobs(roundId: string) {
+  return getRows<GenerationJob>(
+    "SELECT * FROM generation_jobs WHERE round_id = ? ORDER BY batch_index ASC",
+    [roundId]
+  );
+}
+
+function requestForBatchJob(request: GenerationRequest, batchIndex: number): GenerationRequest {
+  return {
+    ...request,
+    batchSize: 1,
+    seed: seedForBatchIndex(request.seed, batchIndex)
+  };
+}
+
+function seedForBatchIndex(seed: number | null, batchIndex: number) {
+  if (typeof seed !== "number" || !Number.isFinite(seed)) {
+    return null;
+  }
+  const maxSeed = 2 ** 31 - 1;
+  const normalized = Math.abs(Math.trunc(seed)) % maxSeed;
+  return (normalized + batchIndex) % maxSeed;
+}
+
+function jobStats(roundId: string): JobStats {
+  const stats: JobStats = {
+    total: 0,
+    pending: 0,
+    queued: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+    interrupted: 0,
+    cancelled: 0,
+    active: 0,
+    terminal: 0
+  };
+
+  for (const row of getRows<{ status: GenerationJobStatus; count: number }>(
+    "SELECT status, COUNT(*) AS count FROM generation_jobs WHERE round_id = ? GROUP BY status",
+    [roundId]
+  )) {
+    const count = Number(row.count) || 0;
+    stats.total += count;
+    if (row.status in stats) {
+      stats[row.status] = count;
+    }
+    if (activeJobStatuses.has(row.status)) {
+      stats.active += count;
+    }
+    if (terminalJobStatuses.has(row.status)) {
+      stats.terminal += count;
+    }
+  }
+
+  return stats;
+}
+
+function updateRoundStatusFromJobs(roundId: string) {
+  const round = getRow<Record<string, unknown>>("SELECT * FROM generation_rounds WHERE id = ?", [roundId]);
+  if (!round) {
+    throw new HttpError(404, "Round was not found");
+  }
+
+  const stats = jobStats(roundId);
+  if (stats.total === 0) {
+    return round;
+  }
+
+  let nextStatus = "running";
+  if (stats.completed === stats.total) {
+    nextStatus = "completed";
+  } else if (stats.active === 0 && (stats.interrupted > 0 || stats.cancelled > 0)) {
+    nextStatus = "interrupted";
+  } else if (stats.active === 0 && stats.failed > 0) {
+    nextStatus = "failed";
+  } else if (round.status === "interrupted") {
+    nextStatus = "interrupted";
+  }
+
+  const completedAtSql = terminalRoundStatuses.has(nextStatus)
+    ? "completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)"
+    : "completed_at = completed_at";
+  runSql(
+    `UPDATE generation_rounds SET status = ?, ${completedAtSql} WHERE id = ?`,
+    [nextStatus, roundId]
+  );
+  if (terminalRoundStatuses.has(nextStatus)) {
+    stopRoundMonitor(roundId);
+  }
+  return getRow<Record<string, unknown>>("SELECT * FROM generation_rounds WHERE id = ?", [roundId])!;
+}
+
+async function interruptRound(roundId: string) {
+  const round = getRow<Record<string, unknown>>("SELECT * FROM generation_rounds WHERE id = ?", [roundId]);
+  if (!round) {
+    throw new HttpError(404, "Round was not found");
+  }
+
+  const jobs = getGenerationJobs(roundId);
+  if (jobs.length === 0) {
+    return interruptLegacyRound(round);
+  }
+
+  const activeJobs = jobs.filter((job) => activeJobStatuses.has(job.status));
+  const activePromptIds = activeJobs
+    .map((job) => job.prompt_id)
+    .filter((promptId): promptId is string => typeof promptId === "string" && promptId.length > 0);
+  if (activeJobs.length === 0) {
+    return {
+      round: toApiRow(updateRoundStatusFromJobs(roundId)),
+      interrupted: false,
+      deletedPromptIds: []
+    };
+  }
+
+  let queue: unknown = null;
+  let queueError: string | null = null;
+  try {
+    queue = await getQueue();
+  } catch (error) {
+    queueError = error instanceof Error ? error.message : String(error);
+  }
+
+  const activePromptSet = new Set(activePromptIds);
+  const runningPromptIds = promptIdsInQueueSections(queue, ["queue_running", "currently_running", "running"], activePromptSet);
+  const shouldInterruptRunning = runningPromptIds.length > 0 || activeJobs.some((job) => job.status === "running");
+  let interruptError: string | null = null;
+  let interrupted = false;
+  if (shouldInterruptRunning) {
+    try {
+      await interruptComfy();
+      interrupted = true;
+    } catch (error) {
+      interruptError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  let deleteError: string | null = null;
+  try {
+    await deleteQueuedPrompts(activePromptIds);
+  } catch (error) {
+    deleteError = error instanceof Error ? error.message : String(error);
+  }
+
+  const runningSet = new Set(runningPromptIds);
+  for (const job of activeJobs) {
+    const promptId = typeof job.prompt_id === "string" ? job.prompt_id : null;
+    if (job.status === "running" && !interrupted) {
+      continue;
+    }
+    if (job.status !== "running" && deleteError && promptId) {
+      continue;
+    }
+    const status: GenerationJobStatus = interrupted && (job.status === "running" || (promptId && runningSet.has(promptId)))
+      ? "interrupted"
+      : "cancelled";
+    runSql(
+      "UPDATE generation_jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [status, job.id]
+    );
+  }
+
+  const updatedRound = updateRoundStatusFromJobs(roundId);
+
+  return {
+    round: toApiRow(updatedRound),
+    interrupted,
+    deletedPromptIds: activePromptIds,
+    queueError,
+    deleteError,
+    interruptError,
+    jobStats: jobStats(roundId)
+  };
+}
+
+async function interruptLegacyRound(round: Record<string, unknown>) {
+  const promptId = typeof round.prompt_id === "string" ? round.prompt_id : null;
+  let interrupted = false;
+  let deleteError: string | null = null;
+  let interruptError: string | null = null;
+  if (promptId) {
+    try {
+      await deleteQueuedPrompts([promptId]);
+    } catch (error) {
+      deleteError = error instanceof Error ? error.message : String(error);
+    }
+    try {
+      await interruptComfy();
+      interrupted = true;
+    } catch (error) {
+      interruptError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  runSql(
+    "UPDATE generation_rounds SET status = 'interrupted', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ?",
+    [round.id]
+  );
+  return {
+    round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [round.id])),
+    interrupted,
+    deletedPromptIds: promptId ? [promptId] : [],
+    deleteError,
+    interruptError
+  };
+}
+
+function promptIdsInQueueSections(queue: unknown, sectionNames: string[], promptIds: Set<string>) {
+  const found = new Set<string>();
+  if (!queue || typeof queue !== "object") {
+    return [];
+  }
+  for (const [key, value] of Object.entries(queue as Record<string, unknown>)) {
+    if (sectionNames.includes(key)) {
+      collectPromptIds(value, promptIds, found);
+    }
+  }
+  return [...found];
+}
+
+function collectPromptIds(value: unknown, promptIds: Set<string>, found: Set<string>) {
+  if (typeof value === "string") {
+    if (promptIds.has(value)) {
+      found.add(value);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectPromptIds(item, promptIds, found);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) {
+      collectPromptIds(item, promptIds, found);
+    }
+  }
+}
+
+function ensureRoundMonitor(roundId: string) {
+  if (activeRoundMonitors.has(roundId)) {
+    return;
+  }
+  const job = getRow<{ client_id: string }>(
+    `SELECT client_id
+     FROM generation_jobs
+     WHERE round_id = ? AND prompt_id IS NOT NULL AND status IN ('pending', 'queued', 'running')
+     ORDER BY batch_index ASC
+     LIMIT 1`,
+    [roundId]
+  );
+  if (!job?.client_id) {
+    return;
+  }
+
+  let socket: WebSocket;
+  try {
+    socket = openComfyWebSocket(job.client_id);
+  } catch (error) {
+    console.warn(`Failed to open ComfyUI WebSocket for round ${roundId}:`, error);
+    return;
+  }
+
+  activeRoundMonitors.set(roundId, { socket, clientId: job.client_id });
+  socket.addEventListener("message", (event) => {
+    void handleComfySocketMessage(roundId, event.data);
+  });
+  socket.addEventListener("close", () => {
+    const current = activeRoundMonitors.get(roundId);
+    if (current?.socket === socket) {
+      activeRoundMonitors.delete(roundId);
+    }
+  });
+  socket.addEventListener("error", (event) => {
+    console.warn(`ComfyUI WebSocket error for round ${roundId}:`, event);
+  });
+}
+
+async function handleComfySocketMessage(roundId: string, rawData: unknown) {
+  if (typeof rawData !== "string") {
+    return;
+  }
+
+  let message: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(rawData);
+    if (!isJsonObject(parsed)) {
+      return;
+    }
+    message = parsed;
+  } catch {
+    return;
+  }
+
+  const type = typeof message.type === "string" ? message.type : "";
+  const data = isJsonObject(message.data) ? message.data : {};
+  const promptId = typeof data.prompt_id === "string" ? data.prompt_id : null;
+  if (!promptId) {
+    return;
+  }
+
+  const job = getRow<GenerationJob>(
+    "SELECT * FROM generation_jobs WHERE round_id = ? AND prompt_id = ?",
+    [roundId, promptId]
+  );
+  if (!job) {
+    return;
+  }
+
+  if (type === "execution_start" || (type === "executing" && data.node !== null)) {
+    runSql(
+      "UPDATE generation_jobs SET status = 'running', started_at = COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id = ? AND status IN ('pending', 'queued')",
+      [job.id]
+    );
+    runSql("UPDATE generation_rounds SET status = 'running' WHERE id = ?", [roundId]);
+    return;
+  }
+
+  if (type === "executed" || type === "execution_success" || (type === "executing" && data.node === null)) {
+    await collectRound(roundId);
+    return;
+  }
+
+  if (type === "execution_interrupted") {
+    runSql(
+      "UPDATE generation_jobs SET status = 'interrupted', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status != 'completed'",
+      [job.id]
+    );
+    updateRoundStatusFromJobs(roundId);
+    await collectRound(roundId);
+    return;
+  }
+
+  if (type === "execution_error") {
+    runSql(
+      "UPDATE generation_jobs SET status = 'failed', last_error_json = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status != 'completed'",
+      [JSON.stringify(data), job.id]
+    );
+    updateRoundStatusFromJobs(roundId);
+    await collectRound(roundId);
+  }
+}
+
+function stopRoundMonitor(roundId: string) {
+  const monitor = activeRoundMonitors.get(roundId);
+  if (!monitor) {
+    return;
+  }
+  activeRoundMonitors.delete(roundId);
+  try {
+    monitor.socket.close();
+  } catch {
+    // Ignore close failures; polling collection remains the fallback.
+  }
 }
 
 function deleteRoundTree(roundId: string) {
@@ -908,6 +1519,7 @@ function deleteRoundTree(roundId: string) {
   runSql("BEGIN");
   try {
     for (const row of rows) {
+      stopRoundMonitor(row.id);
       runSql("DELETE FROM generation_rounds WHERE id = ?", [row.id]);
     }
     runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [round.project_id]);
@@ -1105,9 +1717,9 @@ function normalizeGenerationRequest(input: GenerationRequest): GenerationRequest
     templateId: requiredString(input.templateId, "templateId"),
     prompt: stringOr(input.prompt, ""),
     negativePrompt: stringOr(input.negativePrompt, ""),
-    seed: typeof input.seed === "number" ? input.seed : null,
+    seed: typeof input.seed === "number" && Number.isFinite(input.seed) ? input.seed : null,
     seedMode: input.seedMode ?? "random",
-    batchSize: numberOr(input.batchSize, 16),
+    batchSize: clampInteger(numberOr(input.batchSize, 16), 1, maxBatchSize),
     steps: numberOr(input.steps, 20),
     cfg: numberOr(input.cfg, 6),
     sampler: sampling.sampler,

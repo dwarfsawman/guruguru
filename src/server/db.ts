@@ -92,6 +92,24 @@ export function initializeDb() {
       FOREIGN KEY (parent_round_id) REFERENCES generation_rounds(id)
     );
 
+    CREATE TABLE IF NOT EXISTS generation_jobs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      round_id TEXT NOT NULL,
+      batch_index INTEGER NOT NULL,
+      prompt_id TEXT,
+      client_id TEXT NOT NULL,
+      seed INTEGER,
+      status TEXT NOT NULL,
+      last_error_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      queued_at TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (round_id) REFERENCES generation_rounds(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS assets (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -162,6 +180,9 @@ export function initializeDb() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_rounds_project ON generation_rounds(project_id, round_index);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_jobs_round_batch ON generation_jobs(round_id, batch_index);
+    CREATE INDEX IF NOT EXISTS idx_generation_jobs_prompt ON generation_jobs(prompt_id);
+    CREATE INDEX IF NOT EXISTS idx_generation_jobs_round_status ON generation_jobs(round_id, status);
     CREATE INDEX IF NOT EXISTS idx_assets_project_round ON assets(project_id, round_id, batch_index);
     CREATE INDEX IF NOT EXISTS idx_asset_parents_parent ON asset_parents(parent_asset_id);
     CREATE INDEX IF NOT EXISTS idx_asset_parents_child ON asset_parents(child_asset_id);
