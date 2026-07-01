@@ -6,7 +6,7 @@ import {
   requiresParentAsset
 } from "../shared/generationMode";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
-import type { InpaintArea, InpaintOptions, MaskedContent } from "../shared/types";
+import type { InpaintOptions } from "../shared/types";
 import {
   iconBrush,
   iconCheck,
@@ -57,15 +57,45 @@ import {
   renderWorkflowImportPreview
 } from "./workflowUi";
 import type {
-  WebSamBox,
   WebSamModelStatus,
-  WebSamPoint,
   WebSamPromptMode,
   WebSamProviderId,
   WebSamWorkerCandidate,
   WebSamWorkerRequest,
   WebSamWorkerResponse
 } from "./websam/types";
+import type {
+  ActiveBoxPrompt,
+  ActiveImagePan,
+  ActiveMaskStroke,
+  InpaintDraft,
+  MaskBrushCursorKind,
+  MaskLayerSet,
+  MaskStrokeKind,
+  SamMaskCandidate
+} from "./maskTypes";
+import {
+  defaultInpaintDraft,
+  hasActiveMaskData,
+  hasMaskData,
+  isMaskedContent,
+  maskedContentOptions,
+  normalizeInpaintDraft
+} from "./maskDraft";
+import {
+  canvasHasMaskPixels,
+  clearCanvas,
+  composeFinalMaskDataUrl,
+  createMaskLayerSet,
+  distanceToSegmentSq,
+  drawDataUrlIntoCanvas,
+  maskLayerForStroke,
+  normalizePromptBox,
+  paintStroke,
+  pointerToMaskCanvasPoint,
+  renderFinalMaskToCanvas,
+  sampleBrushPromptPoints
+} from "./maskCanvas";
 
 interface ComfySettings {
   baseUrl: string;
@@ -189,79 +219,6 @@ interface GenerationRequest {
   parentAssetId?: string | null;
   relationType?: string | null;
   inpaint?: InpaintOptions | null;
-}
-
-interface InpaintDraft {
-  parentAssetId: string;
-  maskDataUrl: string;
-  enabled: boolean;
-  maskedContent: MaskedContent;
-  inpaintArea: InpaintArea;
-  onlyMaskedPadding: number;
-  brushSize: number;
-  eraser: boolean;
-  selectedSmartMaskProvider: WebSamProviderId;
-  selectedWebSamModel: string;
-  webSamModelStatus: WebSamModelStatus;
-  webSamDownloadProgress: number;
-  webSamStatusText: string;
-  webSamError: string;
-  webSamPromptMode: WebSamPromptMode;
-  foregroundPoints: WebSamPoint[];
-  boxPrompt: WebSamBox | null;
-  brushPromptMaskDataUrl: string;
-  samCandidates: SamMaskCandidate[];
-  selectedSamCandidateIndex: number;
-  samMaskDataUrl: string;
-  previewSamMaskDataUrl: string;
-  manualIncludeMaskDataUrl: string;
-  manualEraseMaskDataUrl: string;
-  threshold: number;
-  smoothing: number;
-  maskOpacity: number;
-  zoomScale: number;
-  panOffset: { x: number; y: number };
-  imageWidth: number | null;
-  imageHeight: number | null;
-}
-
-interface SamMaskCandidate {
-  index: number;
-  score: number | null;
-  dataUrl: string;
-}
-
-type MaskStrokeKind = "manual-include" | "manual-erase" | "brush-prompt";
-
-interface ActiveMaskStroke {
-  pointerId: number;
-  x: number;
-  y: number;
-  kind: MaskStrokeKind;
-}
-
-interface ActiveBoxPrompt {
-  pointerId: number;
-  start: { x: number; y: number };
-  current: { x: number; y: number };
-}
-
-interface ActiveImagePan {
-  pointerId: number;
-  assetId: string;
-  startClient: { x: number; y: number };
-  originOffset: { x: number; y: number };
-}
-
-interface MaskLayerSet {
-  assetId: string;
-  width: number;
-  height: number;
-  samMask: HTMLCanvasElement;
-  previewSamMask: HTMLCanvasElement;
-  manualInclude: HTMLCanvasElement;
-  manualErase: HTMLCanvasElement;
-  brushPrompt: HTMLCanvasElement;
 }
 
 interface ScrollPosition {
@@ -394,13 +351,6 @@ const samplerOptions = [
   "uni_pc_bh2"
 ];
 const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
-const maskedContentOptions: Array<{ value: MaskedContent; label: string }> = [
-  { value: "original", label: "original（元画像を維持・低デノイズで灰色になりにくい）" },
-  { value: "fill", label: "fill（マスク部を灰色で埋める・低デノイズで灰色が残る）" },
-  { value: "latent_noise", label: "latent noise（空の潜在にノイズマスク）" },
-  { value: "latent_nothing", label: "latent nothing（空の潜在）" }
-];
-
 void boot();
 
 function scheduleMessageClear(value: string) {
@@ -1885,8 +1835,6 @@ function syncAssetModalMaskCanvas() {
   canvas.addEventListener("pointercancel", hideMaskBrushCursor);
 }
 
-type MaskBrushCursorKind = "pen" | "eraser" | "brush-prompt";
-
 function resolveMaskBrushCursorKind(draft: InpaintDraft): MaskBrushCursorKind | null {
   if (draft.selectedSmartMaskProvider !== "manual") {
     return draft.webSamPromptMode === "brush" ? "brush-prompt" : null;
@@ -1936,29 +1884,13 @@ function hideMaskBrushCursor() {
   cursor.classList.remove("visible", "pen", "eraser", "brush-prompt");
 }
 
-function createLayerCanvas(width: number, height: number) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  return canvas;
-}
-
 async function ensureMaskLayerSet(draft: InpaintDraft, width: number, height: number): Promise<MaskLayerSet> {
   let layers = maskLayerCache.get(draft.parentAssetId);
   if (layers && layers.width === width && layers.height === height) {
     return layers;
   }
 
-  layers = {
-    assetId: draft.parentAssetId,
-    width,
-    height,
-    samMask: createLayerCanvas(width, height),
-    previewSamMask: createLayerCanvas(width, height),
-    manualInclude: createLayerCanvas(width, height),
-    manualErase: createLayerCanvas(width, height),
-    brushPrompt: createLayerCanvas(width, height)
-  };
+  layers = createMaskLayerSet(draft.parentAssetId, width, height);
   maskLayerCache.set(draft.parentAssetId, layers);
   await syncMaskLayerSetFromDraft(layers, draft);
   return layers;
@@ -1977,59 +1909,6 @@ async function syncMaskLayerSetFromDraft(layers: MaskLayerSet, draft: InpaintDra
     drawDataUrlIntoCanvas(layers.manualErase, draft.manualEraseMaskDataUrl),
     drawDataUrlIntoCanvas(layers.brushPrompt, draft.brushPromptMaskDataUrl)
   ]);
-}
-
-function clearCanvas(canvas: HTMLCanvasElement) {
-  const context = canvas.getContext("2d");
-  context?.clearRect(0, 0, canvas.width, canvas.height);
-}
-
-function drawDataUrlIntoCanvas(canvas: HTMLCanvasElement, dataUrl: string) {
-  if (!dataUrl) {
-    return Promise.resolve();
-  }
-  return new Promise<void>((resolve) => {
-    const image = new Image();
-    image.addEventListener("load", () => {
-      const context = canvas.getContext("2d");
-      if (context) {
-        context.clearRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      }
-      resolve();
-    }, { once: true });
-    image.addEventListener("error", () => resolve(), { once: true });
-    image.src = dataUrl;
-  });
-}
-
-function renderFinalMaskToCanvas(canvas: HTMLCanvasElement, layers: MaskLayerSet, draft: InpaintDraft, includePreview: boolean) {
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return;
-  }
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  const samSource = includePreview && draft.previewSamMaskDataUrl ? layers.previewSamMask : layers.samMask;
-  context.globalCompositeOperation = "source-over";
-  context.drawImage(samSource, 0, 0, canvas.width, canvas.height);
-  context.drawImage(layers.manualInclude, 0, 0, canvas.width, canvas.height);
-  context.globalCompositeOperation = "destination-out";
-  context.drawImage(layers.manualErase, 0, 0, canvas.width, canvas.height);
-  context.globalCompositeOperation = "source-over";
-}
-
-function composeFinalMaskDataUrl(layers: MaskLayerSet, includeSamPreview = false) {
-  const canvas = createLayerCanvas(layers.width, layers.height);
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return "";
-  }
-  context.drawImage(includeSamPreview ? layers.previewSamMask : layers.samMask, 0, 0);
-  context.drawImage(layers.manualInclude, 0, 0);
-  context.globalCompositeOperation = "destination-out";
-  context.drawImage(layers.manualErase, 0, 0);
-  context.globalCompositeOperation = "source-over";
-  return canvasHasMaskPixels(canvas) ? canvas.toDataURL("image/png") : "";
 }
 
 function commitMaskLayers(assetId: string) {
@@ -2054,28 +1933,9 @@ function getOrCreateMaskLayerSet(assetId: string, width: number, height: number)
   if (layers && layers.width === width && layers.height === height) {
     return layers;
   }
-  layers = {
-    assetId,
-    width,
-    height,
-    samMask: createLayerCanvas(width, height),
-    previewSamMask: createLayerCanvas(width, height),
-    manualInclude: createLayerCanvas(width, height),
-    manualErase: createLayerCanvas(width, height),
-    brushPrompt: createLayerCanvas(width, height)
-  };
+  layers = createMaskLayerSet(assetId, width, height);
   maskLayerCache.set(assetId, layers);
   return layers;
-}
-
-function maskLayerForStroke(layers: MaskLayerSet, kind: MaskStrokeKind) {
-  if (kind === "manual-erase") {
-    return layers.manualErase;
-  }
-  if (kind === "brush-prompt") {
-    return layers.brushPrompt;
-  }
-  return layers.manualInclude;
 }
 
 function addWebSamPointPrompt(event: PointerEvent, canvas: HTMLCanvasElement) {
@@ -2150,20 +2010,6 @@ function finishWebSamBoxPrompt(canvas: HTMLCanvasElement) {
   void requestWebSamDecode();
 }
 
-function normalizePromptBox(box: WebSamBox | null): WebSamBox | null {
-  if (!box) {
-    return null;
-  }
-  const x1 = Math.min(box.x1, box.x2);
-  const x2 = Math.max(box.x1, box.x2);
-  const y1 = Math.min(box.y1, box.y2);
-  const y2 = Math.max(box.y1, box.y2);
-  if (Math.abs(x2 - x1) < 2 || Math.abs(y2 - y1) < 2) {
-    return null;
-  }
-  return { x1, y1, x2, y2 };
-}
-
 const BRUSH_PROMPT_POINT_SPACING = 48;
 const BRUSH_PROMPT_MAX_POINTS = 48;
 
@@ -2189,27 +2035,6 @@ function finishBrushPromptStroke(canvas: HTMLCanvasElement) {
   void requestWebSamDecode();
 }
 
-function sampleBrushPromptPoints(canvas: HTMLCanvasElement, spacing: number, maxPoints: number): WebSamPoint[] {
-  const context = canvas.getContext("2d");
-  if (!context || canvas.width <= 0 || canvas.height <= 0) {
-    return [];
-  }
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-  const points: WebSamPoint[] = [];
-  for (let y = Math.floor(spacing / 2); y < canvas.height; y += spacing) {
-    for (let x = Math.floor(spacing / 2); x < canvas.width; x += spacing) {
-      if (pixels[(y * canvas.width + x) * 4 + 3]! <= 0) {
-        continue;
-      }
-      points.push({ x, y, label: 1, source: "brush" });
-      if (points.length >= maxPoints) {
-        return points;
-      }
-    }
-  }
-  return points;
-}
-
 function removeBrushPromptPointsNearSegment(assetId: string, from: { x: number; y: number }, to: { x: number; y: number }, radius: number) {
   const draft = inpaintDraftForAsset(assetId);
   if (!draft || draft.foregroundPoints.length === 0) {
@@ -2230,18 +2055,6 @@ function removeBrushPromptPointsNearSegment(assetId: string, from: { x: number; 
       previewSamMaskDataUrl: ""
     });
   }
-}
-
-function distanceToSegmentSq(point: { x: number; y: number }, from: { x: number; y: number }, to: { x: number; y: number }) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  if (dx === 0 && dy === 0) {
-    return (point.x - from.x) ** 2 + (point.y - from.y) ** 2;
-  }
-  const t = Math.max(0, Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / (dx * dx + dy * dy)));
-  const projectedX = from.x + t * dx;
-  const projectedY = from.y + t * dy;
-  return (point.x - projectedX) ** 2 + (point.y - projectedY) ** 2;
 }
 
 function beginMaskToolbarDrag(event: PointerEvent, toolbar: HTMLElement) {
@@ -2429,16 +2242,6 @@ function finishMaskStroke(canvas: HTMLCanvasElement) {
   }
 }
 
-function pointerToMaskCanvasPoint(canvas: HTMLCanvasElement, event: PointerEvent) {
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
-  const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
-  return {
-    x: (event.clientX - rect.left) * scaleX,
-    y: (event.clientY - rect.top) * scaleY
-  };
-}
-
 function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }, kind: MaskStrokeKind) {
   const assetId = canvas.dataset.assetId ?? state.activeAssetId;
   const draft = inpaintDraftForAsset(assetId) ?? (assetId ? ensureInpaintDraft(assetId) : null);
@@ -2462,31 +2265,6 @@ function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number
   renderFinalMaskToCanvas(canvas, layers, draft, true);
 }
 
-function paintStroke(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }, brushSize: number, compositeOperation: GlobalCompositeOperation) {
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return;
-  }
-  context.save();
-  context.globalCompositeOperation = compositeOperation;
-  context.lineCap = "round";
-  context.lineJoin = "round";
-  context.lineWidth = brushSize;
-  context.strokeStyle = "rgba(255, 255, 255, 1)";
-  context.fillStyle = "rgba(255, 255, 255, 1)";
-  if (from.x === to.x && from.y === to.y) {
-    context.beginPath();
-    context.arc(to.x, to.y, brushSize / 2, 0, Math.PI * 2);
-    context.fill();
-  } else {
-    context.beginPath();
-    context.moveTo(from.x, from.y);
-    context.lineTo(to.x, to.y);
-    context.stroke();
-  }
-  context.restore();
-}
-
 function commitActiveMaskCanvas() {
   const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
   if (canvas) {
@@ -2501,21 +2279,6 @@ function commitMaskCanvas(canvas: HTMLCanvasElement) {
   }
 
   commitMaskLayers(assetId);
-}
-
-function canvasHasMaskPixels(canvas: HTMLCanvasElement) {
-  const context = canvas.getContext("2d");
-  if (!context || canvas.width <= 0 || canvas.height <= 0) {
-    return false;
-  }
-
-  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-  for (let index = 3; index < pixels.length; index += 4) {
-    if (pixels[index]! > 0) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function renderHeader() {
@@ -2927,64 +2690,6 @@ function draftNumber(draft: GenerationDraft | null, field: GenerationDraftField)
   return Number.isFinite(number) ? number : undefined;
 }
 
-function defaultInpaintDraft(assetId: string): InpaintDraft {
-  return {
-    parentAssetId: assetId,
-    maskDataUrl: "",
-    enabled: false,
-    maskedContent: "original",
-    inpaintArea: "only_masked",
-    onlyMaskedPadding: 32,
-    brushSize: 48,
-    eraser: false,
-    selectedSmartMaskProvider: "manual",
-    selectedWebSamModel: "slimsam-77",
-    webSamModelStatus: "idle",
-    webSamDownloadProgress: 0,
-    webSamStatusText: "未取得",
-    webSamError: "",
-    webSamPromptMode: "point",
-    foregroundPoints: [],
-    boxPrompt: null,
-    brushPromptMaskDataUrl: "",
-    samCandidates: [],
-    selectedSamCandidateIndex: 0,
-    samMaskDataUrl: "",
-    previewSamMaskDataUrl: "",
-    manualIncludeMaskDataUrl: "",
-    manualEraseMaskDataUrl: "",
-    threshold: 0,
-    smoothing: 0,
-    maskOpacity: 0.58,
-    zoomScale: 1,
-    panOffset: { x: 0, y: 0 },
-    imageWidth: null,
-    imageHeight: null
-  };
-}
-
-function normalizeInpaintDraft(draft: InpaintDraft): InpaintDraft {
-  const defaults = defaultInpaintDraft(draft.parentAssetId);
-  const normalized = {
-    ...defaults,
-    ...draft,
-    panOffset: draft.panOffset ?? defaults.panOffset,
-    foregroundPoints: draft.foregroundPoints ?? [],
-    samCandidates: draft.samCandidates ?? []
-  };
-  if (
-    !normalized.samMaskDataUrl &&
-    !normalized.previewSamMaskDataUrl &&
-    !normalized.manualIncludeMaskDataUrl &&
-    !normalized.manualEraseMaskDataUrl &&
-    !normalized.brushPromptMaskDataUrl &&
-    normalized.maskDataUrl
-  ) {
-    normalized.manualIncludeMaskDataUrl = normalized.maskDataUrl;
-  }
-  return normalized;
-}
-
 function inpaintDraftForAsset(assetId: string | null | undefined) {
   const stored = assetId ? state.inpaintDrafts[assetId] : null;
   if (stored) {
@@ -3052,14 +2757,6 @@ function syncPreviewPromptControl(value: string) {
   if (control && control.value !== value) {
     control.value = value;
   }
-}
-
-function hasMaskData(draft: InpaintDraft | null | undefined) {
-  return !!draft?.maskDataUrl && draft.maskDataUrl.startsWith("data:image/png;base64,");
-}
-
-function hasActiveMaskData(draft: InpaintDraft | null | undefined) {
-  return draft?.enabled === true && hasMaskData(draft);
 }
 
 function updateInpaintDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
@@ -3746,10 +3443,6 @@ function clearInpaintDraft() {
   }
   setInpaintDraft(null);
   render();
-}
-
-function isMaskedContent(value: string): value is MaskedContent {
-  return maskedContentOptions.some((option) => option.value === value);
 }
 
 function clampNumber(value: number, min: number, max: number, fallback: number) {
