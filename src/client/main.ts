@@ -62,6 +62,7 @@ import {
   renderWorkflowImportPreview
 } from "./workflowUi";
 import { renderHome } from "./views/homeView";
+import { renderIterationTracker } from "./views/iterationTree";
 import type {
   WebSamModelStatus,
   WebSamPromptMode,
@@ -2206,95 +2207,6 @@ function getConnectionView() {
   return { className: "unknown", label: "ComfyUI 未確認" };
 }
 
-function renderIterationTracker(detail: ProjectDetail) {
-  const rounds = sortRoundsAsc(detail.rounds);
-  if (!rounds.length) {
-    return `<div class="iteration-tracker empty-tracker"><span class="iteration-empty">No iterations</span></div>`;
-  }
-  const forest = buildRoundForest(rounds);
-  const deleteTargetIds = state.deletePreviewRoundId
-    ? collectRoundSubtreeIds(state.deletePreviewRoundId, forest.children)
-    : new Set<string>();
-  return `
-    <div class="iteration-tracker" aria-label="イテレーション">
-      <div class="iteration-forest">
-        ${forest.roots.map((round) => renderRoundTreeNode(round, forest.children, deleteTargetIds)).join("")}
-      </div>
-    </div>
-  `;
-}
-
-function buildRoundForest(rounds: Round[]) {
-  const byId = new Map(rounds.map((round) => [round.id, round]));
-  const children = new Map<string, Round[]>();
-  const roots: Round[] = [];
-
-  for (const round of rounds) {
-    const parentId = round.parentRoundId && byId.has(round.parentRoundId) ? round.parentRoundId : null;
-    if (!parentId) {
-      roots.push(round);
-      continue;
-    }
-    const siblings = children.get(parentId) ?? [];
-    siblings.push(round);
-    children.set(parentId, siblings);
-  }
-
-  return { roots, children };
-}
-
-function collectRoundSubtreeIds(rootRoundId: string, children: Map<string, Round[]>) {
-  const ids = new Set<string>();
-  const visit = (roundId: string) => {
-    ids.add(roundId);
-    for (const child of children.get(roundId) ?? []) {
-      visit(child.id);
-    }
-  };
-  visit(rootRoundId);
-  return ids;
-}
-
-function renderRoundTreeNode(round: Round, children: Map<string, Round[]>, deleteTargetIds: Set<string>): string {
-  const childRounds = children.get(round.id) ?? [];
-  const active = round.id === state.activeRoundId;
-  const completed = round.status === "completed";
-  const dotClass = active ? "active" : completed ? "completed" : "pending";
-  const hue = branchHue(round);
-  const isDeleteRoot = state.deletePreviewRoundId === round.id;
-  const isDeleteTarget = deleteTargetIds.has(round.id);
-  return `
-    <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="--branch-hue: ${hue}">
-      <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" type="button" title="${escapeAttr(iterationTitle(round))}">
-        <span>${round.roundIndex}</span>
-      </button>
-      ${isDeleteTarget ? `
-        <button class="iteration-delete-mark" type="button" data-action="delete-round" data-id="${state.deletePreviewRoundId ?? round.id}" title="削除">
-          ${iconClose()}
-        </button>
-      ` : ""}
-      ${childRounds.length ? `
-        <div class="iteration-children ${childRounds.length > 1 ? "has-siblings" : "single-child"}">
-          ${childRounds.map((child, index) => `
-            <div class="iteration-child ${index === 0 ? "first" : ""} ${index === childRounds.length - 1 ? "last" : ""}">
-              ${renderRoundTreeNode(child, children, deleteTargetIds)}
-            </div>
-          `).join("")}
-        </div>
-      ` : ""}
-    </div>
-  `;
-}
-
-function branchHue(round: Round) {
-  return ((round.branchColorIndex ?? 0) * 57) % 360;
-}
-
-function iterationTitle(round: Round) {
-  const parent = round.parentRoundId ? ` / parent ${round.parentRoundId}` : " / root";
-  return `Round ${round.roundIndex} / ${generationModeLabel(round.generationMode)} / ${round.status}${parent}`;
-}
-
 function renderProjectDetail(detail: ProjectDetail) {
   const activeRound = getActiveRound(detail);
   const assets = getActiveRoundAssets().filter(assetPassesFilter);
@@ -2334,7 +2246,7 @@ function renderProjectDetail(detail: ProjectDetail) {
             ${assets.length ? assets.map(renderAssetTile).join("") : renderEmptyGallery(activeRound)}
           </div>
         </div>
-        ${renderIterationTracker(detail)}
+        ${renderIterationTracker(detail.rounds, state.activeRoundId, state.deletePreviewRoundId)}
         ${renderBottomActionBar(selectedAssets, activeRound)}
       </main>
     </div>
@@ -3823,10 +3735,6 @@ function getActiveRoundAssets() {
     return [];
   }
   return state.detail.assets.filter((asset) => asset.roundId === activeRound.id);
-}
-
-function sortRoundsAsc(rounds: Round[]) {
-  return [...rounds].sort((a, b) => a.roundIndex - b.roundIndex);
 }
 
 function findAsset(assetId: string | null) {
