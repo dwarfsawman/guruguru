@@ -1756,6 +1756,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .mask-brush-control,
+.mask-batch-control,
 .mask-padding-control {
   gap: 7px;
 }
