@@ -159,9 +159,13 @@ function patchInpaintLatentPath(
   const padding = Number.isFinite(inpaint.onlyMaskedPadding)
     ? Math.max(0, Math.trunc(inpaint.onlyMaskedPadding))
     : 32;
-  const maskConnection = padding > 0
+  // The grown mask gives the sampler a slightly larger noise region for context.
+  const grownMaskConnection = padding > 0
     ? [addGrowMaskNode(workflow, resizedMaskConnection, padding), 0]
     : resizedMaskConnection;
+  // The paste-back composite uses the original (non-grown) mask so generated content
+  // is only written back where the user actually painted, avoiding gray bleed into padding.
+  const compositeMaskConnection = resizedMaskConnection;
   const vaeConnection = findVaeConnection(workflow);
 
   const ksamplerNodeId =
@@ -182,7 +186,7 @@ function patchInpaintLatentPath(
         workflow,
         findNodeIdByExactClass(workflow, "VAEEncodeForInpaint") ?? addVaeEncodeForInpaintNode(workflow, vaeConnection),
         resizedImageConnection,
-        maskConnection,
+        grownMaskConnection,
         vaeConnection
       ),
       0
@@ -196,14 +200,14 @@ function patchInpaintLatentPath(
       addVaeEncodeNode(workflow, vaeConnection);
     setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], resizedImageConnection);
     setNodeInput(workflow, vaeEncodeNodeId, ["vae"], vaeConnection);
-    latentConnection = [addSetLatentNoiseMaskNode(workflow, [vaeEncodeNodeId, 0], maskConnection), 0];
+    latentConnection = [addSetLatentNoiseMaskNode(workflow, [vaeEncodeNodeId, 0], grownMaskConnection), 0];
     latentConnection = repeatLatentForBatchSize(workflow, roleMap, latentConnection, request.batchSize);
   } else if (inpaint.maskedContent === "latent_noise") {
     const emptyLatentConnection = [
       addEmptyLatentImageNode(workflow, request.width, request.height, request.batchSize),
       0
     ];
-    latentConnection = [addSetLatentNoiseMaskNode(workflow, emptyLatentConnection, maskConnection), 0];
+    latentConnection = [addSetLatentNoiseMaskNode(workflow, emptyLatentConnection, grownMaskConnection), 0];
   } else {
     latentConnection = [
       addEmptyLatentImageNode(workflow, request.width, request.height, request.batchSize),
@@ -213,7 +217,7 @@ function patchInpaintLatentPath(
 
   setRolePath(workflow, roleMap.ksampler_latent_image_input, latentConnection);
   setNodeInput(workflow, ksamplerNodeId, ["latent_image"], latentConnection);
-  patchSaveImageForInpaintComposite(workflow, roleMap, resizedImageConnection, maskConnection);
+  patchSaveImageForInpaintComposite(workflow, roleMap, resizedImageConnection, compositeMaskConnection);
 }
 
 function repeatLatentForBatchSize(
