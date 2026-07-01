@@ -371,10 +371,10 @@ const samplerOptions = [
 ];
 const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
 const maskedContentOptions: Array<{ value: MaskedContent; label: string }> = [
-  { value: "fill", label: "fill" },
-  { value: "original", label: "original" },
-  { value: "latent_noise", label: "latent noise" },
-  { value: "latent_nothing", label: "latent nothing" }
+  { value: "original", label: "original（元画像を維持・低デノイズで灰色になりにくい）" },
+  { value: "fill", label: "fill（マスク部を灰色で埋める・低デノイズで灰色が残る）" },
+  { value: "latent_noise", label: "latent noise（空の潜在にノイズマスク）" },
+  { value: "latent_nothing", label: "latent nothing（空の潜在）" }
 ];
 
 void boot();
@@ -814,13 +814,20 @@ function previewRoundDeletion(roundId: string) {
 }
 
 function selectRound(roundId: string) {
+  preserveGenerationDenoise();
   state.activeRoundId = roundId;
   state.activeAssetId = null;
   state.deletePreviewRoundId = null;
-  state.generationDraft = null;
   state.maskEditMode = false;
   activeImagePan = null;
   render();
+}
+
+function preserveGenerationDenoise() {
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  const denoiseControl = form?.elements.namedItem("denoise") as HTMLInputElement | null;
+  const denoiseValue = denoiseControl?.value ?? state.generationDraft?.denoise;
+  state.generationDraft = denoiseValue ? { denoise: denoiseValue } : null;
 }
 
 function openAssetDetail(assetId: string) {
@@ -1792,6 +1799,63 @@ function syncAssetModalMaskCanvas() {
   } else {
     image.addEventListener("load", sync, { once: true });
   }
+
+  canvas.addEventListener("pointermove", updateMaskBrushCursor);
+  canvas.addEventListener("pointerdown", updateMaskBrushCursor);
+  canvas.addEventListener("pointerenter", updateMaskBrushCursor);
+  canvas.addEventListener("pointerleave", hideMaskBrushCursor);
+  canvas.addEventListener("pointercancel", hideMaskBrushCursor);
+}
+
+type MaskBrushCursorKind = "pen" | "eraser" | "brush-prompt";
+
+function resolveMaskBrushCursorKind(draft: InpaintDraft): MaskBrushCursorKind | null {
+  if (draft.selectedSmartMaskProvider !== "manual") {
+    return draft.webSamPromptMode === "brush" ? "brush-prompt" : null;
+  }
+  return draft.eraser ? "eraser" : "pen";
+}
+
+function updateMaskBrushCursor(event: PointerEvent) {
+  const canvas = event.currentTarget as HTMLCanvasElement | null;
+  if (!canvas || !state.maskEditMode) {
+    return;
+  }
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!draft) {
+    hideMaskBrushCursor();
+    return;
+  }
+  const kind = resolveMaskBrushCursorKind(draft);
+  const cursor = document.querySelector<SVGCircleElement>(".brush-cursor");
+  if (!cursor || !kind) {
+    hideMaskBrushCursor();
+    return;
+  }
+  const point = pointerToMaskCanvasPoint(canvas, event);
+  const withinBounds =
+    point.x >= 0 && point.x <= canvas.width && point.y >= 0 && point.y <= canvas.height;
+  if (!withinBounds) {
+    hideMaskBrushCursor();
+    return;
+  }
+  cursor.setAttribute("cx", formatCssNumber(point.x));
+  cursor.setAttribute("cy", formatCssNumber(point.y));
+  cursor.setAttribute("r", formatCssNumber(draft.brushSize / 2));
+  cursor.classList.remove("pen", "eraser", "brush-prompt");
+  cursor.classList.add(kind);
+  cursor.classList.add("visible");
+}
+
+function hideMaskBrushCursor() {
+  const cursor = document.querySelector<SVGCircleElement>(".brush-cursor");
+  if (!cursor) {
+    return;
+  }
+  cursor.removeAttribute("r");
+  cursor.setAttribute("r", "0");
+  cursor.classList.remove("visible", "pen", "eraser", "brush-prompt");
 }
 
 function createLayerCanvas(width: number, height: number) {
@@ -2022,6 +2086,9 @@ function normalizePromptBox(box: WebSamBox | null): WebSamBox | null {
   return { x1, y1, x2, y2 };
 }
 
+const BRUSH_PROMPT_POINT_SPACING = 48;
+const BRUSH_PROMPT_MAX_POINTS = 48;
+
 function finishBrushPromptStroke(canvas: HTMLCanvasElement) {
   const assetId = canvas.dataset.assetId ?? state.activeAssetId;
   const draft = assetId ? ensureInpaintDraft(assetId) : null;
@@ -2030,7 +2097,7 @@ function finishBrushPromptStroke(canvas: HTMLCanvasElement) {
     return;
   }
   const manualPoints = draft.foregroundPoints.filter((point) => point.source !== "brush");
-  const sampledPoints = sampleBrushPromptPoints(layers.brushPrompt, 24, 96);
+  const sampledPoints = sampleBrushPromptPoints(layers.brushPrompt, BRUSH_PROMPT_POINT_SPACING, BRUSH_PROMPT_MAX_POINTS);
   // TODO: also pass the brushPromptMask bounding box as a SAM box prompt when decoder quality needs the extra constraint.
   setInpaintDraft({
     ...draft,
@@ -2301,23 +2368,37 @@ function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number
     return;
   }
   const layers = getOrCreateMaskLayerSet(assetId, canvas.width, canvas.height);
-  const layer = maskLayerForStroke(layers, kind);
-  const context = layer.getContext("2d");
+  const brushSize = draft.brushSize;
+
+  if (kind === "manual-include") {
+    // Add to the include layer, and lift any prior erase strokes in the same area so
+    // a previously erased region can be re-masked by drawing over it with the pen.
+    paintStroke(layers.manualInclude, from, to, brushSize, "source-over");
+    paintStroke(layers.manualErase, from, to, brushSize, "destination-out");
+  } else if (kind === "manual-erase") {
+    paintStroke(layers.manualErase, from, to, brushSize, "source-over");
+    removeBrushPromptPointsNearSegment(assetId, from, to, brushSize / 2);
+  } else {
+    paintStroke(maskLayerForStroke(layers, kind), from, to, brushSize, "source-over");
+  }
+  renderFinalMaskToCanvas(canvas, layers, draft, true);
+}
+
+function paintStroke(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }, brushSize: number, compositeOperation: GlobalCompositeOperation) {
+  const context = canvas.getContext("2d");
   if (!context) {
     return;
   }
-
   context.save();
-  context.globalCompositeOperation = "source-over";
+  context.globalCompositeOperation = compositeOperation;
   context.lineCap = "round";
   context.lineJoin = "round";
-  context.lineWidth = draft.brushSize;
+  context.lineWidth = brushSize;
   context.strokeStyle = "rgba(255, 255, 255, 1)";
   context.fillStyle = "rgba(255, 255, 255, 1)";
-
   if (from.x === to.x && from.y === to.y) {
     context.beginPath();
-    context.arc(to.x, to.y, draft.brushSize / 2, 0, Math.PI * 2);
+    context.arc(to.x, to.y, brushSize / 2, 0, Math.PI * 2);
     context.fill();
   } else {
     context.beginPath();
@@ -2326,10 +2407,6 @@ function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number
     context.stroke();
   }
   context.restore();
-  if (kind === "manual-erase") {
-    removeBrushPromptPointsNearSegment(assetId, from, to, draft.brushSize / 2);
-  }
-  renderFinalMaskToCanvas(canvas, layers, draft, true);
 }
 
 function commitActiveMaskCanvas() {
@@ -2854,7 +2931,7 @@ function defaultInpaintDraft(assetId: string): InpaintDraft {
     parentAssetId: assetId,
     maskDataUrl: "",
     enabled: false,
-    maskedContent: "fill",
+    maskedContent: "original",
     inpaintArea: "only_masked",
     onlyMaskedPadding: 32,
     brushSize: 48,
@@ -3741,6 +3818,7 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null)
     draftNumber(draft, "denoise") ??
     request?.denoise ??
     normalizeDenoiseForMode(defaults.denoise ?? defaultDenoiseForMode(selectedMode), selectedMode);
+  const normalizedDenoiseValue = normalizeDenoiseForMode(denoiseValue, selectedMode);
   const widthValue = draftNumber(draft, "width") ?? assetDimension(previous, "width") ?? request?.width ?? defaults.width ?? 512;
   const heightValue = draftNumber(draft, "height") ?? assetDimension(previous, "height") ?? request?.height ?? defaults.height ?? 768;
   const seedValue = draft?.seed ?? String(request?.seed ?? previous?.seed ?? defaults.seed ?? -1);
@@ -3804,7 +3882,7 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null)
         ${renderRangeControl("batchSize", "バッチサイズ", batchSizeValue, 1, 32, 1, "batchValue")}
         ${renderRangeControl("steps", "ステップ数", stepsValue, 1, 50, 1, "stepsValue")}
         ${renderRangeControl("cfg", "CFGスケール", cfgValue, 1, 20, 0.5, "cfgValue")}
-        ${renderRangeControl("denoise", "デノイズ強度", denoiseValue, 0, 1, 0.05, "denoiseValue")}
+        ${renderRangeControl("denoise", "デノイズ強度", normalizedDenoiseValue, 0, 1, 0.05, "denoiseValue")}
 
         <div class="resolution-row">
           <label>幅<input class="input-field center" name="width" type="number" step="64" value="${widthValue}" /></label>
@@ -4244,6 +4322,7 @@ function renderWebSamPromptOverlay(draft: InpaintDraft, asset: Asset) {
     <svg class="websam-prompt-overlay" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}" aria-hidden="true">
       ${boxMarkup}
       ${points}
+      <circle class="brush-cursor" cx="0" cy="0" r="0" data-brush-asset-id="${asset.id}"></circle>
     </svg>
   `;
 }
@@ -4496,10 +4575,23 @@ function fillGenerationFormFromAsset(asset: Asset, mode: string) {
   setFormValue(form, "seed", String(asset.seed ?? ""));
   setFormValue(form, "seedMode", "random");
   applyAssetDimensionsToForm(form, asset);
-  if (!requiresFullDenoise(mode)) {
+  preserveDenoiseOnAssetFill(form, mode);
+  captureGenerationDraft();
+}
+
+function preserveDenoiseOnAssetFill(form: HTMLFormElement, mode: string) {
+  const denoise = form.elements.namedItem("denoise") as HTMLInputElement | null;
+  if (!denoise) {
+    return;
+  }
+  if (requiresFullDenoise(mode)) {
+    setFormValue(form, "denoise", "1");
+    return;
+  }
+  const current = Number(denoise.value);
+  if (!Number.isFinite(current) || current <= 0 || current >= 1) {
     setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
   }
-  captureGenerationDraft();
 }
 
 function prepareGenerationFormForParent(asset: Asset, mode: string) {
