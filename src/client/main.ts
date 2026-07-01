@@ -2840,10 +2840,15 @@ function renderTemplatePanel() {
               ${template.description ? `<small>${escapeHtml(template.description)}</small>` : ""}
             </div>
             <div class="template-row-actions">
-              <button class="button-secondary compact" type="button" data-action="open-template-diagram" data-template-id="${escapeAttr(template.id)}">${iconDiagram()}diagram</button>
-              <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${template.id}">${iconDownload()}raw export</button>
-              <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${template.id}">${iconDownload()}template export</button>
-              <button class="button-danger compact" type="button" data-action="delete-template" data-template-id="${template.id}">${iconTrash()}削除</button>
+              <button class="button-secondary compact template-action-button" type="button" data-action="open-template-diagram" data-template-id="${escapeAttr(template.id)}" aria-label="diagram" title="diagram">${iconDiagram()}</button>
+              <details class="template-export-dropdown">
+                <summary class="button-secondary compact template-action-button" aria-label="export" title="export">${iconDownload()}</summary>
+                <div class="template-export-menu">
+                  <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${escapeAttr(template.id)}">${iconDownload()}raw export</button>
+                  <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${escapeAttr(template.id)}">${iconDownload()}template export</button>
+                </div>
+              </details>
+              <button class="button-danger compact template-action-button" type="button" data-action="delete-template" data-template-id="${escapeAttr(template.id)}" aria-label="削除" title="削除">${iconTrash()}</button>
             </div>
           </article>
         `).join("") || `<div class="empty">登録済みテンプレートはありません。</div>`}
@@ -2879,8 +2884,8 @@ function renderWorkflowImportModal() {
                 ${renderWorkflowTypeOptions(draft.type)}
               </select>
             </label>
-            <label>API形式workflow JSON<textarea name="workflowJson" rows="10" spellcheck="false">${escapeHtml(draft.workflowJson)}</textarea></label>
-            <label>role map<textarea name="roleMap" rows="10" spellcheck="false">${escapeHtml(draft.roleMap)}</textarea></label>
+            <label>API形式workflow JSON<textarea class="workflow-json-textarea" name="workflowJson" rows="12" spellcheck="false">${escapeHtml(draft.workflowJson)}</textarea></label>
+            <label>role map<textarea class="role-map-textarea" name="roleMap" rows="18" spellcheck="false">${escapeHtml(draft.roleMap)}</textarea></label>
           </div>
           <aside class="workflow-diagram-preview">
             <div class="workflow-diagram-heading">
