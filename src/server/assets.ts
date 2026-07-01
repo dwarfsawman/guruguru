@@ -1,4 +1,5 @@
 import type { ServerResponse } from "node:http";
+import type { Asset } from "../shared/apiTypes";
 import type { AssetStatus, SelectionAction } from "../shared/types";
 import { createId, getRow, runSql, toApiRow } from "./db";
 import { streamFile } from "./files";
@@ -51,13 +52,13 @@ export async function serveAssetFile(res: ServerResponse, assetId: string, kind:
   streamFile(res, path);
 }
 
-export function decorateAsset(asset: Record<string, unknown>) {
+export function decorateAsset(asset: Record<string, unknown>): Asset {
   return {
     ...asset,
     imageUrl: `/api/assets/${asset.id}/image`,
     thumbnailUrl: `/api/assets/${asset.id}/thumbnail?size=small`,
     thumbnailMediumUrl: `/api/assets/${asset.id}/thumbnail?size=medium`
-  };
+  } as unknown as Asset;
 }
 
 function selectionActionFor(newStatus: string, previousStatus: string): SelectionAction | null {

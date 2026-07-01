@@ -1,10 +1,11 @@
+import type { WorkflowTemplate } from "../shared/apiTypes";
 import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
 import { validateRoleMapReferences } from "../shared/workflowRoleMap";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap } from "./workflow";
 import { objectBody, requiredString, stringOr } from "./validate";
 
-export function listTemplates() {
+export function listTemplates(): WorkflowTemplate[] {
   return toApiRows(
     getRows(
       `SELECT *
@@ -12,7 +13,7 @@ export function listTemplates() {
        WHERE deleted_at IS NULL
        ORDER BY updated_at DESC, name ASC`
     )
-  );
+  ) as unknown as WorkflowTemplate[];
 }
 
 export function createTemplate(body: unknown) {
@@ -44,7 +45,7 @@ export function createTemplate(body: unknown) {
     [id, name, description, type, version, JSON.stringify(workflow), JSON.stringify(normalizedRoleMap), workflowHash]
   );
 
-  return toApiRow(getRow("SELECT * FROM workflow_templates WHERE id = ?", [id]));
+  return toApiRow(getRow("SELECT * FROM workflow_templates WHERE id = ?", [id])) as unknown as WorkflowTemplate | null;
 }
 
 export function deleteTemplate(templateId: string) {
@@ -63,7 +64,7 @@ export function deleteTemplate(templateId: string) {
   );
 
   return {
-    template: toApiRow(getRow("SELECT * FROM workflow_templates WHERE id = ?", [templateId]))
+    template: toApiRow(getRow("SELECT * FROM workflow_templates WHERE id = ?", [templateId])) as unknown as WorkflowTemplate | null
   };
 }
 
