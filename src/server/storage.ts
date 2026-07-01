@@ -1,7 +1,8 @@
 import { createReadStream, mkdirSync } from "node:fs";
 import { copyFile, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { dataRoot } from "./db";
+import { isPathInside } from "./paths";
 
 export interface StoredImage {
   imagePath: string;
@@ -79,8 +80,7 @@ export async function storeMaskImage(projectId: string, roundId: string, bytes: 
 
 export function safeFileStream(path: string) {
   const resolved = resolve(path);
-  const root = resolve(dataRoot);
-  if (!resolved.toLowerCase().startsWith(root.toLowerCase())) {
+  if (!isPathInside(resolved, dataRoot)) {
     throw new Error("File is outside the data directory");
   }
   return createReadStream(resolved);
@@ -164,9 +164,4 @@ export function readImageSize(bytes: Buffer): { width: number; height: number } 
   }
 
   return null;
-}
-
-function isPathInside(target: string, parent: string): boolean {
-  const pathFromParent = relative(resolve(parent), resolve(target));
-  return pathFromParent !== "" && !pathFromParent.startsWith("..") && !isAbsolute(pathFromParent);
 }

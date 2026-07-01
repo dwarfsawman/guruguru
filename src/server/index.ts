@@ -17,6 +17,7 @@ import {
   uploadImageToComfy
 } from "./comfy";
 import { deleteProjectStorage, ensureProjectStorage, readImageSize, safeFileStream, storeImage, storeMaskImage } from "./storage";
+import { isPathInside } from "./paths";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL, GITHUB_WEB_SAM_RELEASE_API_URL } from "../shared/constants";
 import { validateRoleMapReferences } from "../shared/workflowRoleMap";
@@ -1997,7 +1998,7 @@ function errorToJson(error: unknown) {
 async function serveStatic(res: ServerResponse, pathname: string) {
   const normalizedPath = pathname === "/" ? "/index.html" : pathname;
   const filePath = resolve(join(publicDir, normalizedPath));
-  if (!filePath.startsWith(publicDir) || !existsSync(filePath)) {
+  if (!isPathInside(filePath, publicDir) || !existsSync(filePath)) {
     const indexHtml = await readFile(join(publicDir, "index.html"), "utf8");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(indexHtml);
@@ -2007,7 +2008,7 @@ async function serveStatic(res: ServerResponse, pathname: string) {
 }
 
 function streamFile(res: ServerResponse, filePath: string) {
-  const stream = filePath.startsWith(resolve(dataRoot)) ? safeFileStream(filePath) : createReadStream(filePath);
+  const stream = isPathInside(filePath, dataRoot) ? safeFileStream(filePath) : createReadStream(filePath);
   stream.on("error", () => sendJson(res, 404, { error: "File was not found" }));
   res.writeHead(200, { "content-type": contentTypeFor(filePath) });
   stream.pipe(res);
