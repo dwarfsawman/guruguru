@@ -114,7 +114,7 @@ function patchImg2ImgLatentPath(
   }
 
   const imageConnection = [loadImageNodeId, 0];
-  const resizedImageConnection = [addImageScaleNode(workflow, imageConnection, request.width, request.height), 0];
+  const resizedImageConnection = [addImageScaleNode(workflow, imageConnection, request.width, request.height, "GURUGURU img2img Resize"), 0];
   setRolePath(workflow, roleMap.vae_encode_image_input, resizedImageConnection);
   setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], resizedImageConnection);
   setNodeInput(workflow, vaeEncodeNodeId, ["vae"], findVaeConnection(workflow));
@@ -153,13 +153,15 @@ function patchInpaintLatentPath(
   setNodeInput(workflow, loadMaskNodeId, ["channel"], GENERATED_MASK_CHANNEL);
 
   const imageConnection = [loadImageNodeId, 0];
+  const resizedImageConnection = resizeImageForInpaint(workflow, imageConnection, request);
   const baseMaskConnection = [loadMaskNodeId, 0];
+  const resizedMaskConnection = resizeMaskForInpaint(workflow, baseMaskConnection, request);
   const padding = Number.isFinite(inpaint.onlyMaskedPadding)
     ? Math.max(0, Math.trunc(inpaint.onlyMaskedPadding))
     : 32;
   const maskConnection = padding > 0
-    ? [addGrowMaskNode(workflow, baseMaskConnection, padding), 0]
-    : baseMaskConnection;
+    ? [addGrowMaskNode(workflow, resizedMaskConnection, padding), 0]
+    : resizedMaskConnection;
   const vaeConnection = findVaeConnection(workflow);
 
   const ksamplerNodeId =
@@ -179,7 +181,7 @@ function patchInpaintLatentPath(
       configureVaeEncodeForInpaintNode(
         workflow,
         findNodeIdByExactClass(workflow, "VAEEncodeForInpaint") ?? addVaeEncodeForInpaintNode(workflow, vaeConnection),
-        imageConnection,
+        resizedImageConnection,
         maskConnection,
         vaeConnection
       ),
@@ -192,7 +194,7 @@ function patchInpaintLatentPath(
       nodeIdFromRolePath(roleMap.vae_encode_image_input) ??
       findNodeIdByExactClass(workflow, "VAEEncode") ??
       addVaeEncodeNode(workflow, vaeConnection);
-    setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], imageConnection);
+    setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], resizedImageConnection);
     setNodeInput(workflow, vaeEncodeNodeId, ["vae"], vaeConnection);
     latentConnection = [addSetLatentNoiseMaskNode(workflow, [vaeEncodeNodeId, 0], maskConnection), 0];
     latentConnection = repeatLatentForBatchSize(workflow, roleMap, latentConnection, request.batchSize);
@@ -211,7 +213,7 @@ function patchInpaintLatentPath(
 
   setRolePath(workflow, roleMap.ksampler_latent_image_input, latentConnection);
   setNodeInput(workflow, ksamplerNodeId, ["latent_image"], latentConnection);
-  patchSaveImageForInpaintComposite(workflow, roleMap, imageConnection, maskConnection);
+  patchSaveImageForInpaintComposite(workflow, roleMap, resizedImageConnection, maskConnection);
 }
 
 function repeatLatentForBatchSize(
@@ -272,7 +274,33 @@ function addLoadImageNode(workflow: JsonObject, uploadedImageName: string): stri
   return nodeId;
 }
 
-function addImageScaleNode(workflow: JsonObject, imageConnection: unknown[], width: number, height: number): string {
+function resizeImageForInpaint(workflow: JsonObject, imageConnection: unknown[], request: GenerationRequest): unknown[] {
+  if (request.inpaint?.maskWidth === positiveInteger(request.width) && request.inpaint.maskHeight === positiveInteger(request.height)) {
+    return imageConnection;
+  }
+  return [addImageScaleNode(workflow, imageConnection, request.width, request.height, "GURUGURU Inpaint Resize"), 0];
+}
+
+function resizeMaskForInpaint(workflow: JsonObject, maskConnection: unknown[], request: GenerationRequest): unknown[] {
+  if (request.inpaint?.maskWidth === positiveInteger(request.width) && request.inpaint.maskHeight === positiveInteger(request.height)) {
+    return maskConnection;
+  }
+
+  const maskImageConnection = [addMaskToImageNode(workflow, maskConnection), 0];
+  const resizedMaskImageConnection = [
+    addImageScaleNode(workflow, maskImageConnection, request.width, request.height, "GURUGURU Inpaint Mask Resize"),
+    0
+  ];
+  return [addImageToMaskNode(workflow, resizedMaskImageConnection), 0];
+}
+
+function addImageScaleNode(
+  workflow: JsonObject,
+  imageConnection: unknown[],
+  width: number,
+  height: number,
+  title: string
+): string {
   const nodeId = nextNodeId(workflow);
   workflow[nodeId] = {
     inputs: {
@@ -284,7 +312,36 @@ function addImageScaleNode(workflow: JsonObject, imageConnection: unknown[], wid
     },
     class_type: "ImageScale",
     _meta: {
-      title: "GURUGURU img2img Resize"
+      title
+    }
+  };
+  return nodeId;
+}
+
+function addMaskToImageNode(workflow: JsonObject, maskConnection: unknown[]): string {
+  const nodeId = nextNodeId(workflow);
+  workflow[nodeId] = {
+    inputs: {
+      mask: maskConnection
+    },
+    class_type: "MaskToImage",
+    _meta: {
+      title: "GURUGURU Inpaint Mask Image"
+    }
+  };
+  return nodeId;
+}
+
+function addImageToMaskNode(workflow: JsonObject, imageConnection: unknown[]): string {
+  const nodeId = nextNodeId(workflow);
+  workflow[nodeId] = {
+    inputs: {
+      image: imageConnection,
+      channel: GENERATED_MASK_CHANNEL
+    },
+    class_type: "ImageToMask",
+    _meta: {
+      title: "GURUGURU Inpaint Scaled Mask"
     }
   };
   return nodeId;
@@ -402,8 +459,8 @@ function addEmptyLatentImageNode(workflow: JsonObject, width: number, height: nu
   const nodeId = nextNodeId(workflow);
   workflow[nodeId] = {
     inputs: {
-      width,
-      height,
+      width: positiveInteger(width),
+      height: positiveInteger(height),
       batch_size: Math.max(1, Math.trunc(batchSize))
     },
     class_type: "EmptyLatentImage",

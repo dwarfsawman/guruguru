@@ -764,6 +764,8 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       randomSeed();
     } else if (action === "swap-resolution") {
       swapResolution();
+    } else if (action === "scale-resolution") {
+      scaleResolution(target.dataset.scaleDirection === "down" ? -1 : 1);
     } else if (action === "use-parent") {
       const asset = findAsset(id);
       if (asset) {
@@ -1469,6 +1471,45 @@ function swapResolution() {
   height.value = width.value;
   width.value = nextWidth;
   captureGenerationDraft();
+}
+
+function scaleResolution(direction: -1 | 1) {
+  const widthInput = document.querySelector<HTMLInputElement>('input[name="width"]');
+  const heightInput = document.querySelector<HTMLInputElement>('input[name="height"]');
+  if (!widthInput || !heightInput) {
+    return;
+  }
+
+  const width = resolutionValue(widthInput, 1024);
+  const height = resolutionValue(heightInput, 1024);
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  const step = 64;
+  const latentStep = 8;
+  let nextWidth = width;
+  let nextHeight = height;
+  if (width <= height) {
+    nextWidth = Math.max(step, width + step * direction);
+    nextHeight = roundToStep((nextWidth * height) / width, latentStep);
+  } else {
+    nextHeight = Math.max(step, height + step * direction);
+    nextWidth = roundToStep((nextHeight * width) / height, latentStep);
+  }
+
+  widthInput.value = String(Math.max(latentStep, nextWidth));
+  heightInput.value = String(Math.max(latentStep, nextHeight));
+  captureGenerationDraft();
+}
+
+function resolutionValue(input: HTMLInputElement, fallback: number) {
+  const value = Number(input.value);
+  return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : fallback;
+}
+
+function roundToStep(value: number, step: number) {
+  return Math.max(step, Math.round(value / step) * step);
 }
 
 type RenderOptions = {
@@ -2534,6 +2575,10 @@ function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null)
           <button class="icon-button swap-button" data-action="swap-resolution" type="button" aria-label="幅と高さを入れ替え">${iconSwap()}</button>
           <label>高さ<input class="input-field center" name="height" type="number" step="64" value="${heightValue}" /></label>
         </div>
+        <div class="resolution-scale-row">
+          <button class="icon-button resolution-scale-button" data-action="scale-resolution" data-scale-direction="down" type="button" aria-label="縦横比を保って縮小" title="縦横比を保って縮小">${iconMinimize()}</button>
+          <button class="icon-button resolution-scale-button" data-action="scale-resolution" data-scale-direction="up" type="button" aria-label="縦横比を保って拡大" title="縦横比を保って拡大">${iconPlus()}</button>
+        </div>
 
         <label>シード
           <div class="seed-row">
@@ -3071,10 +3116,13 @@ function prepareGenerationFormForParent(asset: Asset, mode: string) {
   }
 
   const previousMode = (form.elements.namedItem("generationMode") as HTMLSelectElement | null)?.value ?? "txt2img";
+  const previousParentAssetId = (form.elements.namedItem("parentAssetId") as HTMLInputElement | null)?.value ?? "";
   const denoise = form.elements.namedItem("denoise") as HTMLInputElement | null;
   setFormValue(form, "parentAssetId", asset.id);
   setFormValue(form, "generationMode", mode);
-  applyAssetDimensionsToForm(form, asset);
+  if (previousParentAssetId !== asset.id) {
+    applyAssetDimensionsToForm(form, asset);
+  }
 
   if (denoise && requiresFullDenoise(previousMode) && Number(denoise.value) >= 1 && !requiresFullDenoise(mode)) {
     setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
