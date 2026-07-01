@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { ComfySettings } from "../shared/types";
@@ -238,17 +238,17 @@ export function setSetting(key: string, value: unknown) {
 
 export function runSql(sql: string, params: unknown[] = []) {
   const statement = db.prepare(sql);
-  return statement.run(...params);
+  return statement.run(...(params as SQLInputValue[]));
 }
 
 export function getRow<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | null {
   const statement = db.prepare(sql);
-  return (statement.get(...params) as T | undefined) ?? null;
+  return (statement.get(...(params as SQLInputValue[])) as T | undefined) ?? null;
 }
 
 export function getRows<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
   const statement = db.prepare(sql);
-  return statement.all(...params) as T[];
+  return statement.all(...(params as SQLInputValue[])) as T[];
 }
 
 export function toApiRow<T extends Record<string, unknown>>(row: T | null): Record<string, unknown> | null {

@@ -1,20 +1,10 @@
 /**
  * WorkflowTemplate / workflow import / template generation defaults 型。
  * `src/client/main.ts` から型定義だけを分離したもの。挙動変更なし。
- * `Json` は `src/shared/json.ts` の共有型を利用する。
+ * `WorkflowTemplate` はAPI境界の共有型として `src/shared/apiTypes.ts` に
+ * 移動済みで、ここでは既存のimportを壊さないよう再エクスポートする。
  */
-import type { Json } from "../shared/json";
-
-export interface WorkflowTemplate {
-  id: string;
-  name: string;
-  description: string;
-  type: string;
-  version: number;
-  workflowHash: string;
-  workflowJson: Json;
-  roleMap: Json;
-}
+export type { WorkflowTemplate } from "../shared/apiTypes";
 
 export interface WorkflowImportDraft {
   name: string;

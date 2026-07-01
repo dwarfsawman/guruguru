@@ -83,7 +83,7 @@ export function hasMaskData(draft: InpaintDraft | null | undefined) {
   return !!draft?.maskDataUrl && draft.maskDataUrl.startsWith("data:image/png;base64,");
 }
 
-export function hasActiveMaskData(draft: InpaintDraft | null | undefined) {
+export function hasActiveMaskData(draft: InpaintDraft | null | undefined): draft is InpaintDraft {
   return draft?.enabled === true && hasMaskData(draft);
 }
 

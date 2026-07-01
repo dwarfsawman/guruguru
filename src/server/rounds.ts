@@ -24,6 +24,7 @@ import {
 } from "../shared/generationMode";
 import { nodeIdFromRolePath } from "../shared/workflowRolePath";
 import type { GenerationMode, GenerationRequest, InpaintOptions, MaskedContent } from "../shared/types";
+import type { Asset, Round } from "../shared/apiTypes";
 
 type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
 type GenerationJobStatus = "pending" | "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled";
@@ -58,7 +59,7 @@ const terminalRoundStatuses = new Set(["completed", "failed", "interrupted"]);
 const activeRoundMonitors = new Map<string, { socket: WebSocket; clientId: string }>();
 const roundCollectionLocks = new Map<string, Promise<CollectRoundResult>>();
 
-function getRoundForApi(roundId: string) {
+function getRoundForApi(roundId: string): Round | null {
   return toApiRow(
     getRow(
       `SELECT r.*,
@@ -69,7 +70,7 @@ function getRoundForApi(roundId: string) {
        WHERE r.id = ?`,
       [roundId]
     )
-  );
+  ) as unknown as Round | null;
 }
 
 export async function createGenerationRound(projectId: string, requestBody: GenerationRequest) {
@@ -194,7 +195,7 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
     ensureRoundMonitor(roundId);
 
     return {
-      round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])),
+      round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])) as unknown as Round | null,
       promptId: firstPromptId
     };
   } catch (error) {
@@ -222,8 +223,9 @@ async function prepareInpaintRequest(
   rawRequest: GenerationRequest,
   normalizedRequest: GenerationRequest
 ): Promise<GenerationRequest> {
-  const rawInpaint = isJsonObject((rawRequest as Record<string, unknown>).inpaint)
-    ? (rawRequest as Record<string, unknown>).inpaint as Record<string, unknown>
+  const rawRequestRecord = rawRequest as unknown as Record<string, unknown>;
+  const rawInpaint = isJsonObject(rawRequestRecord.inpaint)
+    ? rawRequestRecord.inpaint as Record<string, unknown>
     : null;
   const hasMaskDataUrl = typeof rawInpaint?.maskDataUrl === "string" && rawInpaint.maskDataUrl.trim() !== "";
 
@@ -343,7 +345,7 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
   const roleMap = parseStoredJsonObject(template.role_map_json);
   const workflowForOutputSelection =
     parseStoredJsonObject(round.patched_workflow_json) ?? parseStoredJsonObject(template.workflow_json);
-  const createdAssets: Record<string, unknown>[] = [];
+  const createdAssets: Asset[] = [];
 
   for (const job of jobs) {
     if (!job.prompt_id || job.status === "cancelled" || job.status === "failed") {
@@ -446,7 +448,7 @@ async function collectLegacyRound(round: Record<string, unknown>): Promise<Colle
   }
 
   const request = JSON.parse(String(round.request_json)) as GenerationRequest;
-  const createdAssets: Record<string, unknown>[] = [];
+  const createdAssets: Asset[] = [];
 
   for (const image of images) {
     const asset = await storeGeneratedAsset({
@@ -687,7 +689,7 @@ export async function interruptRound(roundId: string) {
     .filter((promptId): promptId is string => typeof promptId === "string" && promptId.length > 0);
   if (activeJobs.length === 0) {
     return {
-      round: toApiRow(updateRoundStatusFromJobs(roundId)),
+      round: toApiRow(updateRoundStatusFromJobs(roundId)) as unknown as Round | null,
       interrupted: false,
       deletedPromptIds: []
     };
@@ -743,7 +745,7 @@ export async function interruptRound(roundId: string) {
   const updatedRound = updateRoundStatusFromJobs(roundId);
 
   return {
-    round: toApiRow(updatedRound),
+    round: toApiRow(updatedRound) as unknown as Round | null,
     interrupted,
     deletedPromptIds: activePromptIds,
     queueError,
@@ -776,7 +778,7 @@ async function interruptLegacyRound(round: Record<string, unknown>) {
     [round.id]
   );
   return {
-    round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [round.id])),
+    round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [round.id])) as unknown as Round | null,
     interrupted,
     deletedPromptIds: promptId ? [promptId] : [],
     deleteError,
