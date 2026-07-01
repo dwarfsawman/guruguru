@@ -455,12 +455,6 @@ function bindEvents() {
       return;
     }
 
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
-      event.preventDefault();
-      void selectAllActiveRound();
-      return;
-    }
-
     if (event.key === "Escape") {
       if (state.deletePreviewRoundId) {
         state.deletePreviewRoundId = null;
@@ -473,6 +467,16 @@ function bindEvents() {
         state.sidebarOpen = false;
         render();
       }
+      return;
+    }
+
+    if (isTextEntryTarget(event.target)) {
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      void selectAllActiveRound();
       return;
     }
 
@@ -614,6 +618,16 @@ function clearPendingIterationDotSelect() {
   }
   window.clearTimeout(pendingIterationDotSelect.timer);
   pendingIterationDotSelect = null;
+}
+
+function isTextEntryTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+    return true;
+  }
+  return target.isContentEditable || !!target.closest("[contenteditable=''], [contenteditable='true']");
 }
 
 function previewRoundDeletion(roundId: string) {
