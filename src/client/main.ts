@@ -1,4 +1,3 @@
-import mermaid from "mermaid";
 import {
   defaultDenoiseForMode,
   normalizeDenoiseForMode,
@@ -6,8 +5,6 @@ import {
   requiresFullDenoise,
   requiresParentAsset
 } from "../shared/generationMode";
-import { createWorkflowMermaidDiagram, type WorkflowDiagram, type WorkflowDiagramStatus } from "../shared/workflowDiagram";
-import { inferRoleMap } from "../shared/workflowRoleMap";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { InpaintArea, InpaintOptions, MaskedContent } from "../shared/types";
 import {
@@ -39,8 +36,26 @@ import {
 } from "./icons";
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
 import { escapeAttr, escapeHtml, formatCssNumber, formatDate, formatNumber, formatSliderValue } from "./format";
-import { type Json, isJsonObject, parseJsonObjectText, pickJsonObject } from "./json";
+import { type Json } from "./json";
 import { api } from "./api";
+import type { WorkflowImportDraft, WorkflowTemplate } from "./workflowTypes";
+import {
+  buildTemplateExportPayload,
+  defaultWorkflowImportDraft,
+  parseWorkflowFileContent,
+  workflowExportFilename
+} from "./workflowImport";
+import { defaultModeForTemplate, templateGenerationDefaults } from "./workflowDefaults";
+import {
+  renderModelReadout,
+  renderTemplateOption,
+  renderTemplatePanel,
+  renderWorkflowDiagramCanvases,
+  renderWorkflowDiagramModal,
+  renderWorkflowImportModal,
+  renderWorkflowImportPanel,
+  renderWorkflowImportPreview
+} from "./workflowUi";
 import type {
   WebSamBox,
   WebSamModelStatus,
@@ -80,25 +95,6 @@ interface ProjectSummary {
   assetCount: number;
   defaultTemplateId?: string | null;
   representativeThumbnailUrl?: string;
-}
-
-interface WorkflowTemplate {
-  id: string;
-  name: string;
-  description: string;
-  type: string;
-  version: number;
-  workflowHash: string;
-  workflowJson: Json;
-  roleMap: Json;
-}
-
-interface WorkflowImportDraft {
-  name: string;
-  description: string;
-  type: string;
-  workflowJson: string;
-  roleMap: string;
 }
 
 interface Round {
@@ -273,29 +269,6 @@ interface ScrollPosition {
   top: number;
 }
 
-interface TemplateGenerationDefaults {
-  prompt?: string;
-  negativePrompt?: string;
-  seed?: number;
-  batchSize?: number;
-  steps?: number;
-  cfg?: number;
-  sampler?: string;
-  scheduler?: string;
-  denoise?: number;
-  width?: number;
-  height?: number;
-  model: TemplateModelDefaults;
-}
-
-interface TemplateModelDefaults {
-  checkpoint?: string;
-  diffusionModel?: string;
-  textEncoders: string[];
-  vae?: string;
-  loras: string[];
-}
-
 const generationDraftFields = [
   "templateId",
   "img2imgTemplateId",
@@ -335,54 +308,6 @@ let webSamRequestId = 0;
 let latestWebSamLoadRequestId = 0;
 let latestWebSamEncodeRequestId = 0;
 let latestWebSamDecodeRequestId = 0;
-let workflowDiagramRenderRunId = 0;
-
-const defaultWorkflowImportRoleMap = `{
-  "positive_prompt_node": "6",
-  "negative_prompt_node": "7",
-  "ksampler_node": "3",
-  "seed_input": "3.inputs.seed",
-  "cfg_input": "3.inputs.cfg",
-  "steps_input": "3.inputs.steps",
-  "denoise_input": "3.inputs.denoise",
-  "ksampler_latent_image_input": "3.inputs.latent_image",
-  "batch_size_input": "5.inputs.batch_size",
-  "load_image_node": "12",
-  "load_image_input": "12.inputs.image",
-  "vae_encode_node": "13",
-  "vae_encode_image_input": "13.inputs.pixels",
-  "save_image_node": "9"
-}`;
-
-mermaid.initialize({
-  startOnLoad: false,
-  securityLevel: "strict",
-  theme: "dark",
-  flowchart: {
-    curve: "basis",
-    htmlLabels: false,
-    nodeSpacing: 42,
-    rankSpacing: 60
-  },
-  themeVariables: {
-    background: "#12121f",
-    primaryColor: "#171729",
-    primaryTextColor: "#f4f4f7",
-    primaryBorderColor: "#4b5563",
-    lineColor: "#8b8ba8",
-    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
-  }
-});
-
-function defaultWorkflowImportDraft(): WorkflowImportDraft {
-  return {
-    name: "",
-    description: "",
-    type: "txt2img",
-    workflowJson: "{}",
-    roleMap: defaultWorkflowImportRoleMap
-  };
-}
 
 const state: {
   settings: ComfySettings | null;
@@ -1325,47 +1250,29 @@ async function loadWorkflowFile(input: HTMLInputElement) {
   }
 
   const text = await file.text();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    state.message = "workflow JSONファイルを読み込めませんでした。JSON形式を確認してください。";
+  const parsed = parseWorkflowFileContent(text);
+  if (!parsed.ok) {
+    state.message = parsed.error;
     render();
     return;
   }
 
-  if (!isJsonObject(parsed)) {
-    state.message = "workflow JSONファイルのルートはJSON objectである必要があります。";
-    render();
-    return;
-  }
-
-  const workflowJson = pickJsonObject(parsed, "workflowJson") ?? pickJsonObject(parsed, "workflow_json") ?? parsed;
-  const importedRoleMap =
-    pickJsonObject(parsed, "roleMap") ??
-    pickJsonObject(parsed, "role_map") ??
-    pickJsonObject(parsed, "role_map_json");
-  const roleMap =
-    importedRoleMap ??
-    inferRoleMap(workflowJson);
-
+  const { workflowJson, roleMap, name, description, type } = parsed.result;
   setFormValue(form, "workflowJson", JSON.stringify(workflowJson, null, 2));
   if (Object.keys(roleMap).length > 0) {
     setFormValue(form, "roleMap", JSON.stringify(roleMap, null, 2));
   }
-  state.message = importedRoleMap
-    ? "workflow JSONとrole mapを読み込みました。"
-    : "workflow JSONを読み込み、role mapを自動設定しました。必要に応じて内容を確認してください。";
-  if (typeof parsed.name === "string") {
-    setFormValue(form, "name", parsed.name);
+  state.message = parsed.message;
+  if (name !== undefined) {
+    setFormValue(form, "name", name);
   } else if (!((form.elements.namedItem("name") as HTMLInputElement | null)?.value)) {
     setFormValue(form, "name", file.name.replace(/\.json$/i, ""));
   }
-  if (typeof parsed.description === "string") {
-    setFormValue(form, "description", parsed.description);
+  if (description !== undefined) {
+    setFormValue(form, "description", description);
   }
-  if (typeof parsed.type === "string") {
-    setFormValue(form, "type", parsed.type);
+  if (type !== undefined) {
+    setFormValue(form, "type", type);
   }
   captureWorkflowImportDraft(form);
   render();
@@ -1450,19 +1357,10 @@ function exportWorkflowTemplate(target: HTMLElement, kind: "template" | "workflo
   }
 
   if (kind === "workflow") {
-    downloadJson(`${slugify(template.name)}.workflow.json`, template.workflowJson);
+    downloadJson(workflowExportFilename(template.name, "workflow"), template.workflowJson);
     state.message = `WorkflowTemplate "${template.name}" のraw workflow JSONを書き出しました。`;
   } else {
-    downloadJson(`${slugify(template.name)}.guruguru-template.json`, {
-      guruguruTemplateVersion: 1,
-      exportedAt: new Date().toISOString(),
-      name: template.name,
-      description: template.description,
-      type: template.type,
-      version: template.version,
-      workflowJson: template.workflowJson,
-      roleMap: template.roleMap
-    });
+    downloadJson(workflowExportFilename(template.name, "template"), buildTemplateExportPayload(template));
     state.message = `WorkflowTemplate "${template.name}" をGURUGURU template形式で書き出しました。`;
   }
   render();
@@ -1493,11 +1391,6 @@ function fileToDataUrl(file: File) {
     reader.addEventListener("error", () => reject(reader.error ?? new Error("画像ファイルを読み込めませんでした。")));
     reader.readAsDataURL(file);
   });
-}
-
-function slugify(value: string) {
-  const slug = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return slug || "workflow-template";
 }
 
 async function createProject() {
@@ -1911,8 +1804,8 @@ function render(options: RenderOptions = {}) {
     ${state.message ? `<pre class="message"><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button>${escapeHtml(state.message)}</pre>` : ""}
     ${state.detail ? renderProjectDetail(state.detail) : renderHome()}
     ${renderAssetModal()}
-    ${renderWorkflowImportModal()}
-    ${renderWorkflowDiagramModal()}
+    ${renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft)}
+    ${renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId)}
   `;
   restoreIterationScrollPosition();
   if (preserveIterationScroll) {
@@ -1922,40 +1815,6 @@ function render(options: RenderOptions = {}) {
   }
   syncAssetModalMaskCanvas();
   void renderWorkflowDiagramCanvases();
-}
-
-async function renderWorkflowDiagramCanvases() {
-  const targets = Array.from(document.querySelectorAll<HTMLElement>("[data-mermaid-diagram]"));
-  if (targets.length === 0) {
-    return;
-  }
-
-  const runId = ++workflowDiagramRenderRunId;
-  for (const [index, target] of targets.entries()) {
-    const source = target.querySelector<HTMLElement>(".workflow-diagram-source")?.textContent ?? "";
-    if (!source.trim()) {
-      continue;
-    }
-    target.dataset.state = "loading";
-    try {
-      const result = await mermaid.render(`workflow-diagram-${runId}-${index}`, source);
-      if (runId !== workflowDiagramRenderRunId || !target.isConnected) {
-        return;
-      }
-      target.innerHTML = result.svg;
-      target.dataset.state = "ready";
-    } catch (error) {
-      if (runId !== workflowDiagramRenderRunId || !target.isConnected) {
-        return;
-      }
-      target.dataset.state = "error";
-      target.innerHTML = `
-        <div class="workflow-diagram-error">Mermaid diagramを描画できませんでした。</div>
-        <pre class="workflow-diagram-fallback">${escapeHtml(error instanceof Error ? error.message : String(error))}</pre>
-        <pre class="workflow-diagram-fallback">${escapeHtml(source)}</pre>
-      `;
-    }
-  }
 }
 
 function captureIterationScrollPosition() {
@@ -2816,7 +2675,7 @@ function renderHome() {
       <div class="home-side">
         ${renderSettingsPanel()}
         ${renderWorkflowImportPanel()}
-        ${renderTemplatePanel()}
+        ${renderTemplatePanel(state.templates)}
       </div>
     </main>
   `;
@@ -2864,179 +2723,6 @@ function renderSettingsPanel() {
       </form>
     </section>
   `;
-}
-
-function renderWorkflowImportPanel() {
-  return `
-    <section class="panel workflow-import-collapsed">
-      <button class="button-primary workflow-import-trigger" type="button" data-action="open-template-import">
-        ${iconPlus()}テンプレート登録
-      </button>
-    </section>
-  `;
-}
-
-function renderTemplatePanel() {
-  return `
-    <section class="panel">
-      <div class="panel-heading">
-        <div>
-          <p class="section-kicker">Workflow</p>
-          <h2>WorkflowTemplate</h2>
-        </div>
-      </div>
-      <div class="template-list">
-        ${state.templates.map((template) => `
-          <article class="template-row">
-            <div class="template-row-main">
-              <strong>${escapeHtml(template.name)} v${template.version}</strong>
-              <span>${escapeHtml(template.type)}</span>
-              ${template.description ? `<small>${escapeHtml(template.description)}</small>` : ""}
-            </div>
-            <div class="template-row-actions">
-              <button class="button-secondary compact template-action-button" type="button" data-action="open-template-diagram" data-template-id="${escapeAttr(template.id)}" aria-label="diagram" title="diagram">${iconDiagram()}</button>
-              <details class="template-export-dropdown">
-              <summary class="button-secondary compact template-action-button template-export-trigger" style="display:grid;place-items:center;line-height:0;" aria-label="export" title="export">${iconDownload(true)}</summary>
-                <div class="template-export-menu">
-                  <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${escapeAttr(template.id)}">${iconDownload()}raw export</button>
-                  <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${escapeAttr(template.id)}">${iconDownload()}template export</button>
-                </div>
-              </details>
-              <button class="button-danger compact template-action-button" type="button" data-action="delete-template" data-template-id="${escapeAttr(template.id)}" aria-label="削除" title="削除">${iconTrash()}</button>
-            </div>
-          </article>
-        `).join("") || `<div class="empty">登録済みテンプレートはありません。</div>`}
-      </div>
-    </section>
-  `;
-}
-
-function renderWorkflowImportModal() {
-  if (!state.workflowImportModalOpen) {
-    return "";
-  }
-  const draft = state.workflowImportDraft;
-  return `
-    <div class="workflow-modal" role="dialog" aria-modal="true" aria-label="テンプレート登録">
-      <section class="workflow-dialog workflow-import-dialog">
-        <header class="workflow-dialog-header">
-          <div>
-            <p class="section-kicker">Workflow Import</p>
-            <h2>テンプレート登録</h2>
-          </div>
-          <button class="icon-button" type="button" data-action="close-template-import" aria-label="閉じる" title="閉じる">${iconClose()}</button>
-        </header>
-        <form id="template-form" class="workflow-import-modal-form">
-          <div class="workflow-import-fields form-stack">
-            <label>JSONファイル
-              <input data-file-target="workflowJson" type="file" accept=".json,application/json" />
-            </label>
-            <label>名前<input name="name" placeholder="txt2img_16grid" value="${escapeAttr(draft.name)}" /></label>
-            <label>説明<input name="description" value="${escapeAttr(draft.description)}" /></label>
-            <label>種別
-              <select name="type">
-                ${renderWorkflowTypeOptions(draft.type)}
-              </select>
-            </label>
-            <label>API形式workflow JSON<textarea class="workflow-json-textarea" name="workflowJson" rows="12" spellcheck="false">${escapeHtml(draft.workflowJson)}</textarea></label>
-            <label>role map<textarea class="role-map-textarea" name="roleMap" rows="18" spellcheck="false">${escapeHtml(draft.roleMap)}</textarea></label>
-          </div>
-          <aside class="workflow-diagram-preview">
-            <div class="workflow-diagram-heading">
-              <div>
-                <p class="section-kicker">Preview</p>
-                <h3>diagram</h3>
-              </div>
-            </div>
-            <div class="workflow-import-preview-slot">
-              ${renderWorkflowImportPreview()}
-            </div>
-          </aside>
-          <div class="workflow-import-modal-actions">
-            <button class="button-secondary" type="button" data-action="close-template-import">${iconClose()}閉じる</button>
-            <button class="button-primary" type="button" data-action="create-template">${iconPlus()}テンプレート登録</button>
-          </div>
-        </form>
-      </section>
-    </div>
-  `;
-}
-
-function renderWorkflowDiagramModal() {
-  const templateId = state.activeWorkflowDiagramTemplateId;
-  if (!templateId) {
-    return "";
-  }
-  const template = state.templates.find((item) => item.id === templateId) ?? null;
-  if (!template) {
-    return "";
-  }
-  const diagram = createWorkflowMermaidDiagram(template.workflowJson, template.roleMap);
-  return `
-    <div class="workflow-modal" role="dialog" aria-modal="true" aria-label="${escapeAttr(template.name)} diagram">
-      <section class="workflow-dialog workflow-diagram-dialog">
-        <header class="workflow-dialog-header">
-          <div>
-            <p class="section-kicker">Workflow Diagram</p>
-            <h2>${escapeHtml(template.name)} v${template.version}</h2>
-          </div>
-          <button class="icon-button" type="button" data-action="close-template-diagram" aria-label="閉じる" title="閉じる">${iconClose()}</button>
-        </header>
-        ${renderWorkflowDiagramBlock(diagram)}
-      </section>
-    </div>
-  `;
-}
-
-function renderWorkflowImportPreview() {
-  const workflowResult = parseJsonObjectText(state.workflowImportDraft.workflowJson, "API形式workflow JSON");
-  if (!workflowResult.value) {
-    return renderWorkflowDiagramNotice("invalid", workflowResult.error ?? "workflow JSONを入力してください。");
-  }
-  const roleMapResult = parseJsonObjectText(state.workflowImportDraft.roleMap, "role map", true);
-  const diagram = createWorkflowMermaidDiagram(workflowResult.value, roleMapResult.value ?? {});
-  const warning = roleMapResult.error ? `<div class="workflow-diagram-warning">${escapeHtml(roleMapResult.error)}</div>` : "";
-  return `${warning}${renderWorkflowDiagramBlock(diagram)}`;
-}
-
-function renderWorkflowDiagramBlock(diagram: WorkflowDiagram) {
-  if (diagram.status !== "ready") {
-    return renderWorkflowDiagramNotice(diagram.status, diagram.message);
-  }
-  return `
-    <div class="workflow-diagram-block">
-      <div class="workflow-diagram-meta">
-        <span>${diagram.nodeCount} nodes</span>
-        <span>${diagram.edgeCount} edges</span>
-      </div>
-      <div class="workflow-diagram-canvas" data-mermaid-diagram>
-        <pre class="workflow-diagram-source">${escapeHtml(diagram.source)}</pre>
-        <div class="workflow-diagram-loading">diagramを描画中...</div>
-      </div>
-    </div>
-  `;
-}
-
-function renderWorkflowDiagramNotice(status: WorkflowDiagramStatus, message: string) {
-  return `
-    <div class="workflow-diagram-notice ${status}">
-      <strong>${status === "empty" ? "Empty workflow" : "Preview unavailable"}</strong>
-      <span>${escapeHtml(message)}</span>
-    </div>
-  `;
-}
-
-function renderWorkflowTypeOptions(selectedType: string) {
-  const types = [
-    ["txt2img", "txt2img"],
-    ["img2img", "img2img"],
-    ["ipadapter", "IP-Adapter"],
-    ["controlnet", "ControlNet"],
-    ["hybrid", "Hybrid"]
-  ];
-  return types
-    .map(([value, label]) => `<option value="${value}" ${selectedType === value ? "selected" : ""}>${label}</option>`)
-    .join("");
 }
 
 function renderProjectDetail(detail: ProjectDetail) {
@@ -4306,41 +3992,6 @@ function renderOptions(options: string[], selectedValue: string) {
     .join("");
 }
 
-function renderTemplateOption(template: WorkflowTemplate, selectedTemplateId: string) {
-  const selected = selectedTemplateId === template.id ? "selected" : "";
-  return `<option value="${escapeAttr(template.id)}" ${selected}>${escapeHtml(template.name)} v${template.version} (${escapeHtml(template.type)})</option>`;
-}
-
-function renderModelReadout(model: TemplateModelDefaults) {
-  const rows: Array<[string, string]> = [];
-  if (model.checkpoint) {
-    rows.push(["checkpoint", model.checkpoint]);
-  }
-  if (model.diffusionModel) {
-    rows.push(["diffusion model", model.diffusionModel]);
-  }
-  model.textEncoders.forEach((value, index) => rows.push([`text encoder ${index + 1}`, value]));
-  if (model.vae) {
-    rows.push(["VAE", model.vae]);
-  }
-  model.loras.forEach((value, index) => rows.push([`LoRA ${index + 1}`, value]));
-
-  if (rows.length === 0) {
-    rows.push(["workflow", "-"]);
-  }
-
-  return `
-    <div class="model-readout">
-      ${rows.map(([label, value]) => `
-        <div class="model-readout-row">
-          <span>${escapeHtml(label)}</span>
-          <strong>${escapeHtml(value)}</strong>
-        </div>
-      `).join("")}
-    </div>
-  `;
-}
-
 function updateDenoiseControlForMode(mode: string) {
   const form = document.querySelector<HTMLFormElement>("#generation-form");
   const control = form?.elements.namedItem("denoise") as HTMLInputElement | null;
@@ -4357,156 +4008,8 @@ function updateDenoiseControlForMode(mode: string) {
   setFormValue(form, "denoise", String(value));
 }
 
-function defaultModeForTemplate(template: WorkflowTemplate | null) {
-  if (template && ["txt2img", "img2img", "ipadapter", "controlnet"].includes(template.type)) {
-    return template.type;
-  }
-  return "txt2img";
-}
-
 function generationModeLabel(mode: string) {
   return mode === "manual_upload" ? "source" : mode;
-}
-
-function templateGenerationDefaults(template: WorkflowTemplate | null): TemplateGenerationDefaults {
-  if (!template) {
-    return { model: emptyModelDefaults() };
-  }
-
-  const workflow = template.workflowJson;
-  const roleMap = template.roleMap;
-  return {
-    prompt: stringFromNodeInput(workflow, roleMap.positive_prompt_node, ["text", "prompt", "positive"]),
-    negativePrompt: stringFromNodeInput(workflow, roleMap.negative_prompt_node, ["text", "prompt", "negative"]),
-    seed: numberFromPath(workflow, roleMap.seed_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["seed"]),
-    batchSize:
-      numberFromPath(workflow, roleMap.batch_size_input ?? roleMap.repeat_latent_batch_amount_input) ??
-      numberFromNodeInput(workflow, roleMap.empty_latent_node, ["batch_size"]) ??
-      numberFromNodeInput(workflow, roleMap.repeat_latent_batch_node, ["amount"]),
-    steps: numberFromPath(workflow, roleMap.steps_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["steps"]),
-    cfg: numberFromPath(workflow, roleMap.cfg_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["cfg"]),
-    sampler:
-      stringFromPath(workflow, roleMap.sampler_input ?? roleMap.sampler_name_input) ??
-      stringFromNodeInput(workflow, roleMap.ksampler_node, ["sampler_name", "sampler"]),
-    scheduler:
-      stringFromPath(workflow, roleMap.scheduler_input) ??
-      stringFromNodeInput(workflow, roleMap.ksampler_node, ["scheduler"]),
-    denoise: numberFromPath(workflow, roleMap.denoise_input) ?? numberFromNodeInput(workflow, roleMap.ksampler_node, ["denoise"]),
-    width: numberFromPath(workflow, roleMap.width_input) ?? numberFromNodeInput(workflow, roleMap.empty_latent_node, ["width"]),
-    height: numberFromPath(workflow, roleMap.height_input) ?? numberFromNodeInput(workflow, roleMap.empty_latent_node, ["height"]),
-    model: modelDefaultsFromWorkflow(workflow)
-  };
-}
-
-function emptyModelDefaults(): TemplateModelDefaults {
-  return {
-    textEncoders: [],
-    loras: []
-  };
-}
-
-function modelDefaultsFromWorkflow(workflow: Json): TemplateModelDefaults {
-  const model = emptyModelDefaults();
-
-  for (const rawNode of Object.values(workflow)) {
-    if (!isJsonObject(rawNode) || !isJsonObject(rawNode.inputs)) {
-      continue;
-    }
-
-    const classType = typeof rawNode.class_type === "string" ? rawNode.class_type : "";
-    const inputs = rawNode.inputs;
-
-    model.checkpoint ??= firstStringInput(inputs, ["ckpt_name", "checkpoint_name"]);
-    model.diffusionModel ??= firstStringInput(inputs, ["unet_name", "diffusion_model_name", "model_name"]);
-
-    if (classType.includes("CLIP") || hasAnyInput(inputs, ["clip_name", "clip_name1", "clip_name2", "clip_name3"])) {
-      appendUnique(model.textEncoders, firstStringInput(inputs, ["clip_name"]));
-      appendUnique(model.textEncoders, firstStringInput(inputs, ["clip_name1"]));
-      appendUnique(model.textEncoders, firstStringInput(inputs, ["clip_name2"]));
-      appendUnique(model.textEncoders, firstStringInput(inputs, ["clip_name3"]));
-    }
-
-    if (classType.includes("VAE") || "vae_name" in inputs) {
-      model.vae ??= firstStringInput(inputs, ["vae_name"]);
-    }
-
-    appendUnique(model.loras, firstStringInput(inputs, ["lora_name"]));
-  }
-
-  return model;
-}
-
-function firstStringInput(inputs: Json, names: string[]) {
-  for (const name of names) {
-    const value = inputs[name];
-    if (typeof value === "string" && value.trim() !== "") {
-      return value;
-    }
-  }
-  return undefined;
-}
-
-function hasAnyInput(inputs: Json, names: string[]) {
-  return names.some((name) => name in inputs);
-}
-
-function appendUnique(values: string[], value: string | undefined) {
-  if (value && !values.includes(value)) {
-    values.push(value);
-  }
-}
-
-function stringFromPath(source: Json, rawPath: unknown) {
-  const value = valueFromPath(source, rawPath);
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-function numberFromPath(source: Json, rawPath: unknown) {
-  const value = valueFromPath(source, rawPath);
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function stringFromNodeInput(source: Json, rawNodeId: unknown, inputNames: string[]) {
-  const value = valueFromNodeInput(source, rawNodeId, inputNames);
-  return typeof value === "string" && value !== "" ? value : undefined;
-}
-
-function numberFromNodeInput(source: Json, rawNodeId: unknown, inputNames: string[]) {
-  const value = valueFromNodeInput(source, rawNodeId, inputNames);
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function valueFromNodeInput(source: Json, rawNodeId: unknown, inputNames: string[]) {
-  if (typeof rawNodeId !== "string") {
-    return undefined;
-  }
-
-  const node = source[rawNodeId];
-  if (!isJsonObject(node) || !isJsonObject(node.inputs)) {
-    return undefined;
-  }
-
-  for (const inputName of inputNames) {
-    if (inputName in node.inputs) {
-      return node.inputs[inputName];
-    }
-  }
-  return undefined;
-}
-
-function valueFromPath(source: Json, rawPath: unknown) {
-  if (typeof rawPath !== "string" || rawPath.trim() === "") {
-    return undefined;
-  }
-
-  let cursor: unknown = source;
-  for (const part of rawPath.split(".").filter(Boolean)) {
-    if (!isJsonObject(cursor) || !(part in cursor)) {
-      return undefined;
-    }
-    cursor = cursor[part];
-  }
-  return cursor;
 }
 
 function renderAssetModal() {
@@ -4960,7 +4463,7 @@ function refreshWorkflowImportPreview() {
   if (!preview) {
     return;
   }
-  preview.innerHTML = renderWorkflowImportPreview();
+  preview.innerHTML = renderWorkflowImportPreview(state.workflowImportDraft);
   void renderWorkflowDiagramCanvases();
 }
 
