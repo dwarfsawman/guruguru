@@ -8,7 +8,7 @@ export interface WorkflowDiagram {
   edgeCount: number;
 }
 
-type JsonObject = Record<string, unknown>;
+import { type Json as JsonObject, isJsonObject } from "./json";
 
 interface DiagramNode {
   id: string;
@@ -197,10 +197,6 @@ function invalidDiagram(message: string): WorkflowDiagram {
 
 function placeholderSource(label: string) {
   return `flowchart LR\n  empty["${escapeMermaidLabel(label)}"]`;
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function isNumericLike(value: unknown) {

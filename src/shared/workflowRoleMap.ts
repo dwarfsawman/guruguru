@@ -1,4 +1,4 @@
-type JsonObject = Record<string, unknown>;
+import { type Json as JsonObject, isJsonObject } from "./json";
 
 interface WorkflowNode {
   id: string;
@@ -199,8 +199,4 @@ function compareNodeIds(left: string, right: string): number {
     return leftNumber - rightNumber;
   }
   return left.localeCompare(right);
-}
-
-function isJsonObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
