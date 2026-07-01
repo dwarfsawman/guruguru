@@ -19,6 +19,7 @@ import {
 import { deleteProjectStorage, ensureProjectStorage, readImageSize, safeFileStream, storeImage, storeMaskImage } from "./storage";
 import { isPathInside } from "./paths";
 import { HttpError, readJson, sendJson } from "./http";
+import { isJsonObject, nonEmptyStringOr, numberOr, objectBody, positiveIntegerOr, requiredString, stringOrNull, stringOr } from "./validate";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL, GITHUB_WEB_SAM_RELEASE_API_URL } from "../shared/constants";
 import {
@@ -1815,53 +1816,6 @@ function parseJsonInput(value: unknown, name: string): unknown {
     return value;
   }
   throw new HttpError(400, `${name} is required`);
-}
-
-function objectBody(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new HttpError(400, "Request body must be a JSON object");
-  }
-  return value as Record<string, unknown>;
-}
-
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new HttpError(400, `${name} is required`);
-  }
-  return value.trim();
-}
-
-function stringOr(value: unknown, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
-}
-
-function nonEmptyStringOr(value: unknown, fallback: string): string {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim().replace(/\/+$/, "");
-  }
-  return fallback.trim() || DEFAULT_WEB_SAM_MODEL_BASE_URL;
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function numberOr(value: unknown, fallback: number): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) {
-    return Number(value);
-  }
-  return fallback;
-}
-
-function positiveIntegerOr(value: unknown, fallback: number): number {
-  return Math.max(1, Math.trunc(numberOr(value, fallback)));
 }
 
 function getSettingOrDefault(): ComfySettings {
