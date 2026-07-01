@@ -693,10 +693,64 @@ h3 {
 }
 
 .template-row-actions {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.template-action-button {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  padding: 0;
+}
+
+.template-action-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.template-export-dropdown {
+  position: relative;
+}
+
+.template-export-dropdown summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.template-export-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+
+.template-export-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  display: grid;
+  min-width: 190px;
+  gap: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #171729;
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+
+.template-export-dropdown:not([open]) .template-export-menu {
+  display: none;
+}
+
+.template-export-menu .button-secondary {
+  justify-content: flex-start;
 }
 
 .workflow-toolbar,
@@ -1506,6 +1560,7 @@ input[type="range"]::-webkit-slider-thumb {
 .workflow-dialog {
   position: relative;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   width: min(1180px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
@@ -1534,11 +1589,13 @@ input[type="range"]::-webkit-slider-thumb {
 
 .workflow-import-dialog {
   width: min(1280px, calc(100vw - 48px));
+  height: min(920px, calc(100vh - 48px));
 }
 
 .workflow-import-modal-form {
   display: grid;
   grid-template-columns: minmax(320px, 0.9fr) minmax(380px, 1.1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 16px;
   min-height: 0;
   overflow: hidden;
@@ -1546,14 +1603,23 @@ input[type="range"]::-webkit-slider-thumb {
 
 .workflow-import-fields {
   min-height: 0;
+  height: 100%;
   overflow: auto;
-  padding-right: 4px;
+  padding-right: 8px;
 }
 
 .workflow-import-fields textarea {
   min-height: 180px;
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   font-size: 12px;
+}
+
+.workflow-import-fields .workflow-json-textarea {
+  min-height: 260px;
+}
+
+.workflow-import-fields .role-map-textarea {
+  min-height: 420px;
 }
 
 .workflow-diagram-preview {
@@ -2430,11 +2496,11 @@ input[type="range"]::-webkit-slider-thumb {
 
   .workflow-import-modal-form {
     grid-template-columns: 1fr;
-    overflow: auto;
+    overflow: hidden;
   }
 
   .workflow-import-fields {
-    overflow: visible;
+    overflow: auto;
   }
 
   .workflow-diagram-preview {
