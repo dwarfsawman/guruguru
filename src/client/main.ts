@@ -1,4 +1,11 @@
 import mermaid from "mermaid";
+import {
+  defaultDenoiseForMode,
+  normalizeDenoiseForMode,
+  relationForGenerationMode,
+  requiresFullDenoise,
+  requiresParentAsset
+} from "../shared/generationMode";
 import { createWorkflowMermaidDiagram, type WorkflowDiagram, type WorkflowDiagramStatus } from "../shared/workflowDiagram";
 import { inferRoleMap } from "../shared/workflowRoleMap";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
@@ -1586,7 +1593,7 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     height: Number(form.height || 1024),
     generationMode,
     parentAssetId,
-    relationType: resolvedParentAsset ? relationForMode(generationMode) : null
+    relationType: resolvedParentAsset ? relationForGenerationMode(generationMode) : null
   };
   if (inpaint) {
     request.inpaint = inpaint;
@@ -4360,31 +4367,6 @@ function generationModeLabel(mode: string) {
   return mode === "manual_upload" ? "source" : mode;
 }
 
-function defaultDenoiseForMode(mode: string) {
-  if (requiresFullDenoise(mode)) {
-    return 1;
-  }
-  return mode === "img2img" ? 0.35 : 0.45;
-}
-
-function normalizeDenoiseForMode(value: number, mode: string) {
-  if (requiresFullDenoise(mode)) {
-    return 1;
-  }
-  if (!Number.isFinite(value)) {
-    return defaultDenoiseForMode(mode);
-  }
-  return Math.min(1, Math.max(0, value));
-}
-
-function requiresFullDenoise(mode: string) {
-  return mode === "txt2img" || mode === "seed_reuse" || mode === "prompt_reuse";
-}
-
-function requiresParentAsset(mode: string) {
-  return mode === "img2img" || mode === "ipadapter" || mode === "controlnet";
-}
-
 function templateGenerationDefaults(template: WorkflowTemplate | null): TemplateGenerationDefaults {
   if (!template) {
     return { model: emptyModelDefaults() };
@@ -5021,22 +5003,6 @@ function resolveTemplateForGeneration(templateId: string, mode: string) {
     throw new Error(`${mode}用WorkflowTemplateが選択されていません。`);
   }
   return current;
-}
-
-function relationForMode(mode: string) {
-  if (mode === "ipadapter") {
-    return "ipadapter_reference";
-  }
-  if (mode === "controlnet") {
-    return "controlnet_reference";
-  }
-  if (mode === "seed_reuse") {
-    return "seed_reuse";
-  }
-  if (mode === "prompt_reuse") {
-    return "prompt_reuse";
-  }
-  return "img2img";
 }
 
 function readForm(formId: string): Record<string, string> {

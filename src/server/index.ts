@@ -20,6 +20,12 @@ import { deleteProjectStorage, ensureProjectStorage, readImageSize, safeFileStre
 import { isPathInside } from "./paths";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL, GITHUB_WEB_SAM_RELEASE_API_URL } from "../shared/constants";
+import {
+  defaultDenoiseForMode,
+  normalizeDenoiseForMode,
+  relationForGenerationMode,
+  requiresParentAsset
+} from "../shared/generationMode";
 import { validateRoleMapReferences } from "../shared/workflowRoleMap";
 import type { AssetStatus, ComfySettings, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ParentRelation, SelectionAction } from "../shared/types";
 
@@ -444,7 +450,7 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
   if (requestedParentAssetId && !parentAsset) {
     throw new HttpError(400, "Parent Asset was not found in this Project");
   }
-  if (shouldUploadParent(generationMode) && !parentAsset) {
+  if (requiresParentAsset(generationMode) && !parentAsset) {
     throw new HttpError(400, `${generationMode} generation requires a parent Asset`);
   }
 
@@ -479,7 +485,7 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
   try {
     const workflow = JSON.parse(String(template.workflow_json));
     const roleMap = JSON.parse(String(template.role_map_json));
-    const uploaded = parentAsset && shouldUploadParent(request.generationMode)
+    const uploaded = parentAsset && requiresParentAsset(request.generationMode)
       ? await uploadImageToComfy(String(parentAsset.image_path))
       : null;
     const uploadedMask = request.inpaint?.maskPath
@@ -1141,7 +1147,7 @@ async function storeGeneratedAsset({
         createId("parent"),
         request.parentAssetId,
         assetId,
-        request.relationType ?? relationFromMode(request.generationMode),
+        request.relationType ?? relationForGenerationMode(request.generationMode),
         request.denoise
       ]
     );
@@ -1752,7 +1758,7 @@ function normalizeGenerationRequest(input: GenerationRequest): GenerationRequest
     height: positiveIntegerOr(input.height, 1024),
     generationMode,
     parentAssetId: stringOrNull(input.parentAssetId),
-    relationType: (stringOrNull(input.relationType) as ParentRelation | null) ?? relationFromMode(generationMode)
+    relationType: (stringOrNull(input.relationType) as ParentRelation | null) ?? relationForGenerationMode(generationMode)
   };
 }
 
@@ -1771,45 +1777,7 @@ function normalizeSampling(rawSampler: unknown, rawScheduler: unknown) {
 }
 
 function normalizeDenoise(rawDenoise: unknown, mode: GenerationMode) {
-  if (requiresFullDenoise(mode)) {
-    return 1;
-  }
-  const value = numberOr(rawDenoise, defaultDenoiseForMode(mode));
-  return Math.min(1, Math.max(0, value));
-}
-
-function defaultDenoiseForMode(mode: GenerationMode) {
-  return mode === "img2img" ? 0.35 : 0.45;
-}
-
-function requiresFullDenoise(mode: GenerationMode) {
-  return mode === "txt2img" || mode === "seed_reuse" || mode === "prompt_reuse";
-}
-
-function shouldUploadParent(mode: GenerationMode) {
-  return mode === "img2img" || mode === "ipadapter" || mode === "controlnet";
-}
-
-function relationFromMode(mode: GenerationMode): ParentRelation {
-  if (mode === "ipadapter") {
-    return "ipadapter_reference";
-  }
-  if (mode === "controlnet") {
-    return "controlnet_reference";
-  }
-  if (mode === "seed_reuse") {
-    return "seed_reuse";
-  }
-  if (mode === "prompt_reuse") {
-    return "prompt_reuse";
-  }
-  if (mode === "upscale") {
-    return "upscale";
-  }
-  if (mode === "detail") {
-    return "detailer";
-  }
-  return "img2img";
+  return normalizeDenoiseForMode(numberOr(rawDenoise, defaultDenoiseForMode(mode)), mode);
 }
 
 function selectionActionFor(newStatus: string, previousStatus: string): SelectionAction | null {
