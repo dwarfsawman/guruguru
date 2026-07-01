@@ -1,4 +1,4 @@
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { extname, join, resolve } from "node:path";
@@ -13,13 +13,22 @@ const publicDir = resolve(fileURLToPath(new URL(".", import.meta.url)), "..", "p
 export async function serveStatic(res: ServerResponse, pathname: string) {
   const normalizedPath = pathname === "/" ? "/index.html" : pathname;
   const filePath = resolve(join(publicDir, normalizedPath));
-  if (!isPathInside(filePath, publicDir) || !existsSync(filePath)) {
+  if (!isPathInside(filePath, publicDir) || !isServableFile(filePath)) {
     const indexHtml = await readFile(join(publicDir, "index.html"), "utf8");
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(indexHtml);
     return;
   }
   streamFile(res, filePath);
+}
+
+/** Only regular files are streamable; directories would hang `createReadStream`. */
+function isServableFile(filePath: string): boolean {
+  try {
+    return existsSync(filePath) && statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export function streamFile(res: ServerResponse, filePath: string) {
