@@ -1,3 +1,4 @@
+import type { Round } from "../shared/apiTypes";
 import type { GenerationRequest } from "../shared/types";
 import { decorateAsset } from "./assets";
 import { createId, getRow, runSql, toApiRow } from "./db";
@@ -102,7 +103,7 @@ export async function createSourceAsset(projectId: string, body: unknown) {
   runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [projectId]);
 
   return {
-    round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])),
+    round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])) as unknown as Round | null,
     asset: decorateAsset(toApiRow(getRow("SELECT * FROM assets WHERE id = ?", [assetId]))!)
   };
 }

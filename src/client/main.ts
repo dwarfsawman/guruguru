@@ -6,7 +6,16 @@ import {
   requiresParentAsset
 } from "../shared/generationMode";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
-import type { InpaintOptions } from "../shared/types";
+import type { ComfySettings, GenerationMode, GenerationRequest, InpaintOptions } from "../shared/types";
+import type {
+  Asset,
+  AssetParent,
+  CollectRoundResponse,
+  ComfyStatus,
+  ProjectDetail,
+  ProjectSummary,
+  Round
+} from "../shared/apiTypes";
 import {
   iconBrush,
   iconCheck,
@@ -97,129 +106,7 @@ import {
   sampleBrushPromptPoints
 } from "./maskCanvas";
 
-interface ComfySettings {
-  baseUrl: string;
-  websocketUrl: string;
-  timeoutSeconds: number;
-  imageFetchMode: "view";
-  storageDir: string;
-  webSamModelBaseUrl: string;
-}
-
 type ComfyConnectionState = "unknown" | "checking" | "connected" | "disconnected";
-
-interface ComfyStatus {
-  ok: boolean;
-  state: "connected" | "disconnected";
-  baseUrl: string;
-  checkedAt: string;
-  error?: string;
-}
-
-interface ProjectSummary {
-  id: string;
-  name: string;
-  description: string;
-  updatedAt: string;
-  roundCount: number;
-  assetCount: number;
-  defaultTemplateId?: string | null;
-  representativeThumbnailUrl?: string;
-}
-
-interface Round {
-  id: string;
-  projectId: string;
-  templateId: string;
-  parentRoundId?: string | null;
-  roundIndex: number;
-  promptId?: string | null;
-  status: string;
-  generationMode: string;
-  branchColorIndex: number;
-  branchReason?: string | null;
-  branchKey?: string | null;
-  request: GenerationRequest;
-  createdAt: string;
-  completedAt?: string | null;
-  assetCount?: number;
-  selectedCount?: number;
-  rejectedCount?: number;
-}
-
-interface Asset {
-  id: string;
-  projectId: string;
-  roundId: string;
-  promptId?: string | null;
-  batchIndex: number;
-  imagePath: string;
-  thumbnailSmallPath: string;
-  thumbnailMediumPath: string;
-  width?: number | null;
-  height?: number | null;
-  prompt: string;
-  negativePrompt: string;
-  seed?: number | null;
-  sampler: string;
-  scheduler: string;
-  steps?: number | null;
-  cfg?: number | null;
-  denoise?: number | null;
-  workflowTemplateId: string;
-  workflowTemplateVersion: number;
-  workflowSnapshotHash: string;
-  comfyOutputNodeId?: string | null;
-  status: string;
-  createdAt: string;
-  imageUrl: string;
-  thumbnailUrl: string;
-  thumbnailMediumUrl: string;
-}
-
-interface AssetParent {
-  id: string;
-  parentAssetId: string;
-  childAssetId: string;
-  relationType: string;
-  strength?: number | null;
-  createdAt: string;
-}
-
-interface ProjectDetail {
-  project: ProjectSummary;
-  rounds: Round[];
-  assets: Asset[];
-  assetParents: AssetParent[];
-  templates: WorkflowTemplate[];
-}
-
-interface CollectRoundResponse {
-  round?: Round;
-  assets?: Asset[];
-  message?: string;
-  jobStats?: Json;
-}
-
-interface GenerationRequest {
-  templateId: string;
-  prompt: string;
-  negativePrompt: string;
-  seed: number | null;
-  seedMode: string;
-  batchSize: number;
-  steps: number;
-  cfg: number;
-  sampler: string;
-  scheduler: string;
-  denoise: number;
-  width: number;
-  height: number;
-  generationMode: string;
-  parentAssetId?: string | null;
-  relationType?: string | null;
-  inpaint?: InpaintOptions | null;
-}
 
 interface ScrollPosition {
   left: number;
@@ -1427,7 +1314,7 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     prompt: form.prompt,
     negativePrompt: form.negativePrompt,
     seed: form.seed ? Number(form.seed) : null,
-    seedMode: form.seedMode,
+    seedMode: form.seedMode as GenerationRequest["seedMode"],
     batchSize: Number(form.batchSize || 16),
     steps: Number(form.steps || 20),
     cfg: Number(form.cfg || 6),
@@ -1436,7 +1323,7 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     denoise,
     width: Number(form.width || 1024),
     height: Number(form.height || 1024),
-    generationMode,
+    generationMode: generationMode as GenerationMode,
     parentAssetId,
     relationType: resolvedParentAsset ? relationForGenerationMode(generationMode) : null
   };
