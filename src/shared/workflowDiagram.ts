@@ -9,6 +9,7 @@ export interface WorkflowDiagram {
 }
 
 import { type Json as JsonObject, isJsonObject } from "./json";
+import { nodeIdFromRolePath } from "./workflowRolePath";
 
 interface DiagramNode {
   id: string;
@@ -145,10 +146,7 @@ function buildRoleIndex(roleMap: unknown, workflowNodeIds: Set<string>) {
   }
 
   for (const [roleName, rawPath] of Object.entries(roleMap)) {
-    if (typeof rawPath !== "string") {
-      continue;
-    }
-    const nodeId = rawPath.split(".").filter(Boolean)[0];
+    const nodeId = nodeIdFromRolePath(rawPath);
     if (!nodeId || !workflowNodeIds.has(nodeId)) {
       continue;
     }

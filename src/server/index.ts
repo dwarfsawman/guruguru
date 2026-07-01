@@ -26,6 +26,7 @@ import {
   relationForGenerationMode,
   requiresParentAsset
 } from "../shared/generationMode";
+import { nodeIdFromRolePath } from "../shared/workflowRolePath";
 import type { AssetStatus, ComfySettings, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ParentRelation, SelectionAction } from "../shared/types";
 
 const port = Number(process.env.PORT ?? 5177);
@@ -730,7 +731,7 @@ function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): InpaintOp
 }
 
 function normalizeMaskedContent(value: unknown): MaskedContent {
-  const maskedContent = stringOr(value, "fill");
+  const maskedContent = stringOr(value, "original");
   if (maskedContent === "fill" || maskedContent === "original" || maskedContent === "latent_noise" || maskedContent === "latent_nothing") {
     return maskedContent;
   }
@@ -1651,13 +1652,6 @@ function addRoleNodeId(nodeIds: Set<string>, rawNodeId: unknown) {
   if (typeof rawNodeId === "string" && rawNodeId.trim()) {
     nodeIds.add(rawNodeId.trim());
   }
-}
-
-function nodeIdFromRolePath(rawPath: unknown): string | null {
-  if (typeof rawPath !== "string" || rawPath.trim() === "") {
-    return null;
-  }
-  return rawPath.split(".").filter(Boolean)[0] ?? null;
 }
 
 function parseStoredJsonObject(value: unknown): Record<string, unknown> | null {
