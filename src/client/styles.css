@@ -1003,6 +1003,18 @@ input[type="range"]::-webkit-slider-thumb {
   align-items: end;
 }
 
+.resolution-scale-row {
+  display: grid;
+  grid-template-columns: repeat(2, 38px);
+  justify-content: center;
+  gap: 8px;
+}
+
+.resolution-scale-button {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .center {
   text-align: center;
 }

@@ -587,8 +587,8 @@ async function createSourceAsset(projectId: string, body: unknown) {
     sampler: stringOr(input.sampler, "euler"),
     scheduler: stringOr(input.scheduler, "normal"),
     denoise: numberOr(input.denoise, 0.35),
-    width: numberOr(input.width, 1024),
-    height: numberOr(input.height, 1024),
+    width: positiveIntegerOr(input.width, 1024),
+    height: positiveIntegerOr(input.height, 1024),
     generationMode: "manual_upload",
     parentAssetId: null,
     relationType: "manual"
@@ -754,8 +754,6 @@ async function prepareInpaintRequest(
 
   return {
     ...normalizedRequest,
-    width: parentSize.width,
-    height: parentSize.height,
     inpaint: {
       ...options,
       maskPath: storedMask.maskPath,
@@ -1739,8 +1737,8 @@ function normalizeGenerationRequest(input: GenerationRequest): GenerationRequest
     sampler: sampling.sampler,
     scheduler: sampling.scheduler,
     denoise: normalizeDenoise(input.denoise, generationMode),
-    width: numberOr(input.width, 1024),
-    height: numberOr(input.height, 1024),
+    width: positiveIntegerOr(input.width, 1024),
+    height: positiveIntegerOr(input.height, 1024),
     generationMode,
     parentAssetId: stringOrNull(input.parentAssetId),
     relationType: (stringOrNull(input.relationType) as ParentRelation | null) ?? relationFromMode(generationMode)
@@ -1885,6 +1883,10 @@ function numberOr(value: unknown, fallback: number): number {
     return Number(value);
   }
   return fallback;
+}
+
+function positiveIntegerOr(value: unknown, fallback: number): number {
+  return Math.max(1, Math.trunc(numberOr(value, fallback)));
 }
 
 function getSettingOrDefault(): ComfySettings {
