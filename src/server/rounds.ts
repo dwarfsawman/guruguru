@@ -222,8 +222,9 @@ async function prepareInpaintRequest(
   rawRequest: GenerationRequest,
   normalizedRequest: GenerationRequest
 ): Promise<GenerationRequest> {
-  const rawInpaint = isJsonObject((rawRequest as Record<string, unknown>).inpaint)
-    ? (rawRequest as Record<string, unknown>).inpaint as Record<string, unknown>
+  const rawRequestRecord = rawRequest as unknown as Record<string, unknown>;
+  const rawInpaint = isJsonObject(rawRequestRecord.inpaint)
+    ? rawRequestRecord.inpaint as Record<string, unknown>
     : null;
   const hasMaskDataUrl = typeof rawInpaint?.maskDataUrl === "string" && rawInpaint.maskDataUrl.trim() !== "";
 
