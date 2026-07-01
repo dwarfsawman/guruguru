@@ -424,6 +424,9 @@ function bindEvents() {
       setPositivePromptDraft(target.value);
       return;
     }
+    if (target.dataset.generationField === "batchSize" && target instanceof HTMLInputElement) {
+      setGenerationSliderDraft("batchSize", target);
+    }
     if (target.dataset.inpaintField) {
       updateInpaintDraftFromControl(target);
     }
@@ -2181,6 +2184,14 @@ function setPositivePromptDraft(value: string) {
   syncPreviewPromptControl(value);
 }
 
+function setGenerationSliderDraft(field: GenerationDraftField, control: HTMLInputElement) {
+  setGenerationDraftValue(field, control.value);
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  if (form) {
+    setFormValue(form, field, control.value);
+  }
+}
+
 function syncPreviewPromptControl(value: string) {
   const control = document.querySelector<HTMLTextAreaElement>("[data-generation-field='prompt']");
   if (control && control.value !== value) {
@@ -2818,11 +2829,17 @@ function currentPositivePromptValue(asset: Asset) {
   return state.generationDraft?.prompt ?? activeRound?.request?.prompt ?? asset.prompt ?? defaultPrompt;
 }
 
+function currentBatchSizeValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return draftNumber(state.generationDraft, "batchSize") ?? activeRound?.request?.batchSize ?? 16;
+}
+
 function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: boolean, promptValue: string) {
   if (!editing) {
     return "";
   }
   const draft = inpaint ?? defaultInpaintDraft(asset.id);
+  const batchSizeValue = currentBatchSizeValue();
   const active = hasMaskData(inpaint);
   const minimized = state.maskToolbarMinimized;
   const pos = state.maskToolbarPos;
@@ -2853,6 +2870,11 @@ function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: 
           <label class="mask-prompt-field">Positive prompt
             <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
           </label>
+          <div class="range-control mask-batch-control">
+            <div class="range-label"><span>バッチサイズ</span><strong id="modalBatchValue">${formatNumber(batchSizeValue)}</strong></div>
+            <input type="range" min="1" max="32" step="1" value="${batchSizeValue}" data-value-target="modalBatchValue" data-generation-field="batchSize" />
+            <div class="range-minmax"><span>1</span><span>32</span></div>
+          </div>
           <label>Masked content
             <select class="workflow-select" data-inpaint-field="maskedContent">
               ${maskedContentOptions.map((option) => `
