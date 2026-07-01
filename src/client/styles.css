@@ -523,7 +523,7 @@ h3 {
 .message {
   position: fixed;
   right: 20px;
-  top: 76px;
+  top: 64px;
   z-index: 70;
   max-width: min(560px, calc(100vw - 40px));
   max-height: 36vh;
@@ -533,9 +533,35 @@ h3 {
   border-radius: 10px;
   background: rgba(37, 31, 12, 0.94);
   color: #fde68a;
-  padding: 12px 14px;
+  padding: 12px 42px 12px 14px;
   box-shadow: var(--shadow);
   white-space: pre-wrap;
+}
+
+.message-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(253, 230, 138, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fde68a;
+}
+
+.message-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.message-close svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.4;
 }
 
 .home-layout {
@@ -715,6 +741,17 @@ h3 {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
+}
+
+.template-export-trigger {
+  display: grid;
+  place-items: center;
+  line-height: 0;
+}
+
+.template-export-trigger svg {
+  width: 18px;
+  height: 18px;
 }
 
 .template-export-dropdown {

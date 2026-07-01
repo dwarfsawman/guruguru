@@ -285,7 +285,7 @@ type GenerationDraft = Partial<Record<GenerationDraftField, string>> & {
 };
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
-const messageAutoClearMs = 30_000;
+const messageAutoClearMs = 15_000;
 let messageValue = "";
 let messageClearTimer: ReturnType<typeof window.setTimeout> | null = null;
 let pendingAssetCardSelect: { assetId: string; timer: ReturnType<typeof window.setTimeout> } | null = null;
@@ -706,6 +706,7 @@ function bindEvents() {
 
   app.addEventListener("pointerdown", (event) => {
     const target = event.target as HTMLElement;
+    closeOpenActionDropdowns(target);
     const handle = target.closest<HTMLElement>("[data-mask-toolbar-handle]");
     if (handle) {
       if (target.closest("button")) {
@@ -965,7 +966,18 @@ function closeWorkflowModals() {
   render();
 }
 
+function closeOpenActionDropdowns(exceptTarget?: EventTarget | null) {
+  const exceptNode = exceptTarget instanceof Node ? exceptTarget : null;
+  document.querySelectorAll<HTMLDetailsElement>(".template-export-dropdown[open], .workflow-dropdown[open]").forEach((dropdown) => {
+    if (exceptNode && dropdown.contains(exceptNode)) {
+      return;
+    }
+    dropdown.open = false;
+  });
+}
+
 async function handleAction(action: string, id: string, target: HTMLElement) {
+  const closesActionDropdowns = target.closest(".template-export-dropdown, .workflow-dropdown") !== null;
   try {
     if (action === "home") {
       await loadHome();
@@ -986,6 +998,9 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       openWorkflowDiagram(target);
     } else if (action === "close-template-diagram") {
       closeWorkflowDiagram();
+    } else if (action === "dismiss-message") {
+      state.message = "";
+      render();
     } else if (action === "export-template") {
       exportWorkflowTemplate(target, "template");
     } else if (action === "export-workflow") {
@@ -1096,6 +1111,10 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     state.busy = false;
     state.message = error instanceof Error ? error.message : String(error);
     render();
+  } finally {
+    if (closesActionDropdowns) {
+      closeOpenActionDropdowns();
+    }
   }
 }
 
@@ -1854,7 +1873,7 @@ function render(options: RenderOptions = {}) {
   }
   app.innerHTML = `
     ${renderHeader()}
-    ${state.message ? `<pre class="message">${escapeHtml(state.message)}</pre>` : ""}
+    ${state.message ? `<pre class="message"><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button>${escapeHtml(state.message)}</pre>` : ""}
     ${state.detail ? renderProjectDetail(state.detail) : renderHome()}
     ${renderAssetModal()}
     ${renderWorkflowImportModal()}
@@ -2842,7 +2861,7 @@ function renderTemplatePanel() {
             <div class="template-row-actions">
               <button class="button-secondary compact template-action-button" type="button" data-action="open-template-diagram" data-template-id="${escapeAttr(template.id)}" aria-label="diagram" title="diagram">${iconDiagram()}</button>
               <details class="template-export-dropdown">
-                <summary class="button-secondary compact template-action-button" aria-label="export" title="export">${iconDownload()}</summary>
+              <summary class="button-secondary compact template-action-button template-export-trigger" style="display:grid;place-items:center;line-height:0;" aria-label="export" title="export">${iconDownload(true)}</summary>
                 <div class="template-export-menu">
                   <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${escapeAttr(template.id)}">${iconDownload()}raw export</button>
                   <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${escapeAttr(template.id)}">${iconDownload()}template export</button>
@@ -5094,8 +5113,8 @@ function iconPulse() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6"></path></svg>`;
 }
 
-function iconDownload() {
-  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>`;
+function iconDownload(large = false) {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"${large ? ' style="width: 22px; height: 22px; transform: scale(1.25); transform-origin: center; stroke-width: 2.6;"' : ""}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>`;
 }
 
 function iconDiagram() {
