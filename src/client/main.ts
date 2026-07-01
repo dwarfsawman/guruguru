@@ -396,11 +396,6 @@ async function boot() {
 function bindEvents() {
   app.addEventListener("click", (event) => {
     const target = event.target as HTMLElement;
-    if (state.activeAssetId && !state.maskToolbarMinimized && !target.closest(".mask-toolbar") && !target.closest("[data-action]")) {
-      state.maskToolbarMinimized = true;
-      render();
-      return;
-    }
     if (target.classList.contains("preview-modal")) {
       captureGenerationDraft();
       closeAssetDetail();
@@ -553,7 +548,7 @@ function bindEvents() {
     if (target.id !== "maskCanvas" && !target.closest(".preview-media")) {
       return;
     }
-    if (!state.maskEditMode || !state.maskToolbarMinimized) {
+    if (!state.maskEditMode) {
       return;
     }
     event.preventDefault();
@@ -636,7 +631,7 @@ function bindEvents() {
     if (target.id !== "maskCanvas") {
       return;
     }
-    if (!state.maskToolbarMinimized) {
+    if (!state.maskEditMode) {
       return;
     }
     event.preventDefault();
@@ -855,6 +850,13 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       closeAssetDetail();
     } else if (action === "toggle-mask-editor") {
       toggleMaskEditor();
+    } else if (action === "apply-mask-editor") {
+      await applyMaskEditor();
+    } else if (action === "set-smart-mask-provider") {
+      const provider = target.dataset.provider ?? "";
+      if (isSmartMaskProvider(provider)) {
+        setSmartMaskProvider(provider);
+      }
     } else if (action === "minimize-mask-toolbar") {
       state.maskToolbarMinimized = true;
       render();
@@ -2905,19 +2907,13 @@ function updateSmartMaskDraftFromControl(control: HTMLInputElement | HTMLTextAre
   if (!field || !assetId) {
     return;
   }
+  if (field === "provider" && isSmartMaskProvider(control.value)) {
+    setSmartMaskProvider(control.value);
+    return;
+  }
   const current = ensureInpaintDraft(assetId);
   const next: InpaintDraft = { ...current };
-  if (field === "provider" && isSmartMaskProvider(control.value)) {
-    next.selectedSmartMaskProvider = control.value;
-    next.eraser = false;
-    if (control.value === "manual") {
-      next.webSamStatusText = "Manual";
-    } else {
-      next.webSamError = "";
-      next.webSamModelStatus = state.settings?.webSamModelBaseUrl?.trim() ? "not-cached" : "missing-url";
-      next.webSamStatusText = state.settings?.webSamModelBaseUrl?.trim() ? "未取得" : "モデルURL未設定";
-    }
-  } else if (field === "promptMode" && isWebSamPromptMode(control.value)) {
+  if (field === "promptMode" && isWebSamPromptMode(control.value)) {
     next.webSamPromptMode = control.value;
     next.eraser = false;
   } else if (field === "threshold") {
@@ -2929,13 +2925,6 @@ function updateSmartMaskDraftFromControl(control: HTMLInputElement | HTMLTextAre
   }
   setInpaintDraft(next);
 
-  if (field === "provider") {
-    render();
-    if (next.selectedSmartMaskProvider !== "manual") {
-      void loadActiveWebSamModel();
-    }
-    return;
-  }
   if (field === "threshold" || field === "smoothing") {
     void requestWebSamReprocess();
     return;
@@ -2947,6 +2936,31 @@ function updateSmartMaskDraftFromControl(control: HTMLInputElement | HTMLTextAre
     }
   }
   render();
+}
+
+function setSmartMaskProvider(provider: WebSamProviderId) {
+  const assetId = state.generationDraft?.inpaint?.parentAssetId ?? state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const current = ensureInpaintDraft(assetId);
+  const next: InpaintDraft = {
+    ...current,
+    selectedSmartMaskProvider: provider,
+    eraser: false
+  };
+  if (provider === "manual") {
+    next.webSamStatusText = "Manual";
+  } else {
+    next.webSamError = "";
+    next.webSamModelStatus = state.settings?.webSamModelBaseUrl?.trim() ? "not-cached" : "missing-url";
+    next.webSamStatusText = state.settings?.webSamModelBaseUrl?.trim() ? "未取得" : "モデルURL未設定";
+  }
+  setInpaintDraft(next);
+  render();
+  if (provider !== "manual") {
+    void loadActiveWebSamModel();
+  }
 }
 
 function isSmartMaskProvider(value: string): value is WebSamProviderId {
@@ -3460,7 +3474,6 @@ function toggleMaskEditor() {
       });
     }
     state.maskEditMode = false;
-    // 通常表示に戻すときはプロンプト・設定を見せるため展開する
     state.maskToolbarMinimized = false;
   } else if (state.activeAssetId) {
     const draft = ensureInpaintDraft(state.activeAssetId);
@@ -3469,11 +3482,28 @@ function toggleMaskEditor() {
       enabled: true
     });
     state.maskEditMode = true;
-    // マスク編集に入った直後はツールバーを最小化し、キャンバスを即座に描画可能にする。
-    // 縦長画像では展開済みツールバーが画像全体を覆い、プロンプト等の文字要素が選択されてしまうため。
-    state.maskToolbarMinimized = true;
+    state.maskToolbarMinimized = false;
   }
   state.maskToolbarPos = null;
+  render();
+}
+
+async function applyMaskEditor() {
+  commitActiveMaskCanvas();
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!assetId || !draft) {
+    return;
+  }
+  if (draft.samCandidates.length > 0 && draft.previewSamMaskDataUrl) {
+    await applySelectedSamCandidate();
+    return;
+  }
+  setInpaintDraft({
+    ...draft,
+    enabled: true
+  });
+  state.message = hasMaskData(draft) ? "マスクを適用しました。" : "マスクがありません。";
   render();
 }
 
@@ -3482,9 +3512,16 @@ function setMaskTool(eraser: boolean) {
     return;
   }
   const draft = ensureInpaintDraft(state.activeAssetId);
-  setInpaintDraft({
+  const next: InpaintDraft = {
     ...draft,
     eraser
+  };
+  if (!eraser && draft.selectedSmartMaskProvider !== "manual") {
+    next.selectedSmartMaskProvider = "manual";
+    next.webSamStatusText = "Manual";
+  }
+  setInpaintDraft({
+    ...next
   });
   render();
 }
@@ -4012,31 +4049,55 @@ function renderAssetModal() {
     : "";
   const promptValue = currentPositivePromptValue(asset);
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
+  const media = renderPreviewMedia(asset, draft, editing, zoomStyle);
+  const footer = renderPreviewFooter(asset, info);
   return `
-    <div class="preview-modal" role="dialog" aria-modal="true">
+    <div class="preview-modal ${editing ? "mask-editor-open" : ""}" role="dialog" aria-modal="true">
       <div class="preview-content ${editing ? "mask-mode" : ""}">
         <div class="preview-top-controls">
           ${renderMaskToggleButton(editing)}
           ${editing ? renderMaskModeIndicator(inpaint) : ""}
         </div>
-        <div class="preview-media"${zoomStyle}>
-          <div class="mask-zoom-stage">
-            <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
-            ${editing ? `<canvas id="maskCanvas" class="mask-canvas${state.maskToolbarMinimized ? "" : " mask-locked"}" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
+        ${editing ? `
+          <div class="mask-editor-layout">
+            ${renderMaskPromptSidebar(draft, promptValue)}
+            <main class="preview-center">
+              ${media}
+              ${footer}
+            </main>
+            ${renderSmartMaskSidebar(draft)}
           </div>
-        </div>
-        ${renderMaskToolbar(asset, inpaint, editing, promptValue)}
+        ` : `
+          ${media}
+          ${footer}
+        `}
         <button class="preview-close" type="button" data-action="close-detail" aria-label="閉じる">${iconClose()}</button>
-        <div class="preview-footer">
-          <div class="preview-info">
-            <p>${escapeHtml(info)}</p>
-            <small>${escapeHtml(asset.prompt)}</small>
-          </div>
-          <div class="preview-actions">
-            <button class="button-secondary" type="button" data-action="toggle-select" data-id="${asset.id}">選択切替</button>
-            <button class="button-primary" type="button" data-action="generate-from-preview" data-id="${asset.id}" data-mode="img2img">この画像からブランチング</button>
-          </div>
-        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderPreviewMedia(asset: Asset, draft: InpaintDraft, editing: boolean, zoomStyle: string) {
+  return `
+    <div class="preview-media${editing ? " mask-preview-media" : ""}"${zoomStyle}>
+      <div class="mask-zoom-stage">
+        <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
+        ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderPreviewFooter(asset: Asset, info: string) {
+  return `
+    <div class="preview-footer">
+      <div class="preview-info">
+        <p>${escapeHtml(info)}</p>
+        <small>${escapeHtml(asset.prompt)}</small>
+      </div>
+      <div class="preview-actions">
+        <button class="button-secondary" type="button" data-action="toggle-select" data-id="${asset.id}">選択切替</button>
+        <button class="button-primary" type="button" data-action="generate-from-preview" data-id="${asset.id}" data-mode="img2img">この画像からブランチング</button>
       </div>
     </div>
   `;
@@ -4136,10 +4197,6 @@ function renderWebSamControls(draft: InpaintDraft) {
         <button class="button-secondary compact" type="button" data-action="websam-clear-result">${iconTrash()}SAM結果クリア</button>
       </div>
       ${renderSamCandidateButtons(draft)}
-      <div class="websam-actions">
-        <button class="button-primary compact" type="button" data-action="websam-apply-candidate" ${draft.samCandidates.length ? "" : "disabled"}>${iconCheck()}適用</button>
-        <button class="button-secondary compact" type="button" data-action="websam-clear-manual">${iconEraser()}手動修正クリア</button>
-      </div>
       <div class="websam-counts">
         <span>FG/BG ${draft.foregroundPoints.filter((point) => point.label === 1).length}/${draft.foregroundPoints.filter((point) => point.label === 0).length}</span>
         <span>Brush ${draft.foregroundPoints.filter((point) => point.source === "brush").length}</span>
@@ -4197,67 +4254,74 @@ function currentBatchSizeValue() {
   return draftNumber(state.generationDraft, "batchSize") ?? activeRound?.request?.batchSize ?? 16;
 }
 
-function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: boolean, promptValue: string) {
-  if (!editing) {
-    return "";
-  }
-  const draft = inpaint ?? defaultInpaintDraft(asset.id);
+function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string) {
   const batchSizeValue = currentBatchSizeValue();
-  const active = hasActiveMaskData(inpaint);
-  const minimized = state.maskToolbarMinimized;
-  const pos = state.maskToolbarPos;
-  const styleAttr = pos ? ` style="position: fixed; left: ${pos.left}px; top: ${pos.top}px; right: auto;"` : "";
-  const minimizeButton = minimized
-    ? `<button class="mask-toolbar-icon-button" type="button" data-action="restore-mask-toolbar" aria-label="ダイアログを展開" title="展開">${iconExpand()}</button>`
-    : `<button class="mask-toolbar-icon-button" type="button" data-action="minimize-mask-toolbar" aria-label="ダイアログを最小化" title="最小化">${iconMinimize()}</button>`;
+  const active = hasActiveMaskData(draft);
+  const canApplyCandidate = draft.samCandidates.length > 0 && !!draft.previewSamMaskDataUrl;
+  const webSamProvider = SMART_MASK_PROVIDERS.find((provider) => provider.id !== "manual")?.id ?? "websam-slimsam-77";
+  const smartActive = draft.selectedSmartMaskProvider !== "manual";
   return `
-    <div class="mask-toolbar${minimized ? " minimized" : ""}"${styleAttr}>
-      <div class="mask-toolbar-header" data-mask-toolbar-handle title="ドラッグで移動">
-        <span class="mask-toolbar-title">マスク・プロンプト</span>
-        ${minimizeButton}
+    <aside class="mask-editor-panel mask-prompt-panel">
+      <div class="mask-panel-header">
+        <h2>マスク・プロンプト</h2>
+        <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
       </div>
-      ${minimized ? "" : `
-        <div class="mask-toolbar-row">
-          <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
+      <div class="mask-panel-tabs">
+        <button class="mask-tab ${smartActive ? "" : "active"}" type="button" data-action="set-smart-mask-provider" data-provider="manual">手動編集</button>
+        <button class="mask-tab ${smartActive ? "active" : ""}" type="button" data-action="set-smart-mask-provider" data-provider="${webSamProvider}">${iconPlay()}候補生成</button>
+        <button class="mask-tab" type="button" data-action="websam-clear-prompts">${iconReset()}点クリア</button>
+      </div>
+      <div class="mask-toolbar-row">
+        <button class="mask-tool-button ${!smartActive && !draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ" title="ブラシ">${iconBrush()}</button>
+        <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム" title="消しゴム">${iconEraser()}</button>
+        <button class="mask-tool-button" type="button" data-action="clear-mask" aria-label="マスクをクリア" title="マスクをクリア">${iconReset()}</button>
+      </div>
+      <div class="range-control mask-brush-control">
+        <div class="range-label"><span>ブラシサイズ</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
+        <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
+      </div>
+      <div class="mask-options-grid">
+        <label class="mask-prompt-field">Positive prompt
+          <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
+        </label>
+        <div class="range-control mask-batch-control">
+          <div class="range-label"><span>バッチサイズ</span><strong id="modalBatchValue">${formatNumber(batchSizeValue)}</strong></div>
+          <input type="range" min="1" max="32" step="1" value="${batchSizeValue}" data-value-target="modalBatchValue" data-generation-field="batchSize" />
+          <div class="range-minmax"><span>1</span><span>32</span></div>
         </div>
-        ${renderSmartMaskSection(draft)}
-        <div class="mask-toolbar-row">
-          <button class="mask-tool-button ${draft.eraser ? "" : "active"}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ">${iconBrush()}</button>
-          <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム">${iconEraser()}</button>
-          <button class="button-secondary compact" type="button" data-action="clear-mask">${iconReset()}クリア</button>
+        <label>Masked content
+          <select class="workflow-select" data-inpaint-field="maskedContent">
+            ${maskedContentOptions.map((option) => `
+              <option value="${option.value}" ${draft.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label>Inpaint area
+          <select class="workflow-select" data-inpaint-field="inpaintArea">
+            <option value="only_masked" selected>Only masked</option>
+          </select>
+        </label>
+        <div class="range-control mask-padding-control">
+          <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
+          <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
         </div>
-        <div class="range-control mask-brush-control">
-          <div class="range-label"><span>Brush size</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
-          <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
-        </div>
-        <div class="mask-options-grid">
-          <label class="mask-prompt-field">Positive prompt
-            <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
-          </label>
-          <div class="range-control mask-batch-control">
-            <div class="range-label"><span>バッチサイズ</span><strong id="modalBatchValue">${formatNumber(batchSizeValue)}</strong></div>
-            <input type="range" min="1" max="32" step="1" value="${batchSizeValue}" data-value-target="modalBatchValue" data-generation-field="batchSize" />
-            <div class="range-minmax"><span>1</span><span>32</span></div>
-          </div>
-          <label>Masked content
-            <select class="workflow-select" data-inpaint-field="maskedContent">
-              ${maskedContentOptions.map((option) => `
-                <option value="${option.value}" ${draft.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
-              `).join("")}
-            </select>
-          </label>
-          <label>Inpaint area
-            <select class="workflow-select" data-inpaint-field="inpaintArea">
-              <option value="only_masked" selected>Only masked</option>
-            </select>
-          </label>
-          <div class="range-control mask-padding-control">
-            <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
-            <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
-          </div>
-        </div>
-      `}
-    </div>
+      </div>
+      <div class="mask-panel-actions">
+        <button class="button-primary" type="button" data-action="apply-mask-editor">${iconCheck()}${canApplyCandidate ? "候補を適用" : "適用"}</button>
+        <button class="button-secondary" type="button" data-action="websam-clear-manual">${iconEraser()}手動修正クリア</button>
+      </div>
+    </aside>
+  `;
+}
+
+function renderSmartMaskSidebar(draft: InpaintDraft) {
+  return `
+    <aside class="mask-editor-panel smart-mask-panel">
+      <div class="mask-panel-header">
+        <h2>スマート選択</h2>
+      </div>
+      ${renderSmartMaskSection(draft)}
+    </aside>
   `;
 }
 
