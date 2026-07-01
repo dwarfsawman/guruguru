@@ -15,27 +15,28 @@ import {
 } from "./comfy";
 import { readImageSize, storeImage, storeMaskImage } from "./storage";
 import { serveStatic } from "./files";
+import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
 import { HttpError, readJson, sendJson } from "./http";
-import { isJsonObject, nonEmptyStringOr, numberOr, objectBody, positiveIntegerOr, requiredString, stringOrNull, stringOr } from "./validate";
+import { isJsonObject, nonEmptyStringOr, numberOr, stringOrNull, stringOr } from "./validate";
 import { patchWorkflow, resolveSeed } from "./workflow";
 import { createTemplate, deleteTemplate, listTemplates } from "./templates";
 import { decorateAsset, serveAssetFile, updateAssetStatus } from "./assets";
 import { createProject, deleteProject, getProjectDetail, listProjects } from "./projects";
+import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
+import { createSourceAsset } from "./sourceAssets";
+import { decodeMaskDataUrl } from "./uploadDataUrl";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL, GITHUB_WEB_SAM_RELEASE_API_URL } from "../shared/constants";
 import {
-  defaultDenoiseForMode,
-  normalizeDenoiseForMode,
   relationForGenerationMode,
   requiresParentAsset
 } from "../shared/generationMode";
 import { nodeIdFromRolePath } from "../shared/workflowRolePath";
-import type { ComfySettings, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ParentRelation } from "../shared/types";
+import type { ComfySettings, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent } from "../shared/types";
 
 const port = Number(process.env.PORT ?? 5177);
 let isShuttingDown = false;
 
 type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
-type BranchAssignment = { colorIndex: number; reason: string; key: string };
 type GenerationJobStatus = "pending" | "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled";
 type GenerationJob = {
   id: string;
@@ -62,9 +63,6 @@ type JobStats = {
   terminal: number;
 };
 
-const maxSourceImageBytes = 16 * 1024 * 1024;
-const maxMaskImageBytes = 8 * 1024 * 1024;
-const maxBatchSize = 32;
 const terminalJobStatuses = new Set<GenerationJobStatus>(["completed", "failed", "interrupted", "cancelled"]);
 const activeJobStatuses = new Set<GenerationJobStatus>(["pending", "queued", "running"]);
 const terminalRoundStatuses = new Set(["completed", "failed", "interrupted"]);
@@ -390,156 +388,6 @@ async function createGenerationRound(projectId: string, requestBody: GenerationR
   }
 }
 
-async function createSourceAsset(projectId: string, body: unknown) {
-  const project = getRow<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
-  if (!project) {
-    throw new HttpError(404, "Project was not found");
-  }
-
-  const input = objectBody(body);
-  const templateId = requiredString(input.templateId ?? input.template_id, "templateId");
-  const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [templateId]);
-  if (!template) {
-    throw new HttpError(400, "WorkflowTemplate was not found. Select a template before uploading a source image.");
-  }
-
-  const image = decodeImageDataUrl(input.dataUrl ?? input.data_url);
-  const filename = normalizedUploadFileName(stringOr(input.filename, "source"), image.mimeType);
-  const roundIndex = nextRoundIndex(projectId);
-  const roundId = createId("round");
-  const assetId = createId("asset");
-  const branch = branchAssignmentForRound(projectId, null, roundId, "manual_upload");
-  const request: GenerationRequest = normalizeGenerationRequest({
-    templateId,
-    prompt: stringOr(input.prompt, ""),
-    negativePrompt: stringOr(input.negativePrompt ?? input.negative_prompt, ""),
-    seed: typeof input.seed === "number" ? input.seed : null,
-    seedMode: stringOr(input.seedMode ?? input.seed_mode, "random") as GenerationRequest["seedMode"],
-    batchSize: numberOr(input.batchSize ?? input.batch_size, 1),
-    steps: numberOr(input.steps, 20),
-    cfg: numberOr(input.cfg, 7),
-    sampler: stringOr(input.sampler, "euler"),
-    scheduler: stringOr(input.scheduler, "normal"),
-    denoise: numberOr(input.denoise, 0.35),
-    width: positiveIntegerOr(input.width, 1024),
-    height: positiveIntegerOr(input.height, 1024),
-    generationMode: "manual_upload",
-    parentAssetId: null,
-    relationType: "manual"
-  });
-  const stored = await storeImage(projectId, roundId, 0, filename, image.bytes);
-
-  runSql(
-    `INSERT INTO generation_rounds
-      (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
-       branch_color_index, branch_reason, branch_key, request_json, completed_at)
-     VALUES (?, ?, ?, NULL, ?, 'completed', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-    [
-      roundId,
-      projectId,
-      templateId,
-      roundIndex,
-      request.generationMode,
-      branch.colorIndex,
-      branch.reason,
-      `asset:${assetId}`,
-      JSON.stringify(request)
-    ]
-  );
-
-  runSql(
-    `INSERT INTO assets
-      (id, project_id, round_id, prompt_id, batch_index, image_path, thumbnail_small_path, thumbnail_medium_path,
-       width, height, prompt, negative_prompt, seed, sampler, scheduler, steps, cfg, denoise,
-       workflow_template_id, workflow_template_version, workflow_snapshot_hash, comfy_output_node_id, status)
-     VALUES (?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'selected')`,
-    [
-      assetId,
-      projectId,
-      roundId,
-      stored.imagePath,
-      stored.thumbnailSmallPath,
-      stored.thumbnailMediumPath,
-      stored.width,
-      stored.height,
-      request.prompt,
-      request.negativePrompt,
-      request.seed,
-      request.sampler,
-      request.scheduler,
-      request.steps,
-      request.cfg,
-      request.denoise,
-      template.id,
-      template.version,
-      template.workflow_hash
-    ]
-  );
-
-  runSql(
-    `INSERT INTO selection_events (id, project_id, round_id, asset_id, action, note)
-     VALUES (?, ?, ?, ?, 'select', ?)`,
-    [createId("selection"), projectId, roundId, assetId, "uploaded source asset"]
-  );
-  runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [projectId]);
-
-  return {
-    round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])),
-    asset: decorateAsset(toApiRow(getRow("SELECT * FROM assets WHERE id = ?", [assetId]))!)
-  };
-}
-
-function nextRoundIndex(projectId: string) {
-  return getRow<{ next_index: number }>(
-    "SELECT COALESCE(MAX(round_index), 0) + 1 AS next_index FROM generation_rounds WHERE project_id = ?",
-    [projectId]
-  )?.next_index ?? 1;
-}
-
-function branchAssignmentForRound(
-  projectId: string,
-  parentAsset: Record<string, unknown> | null,
-  roundId: string,
-  rootReason: string
-): BranchAssignment {
-  if (parentAsset) {
-    const key = `asset:${parentAsset.id}`;
-    const existing = getRow<{ branch_color_index: number }>(
-      `SELECT branch_color_index
-       FROM generation_rounds
-       WHERE project_id = ? AND branch_key = ?
-       ORDER BY round_index ASC
-       LIMIT 1`,
-      [projectId, key]
-    );
-    if (existing) {
-      return {
-        colorIndex: Number(existing.branch_color_index) || 0,
-        reason: "parent_asset",
-        key
-      };
-    }
-    return {
-      colorIndex: nextBranchColorIndex(projectId),
-      reason: "parent_asset",
-      key
-    };
-  }
-
-  return {
-    colorIndex: nextBranchColorIndex(projectId),
-    reason: rootReason,
-    key: `root:${roundId}`
-  };
-}
-
-function nextBranchColorIndex(projectId: string) {
-  return getRow<{ next_index: number }>(
-    "SELECT COALESCE(MAX(branch_color_index), -1) + 1 AS next_index FROM generation_rounds WHERE project_id = ?",
-    [projectId]
-  )?.next_index ?? 0;
-}
-
 async function prepareInpaintRequest(
   projectId: string,
   roundId: string,
@@ -620,31 +468,6 @@ function normalizeMaskedContent(value: unknown): MaskedContent {
   throw new HttpError(400, "Unsupported maskedContent value.");
 }
 
-function decodeMaskDataUrl(rawValue: unknown): { bytes: Buffer } {
-  const dataUrl = requiredString(rawValue, "inpaint.maskDataUrl");
-  if (dataUrl.length > Math.ceil(maxMaskImageBytes * 1.4) + 128) {
-    throw new HttpError(413, `Mask image is too large. The maximum upload size is ${formatBytes(maxMaskImageBytes)}.`);
-  }
-
-  const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/i.exec(dataUrl);
-  if (!match) {
-    throw new HttpError(400, "inpaint.maskDataUrl must be a base64 PNG data URL.");
-  }
-
-  const bytes = Buffer.from(match[1]!, "base64");
-  if (bytes.length === 0) {
-    throw new HttpError(400, "Mask image is empty.");
-  }
-  if (bytes.length > maxMaskImageBytes) {
-    throw new HttpError(413, `Mask image is too large. The maximum upload size is ${formatBytes(maxMaskImageBytes)}.`);
-  }
-  if (!bytesMatchMimeType(bytes, "image/png")) {
-    throw new HttpError(400, "Mask data URL content is not a PNG image.");
-  }
-
-  return { bytes };
-}
-
 async function parentAssetDimensions(parentAsset: Record<string, unknown>): Promise<{ width: number; height: number } | null> {
   const width = typeof parentAsset.width === "number" && Number.isFinite(parentAsset.width) ? Math.trunc(parentAsset.width) : null;
   const height = typeof parentAsset.height === "number" && Number.isFinite(parentAsset.height) ? Math.trunc(parentAsset.height) : null;
@@ -658,66 +481,6 @@ async function parentAssetDimensions(parentAsset: Record<string, unknown>): Prom
   }
   const size = readImageSize(await readFile(imagePath));
   return size ? { width: size.width, height: size.height } : null;
-}
-
-function clampInteger(value: number, min: number, max: number) {
-  if (!Number.isFinite(value)) {
-    return min;
-  }
-  return Math.min(max, Math.max(min, Math.trunc(value)));
-}
-
-function decodeImageDataUrl(rawValue: unknown): { mimeType: string; bytes: Buffer } {
-  const dataUrl = requiredString(rawValue, "dataUrl");
-  if (dataUrl.length > Math.ceil(maxSourceImageBytes * 1.4) + 128) {
-    throw new HttpError(413, `Source image is too large. The maximum upload size is ${formatBytes(maxSourceImageBytes)}.`);
-  }
-
-  const match = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/i.exec(dataUrl);
-  if (!match) {
-    throw new HttpError(400, "dataUrl must be a base64 data URL for image/png, image/jpeg, or image/webp.");
-  }
-
-  const mimeType = match[1]!.toLowerCase();
-  const bytes = Buffer.from(match[2]!, "base64");
-  if (bytes.length === 0) {
-    throw new HttpError(400, "Source image is empty.");
-  }
-  if (bytes.length > maxSourceImageBytes) {
-    throw new HttpError(413, `Source image is too large. The maximum upload size is ${formatBytes(maxSourceImageBytes)}.`);
-  }
-  if (!bytesMatchMimeType(bytes, mimeType)) {
-    throw new HttpError(400, "dataUrl content does not match the declared image MIME type.");
-  }
-
-  return { mimeType, bytes };
-}
-
-function bytesMatchMimeType(bytes: Buffer, mimeType: string) {
-  if (mimeType === "image/png") {
-    return bytes.length >= 8 && bytes.toString("ascii", 1, 4) === "PNG";
-  }
-  if (mimeType === "image/jpeg") {
-    return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  }
-  if (mimeType === "image/webp") {
-    return bytes.length >= 12 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP";
-  }
-  return false;
-}
-
-function normalizedUploadFileName(filename: string, mimeType: string) {
-  const trimmed = filename.trim() || "source";
-  if (/\.(png|jpe?g|webp)$/i.test(trimmed)) {
-    return trimmed;
-  }
-  const ext = mimeType === "image/jpeg" ? ".jpg" : mimeType === "image/webp" ? ".webp" : ".png";
-  return `${trimmed}${ext}`;
-}
-
-function formatBytes(bytes: number) {
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
 async function collectRound(roundId: string): Promise<CollectRoundResult> {
@@ -1491,48 +1254,6 @@ function parseStoredJsonObject(value: unknown): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function normalizeGenerationRequest(input: GenerationRequest): GenerationRequest {
-  const sampling = normalizeSampling(input.sampler, input.scheduler);
-  const generationMode = (input.generationMode ?? "txt2img") as GenerationMode;
-
-  return {
-    templateId: requiredString(input.templateId, "templateId"),
-    prompt: stringOr(input.prompt, ""),
-    negativePrompt: stringOr(input.negativePrompt, ""),
-    seed: typeof input.seed === "number" && Number.isFinite(input.seed) ? input.seed : null,
-    seedMode: input.seedMode ?? "random",
-    batchSize: clampInteger(numberOr(input.batchSize, 16), 1, maxBatchSize),
-    steps: numberOr(input.steps, 20),
-    cfg: numberOr(input.cfg, 6),
-    sampler: sampling.sampler,
-    scheduler: sampling.scheduler,
-    denoise: normalizeDenoise(input.denoise, generationMode),
-    width: positiveIntegerOr(input.width, 1024),
-    height: positiveIntegerOr(input.height, 1024),
-    generationMode,
-    parentAssetId: stringOrNull(input.parentAssetId),
-    relationType: (stringOrNull(input.relationType) as ParentRelation | null) ?? relationForGenerationMode(generationMode)
-  };
-}
-
-function normalizeSampling(rawSampler: unknown, rawScheduler: unknown) {
-  const sampler = stringOr(rawSampler, "euler");
-  const scheduler = stringOr(rawScheduler, "normal");
-
-  if (sampler.endsWith("_karras")) {
-    return {
-      sampler: sampler.slice(0, -"_karras".length),
-      scheduler: scheduler === "normal" ? "karras" : scheduler
-    };
-  }
-
-  return { sampler, scheduler };
-}
-
-function normalizeDenoise(rawDenoise: unknown, mode: GenerationMode) {
-  return normalizeDenoiseForMode(numberOr(rawDenoise, defaultDenoiseForMode(mode)), mode);
 }
 
 function getSettingOrDefault(): ComfySettings {
