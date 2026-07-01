@@ -263,6 +263,7 @@ const defaultPrompt =
   "masterpiece, best quality, 1girl, beautiful detailed eyes, flowing hair, fantasy landscape, dramatic lighting, ethereal atmosphere";
 const defaultNegativePrompt = "low quality, worst quality, blurry, deformed";
 const pendingAutoCollectRoundIds = new Set<string>();
+const autoCollectIntervalMs = 3_000;
 const samplerOptions = [
   "euler",
   "euler_ancestral",
@@ -1315,11 +1316,12 @@ async function pollCollectRound(roundId: string, projectId: string | null) {
 
   try {
     while (true) {
-      await delay(1500);
+      await delay(autoCollectIntervalMs);
       if (state.currentProjectId !== projectId) {
         return;
       }
 
+      const knownAssetCount = knownRoundAssetCount(roundId);
       const result = await api<CollectRoundResponse>(`/api/rounds/${roundId}/collect`, {
         method: "POST",
         body: "{}"
@@ -1327,8 +1329,15 @@ async function pollCollectRound(roundId: string, projectId: string | null) {
 
       const count = result.assets?.length ?? 0;
       const status = result.round?.status;
-      if (count > 0) {
-        state.message = `生成画像を自動で取り込みました。${count}件`;
+      const responseAssetCount = responseRoundAssetCount(result.round);
+      const displayedAssetCountChanged = responseAssetCount !== null && responseAssetCount !== knownAssetCount;
+      if (count > 0 || displayedAssetCountChanged) {
+        const collectedCount = responseAssetCount !== null
+          ? Math.max(0, responseAssetCount - knownAssetCount)
+          : count;
+        state.message = collectedCount > 0
+          ? `生成画像を自動で取り込みました。${collectedCount}件`
+          : "生成画像を自動で更新しました。";
         await refreshProject(roundId, state.activeAssetId);
         render();
       } else if (status && !isRoundActiveStatus(status)) {
@@ -1350,6 +1359,18 @@ async function pollCollectRound(roundId: string, projectId: string | null) {
   } finally {
     pendingAutoCollectRoundIds.delete(roundId);
   }
+}
+
+function knownRoundAssetCount(roundId: string) {
+  const round = findRound(roundId);
+  if (typeof round?.assetCount === "number") {
+    return round.assetCount;
+  }
+  return state.detail?.assets.filter((asset) => asset.roundId === roundId).length ?? 0;
+}
+
+function responseRoundAssetCount(round: Round | null | undefined) {
+  return typeof round?.assetCount === "number" ? round.assetCount : null;
 }
 
 async function setAssetStatus(assetId: string, status: string, refresh = true) {
@@ -2974,6 +2995,13 @@ function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: 
 
 function getActiveRound(detail: ProjectDetail) {
   return detail.rounds.find((round) => round.id === state.activeRoundId) ?? detail.rounds[0] ?? null;
+}
+
+function findRound(roundId: string | null) {
+  if (!roundId || !state.detail) {
+    return null;
+  }
+  return state.detail.rounds.find((round) => round.id === roundId) ?? null;
 }
 
 function getActiveRoundAssets() {
