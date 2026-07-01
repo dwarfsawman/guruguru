@@ -1547,6 +1547,11 @@ input[type="range"]::-webkit-slider-thumb {
   max-height: 88vh;
   min-height: 0;
   overflow: auto;
+  cursor: grab;
+}
+
+.preview-media.panning {
+  cursor: grabbing;
 }
 
 .mask-preview-media {
@@ -1582,6 +1587,14 @@ input[type="range"]::-webkit-slider-thumb {
 
 .preview-content.mask-mode .mask-zoom-stage > img {
   user-select: none;
+}
+
+.preview-content.mask-mode .preview-media {
+  cursor: default;
+}
+
+.preview-content.mask-mode .preview-media.panning {
+  cursor: grabbing;
 }
 
 .preview-mask-toggle {
