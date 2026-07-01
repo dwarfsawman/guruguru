@@ -1,5 +1,16 @@
 import { inferRoleMap } from "../shared/workflowRoleMap";
 import type { InpaintArea, InpaintOptions, MaskedContent } from "../shared/types";
+import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
+import type {
+  WebSamBox,
+  WebSamModelStatus,
+  WebSamPoint,
+  WebSamPromptMode,
+  WebSamProviderId,
+  WebSamWorkerCandidate,
+  WebSamWorkerRequest,
+  WebSamWorkerResponse
+} from "./websam/types";
 
 type Json = Record<string, unknown>;
 
@@ -9,6 +20,7 @@ interface ComfySettings {
   timeoutSeconds: number;
   imageFetchMode: "view";
   storageDir: string;
+  webSamModelBaseUrl: string;
 }
 
 type ComfyConnectionState = "unknown" | "checking" | "connected" | "disconnected";
@@ -146,6 +158,61 @@ interface InpaintDraft {
   onlyMaskedPadding: number;
   brushSize: number;
   eraser: boolean;
+  selectedSmartMaskProvider: WebSamProviderId;
+  selectedWebSamModel: string;
+  webSamModelStatus: WebSamModelStatus;
+  webSamDownloadProgress: number;
+  webSamStatusText: string;
+  webSamError: string;
+  webSamPromptMode: WebSamPromptMode;
+  foregroundPoints: WebSamPoint[];
+  boxPrompt: WebSamBox | null;
+  brushPromptMaskDataUrl: string;
+  samCandidates: SamMaskCandidate[];
+  selectedSamCandidateIndex: number;
+  samMaskDataUrl: string;
+  previewSamMaskDataUrl: string;
+  manualIncludeMaskDataUrl: string;
+  manualEraseMaskDataUrl: string;
+  threshold: number;
+  smoothing: number;
+  maskOpacity: number;
+  zoomScale: number;
+  panOffset: { x: number; y: number };
+  imageWidth: number | null;
+  imageHeight: number | null;
+}
+
+interface SamMaskCandidate {
+  index: number;
+  score: number | null;
+  dataUrl: string;
+}
+
+type MaskStrokeKind = "manual-include" | "manual-erase" | "brush-prompt";
+
+interface ActiveMaskStroke {
+  pointerId: number;
+  x: number;
+  y: number;
+  kind: MaskStrokeKind;
+}
+
+interface ActiveBoxPrompt {
+  pointerId: number;
+  start: { x: number; y: number };
+  current: { x: number; y: number };
+}
+
+interface MaskLayerSet {
+  assetId: string;
+  width: number;
+  height: number;
+  samMask: HTMLCanvasElement;
+  previewSamMask: HTMLCanvasElement;
+  manualInclude: HTMLCanvasElement;
+  manualErase: HTMLCanvasElement;
+  brushPrompt: HTMLCanvasElement;
 }
 
 interface ScrollPosition {
@@ -205,8 +272,15 @@ let messageValue = "";
 let messageClearTimer: ReturnType<typeof window.setTimeout> | null = null;
 let pendingAssetCardSelect: { assetId: string; timer: ReturnType<typeof window.setTimeout> } | null = null;
 let pendingIterationDotSelect: { timer: ReturnType<typeof window.setTimeout> } | null = null;
-let activeMaskStroke: { pointerId: number; x: number; y: number } | null = null;
+let activeMaskStroke: ActiveMaskStroke | null = null;
+let activeBoxPrompt: ActiveBoxPrompt | null = null;
 let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
+const maskLayerCache = new Map<string, MaskLayerSet>();
+let webSamWorker: Worker | null = null;
+let webSamRequestId = 0;
+let latestWebSamLoadRequestId = 0;
+let latestWebSamEncodeRequestId = 0;
+let latestWebSamDecodeRequestId = 0;
 
 const state: {
   settings: ComfySettings | null;
@@ -417,6 +491,10 @@ function bindEvents() {
     if (target.name === "generationMode") {
       updateDenoiseControlForMode(target.value);
     }
+    if (target.dataset.smartMaskField) {
+      updateSmartMaskDraftFromControl(target);
+      return;
+    }
     if (target.dataset.inpaintField) {
       updateInpaintDraftFromControl(target);
       return;
@@ -456,7 +534,30 @@ function bindEvents() {
     if (target.closest("#generation-form")) {
       captureGenerationDraft();
     }
+    if (target.dataset.smartMaskField) {
+      updateSmartMaskDraftFromControl(target);
+      return;
+    }
   });
+
+  app.addEventListener("contextmenu", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.id === "maskCanvas") {
+      event.preventDefault();
+    }
+  });
+
+  app.addEventListener("wheel", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.id !== "maskCanvas" && !target.closest(".preview-media")) {
+      return;
+    }
+    if (!state.maskEditMode || !state.maskToolbarMinimized) {
+      return;
+    }
+    event.preventDefault();
+    handleMaskWheelZoom(event);
+  }, { passive: false });
 
   window.addEventListener("keydown", (event) => {
     if (!state.detail) {
@@ -538,7 +639,7 @@ function bindEvents() {
       return;
     }
     event.preventDefault();
-    beginMaskStroke(event, target as HTMLCanvasElement);
+    handleMaskPointerDown(event, target as HTMLCanvasElement);
   });
 
   app.addEventListener("pointermove", (event) => {
@@ -551,6 +652,18 @@ function bindEvents() {
         event.preventDefault();
         moveMaskToolbarDrag(event, toolbar);
       }
+      return;
+    }
+    if (activeBoxPrompt) {
+      if (event.pointerId !== activeBoxPrompt.pointerId) {
+        return;
+      }
+      const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+      if (!canvas) {
+        return;
+      }
+      event.preventDefault();
+      continueWebSamBoxPrompt(event, canvas);
       return;
     }
     if (!activeMaskStroke) {
@@ -569,6 +682,14 @@ function bindEvents() {
       finishMaskToolbarDrag();
       return;
     }
+    if (activeBoxPrompt && event.pointerId === activeBoxPrompt.pointerId) {
+      const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+      if (canvas) {
+        event.preventDefault();
+        finishWebSamBoxPrompt(canvas);
+      }
+      return;
+    }
     if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
       return;
     }
@@ -582,6 +703,10 @@ function bindEvents() {
   app.addEventListener("pointercancel", (event) => {
     if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
       maskToolbarDrag = null;
+      return;
+    }
+    if (activeBoxPrompt && event.pointerId === activeBoxPrompt.pointerId) {
+      activeBoxPrompt = null;
       return;
     }
     if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
@@ -667,6 +792,8 @@ function openAssetDetail(assetId: string) {
 function closeAssetDetail() {
   commitActiveMaskCanvas();
   activeMaskStroke = null;
+  activeBoxPrompt = null;
+  void destroyWebSamWorkerSession();
   state.activeAssetId = null;
   state.maskEditMode = false;
   state.maskToolbarMinimized = false;
@@ -737,6 +864,20 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       setMaskTool(target.dataset.tool === "eraser");
     } else if (action === "clear-mask") {
       clearActiveMaskCanvas();
+    } else if (action === "websam-load-model" || action === "websam-retry") {
+      await loadActiveWebSamModel();
+    } else if (action === "websam-decode") {
+      await requestWebSamDecode();
+    } else if (action === "websam-candidate") {
+      selectSamCandidate(Number(target.dataset.index ?? 0));
+    } else if (action === "websam-apply-candidate") {
+      await applySelectedSamCandidate();
+    } else if (action === "websam-clear-prompts") {
+      clearWebSamPrompts();
+    } else if (action === "websam-clear-result") {
+      clearWebSamResult();
+    } else if (action === "websam-clear-manual") {
+      clearManualMaskLayers();
     } else if (action === "clear-inpaint") {
       clearInpaintDraft();
     } else if (action === "asset-selected") {
@@ -870,7 +1011,8 @@ async function saveSettings() {
       baseUrl: form.baseUrl,
       websocketUrl: form.websocketUrl,
       timeoutSeconds: Number(form.timeoutSeconds),
-      storageDir: form.storageDir
+      storageDir: form.storageDir,
+      webSamModelBaseUrl: form.webSamModelBaseUrl
     })
   });
   state.message = "ComfyUI接続設定を保存しました。";
@@ -1576,23 +1718,22 @@ function syncAssetModalMaskCanvas() {
 
     canvas.width = width;
     canvas.height = height;
-    const context = canvas.getContext("2d");
-    context?.clearRect(0, 0, width, height);
-
     const draft = inpaintDraftForAsset(canvas.dataset.assetId);
-    if (!hasMaskData(draft) || !context) {
+    if (!draft) {
+      const context = canvas.getContext("2d");
+      context?.clearRect(0, 0, width, height);
       return;
     }
-
-    const mask = new Image();
-    mask.addEventListener("load", () => {
+    if (draft.imageWidth !== width || draft.imageHeight !== height) {
+      setInpaintDraft({ ...draft, imageWidth: width, imageHeight: height });
+    }
+    canvas.style.opacity = String(clampNumber(draft.maskOpacity, 0, 1, 0.58));
+    void ensureMaskLayerSet(draft, width, height).then((layers) => {
       if (!canvas.isConnected || canvas.dataset.assetId !== draft.parentAssetId) {
         return;
       }
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(mask, 0, 0, canvas.width, canvas.height);
-    }, { once: true });
-    mask.src = draft.maskDataUrl;
+      renderFinalMaskToCanvas(canvas, layers, draft, true);
+    });
   };
 
   if (image.complete && image.naturalWidth > 0) {
@@ -1600,6 +1741,311 @@ function syncAssetModalMaskCanvas() {
   } else {
     image.addEventListener("load", sync, { once: true });
   }
+}
+
+function createLayerCanvas(width: number, height: number) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
+}
+
+async function ensureMaskLayerSet(draft: InpaintDraft, width: number, height: number): Promise<MaskLayerSet> {
+  let layers = maskLayerCache.get(draft.parentAssetId);
+  if (layers && layers.width === width && layers.height === height) {
+    return layers;
+  }
+
+  layers = {
+    assetId: draft.parentAssetId,
+    width,
+    height,
+    samMask: createLayerCanvas(width, height),
+    previewSamMask: createLayerCanvas(width, height),
+    manualInclude: createLayerCanvas(width, height),
+    manualErase: createLayerCanvas(width, height),
+    brushPrompt: createLayerCanvas(width, height)
+  };
+  maskLayerCache.set(draft.parentAssetId, layers);
+  await syncMaskLayerSetFromDraft(layers, draft);
+  return layers;
+}
+
+async function syncMaskLayerSetFromDraft(layers: MaskLayerSet, draft: InpaintDraft) {
+  clearCanvas(layers.samMask);
+  clearCanvas(layers.previewSamMask);
+  clearCanvas(layers.manualInclude);
+  clearCanvas(layers.manualErase);
+  clearCanvas(layers.brushPrompt);
+  await Promise.all([
+    drawDataUrlIntoCanvas(layers.samMask, draft.samMaskDataUrl),
+    drawDataUrlIntoCanvas(layers.previewSamMask, draft.previewSamMaskDataUrl),
+    drawDataUrlIntoCanvas(layers.manualInclude, draft.manualIncludeMaskDataUrl || draft.maskDataUrl),
+    drawDataUrlIntoCanvas(layers.manualErase, draft.manualEraseMaskDataUrl),
+    drawDataUrlIntoCanvas(layers.brushPrompt, draft.brushPromptMaskDataUrl)
+  ]);
+}
+
+function clearCanvas(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d");
+  context?.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawDataUrlIntoCanvas(canvas: HTMLCanvasElement, dataUrl: string) {
+  if (!dataUrl) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const image = new Image();
+    image.addEventListener("load", () => {
+      const context = canvas.getContext("2d");
+      if (context) {
+        context.clearRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      }
+      resolve();
+    }, { once: true });
+    image.addEventListener("error", () => resolve(), { once: true });
+    image.src = dataUrl;
+  });
+}
+
+function renderFinalMaskToCanvas(canvas: HTMLCanvasElement, layers: MaskLayerSet, draft: InpaintDraft, includePreview: boolean) {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  const samSource = includePreview && draft.previewSamMaskDataUrl ? layers.previewSamMask : layers.samMask;
+  context.globalCompositeOperation = "source-over";
+  context.drawImage(samSource, 0, 0, canvas.width, canvas.height);
+  context.drawImage(layers.manualInclude, 0, 0, canvas.width, canvas.height);
+  context.globalCompositeOperation = "destination-out";
+  context.drawImage(layers.manualErase, 0, 0, canvas.width, canvas.height);
+  context.globalCompositeOperation = "source-over";
+}
+
+function composeFinalMaskDataUrl(layers: MaskLayerSet, includeSamPreview = false) {
+  const canvas = createLayerCanvas(layers.width, layers.height);
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return "";
+  }
+  context.drawImage(includeSamPreview ? layers.previewSamMask : layers.samMask, 0, 0);
+  context.drawImage(layers.manualInclude, 0, 0);
+  context.globalCompositeOperation = "destination-out";
+  context.drawImage(layers.manualErase, 0, 0);
+  context.globalCompositeOperation = "source-over";
+  return canvasHasMaskPixels(canvas) ? canvas.toDataURL("image/png") : "";
+}
+
+function commitMaskLayers(assetId: string) {
+  const draft = inpaintDraftForAsset(assetId);
+  const layers = draft ? maskLayerCache.get(assetId) : null;
+  if (!draft || !layers) {
+    return;
+  }
+  setInpaintDraft({
+    ...draft,
+    samMaskDataUrl: canvasHasMaskPixels(layers.samMask) ? layers.samMask.toDataURL("image/png") : "",
+    previewSamMaskDataUrl: draft.previewSamMaskDataUrl,
+    manualIncludeMaskDataUrl: canvasHasMaskPixels(layers.manualInclude) ? layers.manualInclude.toDataURL("image/png") : "",
+    manualEraseMaskDataUrl: canvasHasMaskPixels(layers.manualErase) ? layers.manualErase.toDataURL("image/png") : "",
+    brushPromptMaskDataUrl: canvasHasMaskPixels(layers.brushPrompt) ? layers.brushPrompt.toDataURL("image/png") : "",
+    maskDataUrl: composeFinalMaskDataUrl(layers, false)
+  });
+}
+
+function getOrCreateMaskLayerSet(assetId: string, width: number, height: number): MaskLayerSet {
+  let layers = maskLayerCache.get(assetId);
+  if (layers && layers.width === width && layers.height === height) {
+    return layers;
+  }
+  layers = {
+    assetId,
+    width,
+    height,
+    samMask: createLayerCanvas(width, height),
+    previewSamMask: createLayerCanvas(width, height),
+    manualInclude: createLayerCanvas(width, height),
+    manualErase: createLayerCanvas(width, height),
+    brushPrompt: createLayerCanvas(width, height)
+  };
+  maskLayerCache.set(assetId, layers);
+  return layers;
+}
+
+function maskLayerForStroke(layers: MaskLayerSet, kind: MaskStrokeKind) {
+  if (kind === "manual-erase") {
+    return layers.manualErase;
+  }
+  if (kind === "brush-prompt") {
+    return layers.brushPrompt;
+  }
+  return layers.manualInclude;
+}
+
+function addWebSamPointPrompt(event: PointerEvent, canvas: HTMLCanvasElement) {
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const draft = ensureInpaintDraft(assetId);
+  const point = pointerToMaskCanvasPoint(canvas, event);
+  const label: 0 | 1 = event.button === 2 || event.altKey || event.shiftKey ? 0 : 1;
+  setInpaintDraft({
+    ...draft,
+    foregroundPoints: [...draft.foregroundPoints, { x: point.x, y: point.y, label, source: "point" }],
+    webSamError: "",
+    samCandidates: [],
+    previewSamMaskDataUrl: ""
+  });
+  render();
+  void requestWebSamDecode();
+}
+
+function beginWebSamBoxPrompt(event: PointerEvent, canvas: HTMLCanvasElement) {
+  const point = pointerToMaskCanvasPoint(canvas, event);
+  activeBoxPrompt = {
+    pointerId: event.pointerId,
+    start: point,
+    current: point
+  };
+  canvas.setPointerCapture(event.pointerId);
+}
+
+function continueWebSamBoxPrompt(event: PointerEvent, canvas: HTMLCanvasElement) {
+  if (!activeBoxPrompt) {
+    return;
+  }
+  activeBoxPrompt.current = pointerToMaskCanvasPoint(canvas, event);
+}
+
+function finishWebSamBoxPrompt(canvas: HTMLCanvasElement) {
+  if (!activeBoxPrompt) {
+    return;
+  }
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  if (!assetId) {
+    activeBoxPrompt = null;
+    return;
+  }
+  try {
+    canvas.releasePointerCapture(activeBoxPrompt.pointerId);
+  } catch {
+    // Capture may already be released.
+  }
+  const box = normalizePromptBox({
+    x1: activeBoxPrompt.start.x,
+    y1: activeBoxPrompt.start.y,
+    x2: activeBoxPrompt.current.x,
+    y2: activeBoxPrompt.current.y
+  });
+  activeBoxPrompt = null;
+  if (!box) {
+    return;
+  }
+  const draft = ensureInpaintDraft(assetId);
+  setInpaintDraft({
+    ...draft,
+    boxPrompt: box,
+    webSamError: "",
+    samCandidates: [],
+    previewSamMaskDataUrl: ""
+  });
+  render();
+  void requestWebSamDecode();
+}
+
+function normalizePromptBox(box: WebSamBox | null): WebSamBox | null {
+  if (!box) {
+    return null;
+  }
+  const x1 = Math.min(box.x1, box.x2);
+  const x2 = Math.max(box.x1, box.x2);
+  const y1 = Math.min(box.y1, box.y2);
+  const y2 = Math.max(box.y1, box.y2);
+  if (Math.abs(x2 - x1) < 2 || Math.abs(y2 - y1) < 2) {
+    return null;
+  }
+  return { x1, y1, x2, y2 };
+}
+
+function finishBrushPromptStroke(canvas: HTMLCanvasElement) {
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  const draft = assetId ? ensureInpaintDraft(assetId) : null;
+  const layers = assetId ? maskLayerCache.get(assetId) : null;
+  if (!assetId || !draft || !layers) {
+    return;
+  }
+  const manualPoints = draft.foregroundPoints.filter((point) => point.source !== "brush");
+  const sampledPoints = sampleBrushPromptPoints(layers.brushPrompt, 24, 96);
+  // TODO: also pass the brushPromptMask bounding box as a SAM box prompt when decoder quality needs the extra constraint.
+  setInpaintDraft({
+    ...draft,
+    foregroundPoints: [...manualPoints, ...sampledPoints],
+    brushPromptMaskDataUrl: canvasHasMaskPixels(layers.brushPrompt) ? layers.brushPrompt.toDataURL("image/png") : "",
+    samCandidates: [],
+    previewSamMaskDataUrl: "",
+    maskDataUrl: composeFinalMaskDataUrl(layers, false)
+  });
+  render();
+  void requestWebSamDecode();
+}
+
+function sampleBrushPromptPoints(canvas: HTMLCanvasElement, spacing: number, maxPoints: number): WebSamPoint[] {
+  const context = canvas.getContext("2d");
+  if (!context || canvas.width <= 0 || canvas.height <= 0) {
+    return [];
+  }
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const points: WebSamPoint[] = [];
+  for (let y = Math.floor(spacing / 2); y < canvas.height; y += spacing) {
+    for (let x = Math.floor(spacing / 2); x < canvas.width; x += spacing) {
+      if (pixels[(y * canvas.width + x) * 4 + 3]! <= 0) {
+        continue;
+      }
+      points.push({ x, y, label: 1, source: "brush" });
+      if (points.length >= maxPoints) {
+        return points;
+      }
+    }
+  }
+  return points;
+}
+
+function removeBrushPromptPointsNearSegment(assetId: string, from: { x: number; y: number }, to: { x: number; y: number }, radius: number) {
+  const draft = inpaintDraftForAsset(assetId);
+  if (!draft || draft.foregroundPoints.length === 0) {
+    return;
+  }
+  const radiusSq = radius * radius;
+  const filtered = draft.foregroundPoints.filter((point) => {
+    if (point.source !== "brush") {
+      return true;
+    }
+    return distanceToSegmentSq(point, from, to) > radiusSq;
+  });
+  if (filtered.length !== draft.foregroundPoints.length) {
+    setInpaintDraft({
+      ...draft,
+      foregroundPoints: filtered,
+      samCandidates: [],
+      previewSamMaskDataUrl: ""
+    });
+  }
+}
+
+function distanceToSegmentSq(point: { x: number; y: number }, from: { x: number; y: number }, to: { x: number; y: number }) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (dx === 0 && dy === 0) {
+    return (point.x - from.x) ** 2 + (point.y - from.y) ** 2;
+  }
+  const t = Math.max(0, Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / (dx * dx + dy * dy)));
+  const projectedX = from.x + t * dx;
+  const projectedY = from.y + t * dy;
+  return (point.x - projectedX) ** 2 + (point.y - projectedY) ** 2;
 }
 
 function beginMaskToolbarDrag(event: PointerEvent, toolbar: HTMLElement) {
@@ -1655,7 +2101,28 @@ function finishMaskToolbarDrag() {
   maskToolbarDrag = null;
 }
 
-function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
+function handleMaskPointerDown(event: PointerEvent, canvas: HTMLCanvasElement) {
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const draft = ensureInpaintDraft(assetId);
+  if (draft.selectedSmartMaskProvider !== "manual" && !draft.eraser) {
+    if (draft.webSamPromptMode === "point") {
+      addWebSamPointPrompt(event, canvas);
+      return;
+    }
+    if (draft.webSamPromptMode === "box") {
+      beginWebSamBoxPrompt(event, canvas);
+      return;
+    }
+    beginMaskStroke(event, canvas, "brush-prompt");
+    return;
+  }
+  beginMaskStroke(event, canvas, draft.eraser ? "manual-erase" : "manual-include");
+}
+
+function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement, kind: MaskStrokeKind) {
   const assetId = canvas.dataset.assetId ?? state.activeAssetId;
   if (!assetId) {
     return;
@@ -1666,10 +2133,13 @@ function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
   activeMaskStroke = {
     pointerId: event.pointerId,
     x: point.x,
-    y: point.y
+    y: point.y,
+    kind
   };
-  drawMaskSegment(canvas, point, point);
-  commitMaskCanvas(canvas);
+  drawMaskSegment(canvas, point, point, kind);
+  if (kind === "manual-include" || kind === "manual-erase") {
+    commitMaskCanvas(canvas);
+  }
 }
 
 function continueMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
@@ -1677,11 +2147,12 @@ function continueMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
     return;
   }
   const point = pointerToMaskCanvasPoint(canvas, event);
-  drawMaskSegment(canvas, activeMaskStroke, point);
+  drawMaskSegment(canvas, activeMaskStroke, point, activeMaskStroke.kind);
   activeMaskStroke = {
     pointerId: event.pointerId,
     x: point.x,
-    y: point.y
+    y: point.y,
+    kind: activeMaskStroke.kind
   };
 }
 
@@ -1693,8 +2164,13 @@ function finishMaskStroke(canvas: HTMLCanvasElement) {
       // Pointer capture may already be released by the browser.
     }
   }
+  const finishedKind = activeMaskStroke?.kind ?? "manual-include";
   activeMaskStroke = null;
-  commitActiveMaskCanvas();
+  if (finishedKind === "brush-prompt") {
+    finishBrushPromptStroke(canvas);
+  } else {
+    commitActiveMaskCanvas();
+  }
 }
 
 function pointerToMaskCanvasPoint(canvas: HTMLCanvasElement, event: PointerEvent) {
@@ -1707,16 +2183,21 @@ function pointerToMaskCanvasPoint(canvas: HTMLCanvasElement, event: PointerEvent
   };
 }
 
-function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }) {
+function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }, kind: MaskStrokeKind) {
   const assetId = canvas.dataset.assetId ?? state.activeAssetId;
   const draft = inpaintDraftForAsset(assetId) ?? (assetId ? ensureInpaintDraft(assetId) : null);
-  const context = canvas.getContext("2d");
-  if (!draft || !context) {
+  if (!draft || !assetId) {
+    return;
+  }
+  const layers = getOrCreateMaskLayerSet(assetId, canvas.width, canvas.height);
+  const layer = maskLayerForStroke(layers, kind);
+  const context = layer.getContext("2d");
+  if (!context) {
     return;
   }
 
   context.save();
-  context.globalCompositeOperation = draft.eraser ? "destination-out" : "source-over";
+  context.globalCompositeOperation = "source-over";
   context.lineCap = "round";
   context.lineJoin = "round";
   context.lineWidth = draft.brushSize;
@@ -1734,6 +2215,10 @@ function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number
     context.stroke();
   }
   context.restore();
+  if (kind === "manual-erase") {
+    removeBrushPromptPointsNearSegment(assetId, from, to, draft.brushSize / 2);
+  }
+  renderFinalMaskToCanvas(canvas, layers, draft, true);
 }
 
 function commitActiveMaskCanvas() {
@@ -1749,11 +2234,7 @@ function commitMaskCanvas(canvas: HTMLCanvasElement) {
     return;
   }
 
-  const draft = ensureInpaintDraft(assetId);
-  setInpaintDraft({
-    ...draft,
-    maskDataUrl: canvasHasMaskPixels(canvas) ? canvas.toDataURL("image/png") : ""
-  });
+  commitMaskLayers(assetId);
 }
 
 function canvasHasMaskPixels(canvas: HTMLCanvasElement) {
@@ -1968,6 +2449,7 @@ function renderSettingsPanel() {
         <label>WebSocket URL<input name="websocketUrl" value="${escapeAttr(settings?.websocketUrl ?? "ws://127.0.0.1:8188/ws")}" /></label>
         <label>Timeout秒<input name="timeoutSeconds" type="number" min="1" value="${settings?.timeoutSeconds ?? 60}" /></label>
         <label>保存先<input name="storageDir" value="${escapeAttr(settings?.storageDir ?? "")}" /></label>
+        <label>WebSAM model base URL<input name="webSamModelBaseUrl" value="${escapeAttr(settings?.webSamModelBaseUrl ?? "")}" placeholder="https://github.com/<owner>/<repo>/releases/download/websam-models-v1" /></label>
         <div class="button-row">
           <button class="button-secondary" type="button" data-action="save-settings">${iconSave()}保存</button>
           <button class="button-secondary" type="button" data-action="test-comfy">${iconPulse()}接続テスト</button>
@@ -2265,21 +2747,69 @@ function defaultInpaintDraft(assetId: string): InpaintDraft {
     inpaintArea: "only_masked",
     onlyMaskedPadding: 32,
     brushSize: 48,
-    eraser: false
+    eraser: false,
+    selectedSmartMaskProvider: "manual",
+    selectedWebSamModel: "slimsam-77",
+    webSamModelStatus: "idle",
+    webSamDownloadProgress: 0,
+    webSamStatusText: "未取得",
+    webSamError: "",
+    webSamPromptMode: "point",
+    foregroundPoints: [],
+    boxPrompt: null,
+    brushPromptMaskDataUrl: "",
+    samCandidates: [],
+    selectedSamCandidateIndex: 0,
+    samMaskDataUrl: "",
+    previewSamMaskDataUrl: "",
+    manualIncludeMaskDataUrl: "",
+    manualEraseMaskDataUrl: "",
+    threshold: 0,
+    smoothing: 0,
+    maskOpacity: 0.58,
+    zoomScale: 1,
+    panOffset: { x: 0, y: 0 },
+    imageWidth: null,
+    imageHeight: null
   };
+}
+
+function normalizeInpaintDraft(draft: InpaintDraft): InpaintDraft {
+  const defaults = defaultInpaintDraft(draft.parentAssetId);
+  const normalized = {
+    ...defaults,
+    ...draft,
+    panOffset: draft.panOffset ?? defaults.panOffset,
+    foregroundPoints: draft.foregroundPoints ?? [],
+    samCandidates: draft.samCandidates ?? []
+  };
+  if (
+    !normalized.samMaskDataUrl &&
+    !normalized.previewSamMaskDataUrl &&
+    !normalized.manualIncludeMaskDataUrl &&
+    !normalized.manualEraseMaskDataUrl &&
+    !normalized.brushPromptMaskDataUrl &&
+    normalized.maskDataUrl
+  ) {
+    normalized.manualIncludeMaskDataUrl = normalized.maskDataUrl;
+  }
+  return normalized;
 }
 
 function inpaintDraftForAsset(assetId: string | null | undefined) {
   const stored = assetId ? state.inpaintDrafts[assetId] : null;
   if (stored) {
-    return stored;
+    const normalized = normalizeInpaintDraft(stored);
+    state.inpaintDrafts[normalized.parentAssetId] = normalized;
+    return normalized;
   }
   const draft = state.generationDraft?.inpaint;
   if (!assetId || !draft || draft.parentAssetId !== assetId) {
     return null;
   }
-  state.inpaintDrafts[assetId] = draft;
-  return draft;
+  const normalized = normalizeInpaintDraft(draft);
+  state.inpaintDrafts[assetId] = normalized;
+  return normalized;
 }
 
 function setInpaintDraft(draft: InpaintDraft | null) {
@@ -2287,19 +2817,20 @@ function setInpaintDraft(draft: InpaintDraft | null) {
     state.generationDraft?.inpaint?.parentAssetId ??
     state.generationDraft?.parentAssetId ??
     state.activeAssetId;
-  if (draft) {
-    state.inpaintDrafts[draft.parentAssetId] = draft;
+  const normalized = draft ? normalizeInpaintDraft(draft) : null;
+  if (normalized) {
+    state.inpaintDrafts[normalized.parentAssetId] = normalized;
   } else if (previousAssetId) {
     delete state.inpaintDrafts[previousAssetId];
   }
   state.generationDraft = {
     ...(state.generationDraft ?? {}),
-    inpaint: draft
+    inpaint: normalized
   };
 }
 
 function ensureInpaintDraft(assetId: string) {
-  const draft = inpaintDraftForAsset(assetId) ?? defaultInpaintDraft(assetId);
+  const draft = normalizeInpaintDraft(inpaintDraftForAsset(assetId) ?? defaultInpaintDraft(assetId));
   state.inpaintDrafts[assetId] = draft;
   state.generationDraft = {
     ...(state.generationDraft ?? {}),
@@ -2367,6 +2898,540 @@ function updateInpaintDraftFromControl(control: HTMLInputElement | HTMLTextAreaE
   setInpaintDraft(next);
 }
 
+function updateSmartMaskDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
+  const field = control.dataset.smartMaskField;
+  const assetId = state.generationDraft?.inpaint?.parentAssetId ?? state.activeAssetId;
+  if (!field || !assetId) {
+    return;
+  }
+  const current = ensureInpaintDraft(assetId);
+  const next: InpaintDraft = { ...current };
+  if (field === "provider" && isSmartMaskProvider(control.value)) {
+    next.selectedSmartMaskProvider = control.value;
+    next.eraser = false;
+    if (control.value === "manual") {
+      next.webSamStatusText = "Manual";
+    } else {
+      next.webSamError = "";
+      next.webSamModelStatus = state.settings?.webSamModelBaseUrl?.trim() ? "not-cached" : "missing-url";
+      next.webSamStatusText = state.settings?.webSamModelBaseUrl?.trim() ? "未取得" : "モデルURL未設定";
+    }
+  } else if (field === "promptMode" && isWebSamPromptMode(control.value)) {
+    next.webSamPromptMode = control.value;
+    next.eraser = false;
+  } else if (field === "threshold") {
+    next.threshold = clampNumber(Number(control.value), -10, 10, 0);
+  } else if (field === "smoothing") {
+    next.smoothing = clampNumber(Number(control.value), 0, 4, 0);
+  } else if (field === "maskOpacity") {
+    next.maskOpacity = clampNumber(Number(control.value), 0, 1, 0.58);
+  }
+  setInpaintDraft(next);
+
+  if (field === "provider") {
+    render();
+    if (next.selectedSmartMaskProvider !== "manual") {
+      void loadActiveWebSamModel();
+    }
+    return;
+  }
+  if (field === "threshold" || field === "smoothing") {
+    void requestWebSamReprocess();
+    return;
+  }
+  if (field === "maskOpacity") {
+    const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+    if (canvas) {
+      canvas.style.opacity = String(next.maskOpacity);
+    }
+  }
+  render();
+}
+
+function isSmartMaskProvider(value: string): value is WebSamProviderId {
+  return SMART_MASK_PROVIDERS.some((provider) => provider.id === value);
+}
+
+function isWebSamPromptMode(value: string): value is WebSamPromptMode {
+  return value === "point" || value === "box" || value === "brush";
+}
+
+function ensureWebSamWorker() {
+  if (webSamWorker) {
+    return webSamWorker;
+  }
+  webSamWorker = new Worker("/websam-worker.js", { type: "module" });
+  webSamWorker.addEventListener("message", (event: MessageEvent<WebSamWorkerResponse>) => {
+    void handleWebSamWorkerResponse(event.data);
+  });
+  webSamWorker.addEventListener("error", (event) => {
+    updateActiveWebSamDraft({
+      webSamModelStatus: "error",
+      webSamError: event.message || "WebSAM Worker initialization failed.",
+      webSamStatusText: "Error"
+    });
+  });
+  return webSamWorker;
+}
+
+function postWebSamMessage(message: WebSamWorkerRequest) {
+  ensureWebSamWorker().postMessage(message);
+}
+
+function nextWebSamRequestId() {
+  webSamRequestId += 1;
+  return webSamRequestId;
+}
+
+function updateActiveWebSamDraft(patch: Partial<InpaintDraft>) {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!draft) {
+    return;
+  }
+  setInpaintDraft({ ...draft, ...patch });
+  render();
+}
+
+async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!assetId || !draft) {
+    return;
+  }
+
+  if (message.type === "progress") {
+    if (message.requestId < latestWebSamLoadRequestId && message.progress.status !== "encoding" && message.progress.status !== "decoding") {
+      return;
+    }
+    setInpaintDraft({
+      ...draft,
+      webSamModelStatus: message.progress.status,
+      webSamDownloadProgress: message.progress.totalBytes > 0 ? message.progress.bytesDownloaded / message.progress.totalBytes : 0,
+      webSamStatusText: webSamProgressText(message.progress),
+      webSamError: ""
+    });
+    render();
+    return;
+  }
+
+  if (message.type === "model-ready") {
+    if (message.requestId !== latestWebSamLoadRequestId) {
+      return;
+    }
+    setInpaintDraft({
+      ...draft,
+      webSamModelStatus: "initializing",
+      webSamDownloadProgress: 1,
+      webSamStatusText: message.fallback ? "WebGPU不可のためWASMで初期化" : `${message.backend.toUpperCase()} 初期化済み`,
+      webSamError: ""
+    });
+    render();
+    await encodeActiveImageForWebSam();
+    return;
+  }
+
+  if (message.type === "encoded") {
+    if (message.requestId !== latestWebSamEncodeRequestId) {
+      return;
+    }
+    const current = inpaintDraftForAsset(assetId);
+    if (!current) {
+      return;
+    }
+    setInpaintDraft({
+      ...current,
+      webSamModelStatus: "ready",
+      webSamStatusText: "Ready",
+      imageWidth: message.width,
+      imageHeight: message.height,
+      webSamError: ""
+    });
+    render();
+    if (hasWebSamPrompt(current)) {
+      await requestWebSamDecode();
+    }
+    return;
+  }
+
+  if (message.type === "decoded") {
+    if (message.requestId !== latestWebSamDecodeRequestId) {
+      return;
+    }
+    const candidates = await Promise.all(message.candidates.map(candidateFromWorker));
+    const selectedIndex = candidates.some((candidate) => candidate.index === message.selectedIndex)
+      ? message.selectedIndex
+      : candidates[0]?.index ?? 0;
+    const selected = candidates.find((candidate) => candidate.index === selectedIndex) ?? candidates[0] ?? null;
+    const current = inpaintDraftForAsset(assetId);
+    if (!current) {
+      return;
+    }
+    if (selected) {
+      await drawCandidatePreview(assetId, selected.dataUrl);
+    }
+    setInpaintDraft({
+      ...current,
+      webSamModelStatus: "ready",
+      webSamStatusText: "Ready",
+      webSamError: "",
+      samCandidates: candidates,
+      selectedSamCandidateIndex: selectedIndex,
+      previewSamMaskDataUrl: selected?.dataUrl ?? ""
+    });
+    render();
+    return;
+  }
+
+  if (message.type === "error") {
+    if (message.requestId < Math.max(latestWebSamLoadRequestId, latestWebSamEncodeRequestId, latestWebSamDecodeRequestId)) {
+      return;
+    }
+    setInpaintDraft({
+      ...draft,
+      webSamModelStatus: "error",
+      webSamError: message.message,
+      webSamStatusText: "Error"
+    });
+    render();
+  }
+}
+
+function webSamProgressText(progress: { status: WebSamModelStatus; bytesDownloaded: number; totalBytes: number; cached: boolean; detail?: string }) {
+  if (progress.status === "cached") {
+    return "キャッシュ済み";
+  }
+  if (progress.status === "downloading") {
+    return `ダウンロード中 ${formatModelBytes(progress.bytesDownloaded)} / ${formatModelBytes(progress.totalBytes)}`;
+  }
+  if (progress.status === "initializing") {
+    return "初期化中";
+  }
+  if (progress.status === "encoding") {
+    return progress.detail === "encoder" ? "画像encode中" : "画像準備中";
+  }
+  if (progress.status === "decoding") {
+    return "マスク候補生成中";
+  }
+  if (progress.status === "not-cached") {
+    return "未取得";
+  }
+  return progress.status;
+}
+
+async function loadActiveWebSamModel() {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? ensureInpaintDraft(assetId) : null;
+  const model = draft ? modelForProvider(draft.selectedSmartMaskProvider) : null;
+  if (!assetId || !draft || !model) {
+    return;
+  }
+  const urls = buildWebSamModelUrls(state.settings?.webSamModelBaseUrl ?? "", model);
+  if (!urls) {
+    setInpaintDraft({
+      ...draft,
+      webSamModelStatus: "missing-url",
+      webSamError: "webSamModelBaseUrl が未設定です。",
+      webSamStatusText: "モデルURL未設定"
+    });
+    render();
+    return;
+  }
+  const requestId = nextWebSamRequestId();
+  latestWebSamLoadRequestId = requestId;
+  setInpaintDraft({
+    ...draft,
+    webSamModelStatus: "downloading",
+    webSamDownloadProgress: 0,
+    webSamError: "",
+    webSamStatusText: "モデル確認中"
+  });
+  render();
+  postWebSamMessage({ type: "load-model", requestId, model, urls });
+}
+
+async function encodeActiveImageForWebSam() {
+  const image = document.querySelector<HTMLImageElement>("#previewImage");
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!image || !assetId || !draft) {
+    return;
+  }
+  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+    await new Promise<void>((resolve, reject) => {
+      image.addEventListener("load", () => resolve(), { once: true });
+      image.addEventListener("error", () => reject(new Error("画像を読み込めませんでした。")), { once: true });
+    });
+  }
+  const raw = imageToRawData(image);
+  const requestId = nextWebSamRequestId();
+  latestWebSamEncodeRequestId = requestId;
+  setInpaintDraft({
+    ...draft,
+    webSamModelStatus: "encoding",
+    webSamStatusText: "画像encode中",
+    webSamError: ""
+  });
+  render();
+  postWebSamMessage({ type: "encode-image", requestId, imageData: raw });
+}
+
+function imageToRawData(image: HTMLImageElement) {
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("画像処理Canvasを初期化できません。");
+  }
+  context.drawImage(image, 0, 0);
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  return {
+    data: imageData.data,
+    width: canvas.width,
+    height: canvas.height
+  };
+}
+
+async function requestWebSamDecode() {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!assetId || !draft || draft.selectedSmartMaskProvider === "manual") {
+    return;
+  }
+  if (!hasWebSamPrompt(draft)) {
+    setInpaintDraft({
+      ...draft,
+      webSamError: "Point、Box、Brush prompt のいずれかを指定してください。",
+      webSamStatusText: "プロンプト未指定"
+    });
+    render();
+    return;
+  }
+  if (draft.webSamModelStatus !== "ready") {
+    if (draft.webSamModelStatus === "idle" || draft.webSamModelStatus === "not-cached" || draft.webSamModelStatus === "missing-url" || draft.webSamModelStatus === "error") {
+      await loadActiveWebSamModel();
+    }
+    return;
+  }
+  const width = draft.imageWidth ?? document.querySelector<HTMLCanvasElement>("#maskCanvas")?.width ?? 0;
+  const height = draft.imageHeight ?? document.querySelector<HTMLCanvasElement>("#maskCanvas")?.height ?? 0;
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+  const requestId = nextWebSamRequestId();
+  latestWebSamDecodeRequestId = requestId;
+  setInpaintDraft({
+    ...draft,
+    webSamModelStatus: "decoding",
+    webSamStatusText: "マスク候補生成中",
+    webSamError: ""
+  });
+  render();
+  postWebSamMessage({
+    type: "decode",
+    requestId,
+    prompt: {
+      points: draft.foregroundPoints,
+      box: draft.boxPrompt
+    },
+    outputWidth: width,
+    outputHeight: height,
+    threshold: draft.threshold,
+    smoothing: draft.smoothing
+  });
+}
+
+async function requestWebSamReprocess() {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!assetId || !draft || draft.selectedSmartMaskProvider === "manual" || draft.samCandidates.length === 0) {
+    return;
+  }
+  const width = draft.imageWidth ?? document.querySelector<HTMLCanvasElement>("#maskCanvas")?.width ?? 0;
+  const height = draft.imageHeight ?? document.querySelector<HTMLCanvasElement>("#maskCanvas")?.height ?? 0;
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+  const requestId = nextWebSamRequestId();
+  latestWebSamDecodeRequestId = requestId;
+  postWebSamMessage({
+    type: "reprocess",
+    requestId,
+    outputWidth: width,
+    outputHeight: height,
+    threshold: draft.threshold,
+    smoothing: draft.smoothing
+  });
+}
+
+function hasWebSamPrompt(draft: InpaintDraft) {
+  return draft.foregroundPoints.length > 0 || !!normalizePromptBox(draft.boxPrompt);
+}
+
+function candidateFromWorker(candidate: WebSamWorkerCandidate): Promise<SamMaskCandidate> {
+  return imageDataToDataUrl(candidate.mask).then((dataUrl) => ({
+    index: candidate.index,
+    score: candidate.score,
+    dataUrl
+  }));
+}
+
+function imageDataToDataUrl(imageData: ImageData) {
+  const canvas = document.createElement("canvas");
+  canvas.width = imageData.width;
+  canvas.height = imageData.height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return Promise.resolve("");
+  }
+  context.putImageData(imageData, 0, 0);
+  return Promise.resolve(canvas.toDataURL("image/png"));
+}
+
+async function drawCandidatePreview(assetId: string, dataUrl: string) {
+  const draft = inpaintDraftForAsset(assetId);
+  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+  if (!draft || !canvas) {
+    return;
+  }
+  const layers = await ensureMaskLayerSet(draft, canvas.width, canvas.height);
+  clearCanvas(layers.previewSamMask);
+  await drawDataUrlIntoCanvas(layers.previewSamMask, dataUrl);
+  renderFinalMaskToCanvas(canvas, layers, { ...draft, previewSamMaskDataUrl: dataUrl }, true);
+}
+
+function selectSamCandidate(index: number) {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  const candidate = draft?.samCandidates.find((item) => item.index === index) ?? null;
+  if (!assetId || !draft || !candidate) {
+    return;
+  }
+  setInpaintDraft({
+    ...draft,
+    selectedSamCandidateIndex: candidate.index,
+    previewSamMaskDataUrl: candidate.dataUrl
+  });
+  void drawCandidatePreview(assetId, candidate.dataUrl);
+  render();
+}
+
+async function applySelectedSamCandidate() {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  const candidate = draft?.samCandidates.find((item) => item.index === draft.selectedSamCandidateIndex) ?? null;
+  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+  if (!assetId || !draft || !candidate || !canvas) {
+    return;
+  }
+  const layers = await ensureMaskLayerSet(draft, canvas.width, canvas.height);
+  clearCanvas(layers.samMask);
+  clearCanvas(layers.previewSamMask);
+  await drawDataUrlIntoCanvas(layers.samMask, candidate.dataUrl);
+  setInpaintDraft({
+    ...draft,
+    samMaskDataUrl: candidate.dataUrl,
+    previewSamMaskDataUrl: "",
+    maskDataUrl: composeFinalMaskDataUrl(layers, false),
+    webSamStatusText: "SAM結果を適用"
+  });
+  renderFinalMaskToCanvas(canvas, layers, { ...draft, previewSamMaskDataUrl: "" }, false);
+  render();
+}
+
+function clearWebSamPrompts() {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  const layers = assetId ? maskLayerCache.get(assetId) : null;
+  if (!assetId || !draft) {
+    return;
+  }
+  if (layers) {
+    clearCanvas(layers.brushPrompt);
+  }
+  setInpaintDraft({
+    ...draft,
+    foregroundPoints: [],
+    boxPrompt: null,
+    brushPromptMaskDataUrl: "",
+    samCandidates: [],
+    selectedSamCandidateIndex: 0,
+    previewSamMaskDataUrl: "",
+    webSamError: ""
+  });
+  render();
+}
+
+function clearWebSamResult() {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  const layers = assetId ? maskLayerCache.get(assetId) : null;
+  if (!assetId || !draft) {
+    return;
+  }
+  if (layers) {
+    clearCanvas(layers.samMask);
+    clearCanvas(layers.previewSamMask);
+    setInpaintDraft({
+      ...draft,
+      samMaskDataUrl: "",
+      previewSamMaskDataUrl: "",
+      samCandidates: [],
+      selectedSamCandidateIndex: 0,
+      maskDataUrl: composeFinalMaskDataUrl(layers, false)
+    });
+  } else {
+    setInpaintDraft({ ...draft, samMaskDataUrl: "", previewSamMaskDataUrl: "", samCandidates: [], selectedSamCandidateIndex: 0, maskDataUrl: "" });
+  }
+  render();
+}
+
+function clearManualMaskLayers() {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  const layers = assetId ? maskLayerCache.get(assetId) : null;
+  if (!assetId || !draft) {
+    return;
+  }
+  if (layers) {
+    clearCanvas(layers.manualInclude);
+    clearCanvas(layers.manualErase);
+    setInpaintDraft({
+      ...draft,
+      manualIncludeMaskDataUrl: "",
+      manualEraseMaskDataUrl: "",
+      maskDataUrl: composeFinalMaskDataUrl(layers, false)
+    });
+  } else {
+    setInpaintDraft({ ...draft, manualIncludeMaskDataUrl: "", manualEraseMaskDataUrl: "" });
+  }
+  render();
+}
+
+function handleMaskWheelZoom(event: WheelEvent) {
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!assetId || !draft) {
+    return;
+  }
+  const direction = event.deltaY < 0 ? 1 : -1;
+  const nextScale = clampNumber(draft.zoomScale + direction * 0.12, 0.25, 4, 1);
+  setInpaintDraft({
+    ...draft,
+    zoomScale: nextScale
+  });
+  render();
+}
+
+async function destroyWebSamWorkerSession() {
+  if (!webSamWorker) {
+    return;
+  }
+  const requestId = nextWebSamRequestId();
+  postWebSamMessage({ type: "destroy", requestId });
+}
+
 function inpaintRequestForParent(parentAssetId: string | null, generationMode: string): InpaintOptions | null {
   if (generationMode !== "img2img" || !parentAssetId) {
     return null;
@@ -2429,20 +3494,32 @@ function clearActiveMaskCanvas() {
   if (!assetId) {
     return;
   }
-  if (canvas) {
-    const context = canvas.getContext("2d");
-    context?.clearRect(0, 0, canvas.width, canvas.height);
-  }
+  maskLayerCache.delete(assetId);
   const draft = ensureInpaintDraft(assetId);
   setInpaintDraft({
     ...draft,
-    maskDataUrl: ""
+    maskDataUrl: "",
+    samMaskDataUrl: "",
+    previewSamMaskDataUrl: "",
+    manualIncludeMaskDataUrl: "",
+    manualEraseMaskDataUrl: "",
+    brushPromptMaskDataUrl: "",
+    foregroundPoints: [],
+    boxPrompt: null,
+    samCandidates: [],
+    selectedSamCandidateIndex: 0,
+    webSamError: "",
+    webSamStatusText: draft.selectedSmartMaskProvider === "manual" ? draft.webSamStatusText : "Ready"
   });
   render();
 }
 
 function clearInpaintDraft() {
   activeMaskStroke = null;
+  activeBoxPrompt = null;
+  if (state.activeAssetId) {
+    maskLayerCache.delete(state.activeAssetId);
+  }
   setInpaintDraft(null);
   render();
 }
@@ -2928,6 +4005,10 @@ function renderAssetModal() {
   }
   const inpaint = inpaintDraftForAsset(asset.id);
   const editing = state.maskEditMode;
+  const draft = inpaint ?? defaultInpaintDraft(asset.id);
+  const zoomStyle = editing
+    ? ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`
+    : "";
   const promptValue = currentPositivePromptValue(asset);
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
   return `
@@ -2937,9 +4018,11 @@ function renderAssetModal() {
           ${renderMaskToggleButton(editing)}
           ${editing ? renderMaskModeIndicator(inpaint) : ""}
         </div>
-        <div class="preview-media">
-          <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
-          ${editing ? `<canvas id="maskCanvas" class="mask-canvas${state.maskToolbarMinimized ? "" : " mask-locked"}" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>` : ""}
+        <div class="preview-media"${zoomStyle}>
+          <div class="mask-zoom-stage">
+            <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
+            ${editing ? `<canvas id="maskCanvas" class="mask-canvas${state.maskToolbarMinimized ? "" : " mask-locked"}" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
+          </div>
         </div>
         ${renderMaskToolbar(asset, inpaint, editing, promptValue)}
         <button class="preview-close" type="button" data-action="close-detail" aria-label="閉じる">${iconClose()}</button>
@@ -2978,6 +4061,131 @@ function renderMaskModeIndicator(inpaint: InpaintDraft | null) {
   `;
 }
 
+function renderWebSamPromptOverlay(draft: InpaintDraft, asset: Asset) {
+  const width = draft.imageWidth ?? assetDimension(asset, "width") ?? 1;
+  const height = draft.imageHeight ?? assetDimension(asset, "height") ?? 1;
+  const points = draft.foregroundPoints.map((point) => {
+    const className = point.label === 0 ? "background" : point.source === "brush" ? "brush" : "foreground";
+    return `<circle class="websam-point ${className}" cx="${formatCssNumber(point.x)}" cy="${formatCssNumber(point.y)}" r="${Math.max(5, Math.min(width, height) * 0.007)}"></circle>`;
+  }).join("");
+  const box = normalizePromptBox(draft.boxPrompt);
+  const boxMarkup = box
+    ? `<rect class="websam-box" x="${formatCssNumber(box.x1)}" y="${formatCssNumber(box.y1)}" width="${formatCssNumber(box.x2 - box.x1)}" height="${formatCssNumber(box.y2 - box.y1)}"></rect>`
+    : "";
+  return `
+    <svg class="websam-prompt-overlay" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}" aria-hidden="true">
+      ${boxMarkup}
+      ${points}
+    </svg>
+  `;
+}
+
+function renderSmartMaskSection(draft: InpaintDraft) {
+  const isWebSam = draft.selectedSmartMaskProvider !== "manual";
+  return `
+    <div class="smart-mask-section">
+      <label>Smart selection
+        <select class="workflow-select" data-smart-mask-field="provider">
+          ${SMART_MASK_PROVIDERS.map((provider) => `
+            <option value="${provider.id}" ${draft.selectedSmartMaskProvider === provider.id ? "selected" : ""}>${escapeHtml(provider.label)}</option>
+          `).join("")}
+        </select>
+      </label>
+      ${isWebSam ? renderWebSamControls(draft) : ""}
+    </div>
+  `;
+}
+
+function renderWebSamControls(draft: InpaintDraft) {
+  const model = modelForProvider(draft.selectedSmartMaskProvider);
+  const statusClass = draft.webSamModelStatus === "ready"
+    ? "active"
+    : draft.webSamModelStatus === "error" || draft.webSamModelStatus === "missing-url"
+      ? "error"
+      : "";
+  const canDecode = draft.webSamModelStatus === "ready" && hasWebSamPrompt(draft);
+  return `
+    <div class="websam-panel">
+      <div class="websam-model-card">
+        <div>
+          <strong>${escapeHtml(model?.label ?? draft.selectedWebSamModel)}</strong>
+          <small>${escapeHtml(model ? `${model.description} / Encoder ${formatModelBytes(model.encoderSize)} / Decoder ${formatModelBytes(model.decoderSize)}` : "")}</small>
+        </div>
+        <span class="mask-status ${statusClass}">${escapeHtml(webSamStatusLabel(draft.webSamModelStatus))}</span>
+      </div>
+      <div class="websam-progress"><span style="width: ${formatCssNumber(clampNumber(draft.webSamDownloadProgress, 0, 1, 0) * 100)}%"></span></div>
+      <div class="websam-status-line">
+        <span>${escapeHtml(draft.webSamStatusText || webSamStatusLabel(draft.webSamModelStatus))}</span>
+        <button class="button-secondary compact mini-button" type="button" data-action="${draft.webSamModelStatus === "error" || draft.webSamModelStatus === "missing-url" ? "websam-retry" : "websam-load-model"}">${iconLoopArrows()}再試行</button>
+      </div>
+      ${draft.webSamError ? `<p class="websam-error">${escapeHtml(draft.webSamError)}</p>` : ""}
+      <label>Prompt mode
+        <select class="workflow-select" data-smart-mask-field="promptMode">
+          <option value="point" ${draft.webSamPromptMode === "point" ? "selected" : ""}>Point</option>
+          <option value="box" ${draft.webSamPromptMode === "box" ? "selected" : ""}>Box</option>
+          <option value="brush" ${draft.webSamPromptMode === "brush" ? "selected" : ""}>Brush prompt</option>
+        </select>
+      </label>
+      ${renderSmartMaskRange("threshold", "Threshold", draft.threshold, -10, 10, 0.1, "webSamThresholdValue")}
+      ${renderSmartMaskRange("smoothing", "Smoothing", draft.smoothing, 0, 4, 1, "webSamSmoothingValue")}
+      ${renderSmartMaskRange("maskOpacity", "Mask opacity", draft.maskOpacity, 0, 1, 0.05, "webSamOpacityValue")}
+      <div class="websam-actions">
+        <button class="button-secondary compact" type="button" data-action="websam-decode" ${canDecode ? "" : "disabled"}>${iconPlay()}候補生成</button>
+        <button class="button-secondary compact" type="button" data-action="websam-clear-prompts">${iconReset()}点クリア</button>
+        <button class="button-secondary compact" type="button" data-action="websam-clear-result">${iconTrash()}SAM結果クリア</button>
+      </div>
+      ${renderSamCandidateButtons(draft)}
+      <div class="websam-actions">
+        <button class="button-primary compact" type="button" data-action="websam-apply-candidate" ${draft.samCandidates.length ? "" : "disabled"}>${iconCheck()}適用</button>
+        <button class="button-secondary compact" type="button" data-action="websam-clear-manual">${iconEraser()}手動修正クリア</button>
+      </div>
+      <div class="websam-counts">
+        <span>FG/BG ${draft.foregroundPoints.filter((point) => point.label === 1).length}/${draft.foregroundPoints.filter((point) => point.label === 0).length}</span>
+        <span>Brush ${draft.foregroundPoints.filter((point) => point.source === "brush").length}</span>
+        <span>Zoom ${Math.round(draft.zoomScale * 100)}%</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderSmartMaskRange(field: string, label: string, value: number, min: number, max: number, step: number, valueId: string) {
+  return `
+    <div class="range-control smart-mask-range">
+      <div class="range-label"><span>${escapeHtml(label)}</span><strong id="${valueId}">${formatNumber(value)}</strong></div>
+      <input type="range" min="${min}" max="${max}" step="${step}" value="${formatCssNumber(value)}" data-value-target="${valueId}" data-smart-mask-field="${field}" />
+    </div>
+  `;
+}
+
+function renderSamCandidateButtons(draft: InpaintDraft) {
+  if (draft.samCandidates.length === 0) {
+    return `<div class="websam-candidates empty-candidates"><span>Mask 1</span><span>Mask 2</span><span>Mask 3</span></div>`;
+  }
+  return `
+    <div class="websam-candidates">
+      ${draft.samCandidates.map((candidate) => `
+        <button class="websam-candidate ${candidate.index === draft.selectedSamCandidateIndex ? "active" : ""}" type="button" data-action="websam-candidate" data-index="${candidate.index}">
+          <span>Mask ${candidate.index + 1}</span>
+          <small>${candidate.score === null ? "-" : `${(candidate.score * 100).toFixed(1)}%`}</small>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function webSamStatusLabel(status: WebSamModelStatus) {
+  if (status === "idle") return "未取得";
+  if (status === "missing-url") return "URL未設定";
+  if (status === "not-cached") return "未取得";
+  if (status === "downloading") return "ダウンロード中";
+  if (status === "cached") return "キャッシュ済み";
+  if (status === "initializing") return "初期化中";
+  if (status === "encoding") return "Encoding";
+  if (status === "ready") return "Ready";
+  if (status === "decoding") return "Decoding";
+  return "Error";
+}
+
 function currentPositivePromptValue(asset: Asset) {
   const activeRound = state.detail ? getActiveRound(state.detail) : null;
   return state.generationDraft?.prompt ?? activeRound?.request?.prompt ?? asset.prompt ?? defaultPrompt;
@@ -3011,6 +4219,7 @@ function renderMaskToolbar(asset: Asset, inpaint: InpaintDraft | null, editing: 
         <div class="mask-toolbar-row">
           <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
         </div>
+        ${renderSmartMaskSection(draft)}
         <div class="mask-toolbar-row">
           <button class="mask-tool-button ${draft.eraser ? "" : "active"}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ">${iconBrush()}</button>
           <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム">${iconEraser()}</button>
@@ -3246,6 +4455,10 @@ function formatDate(value: string) {
 
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0$/, "");
+}
+
+function formatCssNumber(value: number) {
+  return Number.isFinite(value) ? String(Math.round(value * 1000) / 1000) : "0";
 }
 
 function formatSliderValue(input: HTMLInputElement) {

@@ -30,7 +30,8 @@ export const defaultComfySettings: ComfySettings = {
   websocketUrl: "ws://127.0.0.1:8188/ws",
   timeoutSeconds: 60,
   imageFetchMode: "view",
-  storageDir: dataRoot
+  storageDir: dataRoot,
+  webSamModelBaseUrl: ""
 };
 
 export function initializeDb() {

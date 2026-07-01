@@ -11,5 +11,11 @@
   },
   "engines": {
     "node": ">=24"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.27.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }

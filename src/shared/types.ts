@@ -47,6 +47,7 @@ export interface ComfySettings {
   timeoutSeconds: number;
   imageFetchMode: "view";
   storageDir: string;
+  webSamModelBaseUrl: string;
 }
 
 export interface GenerationRequest {
