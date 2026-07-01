@@ -38,6 +38,7 @@ import {
   iconZoom
 } from "./icons";
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
+import { escapeAttr, escapeHtml, formatCssNumber, formatDate, formatNumber, formatSliderValue } from "./format";
 import type {
   WebSamBox,
   WebSamModelStatus,
@@ -5034,34 +5035,4 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function formatDate(value: string) {
-  return value ? new Date(value).toLocaleString() : "-";
-}
-
-function formatNumber(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0$/, "");
-}
-
-function formatCssNumber(value: number) {
-  return Number.isFinite(value) ? String(Math.round(value * 1000) / 1000) : "0";
-}
-
-function formatSliderValue(input: HTMLInputElement) {
-  const step = Number(input.step || 1);
-  const value = Number(input.value);
-  return step < 1 ? value.toFixed(2).replace(/0$/, "") : String(value);
-}
-
-function escapeHtml(value: unknown) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function escapeAttr(value: unknown) {
-  return escapeHtml(value).replaceAll("'", "&#039;");
 }
