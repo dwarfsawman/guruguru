@@ -13,6 +13,7 @@
     "node": ">=24"
   },
   "dependencies": {
+    "mermaid": "^11.16.0",
     "onnxruntime-web": "^1.27.0"
   },
   "devDependencies": {
