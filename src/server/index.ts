@@ -279,7 +279,8 @@ function setupShutdownHandlers() {
   }
   process.stdin.resume();
   process.stdin.on("data", (chunk) => {
-    const command = chunk.trim().toLowerCase();
+    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    const command = text.trim().toLowerCase();
     if (chunk === "\u0003" || command === "q" || command === "quit" || command === "exit") {
       shutdownServer("terminal command");
     }

@@ -1,3 +1,4 @@
+import type { AssetParent, ProjectDetail, ProjectSummary, Round } from "../shared/apiTypes";
 import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { decorateAsset } from "./assets";
 import { HttpError } from "./http";
@@ -9,7 +10,7 @@ type ProjectDetailOptions = {
   ensureRoundMonitor?: (roundId: string) => void;
 };
 
-export function listProjects() {
+export function listProjects(): ProjectSummary[] {
   const rows = getRows<Record<string, unknown>>(
     `SELECT
        p.*,
@@ -25,7 +26,7 @@ export function listProjects() {
     if (typeof item.representativeAssetId === "string") {
       item.representativeThumbnailUrl = `/api/assets/${item.representativeAssetId}/thumbnail?size=small`;
     }
-    return item;
+    return item as unknown as ProjectSummary;
   });
 }
 
@@ -49,7 +50,10 @@ export function createProject(body: unknown) {
     [id, name, description, defaultTemplateId, storage.projectRoot]
   );
 
-  return toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [id]));
+  // NOTE: この行には round_count / asset_count サブクエリが含まれないため、
+  // 実際のレスポンスには ProjectSummary が宣言する roundCount / assetCount が
+  // 存在しない(従来からの挙動。クライアントは作成直後にこれらを参照しない)。
+  return toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [id])) as unknown as ProjectSummary | null;
 }
 
 export async function deleteProject(projectId: string) {
@@ -80,8 +84,10 @@ export async function deleteProject(projectId: string) {
   };
 }
 
-export function getProjectDetail(projectId: string, options: ProjectDetailOptions = {}) {
-  const project = toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [projectId]));
+export function getProjectDetail(projectId: string, options: ProjectDetailOptions = {}): ProjectDetail {
+  // NOTE: この行にも round_count / asset_count サブクエリは含まれない
+  // (createProject と同様、従来からの挙動)。
+  const project = toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [projectId])) as unknown as ProjectSummary | null;
   if (!project) {
     throw new HttpError(404, "Project was not found");
   }
@@ -97,7 +103,7 @@ export function getProjectDetail(projectId: string, options: ProjectDetailOption
        ORDER BY r.round_index DESC`,
       [projectId]
     )
-  );
+  ) as unknown as Round[];
 
   const assets = toApiRows(
     getRows("SELECT * FROM assets WHERE project_id = ? ORDER BY round_id ASC, batch_index ASC", [projectId])
@@ -112,7 +118,7 @@ export function getProjectDetail(projectId: string, options: ProjectDetailOption
        ORDER BY ap.created_at ASC`,
       [projectId]
     )
-  );
+  ) as unknown as AssetParent[];
 
   for (const round of rounds) {
     if ((round.status === "running" || round.status === "pending") && typeof round.id === "string") {
