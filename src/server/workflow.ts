@@ -1,5 +1,6 @@
 import { createHash, randomInt } from "node:crypto";
 import type { GenerationRequest } from "../shared/types";
+import { nodeIdFromRolePath } from "../shared/workflowRolePath";
 
 type JsonObject = Record<string, unknown>;
 const GENERATED_MASK_CHANNEL = "red";
@@ -630,13 +631,6 @@ function getNodeInput(workflow: JsonObject, rawNodeId: unknown, candidateInputs:
 
 function stringRole(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function nodeIdFromRolePath(rawPath: unknown): string | null {
-  if (typeof rawPath !== "string" || rawPath.trim() === "") {
-    return null;
-  }
-  return rawPath.split(".").filter(Boolean)[0] ?? null;
 }
 
 function findNodeIdByClass(workflow: JsonObject, classFragments: string[]): string | null {
