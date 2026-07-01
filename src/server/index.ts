@@ -18,6 +18,7 @@ import {
 } from "./comfy";
 import { deleteProjectStorage, ensureProjectStorage, readImageSize, safeFileStream, storeImage, storeMaskImage } from "./storage";
 import { isPathInside } from "./paths";
+import { HttpError, readJson, sendJson } from "./http";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL, GITHUB_WEB_SAM_RELEASE_API_URL } from "../shared/constants";
 import {
@@ -1816,18 +1817,6 @@ function parseJsonInput(value: unknown, name: string): unknown {
   throw new HttpError(400, `${name} is required`);
 }
 
-async function readJson<T = unknown>(req: IncomingMessage): Promise<T> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  const text = Buffer.concat(chunks).toString("utf8");
-  if (!text.trim()) {
-    return {} as T;
-  }
-  return JSON.parse(text) as T;
-}
-
 function objectBody(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(400, "Request body must be a JSON object");
@@ -2012,23 +2001,6 @@ function contentTypeFor(path: string) {
     return "image/webp";
   }
   return "application/octet-stream";
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown) {
-  if (res.headersSent) {
-    return;
-  }
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(body, null, 2));
-}
-
-class HttpError extends Error {
-  constructor(
-    public statusCode: number,
-    message: string
-  ) {
-    super(message);
-  }
 }
 
 function setupShutdownHandlers() {
