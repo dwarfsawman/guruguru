@@ -1507,9 +1507,18 @@ input[type="range"]::-webkit-slider-thumb {
   max-width: 90vw;
   max-height: 88vh;
   min-height: 0;
+  overflow: auto;
 }
 
-.preview-media > img {
+.mask-zoom-stage {
+  position: relative;
+  display: block;
+  width: fit-content;
+  transform: translate(var(--mask-pan-x, 0), var(--mask-pan-y, 0)) scale(var(--mask-zoom, 1));
+  transform-origin: center center;
+}
+
+.mask-zoom-stage > img {
   display: block;
   max-width: 90vw;
   max-height: calc(88vh - 120px);
@@ -1517,7 +1526,7 @@ input[type="range"]::-webkit-slider-thumb {
   object-fit: contain;
 }
 
-.preview-content.mask-mode .preview-media > img {
+.preview-content.mask-mode .mask-zoom-stage > img {
   user-select: none;
 }
 
@@ -1596,6 +1605,38 @@ input[type="range"]::-webkit-slider-thumb {
   cursor: crosshair;
   opacity: 0.58;
   touch-action: none;
+}
+
+.websam-prompt-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.websam-point {
+  fill: rgba(52, 211, 153, 0.95);
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.websam-point.background {
+  fill: rgba(239, 68, 68, 0.95);
+}
+
+.websam-point.brush {
+  fill: rgba(96, 165, 250, 0.9);
+}
+
+.websam-box {
+  fill: rgba(52, 211, 153, 0.08);
+  stroke: rgba(52, 211, 153, 0.95);
+  stroke-dasharray: 8 6;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
 }
 
 .mask-canvas.mask-locked {
@@ -1733,6 +1774,11 @@ input[type="range"]::-webkit-slider-thumb {
   color: #86efac;
 }
 
+.mask-status.error {
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+}
+
 .mask-tool-button {
   display: inline-grid;
   width: 36px;
@@ -1755,6 +1801,130 @@ input[type="range"]::-webkit-slider-thumb {
 .mask-options-grid {
   display: grid;
   gap: 10px;
+}
+
+.smart-mask-section,
+.websam-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.smart-mask-section {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 0;
+}
+
+.websam-model-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.websam-model-card strong,
+.websam-model-card small {
+  display: block;
+  min-width: 0;
+}
+
+.websam-model-card strong {
+  color: white;
+  font-size: 12px;
+}
+
+.websam-model-card small {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.websam-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.websam-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #34d399, #60a5fa);
+}
+
+.websam-status-line,
+.websam-actions,
+.websam-counts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.websam-status-line {
+  justify-content: space-between;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+}
+
+.websam-error {
+  border: 1px solid rgba(239, 68, 68, 0.24);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.smart-mask-range {
+  gap: 6px;
+}
+
+.websam-candidates {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.websam-candidate,
+.empty-candidates span {
+  display: grid;
+  min-height: 58px;
+  place-items: center;
+  gap: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(255, 255, 255, 0.7);
+  padding: 8px 6px;
+  font-size: 11px;
+}
+
+.websam-candidate.active {
+  border-color: rgba(139, 92, 246, 0.72);
+  background: rgba(139, 92, 246, 0.18);
+  color: white;
+}
+
+.websam-candidate small {
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 10px;
+}
+
+.empty-candidates span {
+  opacity: 0.58;
+}
+
+.websam-counts {
+  color: rgba(255, 255, 255, 0.44);
+  font-size: 10px;
 }
 
 .mask-prompt-field {
@@ -2047,7 +2217,7 @@ input[type="range"]::-webkit-slider-thumb {
     padding: 8px;
   }
 
-  .preview-media > img {
+  .mask-zoom-stage > img {
     max-width: calc(100vw - 16px);
     max-height: calc(100vh - 200px);
   }

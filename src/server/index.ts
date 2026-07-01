@@ -116,7 +116,8 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       websocketUrl: stringOr(body.websocketUrl, "ws://127.0.0.1:8188/ws"),
       timeoutSeconds: numberOr(body.timeoutSeconds, 60),
       imageFetchMode: "view",
-      storageDir: dataRoot
+      storageDir: dataRoot,
+      webSamModelBaseUrl: stringOr(body.webSamModelBaseUrl, "")
     };
     setSetting("comfy", settings);
     sendJson(res, 200, settings);
@@ -1894,7 +1895,10 @@ function getSettingOrDefault(): ComfySettings {
   if (!row) {
     throw new HttpError(500, "Comfy settings were not initialized");
   }
-  return JSON.parse(row.value_json) as ComfySettings;
+  return {
+    webSamModelBaseUrl: "",
+    ...JSON.parse(row.value_json)
+  } as ComfySettings;
 }
 
 function errorToJson(error: unknown) {
@@ -1931,8 +1935,17 @@ function contentTypeFor(path: string) {
   if (ext === ".js") {
     return "text/javascript; charset=utf-8";
   }
+  if (ext === ".mjs") {
+    return "text/javascript; charset=utf-8";
+  }
   if (ext === ".css") {
     return "text/css; charset=utf-8";
+  }
+  if (ext === ".wasm") {
+    return "application/wasm";
+  }
+  if (ext === ".onnx" || ext === ".ort") {
+    return "application/octet-stream";
   }
   if (ext === ".png") {
     return "image/png";
