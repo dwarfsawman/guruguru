@@ -15,15 +15,24 @@ export interface ComfyStatus {
   error?: string;
 }
 
-export interface ProjectSummary {
+export interface ProjectRow {
   id: string;
   name: string;
   description: string;
   updatedAt: string;
-  roundCount: number;
-  assetCount: number;
   defaultTemplateId?: string | null;
   representativeThumbnailUrl?: string;
+}
+
+/**
+ * `listProjects()` の一覧行。`ProjectRow` に加えて round_count / asset_count
+ * サブクエリで実際に付与される集計フィールドを持つ。`createProject()` /
+ * `getProjectDetail()` が返す行にはこれらのフィールドは存在しない
+ * (`ProjectRow` を使うこと)。
+ */
+export interface ProjectSummary extends ProjectRow {
+  roundCount: number;
+  assetCount: number;
 }
 
 export interface Round {
@@ -97,7 +106,7 @@ export interface WorkflowTemplate {
 }
 
 export interface ProjectDetail {
-  project: ProjectSummary;
+  project: ProjectRow;
   rounds: Round[];
   assets: Asset[];
   assetParents: AssetParent[];

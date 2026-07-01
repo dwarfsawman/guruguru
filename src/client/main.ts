@@ -13,6 +13,7 @@ import type {
   CollectRoundResponse,
   ComfyStatus,
   ProjectDetail,
+  ProjectRow,
   ProjectSummary,
   Round
 } from "../shared/apiTypes";
@@ -1233,7 +1234,7 @@ function fileToDataUrl(file: File) {
 
 async function createProject() {
   const form = readForm("project-form");
-  const result = await api<{ project: ProjectSummary }>("/api/projects", {
+  const result = await api<{ project: ProjectRow }>("/api/projects", {
     method: "POST",
     body: JSON.stringify({
       name: form.name,
@@ -1241,7 +1242,10 @@ async function createProject() {
       defaultTemplateId: form.defaultTemplateId || null
     })
   });
-  state.projects = [result.project, ...state.projects];
+  // NOTE: POST /api/projects は round_count / asset_count を含まない ProjectRow を
+  // 返す (新規Projectは常に0件のため)。一覧表示用に roundCount / assetCount を
+  // 0 で補って ProjectSummary 形にする。
+  state.projects = [{ ...result.project, roundCount: 0, assetCount: 0 }, ...state.projects];
   await openProject(result.project.id);
 }
 

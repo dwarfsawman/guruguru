@@ -1,4 +1,4 @@
-import type { AssetParent, ProjectDetail, ProjectSummary, Round } from "../shared/apiTypes";
+import type { AssetParent, ProjectDetail, ProjectRow, ProjectSummary, Round } from "../shared/apiTypes";
 import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { decorateAsset } from "./assets";
 import { HttpError } from "./http";
@@ -30,7 +30,7 @@ export function listProjects(): ProjectSummary[] {
   });
 }
 
-export function createProject(body: unknown) {
+export function createProject(body: unknown): ProjectRow | null {
   const input = objectBody(body);
   const id = createId("project");
   const name = requiredString(input.name, "name");
@@ -50,10 +50,7 @@ export function createProject(body: unknown) {
     [id, name, description, defaultTemplateId, storage.projectRoot]
   );
 
-  // NOTE: この行には round_count / asset_count サブクエリが含まれないため、
-  // 実際のレスポンスには ProjectSummary が宣言する roundCount / assetCount が
-  // 存在しない(従来からの挙動。クライアントは作成直後にこれらを参照しない)。
-  return toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [id])) as unknown as ProjectSummary | null;
+  return toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [id])) as unknown as ProjectRow | null;
 }
 
 export async function deleteProject(projectId: string) {
@@ -85,9 +82,7 @@ export async function deleteProject(projectId: string) {
 }
 
 export function getProjectDetail(projectId: string, options: ProjectDetailOptions = {}): ProjectDetail {
-  // NOTE: この行にも round_count / asset_count サブクエリは含まれない
-  // (createProject と同様、従来からの挙動)。
-  const project = toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [projectId])) as unknown as ProjectSummary | null;
+  const project = toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [projectId])) as unknown as ProjectRow | null;
   if (!project) {
     throw new HttpError(404, "Project was not found");
   }
