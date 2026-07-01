@@ -19,7 +19,7 @@ const IMAGE_STD = [0.229, 0.224, 0.225] as const;
 const CACHE_DIR = "guruguru-websam-models";
 
 type OrtModule = Awaited<ReturnType<typeof loadOrtModule>>;
-type InferenceSession = OrtModule["InferenceSession"];
+type InferenceSession = Awaited<ReturnType<OrtModule["InferenceSession"]["create"]>>;
 type Tensor = InstanceType<OrtModule["Tensor"]>;
 
 interface ModelSession {
@@ -459,7 +459,7 @@ function applySmoothing(imageData: ImageData, smoothing: number) {
     return;
   }
   const outputPixels = imageData.width * imageData.height;
-  let alpha = new Uint8ClampedArray(outputPixels);
+  let alpha: Uint8ClampedArray = new Uint8ClampedArray(outputPixels);
   for (let index = 0; index < outputPixels; index += 1) {
     alpha[index] = imageData.data[index * 4 + 3]!;
   }

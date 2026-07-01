@@ -252,9 +252,9 @@ type GenerationDraft = Partial<Record<GenerationDraftField, string>> & {
 const app = document.querySelector<HTMLDivElement>("#app")!;
 const messageAutoClearMs = 15_000;
 let messageValue = "";
-let messageClearTimer: ReturnType<typeof window.setTimeout> | null = null;
-let pendingAssetCardSelect: { assetId: string; timer: ReturnType<typeof window.setTimeout> } | null = null;
-let pendingIterationDotSelect: { timer: ReturnType<typeof window.setTimeout> } | null = null;
+let messageClearTimer: number | null = null;
+let pendingAssetCardSelect: { assetId: string; timer: number } | null = null;
+let pendingIterationDotSelect: { timer: number } | null = null;
 let activeMaskStroke: ActiveMaskStroke | null = null;
 let activeBoxPrompt: ActiveBoxPrompt | null = null;
 let activeImagePan: ActiveImagePan | null = null;
@@ -519,7 +519,7 @@ function bindEvents() {
       return;
     }
     const valueTarget = document.getElementById(valueId);
-    if (valueTarget) {
+    if (valueTarget && target instanceof HTMLInputElement) {
       const suffix = target.dataset.inpaintField === "onlyMaskedPadding" || target.dataset.inpaintField === "brushSize" ? "px" : "";
       valueTarget.textContent = `${formatSliderValue(target)}${suffix}`;
     }
@@ -633,13 +633,14 @@ function bindEvents() {
       return;
     }
     const previewMedia = target.closest<HTMLElement>(".preview-media");
+    const activeAssetId = state.activeAssetId;
     const shouldPanImage =
       !!previewMedia &&
-      !!state.activeAssetId &&
+      !!activeAssetId &&
       (event.button === 1 || (!state.maskEditMode && event.button === 0));
     if (shouldPanImage) {
       event.preventDefault();
-      beginImagePan(event, previewMedia, state.activeAssetId);
+      beginImagePan(event, previewMedia, activeAssetId);
       return;
     }
     if (event.button !== 0 && event.button !== 2) {
@@ -2370,7 +2371,7 @@ function collectRoundSubtreeIds(rootRoundId: string, children: Map<string, Round
   return ids;
 }
 
-function renderRoundTreeNode(round: Round, children: Map<string, Round[]>, deleteTargetIds: Set<string>) {
+function renderRoundTreeNode(round: Round, children: Map<string, Round[]>, deleteTargetIds: Set<string>): string {
   const childRounds = children.get(round.id) ?? [];
   const active = round.id === state.activeRoundId;
   const completed = round.status === "completed";
@@ -3688,7 +3689,7 @@ function renderOptions(options: string[], selectedValue: string) {
 function updateDenoiseControlForMode(mode: string) {
   const form = document.querySelector<HTMLFormElement>("#generation-form");
   const control = form?.elements.namedItem("denoise") as HTMLInputElement | null;
-  if (!control) {
+  if (!form || !control) {
     return;
   }
 
