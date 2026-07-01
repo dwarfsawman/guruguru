@@ -399,6 +399,20 @@ function getProjectDetail(projectId: string) {
   };
 }
 
+function getRoundForApi(roundId: string) {
+  return toApiRow(
+    getRow(
+      `SELECT r.*,
+        (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id) AS asset_count,
+        (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id AND a.status = 'selected') AS selected_count,
+        (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id AND a.status = 'rejected') AS rejected_count
+       FROM generation_rounds r
+       WHERE r.id = ?`,
+      [roundId]
+    )
+  );
+}
+
 async function createGenerationRound(projectId: string, requestBody: GenerationRequest) {
   const project = getRow<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!project) {
@@ -959,7 +973,7 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
   return {
     statusCode: isTerminal ? 200 : 202,
     body: {
-      round: toApiRow(updatedRound),
+      round: getRoundForApi(String(updatedRound.id)),
       assets: createdAssets,
       jobStats: stats,
       message: createdAssets.length > 0
@@ -977,7 +991,7 @@ async function collectLegacyRound(round: Record<string, unknown>): Promise<Colle
     return {
       statusCode: 200,
       body: {
-        round: toApiRow(round),
+        round: getRoundForApi(roundId),
         assets: toApiRows(getRows("SELECT * FROM assets WHERE round_id = ? ORDER BY batch_index ASC", [roundId])).map(decorateAsset)
       }
     };
@@ -1003,7 +1017,7 @@ async function collectLegacyRound(round: Record<string, unknown>): Promise<Colle
     return {
       statusCode: 202,
       body: {
-        round: toApiRow(round),
+        round: getRoundForApi(roundId),
         message: "ComfyUI history is reachable, but no final output images are available yet."
       }
     };
@@ -1033,7 +1047,7 @@ async function collectLegacyRound(round: Record<string, unknown>): Promise<Colle
   return {
     statusCode: 200,
     body: {
-      round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])),
+      round: getRoundForApi(roundId),
       assets: createdAssets
     }
   };
