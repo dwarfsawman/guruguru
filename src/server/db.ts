@@ -1,10 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { ComfySettings } from "../shared/types";
+import { isPathInsideOrEqual } from "./paths";
 
 const isTestDataMode = process.env.GURUGURU_TEST_DB === "1" || process.env.NODE_ENV === "test";
 
@@ -318,15 +319,10 @@ function assertDataRootIsNotProjectLocal(root: string) {
   }
 
   const projectRoot = resolve(".");
-  if (isPathInside(root, projectRoot)) {
+  if (isPathInsideOrEqual(root, projectRoot)) {
     throw new Error(
       `Refusing to use a GURUGURU data directory inside the current project: ${root}. ` +
         "Set GURUGURU_DATA_DIR outside the repository, or set GURUGURU_TEST_DB=1 for test databases."
     );
   }
-}
-
-function isPathInside(target: string, parent: string): boolean {
-  const pathFromParent = relative(resolve(parent), resolve(target));
-  return pathFromParent === "" || (!!pathFromParent && !pathFromParent.startsWith("..") && !isAbsolute(pathFromParent));
 }
