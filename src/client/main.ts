@@ -205,6 +205,13 @@ interface ActiveBoxPrompt {
   current: { x: number; y: number };
 }
 
+interface ActiveImagePan {
+  pointerId: number;
+  assetId: string;
+  startClient: { x: number; y: number };
+  originOffset: { x: number; y: number };
+}
+
 interface MaskLayerSet {
   assetId: string;
   width: number;
@@ -275,6 +282,7 @@ let pendingAssetCardSelect: { assetId: string; timer: ReturnType<typeof window.s
 let pendingIterationDotSelect: { timer: ReturnType<typeof window.setTimeout> } | null = null;
 let activeMaskStroke: ActiveMaskStroke | null = null;
 let activeBoxPrompt: ActiveBoxPrompt | null = null;
+let activeImagePan: ActiveImagePan | null = null;
 let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
 const maskLayerCache = new Map<string, MaskLayerSet>();
 let webSamWorker: Worker | null = null;
@@ -543,12 +551,19 @@ function bindEvents() {
     }
   });
 
+  app.addEventListener("auxclick", (event) => {
+    const target = event.target as HTMLElement;
+    if (event.button === 1 && target.closest(".preview-media")) {
+      event.preventDefault();
+    }
+  });
+
   app.addEventListener("wheel", (event) => {
     const target = event.target as HTMLElement;
     if (target.id !== "maskCanvas" && !target.closest(".preview-media")) {
       return;
     }
-    if (!state.maskEditMode) {
+    if (!state.activeAssetId) {
       return;
     }
     event.preventDefault();
@@ -628,6 +643,19 @@ function bindEvents() {
       }
       return;
     }
+    const previewMedia = target.closest<HTMLElement>(".preview-media");
+    const shouldPanImage =
+      !!previewMedia &&
+      !!state.activeAssetId &&
+      (event.button === 1 || (!state.maskEditMode && event.button === 0));
+    if (shouldPanImage) {
+      event.preventDefault();
+      beginImagePan(event, previewMedia, state.activeAssetId);
+      return;
+    }
+    if (event.button !== 0 && event.button !== 2) {
+      return;
+    }
     if (target.id !== "maskCanvas") {
       return;
     }
@@ -639,6 +667,14 @@ function bindEvents() {
   });
 
   app.addEventListener("pointermove", (event) => {
+    if (activeImagePan) {
+      if (event.pointerId !== activeImagePan.pointerId) {
+        return;
+      }
+      event.preventDefault();
+      continueImagePan(event);
+      return;
+    }
     if (maskToolbarDrag) {
       if (event.pointerId !== maskToolbarDrag.pointerId) {
         return;
@@ -674,6 +710,11 @@ function bindEvents() {
   });
 
   app.addEventListener("pointerup", (event) => {
+    if (activeImagePan && event.pointerId === activeImagePan.pointerId) {
+      event.preventDefault();
+      finishImagePan();
+      return;
+    }
     if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
       finishMaskToolbarDrag();
       return;
@@ -697,6 +738,10 @@ function bindEvents() {
   });
 
   app.addEventListener("pointercancel", (event) => {
+    if (activeImagePan && event.pointerId === activeImagePan.pointerId) {
+      activeImagePan = null;
+      return;
+    }
     if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
       maskToolbarDrag = null;
       return;
@@ -774,6 +819,7 @@ function selectRound(roundId: string) {
   state.deletePreviewRoundId = null;
   state.generationDraft = null;
   state.maskEditMode = false;
+  activeImagePan = null;
   render();
 }
 
@@ -782,6 +828,7 @@ function openAssetDetail(assetId: string) {
   state.maskEditMode = false;
   state.maskToolbarMinimized = false;
   state.maskToolbarPos = null;
+  activeImagePan = null;
   render();
 }
 
@@ -789,6 +836,7 @@ function closeAssetDetail() {
   commitActiveMaskCanvas();
   activeMaskStroke = null;
   activeBoxPrompt = null;
+  activeImagePan = null;
   void destroyWebSamWorkerSession();
   state.activeAssetId = null;
   state.maskEditMode = false;
@@ -2102,6 +2150,66 @@ function finishMaskToolbarDrag() {
     state.maskToolbarPos = { left, top };
   }
   maskToolbarDrag = null;
+}
+
+function beginImagePan(event: PointerEvent, element: HTMLElement, assetId: string) {
+  const draft = ensureInpaintDraft(assetId);
+  activeImagePan = {
+    pointerId: event.pointerId,
+    assetId,
+    startClient: { x: event.clientX, y: event.clientY },
+    originOffset: draft.panOffset
+  };
+  element.classList.add("panning");
+  try {
+    element.setPointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture may fail if the pointer started on a child; document-level listeners still finish the pan.
+  }
+}
+
+function continueImagePan(event: PointerEvent) {
+  if (!activeImagePan) {
+    return;
+  }
+  const nextOffset = {
+    x: activeImagePan.originOffset.x + event.clientX - activeImagePan.startClient.x,
+    y: activeImagePan.originOffset.y + event.clientY - activeImagePan.startClient.y
+  };
+  const media = document.querySelector<HTMLElement>(".preview-media");
+  if (media) {
+    media.style.setProperty("--mask-pan-x", `${formatCssNumber(nextOffset.x)}px`);
+    media.style.setProperty("--mask-pan-y", `${formatCssNumber(nextOffset.y)}px`);
+  }
+}
+
+function finishImagePan() {
+  if (!activeImagePan) {
+    return;
+  }
+  const media = document.querySelector<HTMLElement>(".preview-media");
+  const draft = inpaintDraftForAsset(activeImagePan.assetId);
+  const left = media ? parseFloat(media.style.getPropertyValue("--mask-pan-x")) : activeImagePan.originOffset.x;
+  const top = media ? parseFloat(media.style.getPropertyValue("--mask-pan-y")) : activeImagePan.originOffset.y;
+  if (media) {
+    media.classList.remove("panning");
+    try {
+      media.releasePointerCapture(activeImagePan.pointerId);
+    } catch {
+      // Capture may already be released.
+    }
+  }
+  if (draft) {
+    setInpaintDraft({
+      ...draft,
+      panOffset: {
+        x: Number.isFinite(left) ? left : activeImagePan.originOffset.x,
+        y: Number.isFinite(top) ? top : activeImagePan.originOffset.y
+      }
+    });
+  }
+  activeImagePan = null;
+  render();
 }
 
 function handleMaskPointerDown(event: PointerEvent, canvas: HTMLCanvasElement) {
@@ -3426,10 +3534,10 @@ function clearManualMaskLayers() {
 
 function handleMaskWheelZoom(event: WheelEvent) {
   const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!assetId || !draft) {
+  if (!assetId) {
     return;
   }
+  const draft = ensureInpaintDraft(assetId);
   const direction = event.deltaY < 0 ? 1 : -1;
   const nextScale = clampNumber(draft.zoomScale + direction * 0.12, 0.25, 4, 1);
   setInpaintDraft({
@@ -4044,9 +4152,7 @@ function renderAssetModal() {
   const inpaint = inpaintDraftForAsset(asset.id);
   const editing = state.maskEditMode;
   const draft = inpaint ?? defaultInpaintDraft(asset.id);
-  const zoomStyle = editing
-    ? ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`
-    : "";
+  const zoomStyle = ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`;
   const promptValue = currentPositivePromptValue(asset);
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
   const media = renderPreviewMedia(asset, draft, editing, zoomStyle);
