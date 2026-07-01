@@ -40,6 +40,7 @@ import {
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
 import { escapeAttr, escapeHtml, formatCssNumber, formatDate, formatNumber, formatSliderValue } from "./format";
 import { type Json, isJsonObject, parseJsonObjectText, pickJsonObject } from "./json";
+import { api } from "./api";
 import type {
   WebSamBox,
   WebSamModelStatus,
@@ -4986,21 +4987,6 @@ function readForm(formId: string): Record<string, string> {
     values[key] = String(value);
   }
   return values;
-}
-
-async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
-    headers: {
-      "content-type": "application/json",
-      ...(init.headers ?? {})
-    },
-    ...init
-  });
-  const body = await response.json();
-  if (!response.ok) {
-    throw new Error(body.error ?? `Request failed with ${response.status}`);
-  }
-  return body as T;
 }
 
 function delay(ms: number) {
