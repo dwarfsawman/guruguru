@@ -1,17 +1,15 @@
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
+import { isJsonObject } from "../shared/json";
 import { HttpError } from "./http";
+
+export { isJsonObject };
 
 /** Coerce a request value into a JSON object, rejecting non-object bodies with 400. */
 export function objectBody(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isJsonObject(value)) {
     throw new HttpError(400, "Request body must be a JSON object");
   }
-  return value as Record<string, unknown>;
-}
-
-/** Type guard for a plain JSON object (non-null, non-array). */
-export function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return value;
 }
 
 /** Require a non-empty trimmed string, throwing 400 `${name} is required` otherwise. */
