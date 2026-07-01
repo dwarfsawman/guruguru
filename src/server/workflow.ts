@@ -71,7 +71,7 @@ export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unk
     if (request.generationMode === "img2img" && request.inpaint && context.uploadedMaskName) {
       patchInpaintLatentPath(workflow, roleMap, context.uploadedImageName, context.uploadedMaskName, request);
     } else if (request.generationMode === "img2img") {
-      patchImg2ImgLatentPath(workflow, roleMap, context.uploadedImageName, request.batchSize);
+      patchImg2ImgLatentPath(workflow, roleMap, context.uploadedImageName, request);
     }
   }
 
@@ -88,7 +88,7 @@ function patchImg2ImgLatentPath(
   workflow: JsonObject,
   roleMap: Record<string, unknown>,
   uploadedImageName: string,
-  batchSize: number
+  request: GenerationRequest
 ) {
   const loadImageNodeId =
     stringRole(roleMap.load_image_node) ??
@@ -114,12 +114,13 @@ function patchImg2ImgLatentPath(
   }
 
   const imageConnection = [loadImageNodeId, 0];
-  setRolePath(workflow, roleMap.vae_encode_image_input, imageConnection);
-  setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], imageConnection);
+  const resizedImageConnection = [addImageScaleNode(workflow, imageConnection, request.width, request.height), 0];
+  setRolePath(workflow, roleMap.vae_encode_image_input, resizedImageConnection);
+  setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], resizedImageConnection);
   setNodeInput(workflow, vaeEncodeNodeId, ["vae"], findVaeConnection(workflow));
 
   const latentConnection = [vaeEncodeNodeId, 0];
-  const batchedLatentConnection = repeatLatentForBatchSize(workflow, roleMap, latentConnection, batchSize);
+  const batchedLatentConnection = repeatLatentForBatchSize(workflow, roleMap, latentConnection, request.batchSize);
   setRolePath(workflow, roleMap.ksampler_latent_image_input, batchedLatentConnection);
   setNodeInput(workflow, ksamplerNodeId, ["latent_image"], batchedLatentConnection);
 }
@@ -266,6 +267,24 @@ function addLoadImageNode(workflow: JsonObject, uploadedImageName: string): stri
     class_type: "LoadImage",
     _meta: {
       title: "GURUGURU img2img Load Image"
+    }
+  };
+  return nodeId;
+}
+
+function addImageScaleNode(workflow: JsonObject, imageConnection: unknown[], width: number, height: number): string {
+  const nodeId = nextNodeId(workflow);
+  workflow[nodeId] = {
+    inputs: {
+      image: imageConnection,
+      upscale_method: "lanczos",
+      width: positiveInteger(width),
+      height: positiveInteger(height),
+      crop: "disabled"
+    },
+    class_type: "ImageScale",
+    _meta: {
+      title: "GURUGURU img2img Resize"
     }
   };
   return nodeId;
@@ -622,6 +641,10 @@ function nextNodeId(workflow: JsonObject): string {
 
 function isConnection(value: unknown): value is unknown[] {
   return Array.isArray(value) && typeof value[0] === "string" && typeof value[1] === "number";
+}
+
+function positiveInteger(value: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 1;
 }
 
 function stableStringify(value: unknown): string {
