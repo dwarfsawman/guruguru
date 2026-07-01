@@ -1,3 +1,5 @@
+import mermaid from "mermaid";
+import { createWorkflowMermaidDiagram, type WorkflowDiagram, type WorkflowDiagramStatus } from "../shared/workflowDiagram";
 import { inferRoleMap } from "../shared/workflowRoleMap";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { InpaintArea, InpaintOptions, MaskedContent } from "../shared/types";
@@ -54,6 +56,14 @@ interface WorkflowTemplate {
   workflowHash: string;
   workflowJson: Json;
   roleMap: Json;
+}
+
+interface WorkflowImportDraft {
+  name: string;
+  description: string;
+  type: string;
+  workflowJson: string;
+  roleMap: string;
 }
 
 interface Round {
@@ -290,6 +300,54 @@ let webSamRequestId = 0;
 let latestWebSamLoadRequestId = 0;
 let latestWebSamEncodeRequestId = 0;
 let latestWebSamDecodeRequestId = 0;
+let workflowDiagramRenderRunId = 0;
+
+const defaultWorkflowImportRoleMap = `{
+  "positive_prompt_node": "6",
+  "negative_prompt_node": "7",
+  "ksampler_node": "3",
+  "seed_input": "3.inputs.seed",
+  "cfg_input": "3.inputs.cfg",
+  "steps_input": "3.inputs.steps",
+  "denoise_input": "3.inputs.denoise",
+  "ksampler_latent_image_input": "3.inputs.latent_image",
+  "batch_size_input": "5.inputs.batch_size",
+  "load_image_node": "12",
+  "load_image_input": "12.inputs.image",
+  "vae_encode_node": "13",
+  "vae_encode_image_input": "13.inputs.pixels",
+  "save_image_node": "9"
+}`;
+
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: "strict",
+  theme: "dark",
+  flowchart: {
+    curve: "basis",
+    htmlLabels: false,
+    nodeSpacing: 42,
+    rankSpacing: 60
+  },
+  themeVariables: {
+    background: "#12121f",
+    primaryColor: "#171729",
+    primaryTextColor: "#f4f4f7",
+    primaryBorderColor: "#4b5563",
+    lineColor: "#8b8ba8",
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+  }
+});
+
+function defaultWorkflowImportDraft(): WorkflowImportDraft {
+  return {
+    name: "",
+    description: "",
+    type: "txt2img",
+    workflowJson: "{}",
+    roleMap: defaultWorkflowImportRoleMap
+  };
+}
 
 const state: {
   settings: ComfySettings | null;
@@ -313,6 +371,9 @@ const state: {
   maskToolbarMinimized: boolean;
   maskToolbarPos: { left: number; top: number } | null;
   deletePreviewRoundId: string | null;
+  workflowImportModalOpen: boolean;
+  workflowImportDraft: WorkflowImportDraft;
+  activeWorkflowDiagramTemplateId: string | null;
 } = {
   settings: null,
   projects: [],
@@ -340,7 +401,10 @@ const state: {
   maskEditMode: false,
   maskToolbarMinimized: false,
   maskToolbarPos: null,
-  deletePreviewRoundId: null
+  deletePreviewRoundId: null,
+  workflowImportModalOpen: false,
+  workflowImportDraft: defaultWorkflowImportDraft(),
+  activeWorkflowDiagramTemplateId: null
 };
 
 const defaultPrompt =
@@ -407,6 +471,10 @@ function bindEvents() {
     if (target.classList.contains("preview-modal")) {
       captureGenerationDraft();
       closeAssetDetail();
+      return;
+    }
+    if (target.classList.contains("workflow-modal")) {
+      closeWorkflowModals();
       return;
     }
 
@@ -482,6 +550,11 @@ function bindEvents() {
       void loadWorkflowFile(target);
       return;
     }
+    if (target.closest("#template-form")) {
+      captureWorkflowImportDraftFromElement(target);
+      refreshWorkflowImportPreview();
+      return;
+    }
     if (target.id === "round-filter") {
       state.filter = target.value as typeof state.filter;
       render();
@@ -520,6 +593,11 @@ function bindEvents() {
     }
     if (target.dataset.inpaintField) {
       updateInpaintDraftFromControl(target);
+    }
+    if (target.closest("#template-form")) {
+      captureWorkflowImportDraftFromElement(target);
+      refreshWorkflowImportPreview();
+      return;
     }
     if (!valueId) {
       if (target.closest("#generation-form")) {
@@ -853,6 +931,40 @@ function closeAssetDetail() {
   render();
 }
 
+function openWorkflowImportModal() {
+  state.workflowImportModalOpen = true;
+  state.activeWorkflowDiagramTemplateId = null;
+  render();
+}
+
+function closeWorkflowImportModal() {
+  state.workflowImportModalOpen = false;
+  render();
+}
+
+function openWorkflowDiagram(target: HTMLElement) {
+  const template = findTemplateFromActionTarget(target);
+  if (!template) {
+    state.message = "diagramを表示するWorkflowTemplateがありません。";
+    render();
+    return;
+  }
+  state.activeWorkflowDiagramTemplateId = template.id;
+  state.workflowImportModalOpen = false;
+  render();
+}
+
+function closeWorkflowDiagram() {
+  state.activeWorkflowDiagramTemplateId = null;
+  render();
+}
+
+function closeWorkflowModals() {
+  state.workflowImportModalOpen = false;
+  state.activeWorkflowDiagramTemplateId = null;
+  render();
+}
+
 async function handleAction(action: string, id: string, target: HTMLElement) {
   try {
     if (action === "home") {
@@ -864,8 +976,16 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       await saveSettings();
     } else if (action === "test-comfy") {
       await testComfy();
+    } else if (action === "open-template-import") {
+      openWorkflowImportModal();
+    } else if (action === "close-template-import") {
+      closeWorkflowImportModal();
     } else if (action === "create-template") {
       await createTemplate();
+    } else if (action === "open-template-diagram") {
+      openWorkflowDiagram(target);
+    } else if (action === "close-template-diagram") {
+      closeWorkflowDiagram();
     } else if (action === "export-template") {
       exportWorkflowTemplate(target, "template");
     } else if (action === "export-workflow") {
@@ -990,6 +1110,8 @@ async function loadHome() {
   state.maskEditMode = false;
   state.deletePreviewRoundId = null;
   state.iterationScroll = null;
+  state.workflowImportModalOpen = false;
+  state.activeWorkflowDiagramTemplateId = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
   state.projects = (await api<{ projects: ProjectSummary[] }>("/api/projects")).projects;
@@ -1009,6 +1131,8 @@ async function openProject(projectId: string) {
   state.maskEditMode = false;
   state.deletePreviewRoundId = null;
   state.iterationScroll = null;
+  state.workflowImportModalOpen = false;
+  state.activeWorkflowDiagramTemplateId = null;
   render();
   resumeAutoCollectForActiveRounds();
 }
@@ -1133,6 +1257,8 @@ async function createTemplate() {
   if (state.detail) {
     state.detail.templates = state.templates;
   }
+  state.workflowImportModalOpen = false;
+  state.workflowImportDraft = defaultWorkflowImportDraft();
   state.message = `WorkflowTemplate "${result.template.name}" v${result.template.version} を登録しました。`;
   render();
 }
@@ -1187,6 +1313,8 @@ async function loadWorkflowFile(input: HTMLInputElement) {
   if (typeof parsed.type === "string") {
     setFormValue(form, "type", parsed.type);
   }
+  captureWorkflowImportDraft(form);
+  render();
 }
 
 async function uploadSourceAsset(input: HTMLInputElement) {
@@ -1729,6 +1857,8 @@ function render(options: RenderOptions = {}) {
     ${state.message ? `<pre class="message">${escapeHtml(state.message)}</pre>` : ""}
     ${state.detail ? renderProjectDetail(state.detail) : renderHome()}
     ${renderAssetModal()}
+    ${renderWorkflowImportModal()}
+    ${renderWorkflowDiagramModal()}
   `;
   restoreIterationScrollPosition();
   if (preserveIterationScroll) {
@@ -1737,6 +1867,41 @@ function render(options: RenderOptions = {}) {
     });
   }
   syncAssetModalMaskCanvas();
+  void renderWorkflowDiagramCanvases();
+}
+
+async function renderWorkflowDiagramCanvases() {
+  const targets = Array.from(document.querySelectorAll<HTMLElement>("[data-mermaid-diagram]"));
+  if (targets.length === 0) {
+    return;
+  }
+
+  const runId = ++workflowDiagramRenderRunId;
+  for (const [index, target] of targets.entries()) {
+    const source = target.querySelector<HTMLElement>(".workflow-diagram-source")?.textContent ?? "";
+    if (!source.trim()) {
+      continue;
+    }
+    target.dataset.state = "loading";
+    try {
+      const result = await mermaid.render(`workflow-diagram-${runId}-${index}`, source);
+      if (runId !== workflowDiagramRenderRunId || !target.isConnected) {
+        return;
+      }
+      target.innerHTML = result.svg;
+      target.dataset.state = "ready";
+    } catch (error) {
+      if (runId !== workflowDiagramRenderRunId || !target.isConnected) {
+        return;
+      }
+      target.dataset.state = "error";
+      target.innerHTML = `
+        <div class="workflow-diagram-error">Mermaid diagramを描画できませんでした。</div>
+        <pre class="workflow-diagram-fallback">${escapeHtml(error instanceof Error ? error.message : String(error))}</pre>
+        <pre class="workflow-diagram-fallback">${escapeHtml(source)}</pre>
+      `;
+    }
+  }
 }
 
 function captureIterationScrollPosition() {
@@ -2648,49 +2813,11 @@ function renderSettingsPanel() {
 }
 
 function renderWorkflowImportPanel() {
-  const roleMapExample = `{
-  "positive_prompt_node": "6",
-  "negative_prompt_node": "7",
-  "ksampler_node": "3",
-  "seed_input": "3.inputs.seed",
-  "cfg_input": "3.inputs.cfg",
-  "steps_input": "3.inputs.steps",
-  "denoise_input": "3.inputs.denoise",
-  "ksampler_latent_image_input": "3.inputs.latent_image",
-  "batch_size_input": "5.inputs.batch_size",
-  "load_image_node": "12",
-  "load_image_input": "12.inputs.image",
-  "vae_encode_node": "13",
-  "vae_encode_image_input": "13.inputs.pixels",
-  "save_image_node": "9"
-}`;
   return `
-    <section class="panel">
-      <div class="panel-heading">
-        <div>
-          <p class="section-kicker">Workflow Import</p>
-          <h2>テンプレート登録</h2>
-        </div>
-      </div>
-      <form id="template-form" class="form-stack workflow-import-form">
-        <label>JSONファイル
-          <input data-file-target="workflowJson" type="file" accept=".json,application/json" />
-        </label>
-        <label>名前<input name="name" placeholder="txt2img_16grid" /></label>
-        <label>説明<input name="description" /></label>
-        <label>種別
-          <select name="type">
-            <option value="txt2img">txt2img</option>
-            <option value="img2img">img2img</option>
-            <option value="ipadapter">IP-Adapter</option>
-            <option value="controlnet">ControlNet</option>
-            <option value="hybrid">Hybrid</option>
-          </select>
-        </label>
-        <label>API形式workflow JSON<textarea name="workflowJson" rows="8" spellcheck="false">{}</textarea></label>
-        <label>role map<textarea name="roleMap" rows="8" spellcheck="false">${escapeHtml(roleMapExample)}</textarea></label>
-        <button class="button-primary" type="button" data-action="create-template">${iconPlus()}テンプレート登録</button>
-      </form>
+    <section class="panel workflow-import-collapsed">
+      <button class="button-primary workflow-import-trigger" type="button" data-action="open-template-import">
+        ${iconPlus()}テンプレート登録
+      </button>
     </section>
   `;
 }
@@ -2713,6 +2840,7 @@ function renderTemplatePanel() {
               ${template.description ? `<small>${escapeHtml(template.description)}</small>` : ""}
             </div>
             <div class="template-row-actions">
+              <button class="button-secondary compact" type="button" data-action="open-template-diagram" data-template-id="${escapeAttr(template.id)}">${iconDiagram()}diagram</button>
               <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${template.id}">${iconDownload()}raw export</button>
               <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${template.id}">${iconDownload()}template export</button>
               <button class="button-danger compact" type="button" data-action="delete-template" data-template-id="${template.id}">${iconTrash()}削除</button>
@@ -2722,6 +2850,134 @@ function renderTemplatePanel() {
       </div>
     </section>
   `;
+}
+
+function renderWorkflowImportModal() {
+  if (!state.workflowImportModalOpen) {
+    return "";
+  }
+  const draft = state.workflowImportDraft;
+  return `
+    <div class="workflow-modal" role="dialog" aria-modal="true" aria-label="テンプレート登録">
+      <section class="workflow-dialog workflow-import-dialog">
+        <header class="workflow-dialog-header">
+          <div>
+            <p class="section-kicker">Workflow Import</p>
+            <h2>テンプレート登録</h2>
+          </div>
+          <button class="icon-button" type="button" data-action="close-template-import" aria-label="閉じる" title="閉じる">${iconClose()}</button>
+        </header>
+        <form id="template-form" class="workflow-import-modal-form">
+          <div class="workflow-import-fields form-stack">
+            <label>JSONファイル
+              <input data-file-target="workflowJson" type="file" accept=".json,application/json" />
+            </label>
+            <label>名前<input name="name" placeholder="txt2img_16grid" value="${escapeAttr(draft.name)}" /></label>
+            <label>説明<input name="description" value="${escapeAttr(draft.description)}" /></label>
+            <label>種別
+              <select name="type">
+                ${renderWorkflowTypeOptions(draft.type)}
+              </select>
+            </label>
+            <label>API形式workflow JSON<textarea name="workflowJson" rows="10" spellcheck="false">${escapeHtml(draft.workflowJson)}</textarea></label>
+            <label>role map<textarea name="roleMap" rows="10" spellcheck="false">${escapeHtml(draft.roleMap)}</textarea></label>
+          </div>
+          <aside class="workflow-diagram-preview">
+            <div class="workflow-diagram-heading">
+              <div>
+                <p class="section-kicker">Preview</p>
+                <h3>diagram</h3>
+              </div>
+            </div>
+            <div class="workflow-import-preview-slot">
+              ${renderWorkflowImportPreview()}
+            </div>
+          </aside>
+          <div class="workflow-import-modal-actions">
+            <button class="button-secondary" type="button" data-action="close-template-import">${iconClose()}閉じる</button>
+            <button class="button-primary" type="button" data-action="create-template">${iconPlus()}テンプレート登録</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderWorkflowDiagramModal() {
+  const templateId = state.activeWorkflowDiagramTemplateId;
+  if (!templateId) {
+    return "";
+  }
+  const template = state.templates.find((item) => item.id === templateId) ?? null;
+  if (!template) {
+    return "";
+  }
+  const diagram = createWorkflowMermaidDiagram(template.workflowJson, template.roleMap);
+  return `
+    <div class="workflow-modal" role="dialog" aria-modal="true" aria-label="${escapeAttr(template.name)} diagram">
+      <section class="workflow-dialog workflow-diagram-dialog">
+        <header class="workflow-dialog-header">
+          <div>
+            <p class="section-kicker">Workflow Diagram</p>
+            <h2>${escapeHtml(template.name)} v${template.version}</h2>
+          </div>
+          <button class="icon-button" type="button" data-action="close-template-diagram" aria-label="閉じる" title="閉じる">${iconClose()}</button>
+        </header>
+        ${renderWorkflowDiagramBlock(diagram)}
+      </section>
+    </div>
+  `;
+}
+
+function renderWorkflowImportPreview() {
+  const workflowResult = parseJsonObjectText(state.workflowImportDraft.workflowJson, "API形式workflow JSON");
+  if (!workflowResult.value) {
+    return renderWorkflowDiagramNotice("invalid", workflowResult.error ?? "workflow JSONを入力してください。");
+  }
+  const roleMapResult = parseJsonObjectText(state.workflowImportDraft.roleMap, "role map", true);
+  const diagram = createWorkflowMermaidDiagram(workflowResult.value, roleMapResult.value ?? {});
+  const warning = roleMapResult.error ? `<div class="workflow-diagram-warning">${escapeHtml(roleMapResult.error)}</div>` : "";
+  return `${warning}${renderWorkflowDiagramBlock(diagram)}`;
+}
+
+function renderWorkflowDiagramBlock(diagram: WorkflowDiagram) {
+  if (diagram.status !== "ready") {
+    return renderWorkflowDiagramNotice(diagram.status, diagram.message);
+  }
+  return `
+    <div class="workflow-diagram-block">
+      <div class="workflow-diagram-meta">
+        <span>${diagram.nodeCount} nodes</span>
+        <span>${diagram.edgeCount} edges</span>
+      </div>
+      <div class="workflow-diagram-canvas" data-mermaid-diagram>
+        <pre class="workflow-diagram-source">${escapeHtml(diagram.source)}</pre>
+        <div class="workflow-diagram-loading">diagramを描画中...</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderWorkflowDiagramNotice(status: WorkflowDiagramStatus, message: string) {
+  return `
+    <div class="workflow-diagram-notice ${status}">
+      <strong>${status === "empty" ? "Empty workflow" : "Preview unavailable"}</strong>
+      <span>${escapeHtml(message)}</span>
+    </div>
+  `;
+}
+
+function renderWorkflowTypeOptions(selectedType: string) {
+  const types = [
+    ["txt2img", "txt2img"],
+    ["img2img", "img2img"],
+    ["ipadapter", "IP-Adapter"],
+    ["controlnet", "ControlNet"],
+    ["hybrid", "Hybrid"]
+  ];
+  return types
+    .map(([value, label]) => `<option value="${value}" ${selectedType === value ? "selected" : ""}>${label}</option>`)
+    .join("");
 }
 
 function renderProjectDetail(detail: ProjectDetail) {
@@ -4648,6 +4904,57 @@ function setFormValue(form: HTMLFormElement, name: string, value: string) {
   }
 }
 
+function captureWorkflowImportDraftFromElement(target: Element) {
+  const form = target.closest<HTMLFormElement>("#template-form");
+  if (form) {
+    captureWorkflowImportDraft(form);
+  }
+}
+
+function captureWorkflowImportDraft(form: HTMLFormElement) {
+  state.workflowImportDraft = {
+    name: formValue(form, "name"),
+    description: formValue(form, "description"),
+    type: formValue(form, "type") || "txt2img",
+    workflowJson: formValue(form, "workflowJson") || "{}",
+    roleMap: formValue(form, "roleMap") || "{}"
+  };
+}
+
+function refreshWorkflowImportPreview() {
+  const preview = document.querySelector<HTMLElement>(".workflow-import-preview-slot");
+  if (!preview) {
+    return;
+  }
+  preview.innerHTML = renderWorkflowImportPreview();
+  void renderWorkflowDiagramCanvases();
+}
+
+function formValue(form: HTMLFormElement, name: string) {
+  const control = form.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
+  return control?.value ?? "";
+}
+
+function parseJsonObjectText(text: string, label: string, allowEmpty = false): { value: Json | null; error: string | null } {
+  const trimmed = text.trim();
+  if (!trimmed && allowEmpty) {
+    return { value: {}, error: null };
+  }
+  if (!trimmed) {
+    return { value: null, error: `${label}を入力してください。` };
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!isJsonObject(parsed)) {
+      return { value: null, error: `${label}のルートはJSON objectである必要があります。` };
+    }
+    return { value: parsed, error: null };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { value: null, error: `${label}をJSONとして読めません: ${detail}` };
+  }
+}
+
 function isJsonObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -4784,6 +5091,10 @@ function iconPulse() {
 
 function iconDownload() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>`;
+}
+
+function iconDiagram() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="6" height="5" rx="1"></rect><rect x="15" y="4" width="6" height="5" rx="1"></rect><rect x="9" y="15" width="6" height="5" rx="1"></rect><path d="M9 6.5h6M12 9v6"></path></svg>`;
 }
 
 function iconPlay() {
