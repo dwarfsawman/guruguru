@@ -1,4 +1,5 @@
 import { inferRoleMap } from "../shared/workflowRoleMap";
+import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { InpaintArea, InpaintOptions, MaskedContent } from "../shared/types";
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
 import type {
@@ -2449,7 +2450,7 @@ function renderSettingsPanel() {
         <label>WebSocket URL<input name="websocketUrl" value="${escapeAttr(settings?.websocketUrl ?? "ws://127.0.0.1:8188/ws")}" /></label>
         <label>Timeout秒<input name="timeoutSeconds" type="number" min="1" value="${settings?.timeoutSeconds ?? 60}" /></label>
         <label>保存先<input name="storageDir" value="${escapeAttr(settings?.storageDir ?? "")}" /></label>
-        <label>WebSAM model base URL<input name="webSamModelBaseUrl" value="${escapeAttr(settings?.webSamModelBaseUrl ?? "")}" placeholder="https://github.com/<owner>/<repo>/releases/download/websam-models-v1" /></label>
+        <label>WebSAM model base URL<input name="webSamModelBaseUrl" value="${escapeAttr(settings?.webSamModelBaseUrl ?? DEFAULT_WEB_SAM_MODEL_BASE_URL)}" placeholder="${escapeAttr(DEFAULT_WEB_SAM_MODEL_BASE_URL)}" /></label>
         <div class="button-row">
           <button class="button-secondary" type="button" data-action="save-settings">${iconSave()}保存</button>
           <button class="button-secondary" type="button" data-action="test-comfy">${iconPulse()}接続テスト</button>
@@ -3126,7 +3127,7 @@ async function loadActiveWebSamModel() {
   if (!assetId || !draft || !model) {
     return;
   }
-  const urls = buildWebSamModelUrls(state.settings?.webSamModelBaseUrl ?? "", model);
+  const urls = buildWebSamModelUrls(state.settings?.webSamModelBaseUrl ?? DEFAULT_WEB_SAM_MODEL_BASE_URL, model);
   if (!urls) {
     setInpaintDraft({
       ...draft,
