@@ -18,6 +18,7 @@ import {
 } from "./comfy";
 import { deleteProjectStorage, ensureProjectStorage, readImageSize, safeFileStream, storeImage, storeMaskImage } from "./storage";
 import { ensureWorkflowObject, hashJson, normalizeRoleMap, patchWorkflow, resolveSeed } from "./workflow";
+import { DEFAULT_WEB_SAM_MODEL_BASE_URL, GITHUB_WEB_SAM_RELEASE_API_URL } from "../shared/constants";
 import { validateRoleMapReferences } from "../shared/workflowRoleMap";
 import type { AssetStatus, ComfySettings, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ParentRelation, SelectionAction } from "../shared/types";
 
@@ -62,6 +63,7 @@ const activeJobStatuses = new Set<GenerationJobStatus>(["pending", "queued", "ru
 const terminalRoundStatuses = new Set(["completed", "failed", "interrupted"]);
 const activeRoundMonitors = new Map<string, { socket: WebSocket; clientId: string }>();
 const roundCollectionLocks = new Map<string, Promise<CollectRoundResult>>();
+const webSamReleaseAssetNames = new Set(["slimsam-77-encoder.onnx", "slimsam-77-decoder.onnx"]);
 
 initializeDb();
 
@@ -110,14 +112,15 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "PUT" && path === "/api/settings/comfy") {
     const body = await readJson<Partial<ComfySettings>>(req);
+    const currentSettings = getSettingOrDefault();
     const settings: ComfySettings = {
-      ...getSettingOrDefault(),
+      ...currentSettings,
       baseUrl: stringOr(body.baseUrl, "http://127.0.0.1:8188"),
       websocketUrl: stringOr(body.websocketUrl, "ws://127.0.0.1:8188/ws"),
       timeoutSeconds: numberOr(body.timeoutSeconds, 60),
       imageFetchMode: "view",
       storageDir: dataRoot,
-      webSamModelBaseUrl: stringOr(body.webSamModelBaseUrl, "")
+      webSamModelBaseUrl: nonEmptyStringOr(body.webSamModelBaseUrl, currentSettings.webSamModelBaseUrl)
     };
     setSetting("comfy", settings);
     sendJson(res, 200, settings);
@@ -131,6 +134,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "GET" && path === "/api/comfy/status") {
     sendJson(res, 200, await getComfyStatus());
+    return;
+  }
+
+  const webSamModelMatch = path.match(/^\/api\/websam-models\/([^/]+)$/);
+  if (method === "GET" && webSamModelMatch) {
+    await serveWebSamReleaseAsset(res, webSamModelMatch[1]!);
     return;
   }
 
@@ -1872,6 +1881,13 @@ function stringOr(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
+function nonEmptyStringOr(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim().replace(/\/+$/, "");
+  }
+  return fallback.trim() || DEFAULT_WEB_SAM_MODEL_BASE_URL;
+}
+
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -1895,10 +1911,80 @@ function getSettingOrDefault(): ComfySettings {
   if (!row) {
     throw new HttpError(500, "Comfy settings were not initialized");
   }
+  const parsed = JSON.parse(row.value_json) as Partial<ComfySettings>;
   return {
-    webSamModelBaseUrl: "",
-    ...JSON.parse(row.value_json)
+    ...parsed,
+    webSamModelBaseUrl: parsed.webSamModelBaseUrl?.trim() || DEFAULT_WEB_SAM_MODEL_BASE_URL
   } as ComfySettings;
+}
+
+async function serveWebSamReleaseAsset(res: ServerResponse, filename: string) {
+  if (!webSamReleaseAssetNames.has(filename)) {
+    sendJson(res, 404, { error: "WebSAM model asset was not found" });
+    return;
+  }
+
+  const token = githubToken();
+  if (!token) {
+    sendJson(res, 503, {
+      error: "GitHub token is required to download WebSAM models from this private repository release.",
+      env: "Set GURUGURU_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN before starting GURUGURU."
+    });
+    return;
+  }
+
+  const release = await fetchGithubJson<{ assets?: Array<{ name?: string; url?: string; size?: number; content_type?: string }> }>(
+    GITHUB_WEB_SAM_RELEASE_API_URL,
+    token
+  );
+  const asset = release.assets?.find((item) => item.name === filename);
+  if (!asset?.url) {
+    sendJson(res, 404, { error: "WebSAM model asset was not found in the GitHub release" });
+    return;
+  }
+
+  const response = await fetch(asset.url, {
+    headers: githubHeaders(token, "application/octet-stream")
+  });
+  if (!response.ok || !response.body) {
+    sendJson(res, response.status || 502, {
+      error: `GitHub model download failed: ${response.status} ${response.statusText}`.trim()
+    });
+    return;
+  }
+
+  res.writeHead(200, {
+    "content-type": asset.content_type || "application/octet-stream",
+    "content-length": String(asset.size ?? response.headers.get("content-length") ?? ""),
+    "cache-control": "private, max-age=86400"
+  });
+
+  for await (const chunk of response.body) {
+    res.write(chunk);
+  }
+  res.end();
+}
+
+async function fetchGithubJson<T>(url: string, token: string): Promise<T> {
+  const response = await fetch(url, {
+    headers: githubHeaders(token, "application/vnd.github+json")
+  });
+  if (!response.ok) {
+    throw new HttpError(response.status || 502, `GitHub API request failed: ${response.status} ${response.statusText}`.trim());
+  }
+  return response.json() as Promise<T>;
+}
+
+function githubHeaders(token: string, accept: string) {
+  return {
+    accept,
+    authorization: `Bearer ${token}`,
+    "user-agent": "guruguru-websam-model-loader"
+  };
+}
+
+function githubToken() {
+  return process.env.GURUGURU_GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || "";
 }
 
 function errorToJson(error: unknown) {

@@ -11,9 +11,9 @@ export const WEB_SAM_MODELS: WebSamModelDefinition[] = [
     family: "sam1",
     encoderFile: "slimsam-77-encoder.onnx",
     decoderFile: "slimsam-77-decoder.onnx",
-    encoderSize: 9 * MB,
-    decoderSize: 5 * MB,
-    totalSize: 14 * MB,
+    encoderSize: 8_882_165,
+    decoderSize: 4_903_810,
+    totalSize: 13_785_975,
     quantization: "int8"
   }
 ];

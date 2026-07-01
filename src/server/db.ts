@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { ComfySettings } from "../shared/types";
 
 const isTestDataMode = process.env.GURUGURU_TEST_DB === "1" || process.env.NODE_ENV === "test";
@@ -31,7 +32,7 @@ export const defaultComfySettings: ComfySettings = {
   timeoutSeconds: 60,
   imageFetchMode: "view",
   storageDir: dataRoot,
-  webSamModelBaseUrl: ""
+  webSamModelBaseUrl: DEFAULT_WEB_SAM_MODEL_BASE_URL
 };
 
 export function initializeDb() {
@@ -196,12 +197,16 @@ export function initializeDb() {
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {
     setSetting("comfy", defaultComfySettings);
-  } else if (existing.storageDir !== dataRoot) {
-    setSetting("comfy", {
+  } else {
+    const merged = {
       ...defaultComfySettings,
       ...existing,
-      storageDir: dataRoot
-    });
+      storageDir: dataRoot,
+      webSamModelBaseUrl: existing.webSamModelBaseUrl?.trim() || DEFAULT_WEB_SAM_MODEL_BASE_URL
+    };
+    if (JSON.stringify(existing) !== JSON.stringify(merged)) {
+      setSetting("comfy", merged);
+    }
   }
 }
 
