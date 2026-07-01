@@ -32,9 +32,7 @@ import {
   iconMinimize,
   iconPlay,
   iconPlus,
-  iconPulse,
   iconReset,
-  iconSave,
   iconSettings,
   iconShuffle,
   iconStar,
@@ -44,7 +42,7 @@ import {
   iconZoom
 } from "./icons";
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
-import { escapeAttr, escapeHtml, formatCssNumber, formatDate, formatNumber, formatSliderValue } from "./format";
+import { escapeAttr, escapeHtml, formatCssNumber, formatNumber, formatSliderValue } from "./format";
 import { type Json } from "./json";
 import { api } from "./api";
 import type { WorkflowImportDraft, WorkflowTemplate } from "./workflowTypes";
@@ -58,13 +56,12 @@ import { defaultModeForTemplate, templateGenerationDefaults } from "./workflowDe
 import {
   renderModelReadout,
   renderTemplateOption,
-  renderTemplatePanel,
   renderWorkflowDiagramCanvases,
   renderWorkflowDiagramModal,
   renderWorkflowImportModal,
-  renderWorkflowImportPanel,
   renderWorkflowImportPreview
 } from "./workflowUi";
+import { renderHome } from "./views/homeView";
 import type {
   WebSamModelStatus,
   WebSamPromptMode,
@@ -1640,7 +1637,7 @@ function render(options: RenderOptions = {}) {
   app.innerHTML = `
     ${renderHeader()}
     ${state.message ? `<pre class="message"><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button>${escapeHtml(state.message)}</pre>` : ""}
-    ${state.detail ? renderProjectDetail(state.detail) : renderHome()}
+    ${state.detail ? renderProjectDetail(state.detail) : renderHome(state.projects, state.settings, state.templates)}
     ${renderAssetModal()}
     ${renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft)}
     ${renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId)}
@@ -2296,84 +2293,6 @@ function branchHue(round: Round) {
 function iterationTitle(round: Round) {
   const parent = round.parentRoundId ? ` / parent ${round.parentRoundId}` : " / root";
   return `Round ${round.roundIndex} / ${generationModeLabel(round.generationMode)} / ${round.status}${parent}`;
-}
-
-function renderHome() {
-  return `
-    <main class="home-layout">
-      <section class="panel">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">Projects</p>
-            <h1>Project一覧</h1>
-          </div>
-        </div>
-        <form id="project-form" class="form-stack">
-          <label>Project名<input name="name" placeholder="Daily Scene Character Exploration" required /></label>
-          <label>説明<textarea name="description" rows="3"></textarea></label>
-          <label>デフォルトWorkflowTemplate
-            <select name="defaultTemplateId">
-              <option value="">未指定</option>
-              ${state.templates.map((template) => `<option value="${template.id}">${escapeHtml(template.name)} v${template.version}</option>`).join("")}
-            </select>
-          </label>
-          <button class="button-primary" type="button" data-action="create-project">${iconPlus()}新規Project作成</button>
-        </form>
-        <div class="project-list">
-          ${state.projects.length ? state.projects.map(renderProjectCard).join("") : `<div class="empty">Projectはまだありません。</div>`}
-        </div>
-      </section>
-      <div class="home-side">
-        ${renderSettingsPanel()}
-        ${renderWorkflowImportPanel()}
-        ${renderTemplatePanel(state.templates)}
-      </div>
-    </main>
-  `;
-}
-
-function renderProjectCard(project: ProjectSummary) {
-  return `
-    <article class="project-card">
-      <button class="project-thumb" data-action="open-project" data-id="${project.id}" type="button" aria-label="${escapeAttr(project.name)}を開く">
-        ${project.representativeThumbnailUrl ? `<img src="${project.representativeThumbnailUrl}" alt="" />` : `<span>No image</span>`}
-      </button>
-      <div class="project-copy">
-        <h2>${escapeHtml(project.name)}</h2>
-        <p>${escapeHtml(project.description || "説明なし")}</p>
-        <div class="meta-line">Rounds ${project.roundCount ?? 0} / Assets ${project.assetCount ?? 0} / Updated ${formatDate(project.updatedAt)}</div>
-      </div>
-      <div class="project-actions">
-        <button class="button-secondary" type="button" data-action="open-project" data-id="${project.id}">開く</button>
-        <button class="button-danger" type="button" data-action="delete-project" data-id="${project.id}">${iconTrash()}削除</button>
-      </div>
-    </article>
-  `;
-}
-
-function renderSettingsPanel() {
-  const settings = state.settings;
-  return `
-    <section class="panel">
-      <div class="panel-heading">
-        <div>
-          <p class="section-kicker">Connection</p>
-          <h2>ComfyUI接続</h2>
-        </div>
-      </div>
-      <form id="settings-form" class="form-stack">
-        <label>Base URL<input name="baseUrl" value="${escapeAttr(settings?.baseUrl ?? "http://127.0.0.1:8188")}" /></label>
-        <label>WebSocket URL<input name="websocketUrl" value="${escapeAttr(settings?.websocketUrl ?? "ws://127.0.0.1:8188/ws")}" /></label>
-        <label>Timeout秒<input name="timeoutSeconds" type="number" min="1" value="${settings?.timeoutSeconds ?? 60}" /></label>
-        <label>保存先<input name="storageDir" value="${escapeAttr(settings?.storageDir ?? "")}" /></label>
-        <label>WebSAM model base URL<input name="webSamModelBaseUrl" value="${escapeAttr(settings?.webSamModelBaseUrl ?? DEFAULT_WEB_SAM_MODEL_BASE_URL)}" placeholder="${escapeAttr(DEFAULT_WEB_SAM_MODEL_BASE_URL)}" /></label>
-        <div class="button-row">
-          <button class="button-secondary" type="button" data-action="save-settings">${iconSave()}保存</button>
-          <button class="button-secondary" type="button" data-action="test-comfy">${iconPulse()}接続テスト</button>
-        </div>
-      </form>
-    </section>
-  `;
 }
 
 function renderProjectDetail(detail: ProjectDetail) {
