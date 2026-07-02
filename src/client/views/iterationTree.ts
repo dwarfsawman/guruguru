@@ -85,13 +85,14 @@ export function renderRoundTreeNode(
   children: Map<string, Round[]>,
   deleteTargetIds: Set<string>,
   activeRoundId: string | null,
-  deletePreviewRoundId: string | null
+  deletePreviewRoundId: string | null,
+  parentHue: number | null = null
 ): string {
   const childRounds = children.get(round.id) ?? [];
   const active = round.id === activeRoundId;
   const completed = round.status === "completed";
   const dotClass = active ? "active" : completed ? "completed" : "pending";
-  const hue = rootHue(round);
+  const hue = parentHue == null ? rootHue(round) : childHue(parentHue, round.request?.denoise ?? 1);
   const isDeleteRoot = deletePreviewRoundId === round.id;
   const isDeleteTarget = deleteTargetIds.has(round.id);
   return `
@@ -108,7 +109,7 @@ export function renderRoundTreeNode(
         <div class="iteration-children ${childRounds.length > 1 ? "has-siblings" : "single-child"}">
           ${childRounds.map((child, index) => `
             <div class="iteration-child ${index === 0 ? "first" : ""} ${index === childRounds.length - 1 ? "last" : ""}">
-              ${renderRoundTreeNode(child, children, deleteTargetIds, activeRoundId, deletePreviewRoundId)}
+              ${renderRoundTreeNode(child, children, deleteTargetIds, activeRoundId, deletePreviewRoundId, hue)}
             </div>
           `).join("")}
         </div>
