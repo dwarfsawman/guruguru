@@ -29,7 +29,7 @@
 
 ## その後の残タスク（未着手）
 
-1. **Feature-PaintTool**（`Docs/Feature-PaintTool.md`）— Fix-MaskPenLag マージ済みのため着手可能。ブランチ `feature/paint-tool`
+1. **Feature-PaintTool** — ✅ マージ済み `7f0d864`（フェーズ1〜5: PaintDraft / brush・eraser・eyedropper / パレット + recent colors / rAF バッチ描画（mask と同一パス、`paintStroke` に color 引数追加）/ Undo リング5 / Alt 一時スポイト / Ctrl+Z / 保存は既存 source-assets API で新規 root round。フェーズ6（ツリー親子リンク）は設計上任意のため未実装）。マージ時に `a5c0b9c` と `main.ts` / `assetModal.ts` で衝突 → `renderAssetModal` へ `maskPanelWidths` と `paintEditing`/`paintDraft` を両立させて手動統合。マージ後 main: typecheck 0 / 228 pass / check 成功。ブラウザ smoke 済み（paint パネル UI、赤ストローク描画 → Undo で消去 → 再描画 → 保存で新 round/asset 生成・保存画像に 1600x1200 で合成確認、mask/paint 相互排他、mask 側の feather スライダー・invert・リサイザも健在、コンソールエラー / 失敗リクエストなし）
 2. **Feature-PoseControlNet フェーズ 3〜6**（`Docs/Feature-PoseControlNet.md` の実装フェーズ節参照）— フェーズ2は ✅ マージ済み `2fec090`（`@mediapipe/tasks-vision@0.10.35` + `src/client/pose/`（types/models/worker）+ build.mjs の worker バンドル & wasm コピー + OPFS キャッシュ。ブラウザ実機で DL→OPFS→model-ready(GPU)→detect まで確認済み）。**重要な知見: MediaPipe の wasm グルーは module worker 非対応のため pose-worker は IIFE + クラシック worker（`{type:"module"}` を付けない）で起動すること**。`main.ts` への worker 統合はフェーズ3（タブ UI + 検出）の範囲。以降 4（関節ドラッグ編集 + スケルトン PNG）→ 5（サーバ添付パイプライン、**characterization test 先行**）→ 6（棒人間バッジ）
 3. 最終検証 + `操作メモ.md` 追記 + 完了ドキュメントの実施記録追記（完了後に本ファイルと各設計ドキュメントを `Docs/Done/` へ移す）
 
@@ -37,4 +37,6 @@
 
 - 2026-07-02: 初版。第1波の途中経過（2件マージ済み・2件中断）を記録。
 - 2026-07-03: 作業再開。Feature-MaskFeather 完了・マージ（`1631a2e`）、Fix-MaskPenLag 完了・マージ（`190e50e`）。マージ後検証 + ブラウザ smoke 完了。第1波クローズ。
-- 2026-07-03: 第2波開始。PoseControlNet フェーズ2 完了・マージ（`2fec090`、マージ後 main で typecheck 0 / 222 pass / check 成功）。Feature-PaintTool はサブエージェント作業続行中。なお main に手動コミット `a5c0b9c`（Mask editor UX fixes）が第2波ブランチ分岐後に入っており、PaintTool マージ時はマスク系 UI での衝突に注意。
+- 2026-07-03: 第2波開始。PoseControlNet フェーズ2 完了・マージ（`2fec090`、マージ後 main で typecheck 0 / 222 pass / check 成功）。なお main に手動コミット `a5c0b9c`（Mask editor UX fixes）が第2波ブランチ分岐後に入っていた。
+- 2026-07-03: Feature-PaintTool 完了・マージ（`7f0d864`、衝突2ファイル手動統合）。マージ後検証 + ブラウザ smoke 完了。第2波クローズ。残タスクは PoseControlNet フェーズ3〜6 と最終検証・ドキュメント整理のみ。
+  - 補足: `.claude/launch.json` は別チャットの dev サーバとポート競合したため `autoPort: true` + セッション別データディレクトリ方式へ変更。
