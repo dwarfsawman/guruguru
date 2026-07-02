@@ -1,6 +1,7 @@
 # 新機能実装 進捗・再開メモ
 
-- 最終更新: 2026-07-03（第1波完了。MaskFeather / MaskPenLag ともマージ済み・マージ後 smoke 済み）
+- 最終更新: 2026-07-03（使用量制限のため中断。PoseControlNet フェーズ4の途中 — 下記「中断中」参照）
+- **ユーザー指示: 以降のポーズ（PoseControlNet）関連の作業はサブエージェントに委譲せず、Fable 5（メインセッション）が直接実装すること**
 - 方式: ブランチ + サブエージェント監督方式（サブエージェントは sonnet、worktree 分離）。設計仕様は `Docs/Feature-*.md` / `Docs/Fix-*.md`
 
 ## 完了済み（main にマージ済み）
@@ -27,6 +28,19 @@
 - 注意: smoke 用フィクスチャ画像は 1x1 プレースホルダ。合成 PointerEvent では `setPointerCapture` が NotFoundError を投げるため、eval からの smoke 時はスタブが必要（実ポインタでは問題なし）
 - 両 worktree（`agent-a36e377ab17013e36` / `agent-a20d1f6f42bd4c92d`）は削除してよい
 
+## 中断中（2026-07-03、使用量制限）: PoseControlNet フェーズ4（ブランチ `feature/pose-4-edit`）
+
+- worktree: `.claude/worktrees/pose-4-edit`（main の `bbac81f` ベース、npm ci 済み）
+- コミット済み: `55561d4` "Add pure OpenPose skeleton PNG draw-ops + renderer" — `src/client/poseSkeleton.ts`（`buildPoseSkeletonDrawOps` / `poseSkeletonLineWidth` / `renderPoseSkeletonDataUrl`）+ `poseSkeleton.test.ts`（10件）。まだ呼び出し元なし（フェーズ5用、意図どおり）
+- 未コミット変更（関節ドラッグ + クリックで visible トグル。実装は一貫、typecheck/test 249 pass/build/check 通過済みだが**実ブラウザ検証が未実施**）:
+  - `maskCanvas.ts`: `pointerToSvgViewBoxPoint(svg, event)` 追加
+  - `views/posePanel.ts`: `<line class="pose-bone">` に `data-bone-index`/`data-bone-from`/`data-bone-to` 付与
+  - `styles.css`: `.pose-joint { pointer-events:all; cursor:grab; touch-action:none }` + `.pose-joint.dragging`
+  - `main.ts`: `ActivePoseJointDrag` + pointerdown 分岐（`state.maskEditMode && state.maskPanelTab === "pose"` でゲート）+ `beginPoseJointDrag` / `continuePoseJointDrag` / `clampPointToPoseBounds` / `finishPoseJointDrag`（ドラッグで座標確定、クリックで visible トグル、いずれも `source:"edited"` → `render()`）
+  - `poseDraft.ts`: 引き継ぎエージェントが停止直前に触った可能性あり — 再開時に diff を要確認
+- 残作業: ①未コミット diff の全レビュー（特に `poseDraft.ts`）②実ブラウザでのドラッグ/クリック検証（関節ドラッグで座標更新・オーバーレイと `PoseDraft.points` の整合、クリックで visible トグル、マスクブラシ/SAM box prompt/ペイントと非干渉。テスト DB・非 5177/5599 ポート）③検証一式再実行 ④意味単位コミット ⑤マージ（監督フロー）
+- **再開時は上記ユーザー指示によりサブエージェントを使わず Fable 5 が直接この worktree で作業すること**
+
 ## その後の残タスク（未着手）
 
 1. **Feature-PaintTool** — ✅ マージ済み `7f0d864`（フェーズ1〜5: PaintDraft / brush・eraser・eyedropper / パレット + recent colors / rAF バッチ描画（mask と同一パス、`paintStroke` に color 引数追加）/ Undo リング5 / Alt 一時スポイト / Ctrl+Z / 保存は既存 source-assets API で新規 root round。フェーズ6（ツリー親子リンク）は設計上任意のため未実装）。マージ時に `a5c0b9c` と `main.ts` / `assetModal.ts` で衝突 → `renderAssetModal` へ `maskPanelWidths` と `paintEditing`/`paintDraft` を両立させて手動統合。マージ後 main: typecheck 0 / 228 pass / check 成功。ブラウザ smoke 済み（paint パネル UI、赤ストローク描画 → Undo で消去 → 再描画 → 保存で新 round/asset 生成・保存画像に 1600x1200 で合成確認、mask/paint 相互排他、mask 側の feather スライダー・invert・リサイザも健在、コンソールエラー / 失敗リクエストなし）
@@ -40,4 +54,5 @@
 - 2026-07-03: 第2波開始。PoseControlNet フェーズ2 完了・マージ（`2fec090`、マージ後 main で typecheck 0 / 222 pass / check 成功）。なお main に手動コミット `a5c0b9c`（Mask editor UX fixes）が第2波ブランチ分岐後に入っていた。
 - 2026-07-03: Feature-PaintTool 完了・マージ（`7f0d864`、衝突2ファイル手動統合）。マージ後検証 + ブラウザ smoke 完了。第2波クローズ。残タスクは PoseControlNet フェーズ3〜6 と最終検証・ドキュメント整理のみ。
   - 補足: `.claude/launch.json` は別チャットの dev サーバとポート競合したため `autoPort: true` + セッション別データディレクトリ方式へ変更。
+- 2026-07-03: PoseControlNet フェーズ4 着手、途中で使用量制限により中断（上記「中断中」節参照）。担当エージェントが無断で孫エージェントへ再委譲する問題があり（成果自体は孫が実装）、以降のポーズ作業はエージェント委譲禁止・Fable 5 直接実装とする（ユーザー指示）。
 - 2026-07-03: PoseControlNet フェーズ3 完了・マージ（`b3fcd62`）。pose タブ UI（マスク/ポーズタブ、`posePanel.ts`、SVG スケルトンオーバーレイ、MediaPipe33→OpenPose18 変換 `poseDraft.ts` + テスト11件）。担当エージェントが実人物写真で 18 関節・17 bone の検出&オーバーレイ整合を実機確認済み。マージ後 main: typecheck 0 / **239 pass** / check 成功、タブ切替・相互排他（pose 中 maskCanvas pointer-events:none）の smoke 済み。途中セッション使用量制限で中断→同エージェントを transcript から再開して完走。次はフェーズ4（関節ドラッグ編集 + スケルトン PNG）。
