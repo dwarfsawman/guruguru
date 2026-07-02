@@ -1,6 +1,6 @@
 # 新機能実装 進捗・再開メモ
 
-- 最終更新: 2026-07-03（作業再開。MaskFeather マージ済み、MaskPenLag 進行中）
+- 最終更新: 2026-07-03（第1波完了。MaskFeather / MaskPenLag ともマージ済み・マージ後 smoke 済み）
 - 方式: ブランチ + サブエージェント監督方式（サブエージェントは sonnet、worktree 分離）。設計仕様は `Docs/Feature-*.md` / `Docs/Fix-*.md`
 
 ## 完了済み（main にマージ済み）
@@ -14,32 +14,26 @@
 
 マージ後の main で `npm run typecheck` 0 エラー / `npm test` 199 pass / build / check すべて成功確認済み。
 
-## 中断中（worktree に作業状態が残っている）
+## 第1波の中断分 — 2026-07-03 に完了
 
-### 1. Fix-MaskPenLag（ブランチ `fix/mask-pen-lag`）
+| 項目 | 状態 |
+| --- | --- |
+| Fix-MaskPenLag | ✅ マージ済み `190e50e`（A: pointerdown コミット除去 / B・C: rAF バッチ + dirtyRect 限定合成 / D: ホイールズームは `--mask-zoom` 直接更新 + 150ms idle で draft 永続化 / E: カーソル要素キャッシュ — null 判定バグ修正込み） |
+| Feature-MaskFeather | ✅ マージ済み `1631a2e`（上表参照） |
 
-- worktree: `.claude/worktrees/agent-a36e377ab17013e36`
-- コミット済み: `ea42837` "Add rAF batch queue types and dirtyRect compositing pure helpers to maskCanvas.ts"
-- 未コミット: `src/client/main.ts` 変更中（rAF バッチ配線 + カーソルキャッシュ実装の途中）
-- 中断時の状況: 修正 E（カーソル要素キャッシュ）で `cachedMaskBrushCursor` の null 判定ロジック（`A || B` の短絡で null に `.isConnected` アクセスし得る）を直そうとしていた
-- 残作業: B/C の main.ts 配線仕上げ、A（pointerdown コミット除去）、D（ホイールズーム軽量化 — CSS 変数は `.preview-media` へ setProperty）、E の null 判定修正、検証一式
-
-### 2. Feature-MaskFeather — ✅ 完了・マージ済み（上表参照）
-
-## 再開手順
-
-1. `git worktree list` で上記 2 worktree が残っていることを確認
-2. 各 worktree ごとに新しいサブエージェント（sonnet）を起動し、「該当ブランチの worktree で作業続行。まず `git status` / `git log` / 未コミット diff を確認し、設計ドキュメント（`Docs/Fix-MaskPenLag.md` / `Docs/Feature-MaskFeather.md`）の残項目を実装せよ」と指示する（前回の指示内容は各設計ドキュメントの「厳守事項」節と同じ: テスト DB・非 5177・検証コマンド一式・意味単位コミット・push 禁止）
-3. 完了したら監督者が diff レビュー → typecheck/test/build/check → main へ `--no-ff` マージ（2 本とも mask 系で `main.ts` を触るため、後からマージする方に衝突の可能性あり — 手動統合）
-4. マージ後にブラウザ smoke（preview、1680x920、`GURUGURU_TEST_DB=1`、非 5177 ポート）
+- マージは feather → pen-lag の順で実施。`main.ts` / `maskTypes.ts` は自動マージで衝突なし
+- マージ後 main: typecheck 0 エラー / **222 pass** / build / check 成功
+- マージ後ブラウザ smoke 済み（preview 1680x920、テスト DB、port 5599）: feather スライダー 0→12px 反映・再レンダー後も保持、ペンストローク（dab + pointermove×15 + up）描画成功、ホイールズームで `--mask-zoom` 1→1.12→1.24 即時更新・idle 後も保持、コンソールエラー / 失敗リクエストなし
+- 注意: smoke 用フィクスチャ画像は 1x1 プレースホルダ。合成 PointerEvent では `setPointerCapture` が NotFoundError を投げるため、eval からの smoke 時はスタブが必要（実ポインタでは問題なし）
+- 両 worktree（`agent-a36e377ab17013e36` / `agent-a20d1f6f42bd4c92d`）は削除してよい
 
 ## その後の残タスク（未着手）
 
-1. **Feature-PaintTool**（`Docs/Feature-PaintTool.md`）— Fix-MaskPenLag マージ後に着手（同じ描画パスを使うため）。ブランチ `feature/paint-tool`
+1. **Feature-PaintTool**（`Docs/Feature-PaintTool.md`）— Fix-MaskPenLag マージ済みのため着手可能。ブランチ `feature/paint-tool`
 2. **Feature-PoseControlNet フェーズ 2〜6**（`Docs/Feature-PoseControlNet.md` の実装フェーズ節参照）— フェーズ1は完了済み。次はフェーズ2（`@mediapipe/tasks-vision` 導入 + pose worker + build.mjs の wasm コピー + OPFS）。以降 3（タブ UI + 検出）→ 4（関節ドラッグ編集 + スケルトン PNG）→ 5（サーバ添付パイプライン、**characterization test 先行**）→ 6（棒人間バッジ）
 3. 最終検証 + `操作メモ.md` 追記 + 完了ドキュメントの実施記録追記（完了後に本ファイルと各設計ドキュメントを `Docs/Done/` へ移す）
 
 ## 変更履歴
 
 - 2026-07-02: 初版。第1波の途中経過（2件マージ済み・2件中断）を記録。
-- 2026-07-03: 作業再開。Feature-MaskFeather 完了・マージ（`1631a2e`）。Fix-MaskPenLag はサブエージェント作業続行中。
+- 2026-07-03: 作業再開。Feature-MaskFeather 完了・マージ（`1631a2e`）、Fix-MaskPenLag 完了・マージ（`190e50e`）。マージ後検証 + ブラウザ smoke 完了。第1波クローズ。次は Feature-PaintTool と PoseControlNet フェーズ2。
