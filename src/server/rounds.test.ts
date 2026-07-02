@@ -1,0 +1,57 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { normalizeInpaintOptions } from "./rounds.ts";
+
+// Characterization tests: pin the CURRENT behavior of normalizeInpaintOptions before the
+// mask feather feature adds a featherRadius field. See Docs/Feature-MaskFeather.md.
+
+test("normalizeInpaintOptions: defaults maskedContent to 'original' and onlyMaskedPadding to 32", () => {
+  const options = normalizeInpaintOptions({});
+  assert.deepEqual(options, {
+    maskedContent: "original",
+    inpaintArea: "only_masked",
+    onlyMaskedPadding: 32,
+    maskDataUrl: null
+  });
+});
+
+test("normalizeInpaintOptions: accepts all four maskedContent values", () => {
+  for (const value of ["fill", "original", "latent_noise", "latent_nothing"]) {
+    const options = normalizeInpaintOptions({ maskedContent: value });
+    assert.equal(options.maskedContent, value);
+  }
+});
+
+test("normalizeInpaintOptions: throws on unsupported maskedContent value", () => {
+  assert.throws(() => normalizeInpaintOptions({ maskedContent: "bogus" }), /Unsupported maskedContent value/);
+});
+
+test("normalizeInpaintOptions: throws when inpaintArea is not only_masked", () => {
+  assert.throws(
+    () => normalizeInpaintOptions({ inpaintArea: "whole_image" }),
+    /Only inpaintArea='only_masked' is supported/
+  );
+});
+
+test("normalizeInpaintOptions: onlyMaskedPadding clamps into [0, 512] as an integer", () => {
+  assert.equal(normalizeInpaintOptions({ onlyMaskedPadding: -5 }).onlyMaskedPadding, 0);
+  assert.equal(normalizeInpaintOptions({ onlyMaskedPadding: 1000 }).onlyMaskedPadding, 512);
+  assert.equal(normalizeInpaintOptions({ onlyMaskedPadding: 12.9 }).onlyMaskedPadding, 12);
+  assert.equal(normalizeInpaintOptions({ onlyMaskedPadding: "64" }).onlyMaskedPadding, 64);
+});
+
+test("normalizeInpaintOptions: accepts snake_case aliases for maskedContent/inpaintArea/onlyMaskedPadding", () => {
+  const options = normalizeInpaintOptions({
+    masked_content: "fill",
+    inpaint_area: "only_masked",
+    only_masked_padding: 8
+  });
+  assert.equal(options.maskedContent, "fill");
+  assert.equal(options.inpaintArea, "only_masked");
+  assert.equal(options.onlyMaskedPadding, 8);
+});
+
+test("normalizeInpaintOptions: maskDataUrl is always null regardless of input", () => {
+  const options = normalizeInpaintOptions({ maskDataUrl: "data:image/png;base64,abc" });
+  assert.equal(options.maskDataUrl, null);
+});
