@@ -1,0 +1,261 @@
+{
+  "298": {
+    "inputs": {
+      "samples": [
+        "747",
+        0
+      ],
+      "vae": [
+        "710",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAEデコード"
+    }
+  },
+  "694": {
+    "inputs": {
+      "cfg": 4,
+      "model": [
+        "701",
+        0
+      ],
+      "positive": [
+        "752",
+        0
+      ],
+      "negative": [
+        "752",
+        1
+      ]
+    },
+    "class_type": "CFGGuider",
+    "_meta": {
+      "title": "CFGガイダー"
+    }
+  },
+  "700": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "Kサンプラー選択"
+    }
+  },
+  "701": {
+    "inputs": {
+      "shift": 1,
+      "model": [
+        "731",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "Flow Shift"
+    }
+  },
+  "710": {
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAEを読み込む"
+    }
+  },
+  "718": {
+    "inputs": {
+      "noise_seed": 52516174155923
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "SEED"
+    }
+  },
+  "731": {
+    "inputs": {
+      "unet_name": "Chroma1-HD-fp8mixed.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "拡散モデルを読み込む"
+    }
+  },
+  "733": {
+    "inputs": {
+      "clip_name": "t5xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "chroma",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "CLIPを読み込む"
+    }
+  },
+  "734": {
+    "inputs": {
+      "scheduler": "beta",
+      "steps": 26,
+      "denoise": 1,
+      "model": [
+        "701",
+        0
+      ]
+    },
+    "class_type": "BasicScheduler",
+    "_meta": {
+      "title": "基本スケジューラー"
+    }
+  },
+  "737": {
+    "inputs": {
+      "width": 1232,
+      "height": 688,
+      "batch_size": 1
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {
+      "title": "空のSD3潜在画像"
+    }
+  },
+  "740": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "298",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "画像を保存"
+    }
+  },
+  "741": {
+    "inputs": {
+      "min_padding": 0,
+      "min_length": 0,
+      "clip": [
+        "733",
+        0
+      ]
+    },
+    "class_type": "T5TokenizerOptions",
+    "_meta": {
+      "title": "T5TokenizerOptions"
+    }
+  },
+  "747": {
+    "inputs": {
+      "noise": [
+        "718",
+        0
+      ],
+      "guider": [
+        "694",
+        0
+      ],
+      "sampler": [
+        "700",
+        0
+      ],
+      "sigmas": [
+        "734",
+        0
+      ],
+      "latent_image": [
+        "737",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "カスタムサンプラー（高度）"
+    }
+  },
+  "748": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "741",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "749": {
+    "inputs": {
+      "text": "This low quality greyscale unfinished sketch is inaccurate and flawed. The image is very blurred and lacks detail with excessive chromatic aberrations and artifacts. The image is overly saturated with excessive bloom. It has a toony aesthetic with bold outlines and flat colors. anime, manga, cartoon, illustration, 2D, cel shading, flat colors, line art, comic, webtoon, chibi, moe, kawaii, big eyes, exaggerated eyes, anime face, anime girl, japanese animation style, looking at camera, looking at viewer, eye contact, posing, posed photo, portrait, studio portrait, commemorative photo, group photo, smiling for camera, selfie, staged, centered composition, perfect composition, front-facing, formal photo",
+      "clip": [
+        "741",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative Prompt)"
+    }
+  },
+  "752": {
+    "inputs": {
+      "strength": 1,
+      "start_percent": 0,
+      "end_percent": 1,
+      "positive": [
+        "748",
+        0
+      ],
+      "negative": [
+        "749",
+        0
+      ],
+      "control_net": [
+        "753",
+        0
+      ],
+      "image": [
+        "754",
+        0
+      ]
+    },
+    "class_type": "ControlNetApplyAdvanced",
+    "_meta": {
+      "title": "ControlNetを適用"
+    }
+  },
+  "753": {
+    "inputs": {
+      "control_net_name": "diffusion_pytorch_model.safetensors"
+    },
+    "class_type": "ControlNetLoader",
+    "_meta": {
+      "title": "ControlNetモデルを読み込む"
+    }
+  },
+  "754": {
+    "inputs": {
+      "image": "round_add3f877-5a2d-479f-807c-5573fd51f38d_mask.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "画像を読み込む"
+    }
+  },
+  "755": {
+    "inputs": {
+      "control_net_name": "diffusion_pytorch_model.safetensors"
+    },
+    "class_type": "ControlNetLoader",
+    "_meta": {
+      "title": "ControlNetモデルを読み込む"
+    }
+  }
+}
