@@ -214,7 +214,7 @@ export function maskLayerForStroke(layers: MaskLayerSet, kind: MaskStrokeKind) {
   return layers.manualInclude;
 }
 
-export function paintStroke(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }, brushSize: number, compositeOperation: GlobalCompositeOperation) {
+export function paintStroke(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }, brushSize: number, compositeOperation: GlobalCompositeOperation, color = "rgba(255, 255, 255, 1)") {
   const context = canvas.getContext("2d");
   if (!context) {
     return;
@@ -224,8 +224,8 @@ export function paintStroke(canvas: HTMLCanvasElement, from: { x: number; y: num
   context.lineCap = "round";
   context.lineJoin = "round";
   context.lineWidth = brushSize;
-  context.strokeStyle = "rgba(255, 255, 255, 1)";
-  context.fillStyle = "rgba(255, 255, 255, 1)";
+  context.strokeStyle = color;
+  context.fillStyle = color;
   if (from.x === to.x && from.y === to.y) {
     context.beginPath();
     context.arc(to.x, to.y, brushSize / 2, 0, Math.PI * 2);
