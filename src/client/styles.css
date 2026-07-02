@@ -1380,7 +1380,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .seed-chip {
   left: 8px;
-  top: 42px;
+  top: 48px;
   max-width: calc(100% - 16px);
   overflow: hidden;
   padding: 3px 7px;
@@ -1408,6 +1408,15 @@ input[type="range"]::-webkit-slider-thumb {
 .mask-badge svg {
   width: 13px;
   height: 13px;
+}
+
+.mask-badge.inactive {
+  background: rgba(100, 100, 110, 0.55);
+  color: rgba(180, 180, 190, 0.6);
+}
+
+.mask-badge.inactive svg {
+  opacity: 0.5;
 }
 
 .placeholder-pattern {
