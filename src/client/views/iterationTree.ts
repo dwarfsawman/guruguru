@@ -3,8 +3,10 @@
  * `src/client/main.ts` から抽出。state は引数で受け取るため main.ts への逆依存を持たない（circular import なし）。
  * UI 文言・HTML 構造・CSS class・data-action・selector は移動前と同一。
  *
- * `generationModeLabel` は第16フェーズのモジュール4 (`generationPanel.ts`) 抽出までの一時的な
- * ローカル複製。モジュール4のコミットで `generationPanel.ts` からの import に切り替える。
+ * `generationModeLabel` は `generationPanel.ts` にも同名の export があるが、
+ * `generationPanel.ts` は `galleryView.ts`（本 module の依存先）を import するため、
+ * ここから直接 import すると循環 import になる。関数本体が完全に同一の小さい pure helper
+ * のため、循環を避けてこのモジュール内に複製している。
  */
 import type { Round } from "../../shared/apiTypes";
 import { escapeAttr } from "../format";

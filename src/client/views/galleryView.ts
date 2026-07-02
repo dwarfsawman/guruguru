@@ -3,9 +3,11 @@
  * `src/client/main.ts` から抽出。state は引数で受け取るため main.ts への逆依存を持たない（circular import なし）。
  * UI 文言・HTML 構造・CSS class・data-action・selector は移動前と同一。
  *
- * `generationPanelHtml` は第16フェーズのモジュール4 (`generationPanel.ts`) 抽出までの一時的な
- * 引数。モジュール4のコミットで `renderGenerationPanel` を直接 import して呼び出す形に切り替える。
- * `generationModeLabel` も同様にモジュール4抽出までの一時的なローカル複製。
+ * `generationPanelHtml` は main.ts が `renderGenerationPanel()`（`generationPanel.ts`）で
+ * 事前に render した HTML 文字列を渡す形にしている。`generationPanel.ts` 側が
+ * `renderSourceUploadButton`（本 module）に依存するため、本 module から `generationPanel.ts` を
+ * 直接 import すると循環 import になる。そのため意図的にこの間接呼び出しを維持している。
+ * `generationModeLabel` も同じ理由で `generationPanel.ts` の export と同一内容をローカルに複製している。
  */
 import type { Asset, ProjectDetail, Round } from "../../shared/apiTypes";
 import type { InpaintDraft } from "../maskTypes";
