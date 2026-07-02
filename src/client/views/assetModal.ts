@@ -24,6 +24,10 @@ import { defaultInpaintDraft, hasActiveMaskData, maskedContentOptions } from "..
 import { normalizePromptBox } from "../maskCanvas";
 import type { PaintDraft } from "../paintTypes";
 import { renderPaintToggleButton, renderPaintToolPanel } from "./paintPanel";
+import type { PoseDraft } from "../poseTypes";
+import { renderPoseOverlay, renderPosePanelSection } from "./posePanel";
+
+export type MaskPanelTab = "mask" | "pose";
 
 function clampNumber(value: number, min: number, max: number, fallback: number) {
   if (!Number.isFinite(value)) {
@@ -49,7 +53,9 @@ export function renderAssetModal(
   batchSizeValue: number,
   maskPanelWidths: { left: number; right: number } = { left: 300, right: 300 },
   paintEditing = false,
-  paintDraft: PaintDraft | null = null
+  paintDraft: PaintDraft | null = null,
+  maskPanelTab: MaskPanelTab = "mask",
+  poseDraft: PoseDraft | null = null
 ) {
   if (!asset) {
     return "";
@@ -60,7 +66,7 @@ export function renderAssetModal(
     ? ` style="--mask-zoom: ${formatCssNumber(paintDraft.zoomScale)}; --mask-pan-x: ${formatCssNumber(paintDraft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(paintDraft.panOffset.y)}px;"`
     : ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`;
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
-  const media = renderPreviewMedia(asset, draft, editing, zoomStyle, paintEditing);
+  const media = renderPreviewMedia(asset, draft, editing, zoomStyle, paintEditing, maskPanelTab, poseDraft);
   const footer = renderPreviewFooter(asset, info);
   return `
     <div class="preview-modal ${anyEditing ? "mask-editor-open" : ""}" role="dialog" aria-modal="true">
@@ -79,7 +85,7 @@ export function renderAssetModal(
               ${footer}
             </main>
             <div class="mask-panel-resizer" data-mask-panel-resizer="right" role="separator" aria-orientation="vertical" aria-label="右パネル幅を調整"></div>
-            ${renderSmartMaskSidebar(draft)}
+            ${renderSmartMaskSidebar(draft, maskPanelTab, poseDraft, asset.id)}
           </div>
         ` : paintEditing && paintDraft ? `
           <div class="mask-editor-layout paint-editor-layout">
@@ -99,12 +105,22 @@ export function renderAssetModal(
   `;
 }
 
-export function renderPreviewMedia(asset: Asset, draft: InpaintDraft, editing: boolean, zoomStyle: string, paintEditing = false) {
+export function renderPreviewMedia(
+  asset: Asset,
+  draft: InpaintDraft,
+  editing: boolean,
+  zoomStyle: string,
+  paintEditing = false,
+  maskPanelTab: MaskPanelTab = "mask",
+  poseDraft: PoseDraft | null = null
+) {
+  const poseTabActive = editing && maskPanelTab === "pose";
   return `
-    <div class="preview-media${editing || paintEditing ? " mask-preview-media" : ""}"${zoomStyle}>
+    <div class="preview-media${editing || paintEditing ? " mask-preview-media" : ""}${poseTabActive ? " pose-tab-active" : ""}"${zoomStyle}>
       <div class="mask-zoom-stage">
         <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
         ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
+        ${poseTabActive && poseDraft ? renderPoseOverlay(poseDraft, asset) : ""}
         ${paintEditing ? `<canvas id="paintCanvas" class="mask-canvas paint-canvas" data-asset-id="${asset.id}" aria-label="ペイントキャンバス"></canvas>` : ""}
       </div>
     </div>
@@ -332,13 +348,23 @@ export function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string
   `;
 }
 
-export function renderSmartMaskSidebar(draft: InpaintDraft) {
+export function renderSmartMaskSidebar(
+  draft: InpaintDraft,
+  maskPanelTab: MaskPanelTab = "mask",
+  poseDraft: PoseDraft | null = null,
+  assetId: string | null = null
+) {
+  const poseActive = maskPanelTab === "pose";
   return `
     <aside class="mask-editor-panel smart-mask-panel">
       <div class="mask-panel-header">
-        <h2>スマート選択</h2>
+        <h2>${poseActive ? "ポーズ" : "スマート選択"}</h2>
+        <div class="mask-panel-tabs smart-panel-tabs">
+          <button class="mask-tab ${poseActive ? "" : "active"}" type="button" data-action="set-mask-panel-tab" data-tab="mask">マスク</button>
+          <button class="mask-tab ${poseActive ? "active" : ""}" type="button" data-action="set-mask-panel-tab" data-tab="pose">ポーズ</button>
+        </div>
       </div>
-      ${renderSmartMaskSection(draft)}
+      ${poseActive ? renderPosePanelSection(poseDraft ?? null, assetId) : renderSmartMaskSection(draft)}
     </aside>
   `;
 }
