@@ -21,6 +21,7 @@ export interface InpaintDraft {
   maskedContent: MaskedContent;
   inpaintArea: InpaintArea;
   onlyMaskedPadding: number;
+  featherRadius: number;
   brushSize: number;
   eraser: boolean;
   selectedSmartMaskProvider: WebSamProviderId;

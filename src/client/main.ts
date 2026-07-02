@@ -375,7 +375,12 @@ function bindEvents() {
     }
     const valueTarget = document.getElementById(valueId);
     if (valueTarget && target instanceof HTMLInputElement) {
-      const suffix = target.dataset.inpaintField === "onlyMaskedPadding" || target.dataset.inpaintField === "brushSize" ? "px" : "";
+      const suffix =
+        target.dataset.inpaintField === "onlyMaskedPadding" ||
+        target.dataset.inpaintField === "featherRadius" ||
+        target.dataset.inpaintField === "brushSize"
+          ? "px"
+          : "";
       valueTarget.textContent = `${formatSliderValue(target)}${suffix}`;
     }
     if (target.closest("#generation-form")) {
@@ -2475,6 +2480,8 @@ function updateInpaintDraftFromControl(control: HTMLInputElement | HTMLTextAreaE
     next.inpaintArea = "only_masked";
   } else if (field === "onlyMaskedPadding") {
     next.onlyMaskedPadding = clampNumber(Number(control.value), 0, 512, 32);
+  } else if (field === "featherRadius") {
+    next.featherRadius = clampNumber(Number(control.value), 0, 30, 0);
   } else if (field === "brushSize") {
     next.brushSize = clampNumber(Number(control.value), 1, 256, 48);
   }
@@ -3039,7 +3046,8 @@ function inpaintRequestForParent(parentAssetId: string | null, generationMode: s
     maskDataUrl: draft.maskDataUrl,
     maskedContent: draft.maskedContent,
     inpaintArea: draft.inpaintArea,
-    onlyMaskedPadding: draft.onlyMaskedPadding
+    onlyMaskedPadding: draft.onlyMaskedPadding,
+    featherRadius: draft.featherRadius
   };
 }
 

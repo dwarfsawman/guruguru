@@ -297,6 +297,10 @@ export function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string
           <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
           <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
         </div>
+        <div class="range-control mask-feather-control">
+          <div class="range-label"><span>Mask feather</span><strong id="modalMaskFeatherValue">${formatNumber(draft.featherRadius)}px</strong></div>
+          <input type="range" min="0" max="30" step="1" value="${draft.featherRadius}" data-value-target="modalMaskFeatherValue" data-inpaint-field="featherRadius" />
+        </div>
       </div>
       <div class="mask-panel-actions">
         <button class="button-primary" type="button" data-action="apply-mask-editor">${iconCheck()}${canApplyCandidate ? "候補を適用" : "適用"}</button>
