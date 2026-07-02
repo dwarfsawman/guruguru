@@ -657,6 +657,170 @@ test("patchWorkflow inpaint: featherRadius unspecified produces byte-identical o
   }
 });
 
+test("patchWorkflow inpaint (maskedContent=original, featherRadius=6): inserts MaskToImage/ImageBlur/ImageToMask chains for both the sampler-side (post-grow) and paste-back (pre-grow) masks", () => {
+  // Pins addMaskFeatherNodes wiring (Docs/Feature-MaskFeather.md): with padding=32 and
+  // featherRadius=6, patchInpaintLatentPath builds the paste-back feather chain first (it is
+  // computed eagerly from the resized, non-grown mask), then -- inside the maskedContent branch --
+  // the sampler-side feather chain from the grown mask. Node ids continue directly from the
+  // "maskedContent=original" baseline test (8=LoadImage, 9=LoadImageMask, 10=GrowMask).
+  const workflow = baseWorkflow();
+  const roleMap = baseRoleMap();
+  const request = baseRequest({
+    generationMode: "img2img",
+    denoise: 0.75,
+    batchSize: 1,
+    width: 512,
+    height: 512,
+    parentAssetId: "asset_9",
+    relationType: "img2img",
+    inpaint: {
+      maskedContent: "original",
+      inpaintArea: "only_masked",
+      onlyMaskedPadding: 32,
+      featherRadius: 6,
+      maskDataUrl: null,
+      maskPath: "/tmp/mask.png",
+      maskWidth: 512,
+      maskHeight: 512
+    } as unknown as GenerationRequest["inpaint"]
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_3",
+    roundIndex: 2,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: "mask_upload.png"
+  }) as Record<string, any>;
+
+  // 8=LoadImage, 9=LoadImageMask, 10=GrowMask(padding=32) -- unchanged from the no-feather case.
+  assert.equal(patched["8"].class_type, "LoadImage");
+  assert.equal(patched["9"].class_type, "LoadImageMask");
+  assert.deepEqual(patched["10"], {
+    inputs: { mask: ["9", 0], expand: 32, tapered_corners: true },
+    class_type: "GrowMask",
+    _meta: { title: "GURUGURU Inpaint Padding" }
+  });
+
+  // Paste-back feather chain (11-13): built off the resized/non-grown mask (node 9), since
+  // compositeMaskConnection is computed eagerly before the maskedContent branch runs.
+  assert.deepEqual(patched["11"], {
+    inputs: { mask: ["9", 0] },
+    class_type: "MaskToImage",
+    _meta: { title: "GURUGURU Inpaint Mask Feather Image" }
+  });
+  assert.deepEqual(patched["12"], {
+    inputs: { image: ["11", 0], blur_radius: 6, sigma: 2 },
+    class_type: "ImageBlur",
+    _meta: { title: "GURUGURU Inpaint Mask Feather" }
+  });
+  assert.deepEqual(patched["13"], {
+    inputs: { image: ["12", 0], channel: "red" },
+    class_type: "ImageToMask",
+    _meta: { title: "GURUGURU Inpaint Feathered Mask" }
+  });
+
+  // maskedContent === "original": VAEEncode(14) is inserted next, then the sampler-side feather
+  // chain (15-17) is built off the grown mask (node 10, not node 9) since feathredGrownMaskConnection
+  // feathers AFTER grow.
+  assert.deepEqual(patched["14"], {
+    inputs: { pixels: ["8", 0], vae: ["1", 2] },
+    class_type: "VAEEncode",
+    _meta: { title: "GURUGURU img2img VAE Encode" }
+  });
+  assert.deepEqual(patched["15"], {
+    inputs: { mask: ["10", 0] },
+    class_type: "MaskToImage",
+    _meta: { title: "GURUGURU Inpaint Mask Feather Image" }
+  });
+  assert.deepEqual(patched["16"], {
+    inputs: { image: ["15", 0], blur_radius: 6, sigma: 2 },
+    class_type: "ImageBlur",
+    _meta: { title: "GURUGURU Inpaint Mask Feather" }
+  });
+  assert.deepEqual(patched["17"], {
+    inputs: { image: ["16", 0], channel: "red" },
+    class_type: "ImageToMask",
+    _meta: { title: "GURUGURU Inpaint Feathered Mask" }
+  });
+
+  // SetLatentNoiseMask(18) wraps the VAEEncode output with the sampler-side feathered mask (17),
+  // not the raw grown mask (10).
+  assert.deepEqual(patched["18"], {
+    inputs: { samples: ["14", 0], mask: ["17", 0] },
+    class_type: "SetLatentNoiseMask",
+    _meta: { title: "GURUGURU Inpaint Noise Mask" }
+  });
+  assert.deepEqual(patched["5"].inputs.latent_image, ["18", 0]);
+
+  // Paste-back composite(19) uses the paste-back feathered mask (13), not the raw resized mask (9)
+  // or the sampler-side feathered mask (17).
+  assert.deepEqual(patched["19"], {
+    inputs: {
+      destination: ["8", 0],
+      source: ["6", 0],
+      x: 0,
+      y: 0,
+      resize_source: false,
+      mask: ["13", 0]
+    },
+    class_type: "ImageCompositeMasked",
+    _meta: { title: "GURUGURU Inpaint Paste Back" }
+  });
+  assert.deepEqual(patched["7"].inputs.images, ["19", 0]);
+});
+
+test("patchWorkflow inpaint (maskedContent=latent_nothing, featherRadius=6): no feather nodes are inserted at all", () => {
+  // Per Docs/Feature-MaskFeather.md: latent_nothing never wires a sampler-side mask (no
+  // SetLatentNoiseMask), so feathredGrownMaskConnection() is never invoked in that branch and no
+  // orphaned sampler-side feather chain is created. However, the paste-back composite mask
+  // connection is still computed eagerly, so a paste-back feather chain IS expected.
+  const workflow = baseWorkflow();
+  const roleMap = baseRoleMap();
+  const request = baseRequest({
+    generationMode: "img2img",
+    batchSize: 1,
+    width: 512,
+    height: 512,
+    inpaint: {
+      maskedContent: "latent_nothing",
+      inpaintArea: "only_masked",
+      onlyMaskedPadding: 32,
+      featherRadius: 6,
+      maskDataUrl: null,
+      maskPath: "/tmp/mask.png",
+      maskWidth: 512,
+      maskHeight: 512
+    } as unknown as GenerationRequest["inpaint"]
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_6",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: "mask_upload.png"
+  }) as Record<string, any>;
+
+  // Exactly one feather chain (3 nodes: MaskToImage/ImageBlur/ImageToMask) is present -- the
+  // paste-back one. GrowMask(10) remains orphaned (pre-existing behavior, not repeated for feather).
+  const blurNodes = Object.values(patched).filter((node: any) => node.class_type === "ImageBlur");
+  assert.equal(blurNodes.length, 1);
+
+  const compositeNodeId = patched["7"].inputs.images[0];
+  const compositeNode = patched[compositeNodeId];
+  assert.equal(compositeNode.class_type, "ImageCompositeMasked");
+  const pasteBackMaskNodeId = compositeNode.inputs.mask[0];
+  assert.equal(patched[pasteBackMaskNodeId].class_type, "ImageToMask");
+
+  // The sampler's latent_image is the plain EmptyLatentImage output -- no SetLatentNoiseMask,
+  // and therefore no sampler-side feather chain wired to it.
+  const latentImageNodeId = patched["5"].inputs.latent_image[0];
+  assert.equal(patched[latentImageNodeId].class_type, "EmptyLatentImage");
+});
+
 test("patchWorkflow: throws when img2img workflow has no sampler node with a latent_image input", () => {
   const workflow = baseWorkflow() as Record<string, any>;
   delete workflow["5"].inputs.latent_image;
