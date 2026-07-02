@@ -1835,6 +1835,10 @@ input[type="range"]::-webkit-slider-thumb {
   box-shadow: var(--shadow);
 }
 
+.paint-editor-layout {
+  grid-template-columns: minmax(300px, 390px) minmax(420px, 1fr);
+}
+
 .preview-center {
   display: grid;
   min-width: 0;
@@ -2056,7 +2060,8 @@ input[type="range"]::-webkit-slider-thumb {
   background: rgba(8, 9, 16, 0.7);
 }
 
-.mask-prompt-panel {
+.mask-prompt-panel,
+.paint-tool-panel {
   border-right: 1px solid rgba(255, 255, 255, 0.12);
 }
 
@@ -2272,6 +2277,76 @@ input[type="range"]::-webkit-slider-thumb {
 .mask-options-grid {
   display: grid;
   gap: 10px;
+}
+
+.paint-tool-panel .mask-panel-actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.paint-color-section {
+  display: grid;
+  gap: 10px;
+}
+
+.paint-color-picker-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.paint-color-picker {
+  width: 44px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.paint-palette {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+}
+
+.paint-swatch {
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: var(--swatch-color);
+  cursor: pointer;
+}
+
+.paint-swatch:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.paint-swatch.active {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.4);
+}
+
+.paint-recent-colors {
+  display: grid;
+  gap: 6px;
+}
+
+.paint-recent-label {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.paint-canvas {
+  cursor: crosshair;
 }
 
 .smart-mask-section,
@@ -2686,12 +2761,14 @@ input[type="range"]::-webkit-slider-thumb {
   }
 
   .mask-prompt-panel,
-  .smart-mask-panel {
+  .smart-mask-panel,
+  .paint-tool-panel {
     border-left: 0;
     border-right: 0;
   }
 
-  .mask-prompt-panel {
+  .mask-prompt-panel,
+  .paint-tool-panel {
     border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   }
 
