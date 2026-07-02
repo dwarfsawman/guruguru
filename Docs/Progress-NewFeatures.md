@@ -1,6 +1,6 @@
 # 新機能実装 進捗・再開メモ
 
-- 最終更新: 2026-07-02（使用量上限のため中断。ここから再開する）
+- 最終更新: 2026-07-03（作業再開。MaskFeather マージ済み、MaskPenLag 進行中）
 - 方式: ブランチ + サブエージェント監督方式（サブエージェントは sonnet、worktree 分離）。設計仕様は `Docs/Feature-*.md` / `Docs/Fix-*.md`
 
 ## 完了済み（main にマージ済み）
@@ -10,6 +10,7 @@
 | GitHub Release `pose-models-v1` | 作成済み。asset `pose_landmarker_full.task`（9,398,198 bytes）アップロード・検証済み |
 | Feature-IterationTreeHue | ✅ マージ済み `c2a8fd8`（`rootHue`/`childHue` + テスト12件） |
 | PoseControlNet フェーズ1（モデル配布 proxy） | ✅ マージ済み `9bf5eff`（`releaseAssetRegistry` 一般化 + `GET /api/pose-models/:filename`。curl 確認済み） |
+| Feature-MaskFeather | ✅ マージ済み `1631a2e`（`addMaskFeatherNodes`＝MaskToImage→ImageBlur→ImageToMask、featherRadius 0–30 のクライアント経路 + スライダー2箇所。マージ後 main で typecheck 0 / 211 pass / check 成功。クライアント側 blur プレビューは第2フェーズとして未実装） |
 
 マージ後の main で `npm run typecheck` 0 エラー / `npm test` 199 pass / build / check すべて成功確認済み。
 
@@ -23,12 +24,7 @@
 - 中断時の状況: 修正 E（カーソル要素キャッシュ）で `cachedMaskBrushCursor` の null 判定ロジック（`A || B` の短絡で null に `.isConnected` アクセスし得る）を直そうとしていた
 - 残作業: B/C の main.ts 配線仕上げ、A（pointerdown コミット除去）、D（ホイールズーム軽量化 — CSS 変数は `.preview-media` へ setProperty）、E の null 判定修正、検証一式
 
-### 2. Feature-MaskFeather（ブランチ `feature/mask-feather`）
-
-- worktree: `.claude/worktrees/agent-a20d1f6f42bd4c92d`
-- コミット済み: `201d515` "Add characterization tests for inpaint normalization + featherRadius=0 no-op"
-- 未コミット: `src/server/rounds.ts` / `workflowInpaint.ts` / `shared/types.ts` / `rounds.test.ts` 変更中（`addMaskFeatherNodes` 実装 + feather ありのテスト作成途中。ノード採番のトレースまで進行）
-- 残作業: feather テスト完成、クライアント側パラメータ経路（`InpaintDraft.featherRadius` / UI スライダー2箇所 / `updateInpaintDraftFromControl` 分岐 / **`inpaintRequestForParent` の返却 object への追加**）、検証一式
+### 2. Feature-MaskFeather — ✅ 完了・マージ済み（上表参照）
 
 ## 再開手順
 
@@ -46,3 +42,4 @@
 ## 変更履歴
 
 - 2026-07-02: 初版。第1波の途中経過（2件マージ済み・2件中断）を記録。
+- 2026-07-03: 作業再開。Feature-MaskFeather 完了・マージ（`1631a2e`）。Fix-MaskPenLag はサブエージェント作業続行中。
