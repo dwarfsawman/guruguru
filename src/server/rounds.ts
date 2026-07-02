@@ -274,7 +274,7 @@ async function prepareInpaintRequest(
   };
 }
 
-function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): InpaintOptions {
+export function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): InpaintOptions {
   const maskedContent = normalizeMaskedContent(rawInpaint.maskedContent ?? rawInpaint.masked_content);
   const inpaintArea = stringOr(rawInpaint.inpaintArea ?? rawInpaint.inpaint_area, "only_masked");
   if (inpaintArea !== "only_masked") {

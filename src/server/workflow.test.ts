@@ -593,6 +593,70 @@ test("patchWorkflow inpaint: resizes image and mask when mask dimensions differ 
   assert.deepEqual(patched[compositeNodeId].inputs.destination, ["10", 0]);
 });
 
+test("patchWorkflow inpaint: featherRadius unspecified produces byte-identical output to no featherRadius field at all", () => {
+  // Characterization test for the mask feather feature (Docs/Feature-MaskFeather.md):
+  // featherRadius is optional and defaults to "no feathering" -- omitting it entirely must
+  // produce the exact same patched workflow as today, with no MaskToImage/ImageBlur/ImageToMask
+  // feather nodes inserted.
+  const workflowA = baseWorkflow();
+  const workflowB = baseWorkflow();
+  const inpaintBase: Record<string, unknown> = {
+    maskedContent: "original",
+    inpaintArea: "only_masked",
+    onlyMaskedPadding: 32,
+    maskDataUrl: null,
+    maskPath: "/tmp/mask.png",
+    maskWidth: 512,
+    maskHeight: 512
+  };
+  const requestWithoutField = baseRequest({
+    generationMode: "img2img",
+    denoise: 0.75,
+    batchSize: 1,
+    width: 512,
+    height: 512,
+    parentAssetId: "asset_9",
+    relationType: "img2img",
+    inpaint: { ...inpaintBase } as unknown as GenerationRequest["inpaint"]
+  });
+  const requestWithZero = baseRequest({
+    generationMode: "img2img",
+    denoise: 0.75,
+    batchSize: 1,
+    width: 512,
+    height: 512,
+    parentAssetId: "asset_9",
+    relationType: "img2img",
+    inpaint: { ...inpaintBase, featherRadius: 0 } as unknown as GenerationRequest["inpaint"]
+  });
+
+  const patchedA = patchWorkflow(workflowA, baseRoleMap(), {
+    projectId: "project_3",
+    roundIndex: 2,
+    batchIndex: 0,
+    request: requestWithoutField,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: "mask_upload.png"
+  });
+  const patchedB = patchWorkflow(workflowB, baseRoleMap(), {
+    projectId: "project_3",
+    roundIndex: 2,
+    batchIndex: 0,
+    request: requestWithZero,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: "mask_upload.png"
+  });
+
+  assert.deepEqual(patchedB, patchedA);
+
+  // No feather-related node classes are present in either output.
+  for (const patched of [patchedA, patchedB] as Record<string, any>[]) {
+    for (const node of Object.values(patched)) {
+      assert.notEqual((node as any).class_type, "ImageBlur");
+    }
+  }
+});
+
 test("patchWorkflow: throws when img2img workflow has no sampler node with a latent_image input", () => {
   const workflow = baseWorkflow() as Record<string, any>;
   delete workflow["5"].inputs.latent_image;
