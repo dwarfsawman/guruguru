@@ -720,6 +720,7 @@ function openAssetDetail(assetId: string) {
 function closeAssetDetail() {
   commitActiveMaskCanvas();
   cancelPendingMaskStrokeFlush();
+  flushPendingMaskWheelZoom();
   activeMaskStroke = null;
   activeBoxPrompt = null;
   activeImagePan = null;
@@ -2248,6 +2249,32 @@ function cancelPendingMaskStrokeFlush() {
   }
 }
 
+/**
+ * Persists any pending wheel-zoom scale immediately (without waiting for the idle timer) and
+ * clears the timer. Used when the mask editor closes mid-zoom so the last scale the user saw
+ * is not silently lost, matching the pre-batching behavior where every tick persisted.
+ */
+function flushPendingMaskWheelZoom() {
+  if (maskWheelZoomIdleTimer !== null) {
+    window.clearTimeout(maskWheelZoomIdleTimer);
+    maskWheelZoomIdleTimer = null;
+  }
+  const pendingScale = maskWheelZoomPendingScale;
+  maskWheelZoomPendingScale = null;
+  if (pendingScale === null) {
+    return;
+  }
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!draft) {
+    return;
+  }
+  setInpaintDraft({
+    ...draft,
+    zoomScale: pendingScale
+  });
+}
+
 /** Paints and drains any queued pending segments for the active stroke, then re-composites once. */
 function flushMaskStrokeQueue(canvas: HTMLCanvasElement) {
   if (!activeMaskStroke || activeMaskStroke.pendingSegments.length === 0) {
@@ -3074,19 +3101,47 @@ function clearManualMaskLayers() {
   render();
 }
 
+const MASK_WHEEL_ZOOM_IDLE_MS = 150;
+let maskWheelZoomIdleTimer: number | null = null;
+let maskWheelZoomPendingScale: number | null = null;
+
+/**
+ * Wheel zoom ticks update `--mask-zoom` directly on `.preview-media` (same element/mechanism
+ * `continueImagePan` uses for `--mask-pan-x`/`--mask-pan-y`), skipping the full `render()` per tick.
+ * Once wheel input goes idle (~150ms), the final scale is persisted to the draft and `render()`
+ * runs once, mirroring `finishImagePan`'s persist-on-release pattern.
+ */
 function handleMaskWheelZoom(event: WheelEvent) {
   const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
   if (!assetId) {
     return;
   }
   const draft = ensureInpaintDraft(assetId);
+  const currentScale = maskWheelZoomPendingScale ?? draft.zoomScale;
   const direction = event.deltaY < 0 ? 1 : -1;
-  const nextScale = clampNumber(draft.zoomScale + direction * 0.12, 0.25, 4, 1);
-  setInpaintDraft({
-    ...draft,
-    zoomScale: nextScale
-  });
-  render();
+  const nextScale = clampNumber(currentScale + direction * 0.12, 0.25, 4, 1);
+  maskWheelZoomPendingScale = nextScale;
+
+  const media = document.querySelector<HTMLElement>(".preview-media");
+  media?.style.setProperty("--mask-zoom", formatCssNumber(nextScale));
+
+  if (maskWheelZoomIdleTimer !== null) {
+    window.clearTimeout(maskWheelZoomIdleTimer);
+  }
+  maskWheelZoomIdleTimer = window.setTimeout(() => {
+    maskWheelZoomIdleTimer = null;
+    const pendingScale = maskWheelZoomPendingScale;
+    maskWheelZoomPendingScale = null;
+    if (pendingScale === null) {
+      return;
+    }
+    const latestDraft = inpaintDraftForAsset(assetId) ?? draft;
+    setInpaintDraft({
+      ...latestDraft,
+      zoomScale: pendingScale
+    });
+    render();
+  }, MASK_WHEEL_ZOOM_IDLE_MS);
 }
 
 async function destroyWebSamWorkerSession() {
@@ -3203,6 +3258,7 @@ function clearActiveMaskCanvas() {
 }
 
 function clearInpaintDraft() {
+  cancelPendingMaskStrokeFlush();
   activeMaskStroke = null;
   activeBoxPrompt = null;
   if (state.activeAssetId) {
