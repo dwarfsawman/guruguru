@@ -15,13 +15,21 @@ import {
   ensureRoundMonitor,
   interruptRound
 } from "./rounds";
-import { DEFAULT_WEB_SAM_MODEL_BASE_URL, GITHUB_WEB_SAM_RELEASE_API_URL } from "../shared/constants";
+import {
+  DEFAULT_WEB_SAM_MODEL_BASE_URL,
+  GITHUB_POSE_RELEASE_API_URL,
+  GITHUB_WEB_SAM_RELEASE_API_URL
+} from "../shared/constants";
 import type { ComfySettings, GenerationRequest } from "../shared/types";
 
 const port = Number(process.env.PORT ?? 5177);
 let isShuttingDown = false;
 
-const webSamReleaseAssetNames = new Set(["slimsam-77-encoder.onnx", "slimsam-77-decoder.onnx"]);
+const releaseAssetRegistry = new Map<string, string>([
+  ["slimsam-77-encoder.onnx", GITHUB_WEB_SAM_RELEASE_API_URL],
+  ["slimsam-77-decoder.onnx", GITHUB_WEB_SAM_RELEASE_API_URL],
+  ["pose_landmarker_full.task", GITHUB_POSE_RELEASE_API_URL]
+]);
 
 initializeDb();
 
@@ -97,7 +105,13 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   const webSamModelMatch = path.match(/^\/api\/websam-models\/([^/]+)$/);
   if (method === "GET" && webSamModelMatch) {
-    await serveWebSamReleaseAsset(res, webSamModelMatch[1]!);
+    await serveReleaseAsset(res, webSamModelMatch[1]!, "WebSAM");
+    return;
+  }
+
+  const poseModelMatch = path.match(/^\/api\/pose-models\/([^/]+)$/);
+  if (method === "GET" && poseModelMatch) {
+    await serveReleaseAsset(res, poseModelMatch[1]!, "pose");
     return;
   }
 
@@ -196,28 +210,29 @@ function getSettingOrDefault(): ComfySettings {
   } as ComfySettings;
 }
 
-async function serveWebSamReleaseAsset(res: ServerResponse, filename: string) {
-  if (!webSamReleaseAssetNames.has(filename)) {
-    sendJson(res, 404, { error: "WebSAM model asset was not found" });
+async function serveReleaseAsset(res: ServerResponse, filename: string, label: string) {
+  const releaseApiUrl = releaseAssetRegistry.get(filename);
+  if (!releaseApiUrl) {
+    sendJson(res, 404, { error: `${label} model asset was not found` });
     return;
   }
 
   const token = githubToken();
   if (!token) {
     sendJson(res, 503, {
-      error: "GitHub token is required to download WebSAM models from this private repository release.",
+      error: `GitHub token is required to download ${label} models from this private repository release.`,
       env: "Set GURUGURU_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN before starting GURUGURU."
     });
     return;
   }
 
   const release = await fetchGithubJson<{ assets?: Array<{ name?: string; url?: string; size?: number; content_type?: string }> }>(
-    GITHUB_WEB_SAM_RELEASE_API_URL,
+    releaseApiUrl,
     token
   );
   const asset = release.assets?.find((item) => item.name === filename);
   if (!asset?.url) {
-    sendJson(res, 404, { error: "WebSAM model asset was not found in the GitHub release" });
+    sendJson(res, 404, { error: `${label} model asset was not found in the GitHub release` });
     return;
   }
 
