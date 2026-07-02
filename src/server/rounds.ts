@@ -285,6 +285,7 @@ export function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): In
     maskedContent,
     inpaintArea: "only_masked",
     onlyMaskedPadding: clampInteger(numberOr(rawInpaint.onlyMaskedPadding ?? rawInpaint.only_masked_padding, 32), 0, 512),
+    featherRadius: clampInteger(numberOr(rawInpaint.featherRadius ?? rawInpaint.feather_radius, 0), 0, 30),
     maskDataUrl: null
   };
 }

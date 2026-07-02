@@ -2,15 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeInpaintOptions } from "./rounds.ts";
 
-// Characterization tests: pin the CURRENT behavior of normalizeInpaintOptions before the
-// mask feather feature adds a featherRadius field. See Docs/Feature-MaskFeather.md.
+// Characterization tests: pin the behavior of normalizeInpaintOptions, including the
+// featherRadius field added by the mask feather feature. See Docs/Feature-MaskFeather.md.
 
-test("normalizeInpaintOptions: defaults maskedContent to 'original' and onlyMaskedPadding to 32", () => {
+test("normalizeInpaintOptions: defaults maskedContent to 'original', onlyMaskedPadding to 32, featherRadius to 0", () => {
   const options = normalizeInpaintOptions({});
   assert.deepEqual(options, {
     maskedContent: "original",
     inpaintArea: "only_masked",
     onlyMaskedPadding: 32,
+    featherRadius: 0,
     maskDataUrl: null
   });
 });
@@ -49,6 +50,18 @@ test("normalizeInpaintOptions: accepts snake_case aliases for maskedContent/inpa
   assert.equal(options.maskedContent, "fill");
   assert.equal(options.inpaintArea, "only_masked");
   assert.equal(options.onlyMaskedPadding, 8);
+});
+
+test("normalizeInpaintOptions: featherRadius clamps into [0, 30] as an integer, default 0", () => {
+  assert.equal(normalizeInpaintOptions({}).featherRadius, 0);
+  assert.equal(normalizeInpaintOptions({ featherRadius: -5 }).featherRadius, 0);
+  assert.equal(normalizeInpaintOptions({ featherRadius: 100 }).featherRadius, 30);
+  assert.equal(normalizeInpaintOptions({ featherRadius: 12.9 }).featherRadius, 12);
+  assert.equal(normalizeInpaintOptions({ featherRadius: "15" }).featherRadius, 15);
+});
+
+test("normalizeInpaintOptions: accepts snake_case alias for featherRadius", () => {
+  assert.equal(normalizeInpaintOptions({ feather_radius: 9 }).featherRadius, 9);
 });
 
 test("normalizeInpaintOptions: maskDataUrl is always null regardless of input", () => {
