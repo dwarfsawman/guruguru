@@ -12,6 +12,17 @@ import type { Round } from "../../shared/apiTypes";
 import { escapeAttr } from "../format";
 import { iconClose } from "../icons";
 
+const ROOT_HUE_STEP = 57;
+const CHILD_HUE_STEP_MAX = 40;
+
+function normalizeHue(h: number) {
+  return ((h % 360) + 360) % 360;
+}
+
+function clampDenoise(denoise: number) {
+  return Math.min(1, Math.max(0, denoise));
+}
+
 function sortRoundsAsc(rounds: Round[]) {
   return [...rounds].sort((a, b) => a.roundIndex - b.roundIndex);
 }
@@ -80,7 +91,7 @@ export function renderRoundTreeNode(
   const active = round.id === activeRoundId;
   const completed = round.status === "completed";
   const dotClass = active ? "active" : completed ? "completed" : "pending";
-  const hue = branchHue(round);
+  const hue = rootHue(round);
   const isDeleteRoot = deletePreviewRoundId === round.id;
   const isDeleteTarget = deleteTargetIds.has(round.id);
   return `
@@ -106,8 +117,12 @@ export function renderRoundTreeNode(
   `;
 }
 
-export function branchHue(round: Round) {
-  return ((round.branchColorIndex ?? 0) * 57) % 360;
+export function rootHue(round: Round) {
+  return normalizeHue((round.branchColorIndex ?? 0) * ROOT_HUE_STEP);
+}
+
+export function childHue(parentHue: number, denoise: number) {
+  return normalizeHue(parentHue + CHILD_HUE_STEP_MAX * clampDenoise(denoise));
 }
 
 export function iterationTitle(round: Round) {
