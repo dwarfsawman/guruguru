@@ -76,6 +76,7 @@ import {
   clearCanvas,
   composeFinalMaskDataUrl,
   createMaskLayerSet,
+  dirtyRectForSegments,
   distanceToSegmentSq,
   drawDataUrlIntoCanvas,
   maskLayerForStroke,
@@ -718,6 +719,7 @@ function openAssetDetail(assetId: string) {
 
 function closeAssetDetail() {
   commitActiveMaskCanvas();
+  cancelPendingMaskStrokeFlush();
   activeMaskStroke = null;
   activeBoxPrompt = null;
   activeImagePan = null;
@@ -1669,6 +1671,7 @@ function render(options: RenderOptions = {}) {
     ${renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft)}
     ${renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId)}
   `;
+  invalidateMaskBrushCursorCache();
   restoreIterationScrollPosition();
   if (preserveIterationScroll) {
     requestAnimationFrame(() => {
@@ -1754,6 +1757,23 @@ function resolveMaskBrushCursorKind(draft: InpaintDraft): MaskBrushCursorKind | 
   return draft.eraser ? "eraser" : "pen";
 }
 
+// Cached `.brush-cursor` element reference, avoiding a `document.querySelector` on every
+// pointermove. `undefined` means "not resolved for the current render cycle yet"; `null` means
+// "resolved, and the element does not currently exist". Invalidated by `invalidateMaskBrushCursorCache`,
+// which `render()` calls after rebuilding `app.innerHTML` (the old element is detached each render).
+let cachedMaskBrushCursor: SVGCircleElement | null | undefined;
+
+function invalidateMaskBrushCursorCache() {
+  cachedMaskBrushCursor = undefined;
+}
+
+function getMaskBrushCursorElement(): SVGCircleElement | null {
+  if (cachedMaskBrushCursor === undefined || cachedMaskBrushCursor === null || !cachedMaskBrushCursor.isConnected) {
+    cachedMaskBrushCursor = document.querySelector<SVGCircleElement>(".brush-cursor");
+  }
+  return cachedMaskBrushCursor;
+}
+
 function updateMaskBrushCursor(event: PointerEvent) {
   const canvas = event.currentTarget as HTMLCanvasElement | null;
   if (!canvas || !state.maskEditMode) {
@@ -1766,7 +1786,7 @@ function updateMaskBrushCursor(event: PointerEvent) {
     return;
   }
   const kind = resolveMaskBrushCursorKind(draft);
-  const cursor = document.querySelector<SVGCircleElement>(".brush-cursor");
+  const cursor = getMaskBrushCursorElement();
   if (!cursor || !kind) {
     hideMaskBrushCursor();
     return;
@@ -1787,7 +1807,7 @@ function updateMaskBrushCursor(event: PointerEvent) {
 }
 
 function hideMaskBrushCursor() {
-  const cursor = document.querySelector<SVGCircleElement>(".brush-cursor");
+  const cursor = getMaskBrushCursorElement();
   if (!cursor) {
     return;
   }
@@ -2172,6 +2192,8 @@ function handleMaskPointerDown(event: PointerEvent, canvas: HTMLCanvasElement) {
   beginMaskStroke(event, canvas, draft.eraser ? "manual-erase" : "manual-include");
 }
 
+let maskStrokeRafHandle: number | null = null;
+
 function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement, kind: MaskStrokeKind) {
   const assetId = canvas.dataset.assetId ?? state.activeAssetId;
   if (!assetId) {
@@ -2184,29 +2206,62 @@ function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement, kind: M
     pointerId: event.pointerId,
     x: point.x,
     y: point.y,
-    kind
+    kind,
+    pendingSegments: []
   };
-  drawMaskSegment(canvas, point, point, kind);
-  if (kind === "manual-include" || kind === "manual-erase") {
-    commitMaskCanvas(canvas);
-  }
+  // The initial dab paints immediately (no pointermove/coalesced events exist yet for pointerdown),
+  // so a single click without any drag still shows a mark right away.
+  paintMaskSegments(canvas, [{ from: point, to: point }], kind);
 }
 
 function continueMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
   if (!activeMaskStroke) {
     return;
   }
-  const point = pointerToMaskCanvasPoint(canvas, event);
-  drawMaskSegment(canvas, activeMaskStroke, point, activeMaskStroke.kind);
-  activeMaskStroke = {
-    pointerId: event.pointerId,
-    x: point.x,
-    y: point.y,
-    kind: activeMaskStroke.kind
-  };
+  const coalesced = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
+  const pointerEvents = coalesced.length > 0 ? coalesced : [event];
+  let cursor = { x: activeMaskStroke.x, y: activeMaskStroke.y };
+  for (const pointerEvent of pointerEvents) {
+    const point = pointerToMaskCanvasPoint(canvas, pointerEvent);
+    activeMaskStroke.pendingSegments.push({ from: cursor, to: point });
+    cursor = point;
+  }
+  activeMaskStroke.x = cursor.x;
+  activeMaskStroke.y = cursor.y;
+  scheduleMaskStrokeFlush(canvas);
+}
+
+function scheduleMaskStrokeFlush(canvas: HTMLCanvasElement) {
+  if (maskStrokeRafHandle !== null) {
+    return;
+  }
+  maskStrokeRafHandle = requestAnimationFrame(() => {
+    maskStrokeRafHandle = null;
+    flushMaskStrokeQueue(canvas);
+  });
+}
+
+function cancelPendingMaskStrokeFlush() {
+  if (maskStrokeRafHandle !== null) {
+    cancelAnimationFrame(maskStrokeRafHandle);
+    maskStrokeRafHandle = null;
+  }
+}
+
+/** Paints and drains any queued pending segments for the active stroke, then re-composites once. */
+function flushMaskStrokeQueue(canvas: HTMLCanvasElement) {
+  if (!activeMaskStroke || activeMaskStroke.pendingSegments.length === 0) {
+    return;
+  }
+  const segments = activeMaskStroke.pendingSegments;
+  activeMaskStroke.pendingSegments = [];
+  paintMaskSegments(canvas, segments, activeMaskStroke.kind);
 }
 
 function finishMaskStroke(canvas: HTMLCanvasElement) {
+  cancelPendingMaskStrokeFlush();
+  // Flush any segments queued for the next rAF so the final commit sees the full stroke.
+  flushMaskStrokeQueue(canvas);
   if (activeMaskStroke) {
     try {
       canvas.releasePointerCapture(activeMaskStroke.pointerId);
@@ -2223,7 +2278,19 @@ function finishMaskStroke(canvas: HTMLCanvasElement) {
   }
 }
 
-function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number }, to: { x: number; y: number }, kind: MaskStrokeKind) {
+const MASK_DIRTY_RECT_MARGIN = 2;
+
+/**
+ * Paints a batch of line segments (1 rAF frame's worth, or a single pointerdown dab) into the
+ * appropriate layer canvas(es), then re-composites the visible mask canvas exactly once for the
+ * whole batch, limited to the dirty rect covering all segments (plus brush radius + margin).
+ * Per-segment side effects (brush-prompt point removal near erase strokes) still run once per
+ * segment so their distance-based logic is unaffected by batching.
+ */
+function paintMaskSegments(canvas: HTMLCanvasElement, segments: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }>, kind: MaskStrokeKind) {
+  if (segments.length === 0) {
+    return;
+  }
   const assetId = canvas.dataset.assetId ?? state.activeAssetId;
   const draft = inpaintDraftForAsset(assetId) ?? (assetId ? ensureInpaintDraft(assetId) : null);
   if (!draft || !assetId) {
@@ -2232,18 +2299,21 @@ function drawMaskSegment(canvas: HTMLCanvasElement, from: { x: number; y: number
   const layers = getOrCreateMaskLayerSet(assetId, canvas.width, canvas.height);
   const brushSize = draft.brushSize;
 
-  if (kind === "manual-include") {
-    // Add to the include layer, and lift any prior erase strokes in the same area so
-    // a previously erased region can be re-masked by drawing over it with the pen.
-    paintStroke(layers.manualInclude, from, to, brushSize, "source-over");
-    paintStroke(layers.manualErase, from, to, brushSize, "destination-out");
-  } else if (kind === "manual-erase") {
-    paintStroke(layers.manualErase, from, to, brushSize, "source-over");
-    removeBrushPromptPointsNearSegment(assetId, from, to, brushSize / 2);
-  } else {
-    paintStroke(maskLayerForStroke(layers, kind), from, to, brushSize, "source-over");
+  for (const segment of segments) {
+    if (kind === "manual-include") {
+      // Add to the include layer, and lift any prior erase strokes in the same area so
+      // a previously erased region can be re-masked by drawing over it with the pen.
+      paintStroke(layers.manualInclude, segment.from, segment.to, brushSize, "source-over");
+      paintStroke(layers.manualErase, segment.from, segment.to, brushSize, "destination-out");
+    } else if (kind === "manual-erase") {
+      paintStroke(layers.manualErase, segment.from, segment.to, brushSize, "source-over");
+      removeBrushPromptPointsNearSegment(assetId, segment.from, segment.to, brushSize / 2);
+    } else {
+      paintStroke(maskLayerForStroke(layers, kind), segment.from, segment.to, brushSize, "source-over");
+    }
   }
-  renderFinalMaskToCanvas(canvas, layers, draft, true);
+  const dirtyRect = dirtyRectForSegments(segments, brushSize, MASK_DIRTY_RECT_MARGIN) ?? undefined;
+  renderFinalMaskToCanvas(canvas, layers, draft, true, dirtyRect);
 }
 
 function commitActiveMaskCanvas() {
