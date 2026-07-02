@@ -35,6 +35,7 @@ export interface InpaintOptions {
   maskedContent: MaskedContent;
   inpaintArea: InpaintArea;
   onlyMaskedPadding: number;
+  featherRadius?: number;
   maskDataUrl?: string | null;
   maskPath?: string | null;
   maskWidth?: number | null;

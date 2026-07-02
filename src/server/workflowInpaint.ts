@@ -97,9 +97,23 @@ export function patchInpaintLatentPath(
   const grownMaskConnection = padding > 0
     ? [addGrowMaskNode(workflow, resizedMaskConnection, padding), 0]
     : resizedMaskConnection;
+  const featherRadius = Number.isFinite(inpaint.featherRadius)
+    ? Math.max(0, Math.trunc(inpaint.featherRadius!))
+    : 0;
+  // Feathering (blur of the mask edge) is applied after grow for the sampler-side mask, so the
+  // softened boundary sits at the outer edge of the padded region. This is only computed lazily
+  // inside the maskedContent branches below that actually wire a sampler-side mask (fill/original/
+  // latent_noise) -- the latent_nothing branch never calls this, so it never inserts an orphaned
+  // feather chain (unlike the existing GrowMask node, which IS inserted unconditionally above and
+  // left orphaned in that branch; we intentionally do not repeat that pattern for feather).
+  const feathredGrownMaskConnection = (): unknown[] =>
+    featherRadius > 0 ? [addMaskFeatherNodes(workflow, grownMaskConnection, featherRadius), 0] : grownMaskConnection;
   // The paste-back composite uses the original (non-grown) mask so generated content
   // is only written back where the user actually painted, avoiding gray bleed into padding.
-  const compositeMaskConnection = resizedMaskConnection;
+  // Feathering here (without grow) is what mainly smooths the pasted-back boundary.
+  const compositeMaskConnection = featherRadius > 0
+    ? [addMaskFeatherNodes(workflow, resizedMaskConnection, featherRadius), 0]
+    : resizedMaskConnection;
   const vaeConnection = findVaeConnection(workflow);
 
   const ksamplerNodeId =
@@ -120,7 +134,7 @@ export function patchInpaintLatentPath(
         workflow,
         findNodeIdByExactClass(workflow, "VAEEncodeForInpaint") ?? addVaeEncodeForInpaintNode(workflow, vaeConnection),
         resizedImageConnection,
-        grownMaskConnection,
+        feathredGrownMaskConnection(),
         vaeConnection
       ),
       0
@@ -134,14 +148,14 @@ export function patchInpaintLatentPath(
       addVaeEncodeNode(workflow, vaeConnection);
     setNodeInput(workflow, vaeEncodeNodeId, ["pixels", "image"], resizedImageConnection);
     setNodeInput(workflow, vaeEncodeNodeId, ["vae"], vaeConnection);
-    latentConnection = [addSetLatentNoiseMaskNode(workflow, [vaeEncodeNodeId, 0], grownMaskConnection), 0];
+    latentConnection = [addSetLatentNoiseMaskNode(workflow, [vaeEncodeNodeId, 0], feathredGrownMaskConnection()), 0];
     latentConnection = repeatLatentForBatchSize(workflow, roleMap, latentConnection, request.batchSize);
   } else if (inpaint.maskedContent === "latent_noise") {
     const emptyLatentConnection = [
       addEmptyLatentImageNode(workflow, request.width, request.height, request.batchSize),
       0
     ];
-    latentConnection = [addSetLatentNoiseMaskNode(workflow, emptyLatentConnection, grownMaskConnection), 0];
+    latentConnection = [addSetLatentNoiseMaskNode(workflow, emptyLatentConnection, feathredGrownMaskConnection()), 0];
   } else {
     latentConnection = [
       addEmptyLatentImageNode(workflow, request.width, request.height, request.batchSize),
@@ -256,7 +270,7 @@ function addImageScaleNode(
   return nodeId;
 }
 
-function addMaskToImageNode(workflow: JsonObject, maskConnection: unknown[]): string {
+function addMaskToImageNode(workflow: JsonObject, maskConnection: unknown[], title = "GURUGURU Inpaint Mask Image"): string {
   const nodeId = nextNodeId(workflow);
   workflow[nodeId] = {
     inputs: {
@@ -264,13 +278,13 @@ function addMaskToImageNode(workflow: JsonObject, maskConnection: unknown[]): st
     },
     class_type: "MaskToImage",
     _meta: {
-      title: "GURUGURU Inpaint Mask Image"
+      title
     }
   };
   return nodeId;
 }
 
-function addImageToMaskNode(workflow: JsonObject, imageConnection: unknown[]): string {
+function addImageToMaskNode(workflow: JsonObject, imageConnection: unknown[], title = "GURUGURU Inpaint Scaled Mask"): string {
   const nodeId = nextNodeId(workflow);
   workflow[nodeId] = {
     inputs: {
@@ -279,7 +293,7 @@ function addImageToMaskNode(workflow: JsonObject, imageConnection: unknown[]): s
     },
     class_type: "ImageToMask",
     _meta: {
-      title: "GURUGURU Inpaint Scaled Mask"
+      title
     }
   };
   return nodeId;
@@ -373,6 +387,32 @@ function addGrowMaskNode(workflow: JsonObject, maskConnection: unknown[], paddin
     class_type: "GrowMask",
     _meta: {
       title: "GURUGURU Inpaint Padding"
+    }
+  };
+  return nodeId;
+}
+
+// Feathers (blurs) the boundary of a mask using ComfyUI core nodes only:
+// MaskToImage -> ImageBlur(blur_radius=radius, sigma=clamp(radius/3, 0.1, 10.0)) -> ImageToMask(red).
+// FeatherMask is intentionally not used: it fades an image's outer border, not a mask shape's edge.
+export function addMaskFeatherNodes(workflow: JsonObject, maskConnection: unknown[], radius: number): string {
+  const maskImageConnection = [addMaskToImageNode(workflow, maskConnection, "GURUGURU Inpaint Mask Feather Image"), 0];
+  const blurredImageConnection = [addImageBlurNode(workflow, maskImageConnection, radius), 0];
+  return addImageToMaskNode(workflow, blurredImageConnection, "GURUGURU Inpaint Feathered Mask");
+}
+
+function addImageBlurNode(workflow: JsonObject, imageConnection: unknown[], radius: number): string {
+  const nodeId = nextNodeId(workflow);
+  const sigma = Math.min(10.0, Math.max(0.1, radius / 3));
+  workflow[nodeId] = {
+    inputs: {
+      image: imageConnection,
+      blur_radius: radius,
+      sigma
+    },
+    class_type: "ImageBlur",
+    _meta: {
+      title: "GURUGURU Inpaint Mask Feather"
     }
   };
   return nodeId;

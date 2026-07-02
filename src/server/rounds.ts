@@ -274,7 +274,7 @@ async function prepareInpaintRequest(
   };
 }
 
-function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): InpaintOptions {
+export function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): InpaintOptions {
   const maskedContent = normalizeMaskedContent(rawInpaint.maskedContent ?? rawInpaint.masked_content);
   const inpaintArea = stringOr(rawInpaint.inpaintArea ?? rawInpaint.inpaint_area, "only_masked");
   if (inpaintArea !== "only_masked") {
@@ -285,6 +285,7 @@ function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): InpaintOp
     maskedContent,
     inpaintArea: "only_masked",
     onlyMaskedPadding: clampInteger(numberOr(rawInpaint.onlyMaskedPadding ?? rawInpaint.only_masked_padding, 32), 0, 512),
+    featherRadius: clampInteger(numberOr(rawInpaint.featherRadius ?? rawInpaint.feather_radius, 0), 0, 30),
     maskDataUrl: null
   };
 }
