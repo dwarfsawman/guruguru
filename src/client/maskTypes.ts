@@ -56,11 +56,21 @@ export interface SamMaskCandidate {
 
 export type MaskStrokeKind = "manual-include" | "manual-erase" | "brush-prompt";
 
+export interface MaskStrokeSegment {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+}
+
 export interface ActiveMaskStroke {
   pointerId: number;
   x: number;
   y: number;
   kind: MaskStrokeKind;
+  /**
+   * rAF バッチ用の未描画線分キュー。pointermove（getCoalescedEvents）で積み、
+   * 次の requestAnimationFrame コールバックでまとめて `paintStroke` してから空にする。
+   */
+  pendingSegments: MaskStrokeSegment[];
 }
 
 export interface ActiveBoxPrompt {
