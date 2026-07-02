@@ -86,6 +86,18 @@ import {
   renderFinalMaskToCanvas,
   sampleBrushPromptPoints
 } from "./maskCanvas";
+import type { PaintDraft, PaintToolKind } from "./paintTypes";
+import { PAINT_BASE_PALETTE, PAINT_UNDO_STACK_LIMIT } from "./paintTypes";
+import { defaultPaintDraft, normalizePaintDraft, pushRecentColor } from "./paintDraft";
+import {
+  composePaintResultCanvas,
+  createPaintLayerCanvas,
+  renderPaintLayerToCanvas,
+  restorePaintLayerFromSnapshot,
+  sampleColorAt,
+  snapshotPaintLayer
+} from "./paintCanvas";
+import { renderPaintToolPanel } from "./views/paintPanel";
 
 type ComfyConnectionState = "unknown" | "checking" | "connected" | "disconnected";
 
@@ -137,6 +149,11 @@ interface ActiveWorkflowDiagramPan {
 let activeWorkflowDiagramPan: ActiveWorkflowDiagramPan | null = null;
 let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
 const maskLayerCache = new Map<string, MaskLayerSet>();
+const paintLayerCache = new Map<string, HTMLCanvasElement>();
+const paintUndoStacks = new Map<string, HTMLCanvasElement[]>();
+let activePaintStroke: { pointerId: number; x: number; y: number; pendingSegments: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }> } | null = null;
+let paintStrokeRafHandle: number | null = null;
+let paintAltEyedropperActive = false;
 let webSamWorker: Worker | null = null;
 let webSamRequestId = 0;
 let latestWebSamLoadRequestId = 0;
@@ -170,6 +187,8 @@ const state: {
   workflowImportModalOpen: boolean;
   workflowImportDraft: WorkflowImportDraft;
   activeWorkflowDiagramTemplateId: string | null;
+  paintEditMode: boolean;
+  paintDrafts: Record<string, PaintDraft>;
 } = {
   settings: null,
   projects: [],
@@ -202,7 +221,9 @@ const state: {
   deletePreviewRoundId: null,
   workflowImportModalOpen: false,
   workflowImportDraft: defaultWorkflowImportDraft(),
-  activeWorkflowDiagramTemplateId: null
+  activeWorkflowDiagramTemplateId: null,
+  paintEditMode: false,
+  paintDrafts: {}
 };
 
 const pendingAutoCollectRoundIds = new Set<string>();
@@ -342,6 +363,10 @@ function bindEvents() {
       updateInpaintDraftFromControl(target);
       return;
     }
+    if (target instanceof HTMLInputElement && target.dataset.paintColorPicker) {
+      setPaintColor(target.value);
+      return;
+    }
     if (target.closest("#generation-form")) {
       captureGenerationDraft();
     }
@@ -359,6 +384,9 @@ function bindEvents() {
     }
     if (target.dataset.inpaintField) {
       updateInpaintDraftFromControl(target);
+    }
+    if (target.dataset.paintField === "brushSize" && target instanceof HTMLInputElement) {
+      setPaintBrushSize(Number(target.value));
     }
     if (target.closest("#template-form")) {
       captureWorkflowImportDraftFromElement(target);
@@ -379,7 +407,8 @@ function bindEvents() {
       const suffix =
         target.dataset.inpaintField === "onlyMaskedPadding" ||
         target.dataset.inpaintField === "featherRadius" ||
-        target.dataset.inpaintField === "brushSize"
+        target.dataset.inpaintField === "brushSize" ||
+        target.dataset.paintField === "brushSize"
           ? "px"
           : "";
       valueTarget.textContent = `${formatSliderValue(target)}${suffix}`;
@@ -416,14 +445,18 @@ function bindEvents() {
       handleWorkflowDiagramWheelZoom(event, wfCanvas);
       return;
     }
-    if (target.id !== "maskCanvas" && !target.closest(".preview-media")) {
+    if (target.id !== "maskCanvas" && target.id !== "paintCanvas" && !target.closest(".preview-media")) {
       return;
     }
     if (!state.activeAssetId) {
       return;
     }
     event.preventDefault();
-    handleMaskWheelZoom(event);
+    if (state.paintEditMode) {
+      handlePaintWheelZoom(event);
+    } else {
+      handleMaskWheelZoom(event);
+    }
   }, { passive: false });
 
   window.addEventListener("keydown", (event) => {
@@ -464,6 +497,17 @@ function bindEvents() {
       return;
     }
 
+    if (state.paintEditMode) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undoPaintStroke();
+        return;
+      }
+      if (event.key === "Alt" && !event.repeat) {
+        beginAltEyedropper();
+      }
+    }
+
     if (event.key === "r" || event.key === "R") {
       void setAssetStatus(state.activeAssetId, "rejected");
     }
@@ -480,6 +524,16 @@ function bindEvents() {
         fillGenerationFormFromAsset(asset, "img2img");
       }
     }
+  });
+
+  window.addEventListener("keyup", (event) => {
+    if (event.key === "Alt") {
+      endAltEyedropper();
+    }
+  });
+
+  window.addEventListener("blur", () => {
+    endAltEyedropper();
   });
 
   app.addEventListener("pointerdown", (event) => {
@@ -505,7 +559,7 @@ function bindEvents() {
     const shouldPanImage =
       !!previewMedia &&
       !!activeAssetId &&
-      (event.button === 1 || (!state.maskEditMode && event.button === 0));
+      (event.button === 1 || (!state.maskEditMode && !state.paintEditMode && event.button === 0));
     if (shouldPanImage) {
       event.preventDefault();
       beginImagePan(event, previewMedia, activeAssetId);
@@ -519,6 +573,14 @@ function bindEvents() {
       return;
     }
     if (event.button !== 0 && event.button !== 2) {
+      return;
+    }
+    if (target.id === "paintCanvas") {
+      if (!state.paintEditMode) {
+        return;
+      }
+      event.preventDefault();
+      beginPaintStroke(event, target as HTMLCanvasElement);
       return;
     }
     if (target.id !== "maskCanvas") {
@@ -571,6 +633,18 @@ function bindEvents() {
       continueWebSamBoxPrompt(event, canvas);
       return;
     }
+    if (activePaintStroke) {
+      if (event.pointerId !== activePaintStroke.pointerId) {
+        return;
+      }
+      const paintCanvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
+      if (!paintCanvas) {
+        return;
+      }
+      event.preventDefault();
+      continuePaintStroke(event, paintCanvas);
+      return;
+    }
     if (!activeMaskStroke) {
       return;
     }
@@ -605,6 +679,14 @@ function bindEvents() {
       }
       return;
     }
+    if (activePaintStroke && event.pointerId === activePaintStroke.pointerId) {
+      const paintCanvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
+      if (paintCanvas) {
+        event.preventDefault();
+        finishPaintStroke(paintCanvas);
+      }
+      return;
+    }
     if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
       return;
     }
@@ -630,6 +712,13 @@ function bindEvents() {
     }
     if (activeBoxPrompt && event.pointerId === activeBoxPrompt.pointerId) {
       activeBoxPrompt = null;
+      return;
+    }
+    if (activePaintStroke && event.pointerId === activePaintStroke.pointerId) {
+      const paintCanvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
+      if (paintCanvas) {
+        finishPaintStroke(paintCanvas);
+      }
       return;
     }
     if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
@@ -701,6 +790,7 @@ function selectRound(roundId: string) {
   state.activeAssetId = null;
   state.deletePreviewRoundId = null;
   state.maskEditMode = false;
+  state.paintEditMode = false;
   activeImagePan = null;
   render();
 }
@@ -716,6 +806,7 @@ function openAssetDetail(assetId: string) {
   state.activeAssetId = assetId;
   const draft = inpaintDraftForAsset(assetId);
   state.maskEditMode = draft?.enabled === true;
+  state.paintEditMode = false;
   state.maskToolbarMinimized = false;
   state.maskToolbarPos = null;
   activeImagePan = null;
@@ -726,12 +817,15 @@ function closeAssetDetail() {
   commitActiveMaskCanvas();
   cancelPendingMaskStrokeFlush();
   flushPendingMaskWheelZoom();
+  cancelPendingPaintStrokeFlush();
   activeMaskStroke = null;
   activeBoxPrompt = null;
+  activePaintStroke = null;
   activeImagePan = null;
   void destroyWebSamWorkerSession();
   state.activeAssetId = null;
   state.maskEditMode = false;
+  state.paintEditMode = false;
   state.maskToolbarMinimized = false;
   state.maskToolbarPos = null;
   maskToolbarDrag = null;
@@ -846,6 +940,18 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       closeAssetDetail();
     } else if (action === "toggle-mask-editor") {
       toggleMaskEditor();
+    } else if (action === "toggle-paint-editor") {
+      togglePaintEditor();
+    } else if (action === "paint-tool") {
+      setPaintTool(target.dataset.tool as PaintToolKind);
+    } else if (action === "paint-color") {
+      setPaintColor(target.dataset.color ?? "#ffffff");
+    } else if (action === "paint-clear") {
+      clearActivePaintCanvas();
+    } else if (action === "paint-undo") {
+      undoPaintStroke();
+    } else if (action === "paint-save") {
+      await savePaintResultAsSourceAsset();
     } else if (action === "toggle-mask-grid-tag") {
       state.showMaskGridTag = !state.showMaskGridTag;
       render();
@@ -954,6 +1060,8 @@ async function loadHome() {
   state.generationDraft = null;
   state.inpaintDrafts = {};
   state.maskEditMode = false;
+  state.paintEditMode = false;
+  state.paintDrafts = {};
   state.deletePreviewRoundId = null;
   state.iterationScroll = null;
   state.workflowImportModalOpen = false;
@@ -975,6 +1083,8 @@ async function openProject(projectId: string) {
   state.generationDraft = null;
   state.inpaintDrafts = {};
   state.maskEditMode = false;
+  state.paintEditMode = false;
+  state.paintDrafts = {};
   state.deletePreviewRoundId = null;
   state.iterationScroll = null;
   state.workflowImportModalOpen = false;
@@ -995,6 +1105,7 @@ async function refreshProject(keepRoundId = state.activeRoundId, keepAssetId = s
   state.activeAssetId = state.detail.assets.some((asset) => asset.id === keepAssetId) ? keepAssetId : null;
   if (!state.activeAssetId) {
     state.maskEditMode = false;
+    state.paintEditMode = false;
   }
   resumeAutoCollectForActiveRounds();
 }
@@ -1685,6 +1796,7 @@ function render(options: RenderOptions = {}) {
     });
   }
   syncAssetModalMaskCanvas();
+  syncAssetModalPaintCanvas();
   void renderWorkflowDiagramCanvases();
 }
 
@@ -3151,6 +3263,44 @@ function handleMaskWheelZoom(event: WheelEvent) {
   }, MASK_WHEEL_ZOOM_IDLE_MS);
 }
 
+const PAINT_WHEEL_ZOOM_IDLE_MS = 150;
+let paintWheelZoomIdleTimer: number | null = null;
+let paintWheelZoomPendingScale: number | null = null;
+
+/** Paint-mode analogue of `handleMaskWheelZoom`, persisting to `PaintDraft.zoomScale` instead. */
+function handlePaintWheelZoom(event: WheelEvent) {
+  const assetId = state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const draft = ensurePaintDraft(assetId);
+  const currentScale = paintWheelZoomPendingScale ?? draft.zoomScale;
+  const direction = event.deltaY < 0 ? 1 : -1;
+  const nextScale = clampNumber(currentScale + direction * 0.12, 0.25, 4, 1);
+  paintWheelZoomPendingScale = nextScale;
+
+  const media = document.querySelector<HTMLElement>(".preview-media");
+  media?.style.setProperty("--mask-zoom", formatCssNumber(nextScale));
+
+  if (paintWheelZoomIdleTimer !== null) {
+    window.clearTimeout(paintWheelZoomIdleTimer);
+  }
+  paintWheelZoomIdleTimer = window.setTimeout(() => {
+    paintWheelZoomIdleTimer = null;
+    const pendingScale = paintWheelZoomPendingScale;
+    paintWheelZoomPendingScale = null;
+    if (pendingScale === null) {
+      return;
+    }
+    const latestDraft = paintDraftForAsset(assetId) ?? draft;
+    setPaintDraft({
+      ...latestDraft,
+      zoomScale: pendingScale
+    });
+    render();
+  }, PAINT_WHEEL_ZOOM_IDLE_MS);
+}
+
 async function destroyWebSamWorkerSession() {
   if (!webSamWorker) {
     return;
@@ -3196,8 +3346,21 @@ function toggleMaskEditor() {
     });
     state.maskEditMode = true;
     state.maskToolbarMinimized = false;
+    state.paintEditMode = false;
   }
   state.maskToolbarPos = null;
+  render();
+}
+
+function togglePaintEditor() {
+  if (state.paintEditMode) {
+    commitActivePaintCanvas();
+    state.paintEditMode = false;
+  } else if (state.activeAssetId) {
+    ensurePaintDraft(state.activeAssetId);
+    state.paintEditMode = true;
+    state.maskEditMode = false;
+  }
   render();
 }
 
@@ -3276,6 +3439,388 @@ function clearInpaintDraft() {
   render();
 }
 
+// --- Paint tool -----------------------------------------------------------
+
+function paintDraftForAsset(assetId: string | null | undefined): PaintDraft | null {
+  const stored = assetId ? state.paintDrafts[assetId] : null;
+  if (!stored) {
+    return null;
+  }
+  const normalized = normalizePaintDraft(stored);
+  state.paintDrafts[normalized.assetId] = normalized;
+  return normalized;
+}
+
+function ensurePaintDraft(assetId: string): PaintDraft {
+  const draft = normalizePaintDraft(paintDraftForAsset(assetId) ?? defaultPaintDraft(assetId));
+  state.paintDrafts[assetId] = draft;
+  return draft;
+}
+
+function setPaintDraft(draft: PaintDraft) {
+  state.paintDrafts[draft.assetId] = normalizePaintDraft(draft);
+}
+
+function getOrCreatePaintLayer(assetId: string, width: number, height: number): HTMLCanvasElement {
+  let layer = paintLayerCache.get(assetId);
+  if (layer && layer.width === width && layer.height === height) {
+    return layer;
+  }
+  layer = createPaintLayerCanvas(width, height);
+  paintLayerCache.set(assetId, layer);
+  return layer;
+}
+
+function activePaintCanvasAndAsset(): { canvas: HTMLCanvasElement; assetId: string } | null {
+  const canvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
+  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
+  if (!canvas || !assetId) {
+    return null;
+  }
+  return { canvas, assetId };
+}
+
+function syncAssetModalPaintCanvas() {
+  const canvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
+  const image = document.querySelector<HTMLImageElement>("#previewImage");
+  if (!canvas || !image) {
+    return;
+  }
+
+  const sync = () => {
+    const asset = findAsset(canvas.dataset.assetId ?? "");
+    const width = image.naturalWidth || assetDimension(asset, "width") || Math.max(1, Math.round(image.clientWidth));
+    const height = image.naturalHeight || assetDimension(asset, "height") || Math.max(1, Math.round(image.clientHeight));
+    if (!width || !height) {
+      return;
+    }
+    canvas.width = width;
+    canvas.height = height;
+    const assetId = canvas.dataset.assetId;
+    if (!assetId) {
+      return;
+    }
+    const draft = ensurePaintDraft(assetId);
+    if (draft.imageWidth !== width || draft.imageHeight !== height) {
+      setPaintDraft({ ...draft, imageWidth: width, imageHeight: height });
+    }
+    const layer = getOrCreatePaintLayer(assetId, width, height);
+    renderPaintLayerToCanvas(canvas, layer);
+  };
+
+  if (image.complete && image.naturalWidth > 0) {
+    sync();
+  } else {
+    image.addEventListener("load", sync, { once: true });
+  }
+}
+
+function beginPaintStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const draft = ensurePaintDraft(assetId);
+  if (draft.tool === "eyedropper") {
+    pickPaintColorAt(event, canvas, assetId);
+    return;
+  }
+  pushPaintUndoSnapshot(assetId);
+  canvas.setPointerCapture(event.pointerId);
+  const point = pointerToMaskCanvasPoint(canvas, event);
+  activePaintStroke = {
+    pointerId: event.pointerId,
+    x: point.x,
+    y: point.y,
+    pendingSegments: []
+  };
+  paintCanvasSegments(canvas, [{ from: point, to: point }]);
+}
+
+function continuePaintStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
+  if (!activePaintStroke) {
+    return;
+  }
+  const coalesced = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
+  const pointerEvents = coalesced.length > 0 ? coalesced : [event];
+  let cursor = { x: activePaintStroke.x, y: activePaintStroke.y };
+  for (const pointerEvent of pointerEvents) {
+    const point = pointerToMaskCanvasPoint(canvas, pointerEvent);
+    activePaintStroke.pendingSegments.push({ from: cursor, to: point });
+    cursor = point;
+  }
+  activePaintStroke.x = cursor.x;
+  activePaintStroke.y = cursor.y;
+  schedulePaintStrokeFlush(canvas);
+}
+
+function schedulePaintStrokeFlush(canvas: HTMLCanvasElement) {
+  if (paintStrokeRafHandle !== null) {
+    return;
+  }
+  paintStrokeRafHandle = requestAnimationFrame(() => {
+    paintStrokeRafHandle = null;
+    flushPaintStrokeQueue(canvas);
+  });
+}
+
+function cancelPendingPaintStrokeFlush() {
+  if (paintStrokeRafHandle !== null) {
+    cancelAnimationFrame(paintStrokeRafHandle);
+    paintStrokeRafHandle = null;
+  }
+}
+
+function flushPaintStrokeQueue(canvas: HTMLCanvasElement) {
+  if (!activePaintStroke || activePaintStroke.pendingSegments.length === 0) {
+    return;
+  }
+  const segments = activePaintStroke.pendingSegments;
+  activePaintStroke.pendingSegments = [];
+  paintCanvasSegments(canvas, segments);
+}
+
+function finishPaintStroke(canvas: HTMLCanvasElement) {
+  cancelPendingPaintStrokeFlush();
+  flushPaintStrokeQueue(canvas);
+  if (activePaintStroke) {
+    try {
+      canvas.releasePointerCapture(activePaintStroke.pointerId);
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+  }
+  activePaintStroke = null;
+}
+
+const PAINT_DIRTY_RECT_MARGIN = 2;
+
+function paintCanvasSegments(canvas: HTMLCanvasElement, segments: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }>) {
+  if (segments.length === 0) {
+    return;
+  }
+  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const draft = ensurePaintDraft(assetId);
+  const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
+  const brushSize = draft.brushSize;
+  const compositeOperation: GlobalCompositeOperation = draft.tool === "eraser" ? "destination-out" : "source-over";
+  for (const segment of segments) {
+    paintStroke(layer, segment.from, segment.to, brushSize, compositeOperation, draft.color);
+  }
+  const dirtyRect = dirtyRectForSegments(segments, brushSize, PAINT_DIRTY_RECT_MARGIN) ?? undefined;
+  renderPaintLayerToCanvas(canvas, layer, dirtyRect);
+}
+
+function commitActivePaintCanvas() {
+  cancelPendingPaintStrokeFlush();
+  const canvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
+  if (canvas) {
+    finishPaintStroke(canvas);
+  }
+}
+
+function pushPaintUndoSnapshot(assetId: string) {
+  const layer = paintLayerCache.get(assetId);
+  if (!layer) {
+    return;
+  }
+  const stack = paintUndoStacks.get(assetId) ?? [];
+  stack.push(snapshotPaintLayer(layer));
+  while (stack.length > PAINT_UNDO_STACK_LIMIT) {
+    stack.shift();
+  }
+  paintUndoStacks.set(assetId, stack);
+}
+
+function undoPaintStroke() {
+  const active = activePaintCanvasAndAsset();
+  if (!active) {
+    return;
+  }
+  const { canvas, assetId } = active;
+  const stack = paintUndoStacks.get(assetId);
+  const snapshot = stack?.pop();
+  if (!snapshot) {
+    return;
+  }
+  const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
+  restorePaintLayerFromSnapshot(layer, snapshot);
+  renderPaintLayerToCanvas(canvas, layer);
+}
+
+function setPaintTool(tool: PaintToolKind | undefined) {
+  if (!tool || !state.activeAssetId) {
+    return;
+  }
+  const draft = ensurePaintDraft(state.activeAssetId);
+  setPaintDraft({ ...draft, tool });
+  render();
+}
+
+function setPaintColor(color: string) {
+  if (!state.activeAssetId) {
+    return;
+  }
+  const draft = ensurePaintDraft(state.activeAssetId);
+  setPaintDraft({
+    ...draft,
+    color,
+    recentColors: pushRecentColor(draft.recentColors, color)
+  });
+  render();
+}
+
+function setPaintBrushSize(size: number) {
+  if (!state.activeAssetId) {
+    return;
+  }
+  const draft = ensurePaintDraft(state.activeAssetId);
+  setPaintDraft({ ...draft, brushSize: clampNumber(size, 1, 256, 24) });
+}
+
+function pickPaintColorAt(event: PointerEvent, canvas: HTMLCanvasElement, assetId: string) {
+  const image = document.querySelector<HTMLImageElement>("#previewImage");
+  if (!image) {
+    return;
+  }
+  const point = pointerToMaskCanvasPoint(canvas, event);
+  const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
+  const composed = composePaintResultCanvas(image, layer, canvas.width, canvas.height);
+  const color = sampleColorAt(composed, point.x, point.y);
+  if (!color) {
+    return;
+  }
+  const draft = ensurePaintDraft(assetId);
+  if (paintAltEyedropperActive && draft.previousTool) {
+    setPaintDraft({
+      ...draft,
+      color,
+      recentColors: pushRecentColor(draft.recentColors, color),
+      tool: draft.previousTool,
+      previousTool: null
+    });
+    paintAltEyedropperActive = false;
+  } else {
+    setPaintDraft({
+      ...draft,
+      color,
+      recentColors: pushRecentColor(draft.recentColors, color)
+    });
+  }
+  render();
+}
+
+function beginAltEyedropper() {
+  if (!state.paintEditMode || !state.activeAssetId) {
+    return;
+  }
+  const draft = ensurePaintDraft(state.activeAssetId);
+  if (draft.tool === "eyedropper" || draft.previousTool) {
+    return;
+  }
+  paintAltEyedropperActive = true;
+  setPaintDraft({ ...draft, previousTool: draft.tool, tool: "eyedropper" });
+  render();
+}
+
+function endAltEyedropper() {
+  if (!paintAltEyedropperActive || !state.activeAssetId) {
+    return;
+  }
+  const draft = paintDraftForAsset(state.activeAssetId);
+  if (draft?.previousTool) {
+    setPaintDraft({ ...draft, tool: draft.previousTool, previousTool: null });
+  }
+  paintAltEyedropperActive = false;
+  render();
+}
+
+function clearActivePaintCanvas() {
+  const active = activePaintCanvasAndAsset();
+  if (!active) {
+    return;
+  }
+  const { canvas, assetId } = active;
+  pushPaintUndoSnapshot(assetId);
+  const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
+  clearCanvas(layer);
+  renderPaintLayerToCanvas(canvas, layer);
+}
+
+async function savePaintResultAsSourceAsset() {
+  const active = activePaintCanvasAndAsset();
+  const asset = state.activeAssetId ? findAsset(state.activeAssetId) : null;
+  const image = document.querySelector<HTMLImageElement>("#previewImage");
+  if (!active || !asset || !image || !state.currentProjectId) {
+    return;
+  }
+  commitActivePaintCanvas();
+  const { canvas, assetId } = active;
+  const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
+  const composed = composePaintResultCanvas(image, layer, canvas.width, canvas.height);
+  const dataUrl = composed.toDataURL("image/png");
+
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  const draft = form ? generationDraftFromForm(form) : null;
+  const templateId = draft?.img2imgTemplateId || draft?.templateId || asset.workflowTemplateId || "";
+  if (!templateId) {
+    state.message = "WorkflowTemplateを選択してから保存してください。";
+    render();
+    return;
+  }
+
+  const denoise = normalizeDenoiseForMode(
+    Number(draft?.denoise || defaultDenoiseForMode("img2img")),
+    "img2img"
+  );
+
+  state.busy = true;
+  state.message = "ペイント結果を新規アセットとして保存しています。";
+  render();
+
+  const response = await api<{ round: Round; asset: Asset }>(`/api/projects/${state.currentProjectId}/source-assets`, {
+    method: "POST",
+    body: JSON.stringify({
+      filename: `paint_${assetId}_${Date.now()}.png`,
+      mimeType: "image/png",
+      dataUrl,
+      templateId,
+      prompt: draft?.prompt ?? "",
+      negativePrompt: draft?.negativePrompt ?? "",
+      seed: draft?.seed ? Number(draft.seed) : null,
+      seedMode: draft?.seedMode ?? "random",
+      batchSize: Number(draft?.batchSize || 1),
+      steps: Number(draft?.steps || 20),
+      cfg: Number(draft?.cfg || 7),
+      sampler: draft?.sampler || "euler",
+      scheduler: draft?.scheduler || "normal",
+      denoise,
+      width: canvas.width,
+      height: canvas.height
+    })
+  });
+
+  state.busy = false;
+  state.generationDraft = {
+    ...(draft ?? {}),
+    templateId: draft?.templateId || templateId,
+    img2imgTemplateId: templateId,
+    denoise: String(denoise),
+    generationMode: "img2img"
+  };
+  applyAssetDimensionsToDraft(response.asset);
+  paintLayerCache.delete(assetId);
+  paintUndoStacks.delete(assetId);
+  delete state.paintDrafts[assetId];
+  state.paintEditMode = false;
+  state.message = "ペイント結果を新規アセットとして保存し、親画像に設定しました。";
+  await refreshProject(response.round.id, null);
+  render();
+}
+
 function clampNumber(value: number, min: number, max: number, fallback: number) {
   if (!Number.isFinite(value)) {
     return fallback;
@@ -3350,7 +3895,8 @@ function renderAssetModalView() {
   const editing = state.maskEditMode;
   const promptValue = currentPositivePromptValue(asset);
   const batchSizeValue = currentBatchSizeValue();
-  return renderAssetModal(asset, inpaint, editing, promptValue, batchSizeValue);
+  const paintDraft = state.paintEditMode ? paintDraftForAsset(asset.id) ?? defaultPaintDraft(asset.id) : null;
+  return renderAssetModal(asset, inpaint, editing, promptValue, batchSizeValue, state.paintEditMode, paintDraft);
 }
 
 function currentPositivePromptValue(asset: Asset) {
