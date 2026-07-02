@@ -66,7 +66,6 @@ import type {
 } from "./maskTypes";
 import {
   defaultInpaintDraft,
-  hasActiveMaskData,
   hasMaskData,
   isMaskedContent,
   normalizeInpaintDraft
@@ -79,6 +78,7 @@ import {
   dirtyRectForSegments,
   distanceToSegmentSq,
   drawDataUrlIntoCanvas,
+  invertMaskLayers,
   maskLayerForStroke,
   normalizePromptBox,
   paintStroke,
@@ -136,6 +136,7 @@ interface ActiveWorkflowDiagramPan {
 
 let activeWorkflowDiagramPan: ActiveWorkflowDiagramPan | null = null;
 let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
+let maskPanelResize: { pointerId: number; side: "left" | "right"; startX: number; startWidth: number; pendingWidth: number } | null = null;
 const maskLayerCache = new Map<string, MaskLayerSet>();
 let webSamWorker: Worker | null = null;
 let webSamRequestId = 0;
@@ -164,6 +165,7 @@ const state: {
   maskEditMode: boolean;
   maskToolbarMinimized: boolean;
   maskToolbarPos: { left: number; top: number } | null;
+  maskPanelWidths: { left: number; right: number };
   showMaskGridTag: boolean;
   copiedSeedAssetId: string | null;
   deletePreviewRoundId: string | null;
@@ -197,6 +199,7 @@ const state: {
   maskEditMode: false,
   maskToolbarMinimized: false,
   maskToolbarPos: null,
+  maskPanelWidths: { left: 300, right: 300 },
   showMaskGridTag: true,
   copiedSeedAssetId: null,
   deletePreviewRoundId: null,
@@ -500,6 +503,20 @@ function bindEvents() {
       }
       return;
     }
+    const panelResizer = target.closest<HTMLElement>("[data-mask-panel-resizer]");
+    if (panelResizer) {
+      const side = panelResizer.dataset.maskPanelResizer === "right" ? "right" : "left";
+      event.preventDefault();
+      panelResizer.classList.add("resizing");
+      maskPanelResize = {
+        pointerId: event.pointerId,
+        side,
+        startX: event.clientX,
+        startWidth: state.maskPanelWidths[side],
+        pendingWidth: state.maskPanelWidths[side]
+      };
+      return;
+    }
     const previewMedia = target.closest<HTMLElement>(".preview-media");
     const activeAssetId = state.activeAssetId;
     const shouldPanImage =
@@ -548,6 +565,14 @@ function bindEvents() {
       continueWorkflowDiagramPan(event);
       return;
     }
+    if (maskPanelResize) {
+      if (event.pointerId !== maskPanelResize.pointerId) {
+        return;
+      }
+      event.preventDefault();
+      continueMaskPanelResize(event);
+      return;
+    }
     if (maskToolbarDrag) {
       if (event.pointerId !== maskToolbarDrag.pointerId) {
         return;
@@ -593,6 +618,10 @@ function bindEvents() {
       finishWorkflowDiagramPan();
       return;
     }
+    if (maskPanelResize && event.pointerId === maskPanelResize.pointerId) {
+      finishMaskPanelResize();
+      return;
+    }
     if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
       finishMaskToolbarDrag();
       return;
@@ -622,6 +651,10 @@ function bindEvents() {
     }
     if (activeWorkflowDiagramPan && event.pointerId === activeWorkflowDiagramPan.pointerId) {
       activeWorkflowDiagramPan = null;
+      return;
+    }
+    if (maskPanelResize && event.pointerId === maskPanelResize.pointerId) {
+      finishMaskPanelResize();
       return;
     }
     if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
@@ -884,6 +917,8 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       setMaskTool(target.dataset.tool === "eraser");
     } else if (action === "clear-mask") {
       clearActiveMaskCanvas();
+    } else if (action === "invert-mask") {
+      await invertActiveMask();
     } else if (action === "websam-load-model" || action === "websam-retry") {
       await loadActiveWebSamModel();
     } else if (action === "websam-decode") {
@@ -1993,6 +2028,39 @@ function removeBrushPromptPointsNearSegment(assetId: string, from: { x: number; 
       previewSamMaskDataUrl: ""
     });
   }
+}
+
+const MASK_PANEL_MIN_WIDTH = 220;
+const MASK_PANEL_MAX_WIDTH = 460;
+
+/**
+ * ドラッグ中は CSS 変数（`--mask-left-panel` / `--mask-right-panel`）だけを直接更新し、
+ * pointerup 時に state へ確定する（wheel zoom / pan と同じ「操作中は render() しない」パターン）。
+ */
+function continueMaskPanelResize(event: PointerEvent) {
+  if (!maskPanelResize) {
+    return;
+  }
+  const delta = event.clientX - maskPanelResize.startX;
+  const raw = maskPanelResize.side === "left"
+    ? maskPanelResize.startWidth + delta
+    : maskPanelResize.startWidth - delta;
+  const width = clampNumber(raw, MASK_PANEL_MIN_WIDTH, MASK_PANEL_MAX_WIDTH, maskPanelResize.startWidth);
+  maskPanelResize.pendingWidth = width;
+  const layout = document.querySelector<HTMLElement>(".mask-editor-layout");
+  layout?.style.setProperty(maskPanelResize.side === "left" ? "--mask-left-panel" : "--mask-right-panel", `${width}px`);
+}
+
+function finishMaskPanelResize() {
+  if (!maskPanelResize) {
+    return;
+  }
+  state.maskPanelWidths = {
+    ...state.maskPanelWidths,
+    [maskPanelResize.side]: maskPanelResize.pendingWidth
+  };
+  maskPanelResize = null;
+  document.querySelector<HTMLElement>(".mask-panel-resizer.resizing")?.classList.remove("resizing");
 }
 
 function beginMaskToolbarDrag(event: PointerEvent, toolbar: HTMLElement) {
@@ -3164,16 +3232,38 @@ function inpaintRequestForParent(parentAssetId: string | null, generationMode: s
     return null;
   }
   const draft = inpaintDraftForAsset(parentAssetId);
-  if (!hasActiveMaskData(draft)) {
+  if (!draft || draft.enabled !== true) {
+    return null;
+  }
+  const maskDataUrl = effectiveMaskDataUrl(draft);
+  if (!maskDataUrl.startsWith("data:image/png;base64,")) {
     return null;
   }
   return {
-    maskDataUrl: draft.maskDataUrl,
+    maskDataUrl,
     maskedContent: draft.maskedContent,
     inpaintArea: draft.inpaintArea,
     onlyMaskedPadding: draft.onlyMaskedPadding,
     featherRadius: draft.featherRadius
   };
+}
+
+/**
+ * 生成リクエストへ渡す最終マスクを解決する。
+ * 未適用の SAM 候補 preview が表示されている場合は、キャンバス表示と同じ意味論
+ * （preview SAM OR manualInclude、AND NOT manualErase）で合成し直す。
+ * これにより「SAM候補を適用せず手動マスクと併用して生成すると手動領域だけが
+ * inpaintされる」不整合を防ぐ。layer cache が無い場合は commit 済みの
+ * `maskDataUrl` にフォールバックする（その場合 preview も画面に出ていない）。
+ */
+function effectiveMaskDataUrl(draft: InpaintDraft): string {
+  if (draft.previewSamMaskDataUrl) {
+    const layers = maskLayerCache.get(draft.parentAssetId);
+    if (layers) {
+      return composeFinalMaskDataUrl(layers, true);
+    }
+  }
+  return draft.maskDataUrl;
 }
 
 function toggleMaskEditor() {
@@ -3236,6 +3326,35 @@ function setMaskTool(eraser: boolean) {
   setInpaintDraft({
     ...next
   });
+  render();
+}
+
+/**
+ * 表示中の最終マスク（未適用の SAM 候補 preview を含む）を反転し、
+ * 反転結果を単一の手動 include 層として commit する。
+ */
+async function invertActiveMask() {
+  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
+  if (!canvas || !assetId || canvas.width <= 0 || canvas.height <= 0) {
+    return;
+  }
+  const draft = ensureInpaintDraft(assetId);
+  const layers = await ensureMaskLayerSet(draft, canvas.width, canvas.height);
+  invertMaskLayers(layers, !!draft.previewSamMaskDataUrl);
+  const nextDraft: InpaintDraft = {
+    ...draft,
+    samMaskDataUrl: "",
+    previewSamMaskDataUrl: "",
+    samCandidates: [],
+    selectedSamCandidateIndex: 0,
+    manualIncludeMaskDataUrl: canvasHasMaskPixels(layers.manualInclude) ? layers.manualInclude.toDataURL("image/png") : "",
+    manualEraseMaskDataUrl: "",
+    maskDataUrl: composeFinalMaskDataUrl(layers, false)
+  };
+  setInpaintDraft(nextDraft);
+  renderFinalMaskToCanvas(canvas, layers, nextDraft, false);
+  state.message = "マスク領域を反転しました。";
   render();
 }
 
@@ -3350,7 +3469,7 @@ function renderAssetModalView() {
   const editing = state.maskEditMode;
   const promptValue = currentPositivePromptValue(asset);
   const batchSizeValue = currentBatchSizeValue();
-  return renderAssetModal(asset, inpaint, editing, promptValue, batchSizeValue);
+  return renderAssetModal(asset, inpaint, editing, promptValue, batchSizeValue, state.maskPanelWidths);
 }
 
 function currentPositivePromptValue(asset: Asset) {

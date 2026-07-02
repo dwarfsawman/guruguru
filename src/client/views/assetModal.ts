@@ -10,6 +10,7 @@ import {
   iconCheck,
   iconClose,
   iconEraser,
+  iconInvert,
   iconLoopArrows,
   iconMask,
   iconPlay,
@@ -43,7 +44,8 @@ export function renderAssetModal(
   inpaint: InpaintDraft | null,
   editing: boolean,
   promptValue: string,
-  batchSizeValue: number
+  batchSizeValue: number,
+  maskPanelWidths: { left: number; right: number } = { left: 300, right: 300 }
 ) {
   if (!asset) {
     return "";
@@ -61,12 +63,14 @@ export function renderAssetModal(
           ${editing ? renderMaskModeIndicator(inpaint, asset.id) : ""}
         </div>
         ${editing ? `
-          <div class="mask-editor-layout">
+          <div class="mask-editor-layout" style="--mask-left-panel: ${formatCssNumber(maskPanelWidths.left)}px; --mask-right-panel: ${formatCssNumber(maskPanelWidths.right)}px;">
             ${renderMaskPromptSidebar(draft, promptValue, batchSizeValue)}
+            <div class="mask-panel-resizer" data-mask-panel-resizer="left" role="separator" aria-orientation="vertical" aria-label="左パネル幅を調整"></div>
             <main class="preview-center">
               ${media}
               ${footer}
             </main>
+            <div class="mask-panel-resizer" data-mask-panel-resizer="right" role="separator" aria-orientation="vertical" aria-label="右パネル幅を調整"></div>
             ${renderSmartMaskSidebar(draft)}
           </div>
         ` : `
@@ -266,6 +270,7 @@ export function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string
       <div class="mask-toolbar-row">
         <button class="mask-tool-button ${!smartActive && !draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ" title="ブラシ">${iconBrush()}</button>
         <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム" title="消しゴム">${iconEraser()}</button>
+        <button class="mask-tool-button" type="button" data-action="invert-mask" aria-label="マスク領域を反転" title="マスク領域を反転">${iconInvert()}</button>
         <button class="mask-tool-button" type="button" data-action="clear-mask" aria-label="マスクをクリア" title="マスクをクリア">${iconReset()}</button>
       </div>
       <div class="range-control mask-brush-control">

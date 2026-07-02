@@ -94,6 +94,14 @@ export function iconMask() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7c3-3 13-3 16 0v5c0 5-4 8-8 8s-8-3-8-8V7Z"></path><path d="M8.5 12h.01"></path><path d="M15.5 12h.01"></path><path d="M9 16c1.8 1.2 4.2 1.2 6 0"></path></svg>`;
 }
 
+export function iconImage() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="9" cy="10" r="1.6"></circle><path d="m5 18 4.5-4.5 3 3L16 13l3.5 3.5"></path></svg>`;
+}
+
+export function iconInvert() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"></path></svg>`;
+}
+
 export function iconMinimize() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"></path></svg>`;
 }
