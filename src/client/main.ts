@@ -146,6 +146,15 @@ let pendingIterationDotSelect: { timer: number } | null = null;
 let activeMaskStroke: ActiveMaskStroke | null = null;
 let activeBoxPrompt: ActiveBoxPrompt | null = null;
 let activeImagePan: ActiveImagePan | null = null;
+
+interface ActiveWorkflowDiagramPan {
+  pointerId: number;
+  element: HTMLElement;
+  startClient: { x: number; y: number };
+  originPan: { x: number; y: number };
+}
+
+let activeWorkflowDiagramPan: ActiveWorkflowDiagramPan | null = null;
 let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
 const maskLayerCache = new Map<string, MaskLayerSet>();
 let webSamWorker: Worker | null = null;
@@ -440,6 +449,13 @@ function bindEvents() {
 
   app.addEventListener("wheel", (event) => {
     const target = event.target as HTMLElement;
+    // Workflow diagram zoom
+    const wfCanvas = target.closest<HTMLElement>(".workflow-diagram-canvas");
+    if (wfCanvas) {
+      event.preventDefault();
+      handleWorkflowDiagramWheelZoom(event, wfCanvas);
+      return;
+    }
     if (target.id !== "maskCanvas" && !target.closest(".preview-media")) {
       return;
     }
@@ -535,6 +551,13 @@ function bindEvents() {
       beginImagePan(event, previewMedia, activeAssetId);
       return;
     }
+    // Workflow diagram pan (left or middle button)
+    const wfCanvas = target.closest<HTMLElement>(".workflow-diagram-canvas");
+    if (wfCanvas && (event.button === 0 || event.button === 1)) {
+      event.preventDefault();
+      beginWorkflowDiagramPan(event, wfCanvas);
+      return;
+    }
     if (event.button !== 0 && event.button !== 2) {
       return;
     }
@@ -555,6 +578,14 @@ function bindEvents() {
       }
       event.preventDefault();
       continueImagePan(event);
+      return;
+    }
+    if (activeWorkflowDiagramPan) {
+      if (event.pointerId !== activeWorkflowDiagramPan.pointerId) {
+        return;
+      }
+      event.preventDefault();
+      continueWorkflowDiagramPan(event);
       return;
     }
     if (maskToolbarDrag) {
@@ -597,6 +628,11 @@ function bindEvents() {
       finishImagePan();
       return;
     }
+    if (activeWorkflowDiagramPan && event.pointerId === activeWorkflowDiagramPan.pointerId) {
+      event.preventDefault();
+      finishWorkflowDiagramPan();
+      return;
+    }
     if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
       finishMaskToolbarDrag();
       return;
@@ -622,6 +658,10 @@ function bindEvents() {
   app.addEventListener("pointercancel", (event) => {
     if (activeImagePan && event.pointerId === activeImagePan.pointerId) {
       activeImagePan = null;
+      return;
+    }
+    if (activeWorkflowDiagramPan && event.pointerId === activeWorkflowDiagramPan.pointerId) {
+      activeWorkflowDiagramPan = null;
       return;
     }
     if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
@@ -2042,6 +2082,75 @@ function beginImagePan(event: PointerEvent, element: HTMLElement, assetId: strin
   } catch {
     // Pointer capture may fail if the pointer started on a child; document-level listeners still finish the pan.
   }
+}
+
+function beginWorkflowDiagramPan(event: PointerEvent, canvas: HTMLElement) {
+  const panX = parseFloat(canvas.dataset.wfPanX ?? "0");
+  const panY = parseFloat(canvas.dataset.wfPanY ?? "0");
+  activeWorkflowDiagramPan = {
+    pointerId: event.pointerId,
+    element: canvas,
+    startClient: { x: event.clientX, y: event.clientY },
+    originPan: { x: panX, y: panY }
+  };
+  canvas.classList.add("panning");
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture may fail
+  }
+}
+
+function continueWorkflowDiagramPan(event: PointerEvent) {
+  if (!activeWorkflowDiagramPan) {
+    return;
+  }
+  const dx = event.clientX - activeWorkflowDiagramPan.startClient.x;
+  const dy = event.clientY - activeWorkflowDiagramPan.startClient.y;
+  applyWorkflowDiagramTransform(
+    activeWorkflowDiagramPan.element,
+    undefined,
+    activeWorkflowDiagramPan.originPan.x + dx,
+    activeWorkflowDiagramPan.originPan.y + dy
+  );
+}
+
+function finishWorkflowDiagramPan() {
+  if (!activeWorkflowDiagramPan) {
+    return;
+  }
+  const canvas = activeWorkflowDiagramPan.element;
+  canvas.classList.remove("panning");
+  try {
+    canvas.releasePointerCapture(activeWorkflowDiagramPan.pointerId);
+  } catch {
+    // Capture may already be released
+  }
+  // Persist final pan values
+  canvas.dataset.wfPanX = formatCssNumber(
+    parseFloat(canvas.style.getPropertyValue("--wf-pan-x")) || 0
+  );
+  canvas.dataset.wfPanY = formatCssNumber(
+    parseFloat(canvas.style.getPropertyValue("--wf-pan-y")) || 0
+  );
+  activeWorkflowDiagramPan = null;
+}
+
+function handleWorkflowDiagramWheelZoom(event: WheelEvent, canvas: HTMLElement) {
+  const zoom = parseFloat(canvas.dataset.wfZoom ?? "1");
+  const direction = event.deltaY < 0 ? 1 : -1;
+  const nextZoom = clampNumber(zoom + direction * 0.12, 0.25, 4, 1);
+  canvas.dataset.wfZoom = String(nextZoom);
+  applyWorkflowDiagramTransform(canvas, nextZoom);
+}
+
+function applyWorkflowDiagramTransform(canvas: HTMLElement, zoom?: number, panX?: number, panY?: number) {
+  const z = zoom ?? parseFloat(canvas.dataset.wfZoom ?? "1");
+  const px = panX ?? parseFloat(canvas.dataset.wfPanX ?? "0");
+  const py = panY ?? parseFloat(canvas.dataset.wfPanY ?? "0");
+  canvas.style.setProperty("--wf-zoom", String(z));
+  canvas.style.setProperty("--wf-pan-x", `${formatCssNumber(px)}px`);
+  canvas.style.setProperty("--wf-pan-y", `${formatCssNumber(py)}px`);
 }
 
 function continueImagePan(event: PointerEvent) {

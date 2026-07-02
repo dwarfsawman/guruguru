@@ -53,6 +53,15 @@ export async function renderWorkflowDiagramCanvases() {
       }
       target.innerHTML = result.svg;
       target.dataset.state = "ready";
+      // Initialize zoom/pan state
+      if (!target.dataset.wfZoom) {
+        target.dataset.wfZoom = "1";
+        target.dataset.wfPanX = "0";
+        target.dataset.wfPanY = "0";
+      }
+      target.style.setProperty("--wf-zoom", target.dataset.wfZoom);
+      target.style.setProperty("--wf-pan-x", `${target.dataset.wfPanX}px`);
+      target.style.setProperty("--wf-pan-y", `${target.dataset.wfPanY}px`);
     } catch (error) {
       if (runId !== workflowDiagramRenderRunId || !target.isConnected) {
         return;
