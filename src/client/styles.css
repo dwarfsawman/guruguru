@@ -1825,7 +1825,7 @@ input[type="range"]::-webkit-slider-thumb {
 
 .mask-editor-layout {
   display: grid;
-  grid-template-columns: minmax(300px, 390px) minmax(420px, 1fr) minmax(300px, 390px);
+  grid-template-columns: clamp(220px, var(--mask-left-panel, 300px), 460px) auto minmax(420px, 1fr) auto clamp(220px, var(--mask-right-panel, 300px), 460px);
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -1840,8 +1840,22 @@ input[type="range"]::-webkit-slider-thumb {
   min-width: 0;
   min-height: 0;
   grid-template-rows: minmax(0, 1fr) auto;
+  /* footer 等の min-content 幅で中央カラムが押し広げられ、preview-media の
+     スクロールバーが右サイドパネルの下まで食み出すのを防ぐ */
+  grid-template-columns: minmax(0, 1fr);
+  overflow: hidden;
   gap: 12px;
   padding: 40px 20px 14px;
+}
+
+.preview-center > .preview-media,
+.preview-center > .preview-footer {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.preview-content.mask-mode .preview-footer {
+  flex-wrap: wrap;
 }
 
 .preview-media {
@@ -2062,6 +2076,31 @@ input[type="range"]::-webkit-slider-thumb {
 
 .smart-mask-panel {
   border-left: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.mask-panel-resizer {
+  position: relative;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.mask-panel-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  transition: background 0.15s ease;
+}
+
+.mask-panel-resizer:hover::after,
+.mask-panel-resizer.resizing::after {
+  background: rgba(139, 92, 246, 0.7);
 }
 
 .mask-panel-header {
@@ -2501,9 +2540,23 @@ input[type="range"]::-webkit-slider-thumb {
 
 .source-upload-button {
   position: relative;
+  justify-content: flex-start;
   overflow: hidden;
   cursor: pointer;
   white-space: nowrap;
+  width: fit-content;
+  gap: 6px;
+}
+
+.source-upload-button svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .source-upload-button input {
@@ -2582,7 +2635,7 @@ input[type="range"]::-webkit-slider-thumb {
   }
 
   .mask-editor-layout {
-    grid-template-columns: minmax(270px, 340px) minmax(340px, 1fr) minmax(270px, 340px);
+    grid-template-columns: clamp(220px, var(--mask-left-panel, 280px), 400px) auto minmax(340px, 1fr) auto clamp(220px, var(--mask-right-panel, 280px), 400px);
   }
 
   .mask-editor-panel {
@@ -2683,6 +2736,10 @@ input[type="range"]::-webkit-slider-thumb {
   .mask-editor-layout {
     grid-template-columns: 1fr;
     overflow: auto;
+  }
+
+  .mask-panel-resizer {
+    display: none;
   }
 
   .mask-prompt-panel,

@@ -168,6 +168,42 @@ export function composeFinalMaskDataUrl(layers: MaskLayerSet, includeSamPreview 
   return canvasHasMaskPixels(canvas) ? canvas.toDataURL("image/png") : "";
 }
 
+/**
+ * 現在の最終マスク（(sam OR manualInclude) AND NOT manualErase、`includeSamPreview` 時は
+ * samMask の代わりに previewSamMask）を反転し、結果を manualInclude 層へ格納する。
+ * 反転後は「単一の手動 include 層」として扱えるように samMask / previewSamMask / manualErase を
+ * クリアする。呼び出し側は draft の各 dataUrl を再commitすること。
+ */
+export function invertMaskLayers(layers: MaskLayerSet, includeSamPreview: boolean) {
+  const final = createLayerCanvas(layers.width, layers.height);
+  const finalContext = final.getContext("2d");
+  if (!finalContext) {
+    return;
+  }
+  finalContext.drawImage(includeSamPreview ? layers.previewSamMask : layers.samMask, 0, 0);
+  finalContext.drawImage(layers.manualInclude, 0, 0);
+  finalContext.globalCompositeOperation = "destination-out";
+  finalContext.drawImage(layers.manualErase, 0, 0);
+  finalContext.globalCompositeOperation = "source-over";
+
+  const includeContext = layers.manualInclude.getContext("2d");
+  if (!includeContext) {
+    return;
+  }
+  includeContext.save();
+  includeContext.globalCompositeOperation = "source-over";
+  includeContext.clearRect(0, 0, layers.width, layers.height);
+  includeContext.fillStyle = "rgba(255, 255, 255, 1)";
+  includeContext.fillRect(0, 0, layers.width, layers.height);
+  includeContext.globalCompositeOperation = "destination-out";
+  includeContext.drawImage(final, 0, 0);
+  includeContext.restore();
+
+  clearCanvas(layers.samMask);
+  clearCanvas(layers.previewSamMask);
+  clearCanvas(layers.manualErase);
+}
+
 export function maskLayerForStroke(layers: MaskLayerSet, kind: MaskStrokeKind) {
   if (kind === "manual-erase") {
     return layers.manualErase;

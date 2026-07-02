@@ -18,9 +18,9 @@ import {
   iconDot,
   iconDownload,
   iconLoopArrows,
+  iconImage,
   iconMask,
   iconPlay,
-  iconPlus,
   iconStar,
   iconStop,
   iconTrash,
@@ -118,8 +118,8 @@ export function renderSourceUploadEmptyState() {
 
 export function renderSourceUploadButton(label: string) {
   return `
-    <label class="button-secondary source-upload-button">
-      ${iconPlus()}${escapeHtml(label)}
+    <label class="button-secondary compact source-upload-button">
+      ${iconImage()}${escapeHtml(label)}
       <input data-source-upload="1" type="file" accept="image/png,image/jpeg,image/webp" />
     </label>
   `;
