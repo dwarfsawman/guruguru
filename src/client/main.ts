@@ -18,34 +18,13 @@ import type {
   Round
 } from "../shared/apiTypes";
 import {
-  iconBrush,
-  iconCheck,
-  iconChevron,
   iconClose,
   iconDiagram,
-  iconDot,
-  iconDownload,
-  iconEraser,
   iconLoop,
-  iconLoopArrows,
-  iconMask,
-  iconMenu,
-  iconMinimize,
-  iconPlay,
-  iconPlus,
-  iconPulse,
-  iconReset,
-  iconSave,
-  iconSettings,
-  iconShuffle,
-  iconStar,
-  iconStop,
-  iconSwap,
-  iconTrash,
-  iconZoom
+  iconMenu
 } from "./icons";
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
-import { escapeAttr, escapeHtml, formatCssNumber, formatDate, formatNumber, formatSliderValue } from "./format";
+import { escapeAttr, escapeHtml, formatCssNumber, formatNumber, formatSliderValue } from "./format";
 import { type Json } from "./json";
 import { api } from "./api";
 import type { WorkflowImportDraft, WorkflowTemplate } from "./workflowTypes";
@@ -57,15 +36,16 @@ import {
 } from "./workflowImport";
 import { defaultModeForTemplate, templateGenerationDefaults } from "./workflowDefaults";
 import {
-  renderModelReadout,
-  renderTemplateOption,
-  renderTemplatePanel,
   renderWorkflowDiagramCanvases,
   renderWorkflowDiagramModal,
   renderWorkflowImportModal,
-  renderWorkflowImportPanel,
   renderWorkflowImportPreview
 } from "./workflowUi";
+import { renderHome } from "./views/homeView";
+import { renderIterationTracker } from "./views/iterationTree";
+import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
+import { defaultPrompt, defaultNegativePrompt, renderGenerationPanel } from "./views/generationPanel";
+import { renderAssetModal } from "./views/assetModal";
 import type {
   WebSamModelStatus,
   WebSamPromptMode,
@@ -89,7 +69,6 @@ import {
   hasActiveMaskData,
   hasMaskData,
   isMaskedContent,
-  maskedContentOptions,
   normalizeInpaintDraft
 } from "./maskDraft";
 import {
@@ -225,33 +204,8 @@ const state: {
   activeWorkflowDiagramTemplateId: null
 };
 
-const defaultPrompt =
-  "masterpiece, best quality, 1girl, beautiful detailed eyes, flowing hair, fantasy landscape, dramatic lighting, ethereal atmosphere";
-const defaultNegativePrompt = "low quality, worst quality, blurry, deformed";
 const pendingAutoCollectRoundIds = new Set<string>();
 const autoCollectIntervalMs = 3_000;
-const samplerOptions = [
-  "euler",
-  "euler_ancestral",
-  "heun",
-  "dpm_2",
-  "dpm_2_ancestral",
-  "lms",
-  "dpm_fast",
-  "dpm_adaptive",
-  "dpmpp_2s_ancestral",
-  "dpmpp_sde",
-  "dpmpp_sde_gpu",
-  "dpmpp_2m",
-  "dpmpp_2m_sde",
-  "dpmpp_2m_sde_gpu",
-  "dpmpp_3m_sde",
-  "dpmpp_3m_sde_gpu",
-  "ddim",
-  "uni_pc",
-  "uni_pc_bh2"
-];
-const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
 void boot();
 
 function scheduleMessageClear(value: string) {
@@ -1710,8 +1664,8 @@ function render(options: RenderOptions = {}) {
   app.innerHTML = `
     ${renderHeader()}
     ${state.message ? `<pre class="message"><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button>${escapeHtml(state.message)}</pre>` : ""}
-    ${state.detail ? renderProjectDetail(state.detail) : renderHome()}
-    ${renderAssetModal()}
+    ${state.detail ? renderProjectDetailView(state.detail) : renderHome(state.projects, state.settings, state.templates)}
+    ${renderAssetModalView()}
     ${renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft)}
     ${renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId)}
   `;
@@ -2348,313 +2302,29 @@ function getConnectionView() {
   return { className: "unknown", label: "ComfyUI 未確認" };
 }
 
-function renderIterationTracker(detail: ProjectDetail) {
-  const rounds = sortRoundsAsc(detail.rounds);
-  if (!rounds.length) {
-    return `<div class="iteration-tracker empty-tracker"><span class="iteration-empty">No iterations</span></div>`;
-  }
-  const forest = buildRoundForest(rounds);
-  const deleteTargetIds = state.deletePreviewRoundId
-    ? collectRoundSubtreeIds(state.deletePreviewRoundId, forest.children)
-    : new Set<string>();
-  return `
-    <div class="iteration-tracker" aria-label="イテレーション">
-      <div class="iteration-forest">
-        ${forest.roots.map((round) => renderRoundTreeNode(round, forest.children, deleteTargetIds)).join("")}
-      </div>
-    </div>
-  `;
-}
-
-function buildRoundForest(rounds: Round[]) {
-  const byId = new Map(rounds.map((round) => [round.id, round]));
-  const children = new Map<string, Round[]>();
-  const roots: Round[] = [];
-
-  for (const round of rounds) {
-    const parentId = round.parentRoundId && byId.has(round.parentRoundId) ? round.parentRoundId : null;
-    if (!parentId) {
-      roots.push(round);
-      continue;
-    }
-    const siblings = children.get(parentId) ?? [];
-    siblings.push(round);
-    children.set(parentId, siblings);
-  }
-
-  return { roots, children };
-}
-
-function collectRoundSubtreeIds(rootRoundId: string, children: Map<string, Round[]>) {
-  const ids = new Set<string>();
-  const visit = (roundId: string) => {
-    ids.add(roundId);
-    for (const child of children.get(roundId) ?? []) {
-      visit(child.id);
-    }
-  };
-  visit(rootRoundId);
-  return ids;
-}
-
-function renderRoundTreeNode(round: Round, children: Map<string, Round[]>, deleteTargetIds: Set<string>): string {
-  const childRounds = children.get(round.id) ?? [];
-  const active = round.id === state.activeRoundId;
-  const completed = round.status === "completed";
-  const dotClass = active ? "active" : completed ? "completed" : "pending";
-  const hue = branchHue(round);
-  const isDeleteRoot = state.deletePreviewRoundId === round.id;
-  const isDeleteTarget = deleteTargetIds.has(round.id);
-  return `
-    <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="--branch-hue: ${hue}">
-      <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" type="button" title="${escapeAttr(iterationTitle(round))}">
-        <span>${round.roundIndex}</span>
-      </button>
-      ${isDeleteTarget ? `
-        <button class="iteration-delete-mark" type="button" data-action="delete-round" data-id="${state.deletePreviewRoundId ?? round.id}" title="削除">
-          ${iconClose()}
-        </button>
-      ` : ""}
-      ${childRounds.length ? `
-        <div class="iteration-children ${childRounds.length > 1 ? "has-siblings" : "single-child"}">
-          ${childRounds.map((child, index) => `
-            <div class="iteration-child ${index === 0 ? "first" : ""} ${index === childRounds.length - 1 ? "last" : ""}">
-              ${renderRoundTreeNode(child, children, deleteTargetIds)}
-            </div>
-          `).join("")}
-        </div>
-      ` : ""}
-    </div>
-  `;
-}
-
-function branchHue(round: Round) {
-  return ((round.branchColorIndex ?? 0) * 57) % 360;
-}
-
-function iterationTitle(round: Round) {
-  const parent = round.parentRoundId ? ` / parent ${round.parentRoundId}` : " / root";
-  return `Round ${round.roundIndex} / ${generationModeLabel(round.generationMode)} / ${round.status}${parent}`;
-}
-
-function renderHome() {
-  return `
-    <main class="home-layout">
-      <section class="panel">
-        <div class="panel-heading">
-          <div>
-            <p class="section-kicker">Projects</p>
-            <h1>Project一覧</h1>
-          </div>
-        </div>
-        <form id="project-form" class="form-stack">
-          <label>Project名<input name="name" placeholder="Daily Scene Character Exploration" required /></label>
-          <label>説明<textarea name="description" rows="3"></textarea></label>
-          <label>デフォルトWorkflowTemplate
-            <select name="defaultTemplateId">
-              <option value="">未指定</option>
-              ${state.templates.map((template) => `<option value="${template.id}">${escapeHtml(template.name)} v${template.version}</option>`).join("")}
-            </select>
-          </label>
-          <button class="button-primary" type="button" data-action="create-project">${iconPlus()}新規Project作成</button>
-        </form>
-        <div class="project-list">
-          ${state.projects.length ? state.projects.map(renderProjectCard).join("") : `<div class="empty">Projectはまだありません。</div>`}
-        </div>
-      </section>
-      <div class="home-side">
-        ${renderSettingsPanel()}
-        ${renderWorkflowImportPanel()}
-        ${renderTemplatePanel(state.templates)}
-      </div>
-    </main>
-  `;
-}
-
-function renderProjectCard(project: ProjectSummary) {
-  return `
-    <article class="project-card">
-      <button class="project-thumb" data-action="open-project" data-id="${project.id}" type="button" aria-label="${escapeAttr(project.name)}を開く">
-        ${project.representativeThumbnailUrl ? `<img src="${project.representativeThumbnailUrl}" alt="" />` : `<span>No image</span>`}
-      </button>
-      <div class="project-copy">
-        <h2>${escapeHtml(project.name)}</h2>
-        <p>${escapeHtml(project.description || "説明なし")}</p>
-        <div class="meta-line">Rounds ${project.roundCount ?? 0} / Assets ${project.assetCount ?? 0} / Updated ${formatDate(project.updatedAt)}</div>
-      </div>
-      <div class="project-actions">
-        <button class="button-secondary" type="button" data-action="open-project" data-id="${project.id}">開く</button>
-        <button class="button-danger" type="button" data-action="delete-project" data-id="${project.id}">${iconTrash()}削除</button>
-      </div>
-    </article>
-  `;
-}
-
-function renderSettingsPanel() {
-  const settings = state.settings;
-  return `
-    <section class="panel">
-      <div class="panel-heading">
-        <div>
-          <p class="section-kicker">Connection</p>
-          <h2>ComfyUI接続</h2>
-        </div>
-      </div>
-      <form id="settings-form" class="form-stack">
-        <label>Base URL<input name="baseUrl" value="${escapeAttr(settings?.baseUrl ?? "http://127.0.0.1:8188")}" /></label>
-        <label>WebSocket URL<input name="websocketUrl" value="${escapeAttr(settings?.websocketUrl ?? "ws://127.0.0.1:8188/ws")}" /></label>
-        <label>Timeout秒<input name="timeoutSeconds" type="number" min="1" value="${settings?.timeoutSeconds ?? 60}" /></label>
-        <label>保存先<input name="storageDir" value="${escapeAttr(settings?.storageDir ?? "")}" /></label>
-        <label>WebSAM model base URL<input name="webSamModelBaseUrl" value="${escapeAttr(settings?.webSamModelBaseUrl ?? DEFAULT_WEB_SAM_MODEL_BASE_URL)}" placeholder="${escapeAttr(DEFAULT_WEB_SAM_MODEL_BASE_URL)}" /></label>
-        <div class="button-row">
-          <button class="button-secondary" type="button" data-action="save-settings">${iconSave()}保存</button>
-          <button class="button-secondary" type="button" data-action="test-comfy">${iconPulse()}接続テスト</button>
-        </div>
-      </form>
-    </section>
-  `;
-}
-
-function renderProjectDetail(detail: ProjectDetail) {
+function renderProjectDetailView(detail: ProjectDetail) {
   const activeRound = getActiveRound(detail);
   const assets = getActiveRoundAssets().filter(assetPassesFilter);
   const selectedAssets = getActiveRoundAssets().filter((asset) => asset.status === "selected");
   const activeAsset = state.activeAssetId ? findAsset(state.activeAssetId) : null;
-  const mode = activeRound?.generationMode ?? "txt2img";
   const roundActive = isRoundActive(activeRound);
 
-  return `
-    <div class="studio-shell">
-      <div class="sidebar-overlay ${state.sidebarOpen ? "active" : ""}" data-action="toggle-sidebar"></div>
-      <aside class="studio-sidebar ${state.sidebarOpen ? "open" : ""}">
-        ${renderGenerationPanel(detail, activeAsset)}
-      </aside>
-      <main class="studio-main">
-        <div class="round-toolbar">
-          <div>
-            <h1>イテレーション ${activeRound ? `#${activeRound.roundIndex}` : ""}<span class="tag">${iconDot()}${escapeHtml(generationModeLabel(mode))}</span></h1>
-            <p>${activeRound ? `${activeRound.assetCount ?? 0}枚生成・${selectedAssets.length}枚選択中・${escapeHtml(activeRound.status)}` : "新規Roundを生成してください。"}</p>
-          </div>
-          <div class="toolbar-actions">
-            <button class="button-secondary compact" type="button" data-action="select-all">全選択</button>
-            <button class="button-secondary compact" type="button" data-action="clear-selection">選択解除</button>
-            <button class="button-secondary compact" type="button" data-action="invert-selection">選択反転</button>
-            <span class="toolbar-divider"></span>
-            <select id="grid-cols" class="compact-select" aria-label="グリッド列数">
-              <option value="4" ${state.gridCols === 4 ? "selected" : ""}>4x4</option>
-              <option value="3" ${state.gridCols === 3 ? "selected" : ""}>3列</option>
-              <option value="2" ${state.gridCols === 2 ? "selected" : ""}>2列</option>
-            </select>
-            ${roundActive ? `<button class="button-danger compact" type="button" data-action="interrupt-round" data-id="${activeRound!.id}">${iconStop()}停止</button>` : ""}
-            ${activeRound ? `<button class="button-secondary compact" type="button" data-action="collect-round" data-id="${activeRound.id}">${iconDownload()}生成結果取得</button>` : ""}
-          </div>
-        </div>
-        <div class="gallery-scroll">
-          <div class="image-grid cols-${state.gridCols}">
-            ${assets.length ? assets.map(renderAssetTile).join("") : renderEmptyGallery(activeRound)}
-          </div>
-        </div>
-        ${renderIterationTracker(detail)}
-        ${renderBottomActionBar(selectedAssets, activeRound)}
-      </main>
-    </div>
-  `;
-}
-
-function renderEmptyGallery(activeRound: Round | null) {
-  if (!activeRound) {
-    return renderSourceUploadEmptyState();
-  }
-  if (activeRound.status === "running" || activeRound.status === "pending") {
-    return `<div class="empty wide">生成中です。画像ができた順にここへ表示されます。</div>`;
-  }
-  if (activeRound.status === "failed") {
-    return `<div class="empty wide">このイテレーションは失敗しました。接続設定とworkflowを確認してブランチングしてください。</div>`;
-  }
-  if (activeRound.status === "interrupted") {
-    return `<div class="empty wide">停止済みです。保存済みの画像があればここに表示されます。</div>`;
-  }
-  return `<div class="empty wide">取り込み済みの画像はありません。「生成結果取得」を押すと、完了済み画像だけをグリッド表示します。</div>`;
-}
-
-function renderSourceUploadEmptyState() {
-  return `
-    <div class="empty wide source-upload-empty">
-      <div>
-        <strong>画像をアップロードして親画像にする</strong>
-        <p>初回生成前でも source asset を登録して、img2img のブランチングを開始できます。</p>
-      </div>
-      ${renderSourceUploadButton("画像を選択")}
-    </div>
-  `;
-}
-
-function renderSourceUploadButton(label: string) {
-  return `
-    <label class="button-secondary source-upload-button">
-      ${iconPlus()}${escapeHtml(label)}
-      <input data-source-upload="1" type="file" accept="image/png,image/jpeg,image/webp" />
-    </label>
-  `;
-}
-
-function renderAssetTile(asset: Asset) {
-  const selected = asset.status === "selected";
-  const favorite = asset.status === "favorite";
-  const rejected = asset.status === "rejected";
-  const masked = assetHasMaskIndicator(asset);
-  return `
-    <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""} ${masked ? "masked" : ""}">
-      <button class="asset-card-main" data-id="${asset.id}" type="button" aria-label="Asset #${asset.batchIndex + 1}">
-        <img class="gen-image" src="${asset.thumbnailMediumUrl || asset.thumbnailUrl}" alt="" loading="lazy" />
-      </button>
-      <button class="select-badge" data-action="toggle-select" data-id="${asset.id}" type="button" aria-label="選択切替">
-        ${iconCheck(selected)}
-      </button>
-      <button class="star-badge ${favorite ? "starred" : ""}" data-action="toggle-favorite" data-id="${asset.id}" type="button" aria-label="favorite切替">
-        ${iconStar(favorite)}
-      </button>
-      <button class="zoom-btn" data-action="asset-detail" data-id="${asset.id}" type="button" aria-label="拡大">
-        ${iconZoom()}
-      </button>
-      <span class="card-number">#${asset.batchIndex + 1}</span>
-      ${masked ? `<button class="mask-badge ${state.showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="マスクタグ表示切替">${iconMask()}MASK</button>` : ""}
-      <span class="seed-chip" data-action="copy-seed" data-id="${asset.id}" data-seed="${asset.seed ?? ""}">${state.copiedSeedAssetId === asset.id ? "copied" : `seed ${asset.seed ?? "-"}`}</span>
-    </article>
-  `;
-}
-
-function assetHasMaskIndicator(asset: Asset) {
-  return hasActiveMaskData(inpaintDraftForAsset(asset.id));
-}
-
-function renderBottomActionBar(selectedAssets: Asset[], activeRound: Round | null) {
-  return `
-    <div class="bottom-action-bar">
-      <div class="bottom-left">
-        ${state.busy ? `
-          <div class="progress-wrap">
-            <div class="progress-bar"><span style="width: 45%"></span></div>
-            <span>生成中...</span>
-          </div>
-        ` : `
-          <div class="selected-thumbs">
-            ${selectedAssets.slice(0, 5).map((asset) => `<img src="${asset.thumbnailUrl}" alt="" />`).join("")}
-            ${selectedAssets.length > 5 ? `<span>+${selectedAssets.length - 5}</span>` : ""}
-          </div>
-          <span class="selected-label">${selectedAssets.length}枚の画像を次のブランチングに使用</span>
-        `}
-      </div>
-      <div class="bottom-actions">
-        <button class="button-danger" type="button" data-action="reset-session">${iconTrash()}リセット</button>
-        <button class="button-secondary" type="button" data-action="export-selected">${iconDownload()}保存</button>
-        <button class="button-primary" type="button" data-action="generate-round">${iconPlay()}${activeRound ? "画像無しで生成" : "初回生成"}</button>
-        <button class="button-primary" type="button" data-action="img2img-next" ${selectedAssets.length === 0 ? "disabled" : ""}>
-          ${iconLoopArrows()}選択画像でブランチング <span class="button-count">${selectedAssets.length}</span>
-        </button>
-      </div>
-    </div>
-  `;
+  return renderProjectDetail(
+    detail,
+    activeRound,
+    assets,
+    selectedAssets,
+    state.sidebarOpen,
+    state.gridCols,
+    roundActive,
+    state.activeRoundId,
+    state.deletePreviewRoundId,
+    state.busy,
+    renderGenerationPanelView(detail, activeAsset),
+    (assetId: string) => inpaintDraftForAsset(assetId),
+    state.showMaskGridTag,
+    state.copiedSeedAssetId
+  );
 }
 
 function captureGenerationDraft() {
@@ -3512,204 +3182,13 @@ function resetGenerationParamsToTemplateDefaults() {
   render();
 }
 
-function renderGenerationPanel(detail: ProjectDetail, activeAsset: Asset | null) {
+function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | null) {
   const activeRound = getActiveRound(detail);
-  const request = activeRound?.request;
-  const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
   const draft = state.generationDraft;
   const draftParent = findAsset(draft?.parentAssetId ?? "");
   const previous = activeAsset ?? draftParent ?? getPreferredParentAsset();
-  const selectedTemplateId = draft?.templateId ?? request?.templateId ?? detail.project.defaultTemplateId ?? detail.templates[0]?.id ?? "";
-  const selectedImg2ImgTemplateId =
-    draft?.img2imgTemplateId ??
-    (request?.generationMode === "img2img" ? request.templateId : selectedTemplateId);
-  const selectedTemplate = detail.templates.find((template) => template.id === selectedTemplateId) ?? null;
-  const selectedMode = draft?.generationMode ?? requestMode ?? defaultModeForTemplate(selectedTemplate);
-  const selectedImg2ImgTemplate =
-    detail.templates.find((template) => template.id === selectedImg2ImgTemplateId) ??
-    selectedTemplate;
-  const activeTemplateForMode = selectedMode === "img2img" ? selectedImg2ImgTemplate : selectedTemplate;
-  const defaults = templateGenerationDefaults(activeTemplateForMode);
-  const promptValue = draft?.prompt ?? request?.prompt ?? previous?.prompt ?? defaults.prompt ?? defaultPrompt;
-  const negativePromptValue = draft?.negativePrompt ?? request?.negativePrompt ?? previous?.negativePrompt ?? defaults.negativePrompt ?? defaultNegativePrompt;
-  const batchSizeValue = draftNumber(draft, "batchSize") ?? request?.batchSize ?? defaults.batchSize ?? 16;
-  const stepsValue = draftNumber(draft, "steps") ?? request?.steps ?? defaults.steps ?? 20;
-  const cfgValue = draftNumber(draft, "cfg") ?? request?.cfg ?? defaults.cfg ?? 7;
-  const denoiseValue =
-    draftNumber(draft, "denoise") ??
-    request?.denoise ??
-    normalizeDenoiseForMode(defaults.denoise ?? defaultDenoiseForMode(selectedMode), selectedMode);
-  const normalizedDenoiseValue = normalizeDenoiseForMode(denoiseValue, selectedMode);
-  const widthValue = draftNumber(draft, "width") ?? assetDimension(previous, "width") ?? request?.width ?? defaults.width ?? 512;
-  const heightValue = draftNumber(draft, "height") ?? assetDimension(previous, "height") ?? request?.height ?? defaults.height ?? 768;
-  const seedValue = draft?.seed ?? String(request?.seed ?? previous?.seed ?? defaults.seed ?? -1);
-  const seedModeValue = draft?.seedMode ?? request?.seedMode ?? "random";
-  const samplerValue = draft?.sampler ?? request?.sampler ?? defaults.sampler ?? "euler";
-  const schedulerValue = draft?.scheduler ?? request?.scheduler ?? defaults.scheduler ?? "normal";
   const activeInpaint = previous?.id ? inpaintDraftForAsset(previous.id) : null;
-  const templateOptions = detail.templates.length
-    ? detail.templates
-      .map((template) => renderTemplateOption(template, selectedTemplateId))
-      .join("")
-    : `<option value="">未登録</option>`;
-  const img2imgTemplateOptions = detail.templates.length
-    ? detail.templates
-      .map((template) => renderTemplateOption(template, selectedImg2ImgTemplateId))
-      .join("")
-    : `<option value="">未登録</option>`;
-
-  return `
-    <form id="generation-form" class="sidebar-form">
-      <input type="hidden" name="parentAssetId" value="${previous?.id ?? ""}" />
-      <section class="sidebar-section">
-        <p class="section-kicker">ワークフロー</p>
-        <label>txt2img WorkflowTemplate
-          <select id="generation-template-select" class="workflow-select" name="templateId">${templateOptions}</select>
-        </label>
-        <label>img2img WorkflowTemplate
-          <select id="generation-img2img-template-select" class="workflow-select" name="img2imgTemplateId">${img2imgTemplateOptions}</select>
-        </label>
-        <details class="workflow-dropdown compact-dropdown">
-          <summary><span>${iconPlus()}Workflow操作</span>${iconChevron()}</summary>
-          <div class="workflow-export-menu">
-            <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-source="generation-template-select">${iconDownload()}raw workflow export</button>
-            <button class="button-secondary compact" type="button" data-action="export-template" data-template-source="generation-template-select">${iconDownload()}template export</button>
-            <button class="button-danger compact" type="button" data-action="delete-template" data-template-source="generation-template-select" ${detail.templates.length ? "" : "disabled"}>${iconTrash()}workflow削除</button>
-            <button class="button-secondary compact" type="button" data-action="home">${iconSettings()}Workflow管理を開く</button>
-          </div>
-        </details>
-      </section>
-
-      <section class="sidebar-section">
-        <p class="section-kicker">親画像</p>
-        ${renderSourceUploadButton("source asset をアップロード")}
-      </section>
-
-      <section class="sidebar-section">
-        <p class="section-kicker">プロンプト</p>
-        <textarea class="input-field prompt-input" name="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
-      </section>
-
-      <details class="sidebar-section collapsible" open>
-        <summary><span class="section-kicker">ネガティブプロンプト</span>${iconChevron()}</summary>
-        <textarea class="input-field" name="negativePrompt" rows="3" placeholder="ネガティブプロンプト...">${escapeHtml(negativePromptValue)}</textarea>
-      </details>
-
-      <section class="sidebar-section">
-        <div class="section-header-row">
-          <p class="section-kicker">生成パラメータ</p>
-          <button class="button-secondary compact mini-button" type="button" data-action="reset-generation-params">${iconReset()}JSON初期値</button>
-        </div>
-        ${renderRangeControl("batchSize", "バッチサイズ", batchSizeValue, 1, 32, 1, "batchValue")}
-        ${renderRangeControl("steps", "ステップ数", stepsValue, 1, 50, 1, "stepsValue")}
-        ${renderRangeControl("cfg", "CFGスケール", cfgValue, 1, 20, 0.5, "cfgValue")}
-        ${renderRangeControl("denoise", "デノイズ強度", normalizedDenoiseValue, 0, 1, 0.05, "denoiseValue")}
-
-        <div class="resolution-row">
-          <label>幅<input class="input-field center" name="width" type="number" step="64" value="${widthValue}" /></label>
-          <button class="icon-button swap-button" data-action="swap-resolution" type="button" aria-label="幅と高さを入れ替え">${iconSwap()}</button>
-          <label>高さ<input class="input-field center" name="height" type="number" step="64" value="${heightValue}" /></label>
-        </div>
-        <div class="resolution-scale-row">
-          <button class="icon-button resolution-scale-button" data-action="scale-resolution" data-scale-direction="down" type="button" aria-label="縦横比を保って縮小" title="縦横比を保って縮小">${iconMinimize()}</button>
-          <button class="icon-button resolution-scale-button" data-action="scale-resolution" data-scale-direction="up" type="button" aria-label="縦横比を保って拡大" title="縦横比を保って拡大">${iconPlus()}</button>
-        </div>
-
-        <label>シード
-          <div class="seed-row">
-            <input class="input-field mono" name="seed" type="number" value="${seedValue}" />
-            <button class="icon-button" data-action="random-seed" type="button" aria-label="ランダムseed">${iconShuffle()}</button>
-          </div>
-        </label>
-
-        <label>seed mode
-          <select class="workflow-select" name="seedMode">
-            ${["random", "fixed", "increment", "reuse_parent_seed"].map((mode) => `<option value="${mode}" ${seedModeValue === mode ? "selected" : ""}>${mode}</option>`).join("")}
-          </select>
-        </label>
-
-        <label>サンプラー
-          <select class="workflow-select" name="sampler">
-            ${renderOptions(samplerOptions, samplerValue)}
-          </select>
-        </label>
-
-        <label>scheduler
-          <select class="workflow-select" name="scheduler">
-            ${renderOptions(schedulerOptions, schedulerValue)}
-          </select>
-        </label>
-
-        <label>mode
-          <select class="workflow-select" name="generationMode">
-            ${["txt2img", "img2img", "ipadapter", "controlnet", "seed_reuse", "prompt_reuse"].map((mode) => `<option value="${mode}" ${selectedMode === mode ? "selected" : ""}>${mode}</option>`).join("")}
-          </select>
-        </label>
-      </section>
-
-      ${hasActiveMaskData(activeInpaint) ? renderInpaintSidebarSection(activeInpaint) : ""}
-
-      <details class="sidebar-section collapsible">
-        <summary><span class="section-kicker">モデル</span>${iconChevron()}</summary>
-        ${renderModelReadout(defaults.model)}
-      </details>
-    </form>
-  `;
-}
-
-function renderInpaintSidebarSection(inpaint: InpaintDraft) {
-  return `
-    <section class="sidebar-section mask-sidebar-section">
-      <div class="section-header-row">
-        <p class="section-kicker">マスク処理</p>
-        <span class="mask-status">有効</span>
-      </div>
-      <label>Masked content
-        <select class="workflow-select" data-inpaint-field="maskedContent">
-          ${maskedContentOptions.map((option) => `
-            <option value="${option.value}" ${inpaint.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
-          `).join("")}
-        </select>
-      </label>
-      <label>Inpaint area
-        <select class="workflow-select" data-inpaint-field="inpaintArea">
-          <option value="only_masked" selected>Only masked</option>
-        </select>
-      </label>
-      <div class="range-control">
-        <div class="range-label"><span>Only masked padding</span><strong id="sidebarMaskPaddingValue">${formatNumber(inpaint.onlyMaskedPadding)}px</strong></div>
-        <input type="range" min="0" max="512" step="1" value="${inpaint.onlyMaskedPadding}" data-value-target="sidebarMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
-        <div class="range-minmax"><span>0px</span><span>512px</span></div>
-      </div>
-      <button class="button-danger compact" type="button" data-action="clear-inpaint">${iconTrash()}マスクを解除</button>
-    </section>
-  `;
-}
-
-function renderRangeControl(
-  name: string,
-  label: string,
-  value: number,
-  min: number,
-  max: number,
-  step: number,
-  valueId: string,
-  includeName = true
-) {
-  return `
-    <div class="range-control">
-      <div class="range-label"><span>${label}</span><strong id="${valueId}">${formatNumber(value)}</strong></div>
-      <input type="range" ${includeName ? `name="${name}"` : ""} min="${min}" max="${max}" step="${step}" value="${value}" data-value-target="${valueId}" />
-      <div class="range-minmax"><span>${min}</span><span>${max}</span></div>
-    </div>
-  `;
-}
-
-function renderOptions(options: string[], selectedValue: string) {
-  const values = options.includes(selectedValue) ? options : [selectedValue, ...options];
-  return values
-    .map((value) => `<option value="${escapeAttr(value)}" ${selectedValue === value ? "selected" : ""}>${escapeHtml(value)}</option>`)
-    .join("");
+  return renderGenerationPanel(detail, activeRound, previous, draft, activeInpaint);
 }
 
 function updateDenoiseControlForMode(mode: string) {
@@ -3728,218 +3207,16 @@ function updateDenoiseControlForMode(mode: string) {
   setFormValue(form, "denoise", String(value));
 }
 
-function generationModeLabel(mode: string) {
-  return mode === "manual_upload" ? "source" : mode;
-}
-
-function renderAssetModal() {
-  if (!state.activeAssetId) {
-    return "";
-  }
-  const asset = findAsset(state.activeAssetId);
+function renderAssetModalView() {
+  const asset = state.activeAssetId ? findAsset(state.activeAssetId) : null;
   if (!asset) {
     return "";
   }
   const inpaint = inpaintDraftForAsset(asset.id);
   const editing = state.maskEditMode;
-  const draft = inpaint ?? defaultInpaintDraft(asset.id);
-  const zoomStyle = ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`;
   const promptValue = currentPositivePromptValue(asset);
-  const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
-  const media = renderPreviewMedia(asset, draft, editing, zoomStyle);
-  const footer = renderPreviewFooter(asset, info);
-  return `
-    <div class="preview-modal ${editing ? "mask-editor-open" : ""}" role="dialog" aria-modal="true">
-      <div class="preview-content ${editing ? "mask-mode" : ""}">
-        <div class="preview-top-controls">
-          ${renderMaskToggleButton(editing)}
-          ${editing ? renderMaskModeIndicator(inpaint) : ""}
-        </div>
-        ${editing ? `
-          <div class="mask-editor-layout">
-            ${renderMaskPromptSidebar(draft, promptValue)}
-            <main class="preview-center">
-              ${media}
-              ${footer}
-            </main>
-            ${renderSmartMaskSidebar(draft)}
-          </div>
-        ` : `
-          ${media}
-          ${footer}
-        `}
-        <button class="preview-close" type="button" data-action="close-detail" aria-label="閉じる">${iconClose()}</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderPreviewMedia(asset: Asset, draft: InpaintDraft, editing: boolean, zoomStyle: string) {
-  return `
-    <div class="preview-media${editing ? " mask-preview-media" : ""}"${zoomStyle}>
-      <div class="mask-zoom-stage">
-        <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
-        ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
-      </div>
-    </div>
-  `;
-}
-
-function renderPreviewFooter(asset: Asset, info: string) {
-  return `
-    <div class="preview-footer">
-      <div class="preview-info">
-        <p>${escapeHtml(info)}</p>
-        <small>${escapeHtml(asset.prompt)}</small>
-      </div>
-      <div class="preview-actions">
-        <button class="button-secondary" type="button" data-action="toggle-select" data-id="${asset.id}">選択切替</button>
-        <button class="button-primary" type="button" data-action="generate-from-preview" data-id="${asset.id}" data-mode="img2img">この画像からブランチング</button>
-      </div>
-    </div>
-  `;
-}
-
-function renderMaskToggleButton(editing: boolean) {
-  return `
-    <button class="preview-mask-toggle ${editing ? "active" : ""}" type="button" data-action="toggle-mask-editor" aria-pressed="${editing}" title="${editing ? "マスク編集を終了" : "マスク編集を開始"}">
-      ${iconMask()}<span>マスク編集 ${editing ? "ON" : "OFF"}</span>
-    </button>
-  `;
-}
-
-function renderMaskModeIndicator(inpaint: InpaintDraft | null) {
-  const draft = inpaint ?? (state.activeAssetId ? defaultInpaintDraft(state.activeAssetId) : null);
-  const toolLabel = draft?.eraser ? "消しゴム" : "ブラシ";
-  const sizeLabel = draft ? `${formatNumber(draft.brushSize)}px` : "-";
-  return `
-    <div class="mask-mode-indicator" aria-live="polite">
-      <span>${iconMask()}マスク編集モード</span>
-      <small>${escapeHtml(toolLabel)} / ${escapeHtml(sizeLabel)}</small>
-    </div>
-  `;
-}
-
-function renderWebSamPromptOverlay(draft: InpaintDraft, asset: Asset) {
-  const width = draft.imageWidth ?? assetDimension(asset, "width") ?? 1;
-  const height = draft.imageHeight ?? assetDimension(asset, "height") ?? 1;
-  const points = draft.foregroundPoints.map((point) => {
-    const className = point.label === 0 ? "background" : point.source === "brush" ? "brush" : "foreground";
-    return `<circle class="websam-point ${className}" cx="${formatCssNumber(point.x)}" cy="${formatCssNumber(point.y)}" r="${Math.max(5, Math.min(width, height) * 0.007)}"></circle>`;
-  }).join("");
-  const box = normalizePromptBox(draft.boxPrompt);
-  const boxMarkup = box
-    ? `<rect class="websam-box" x="${formatCssNumber(box.x1)}" y="${formatCssNumber(box.y1)}" width="${formatCssNumber(box.x2 - box.x1)}" height="${formatCssNumber(box.y2 - box.y1)}"></rect>`
-    : "";
-  return `
-    <svg class="websam-prompt-overlay" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}" aria-hidden="true">
-      ${boxMarkup}
-      ${points}
-      <circle class="brush-cursor" cx="0" cy="0" r="0" data-brush-asset-id="${asset.id}"></circle>
-    </svg>
-  `;
-}
-
-function renderSmartMaskSection(draft: InpaintDraft) {
-  const isWebSam = draft.selectedSmartMaskProvider !== "manual";
-  return `
-    <div class="smart-mask-section">
-      <label>Smart selection
-        <select class="workflow-select" data-smart-mask-field="provider">
-          ${SMART_MASK_PROVIDERS.map((provider) => `
-            <option value="${provider.id}" ${draft.selectedSmartMaskProvider === provider.id ? "selected" : ""}>${escapeHtml(provider.label)}</option>
-          `).join("")}
-        </select>
-      </label>
-      ${isWebSam ? renderWebSamControls(draft) : ""}
-    </div>
-  `;
-}
-
-function renderWebSamControls(draft: InpaintDraft) {
-  const model = modelForProvider(draft.selectedSmartMaskProvider);
-  const statusClass = draft.webSamModelStatus === "ready"
-    ? "active"
-    : draft.webSamModelStatus === "error" || draft.webSamModelStatus === "missing-url"
-      ? "error"
-      : "";
-  const canDecode = draft.webSamModelStatus === "ready" && hasWebSamPrompt(draft);
-  return `
-    <div class="websam-panel">
-      <div class="websam-model-card">
-        <div>
-          <strong>${escapeHtml(model?.label ?? draft.selectedWebSamModel)}</strong>
-          <small>${escapeHtml(model ? `${model.description} / Encoder ${formatModelBytes(model.encoderSize)} / Decoder ${formatModelBytes(model.decoderSize)}` : "")}</small>
-        </div>
-        <span class="mask-status ${statusClass}">${escapeHtml(webSamStatusLabel(draft.webSamModelStatus))}</span>
-      </div>
-      <div class="websam-progress"><span style="width: ${formatCssNumber(clampNumber(draft.webSamDownloadProgress, 0, 1, 0) * 100)}%"></span></div>
-      <div class="websam-status-line">
-        <span>${escapeHtml(draft.webSamStatusText || webSamStatusLabel(draft.webSamModelStatus))}</span>
-        <button class="button-secondary compact mini-button" type="button" data-action="${draft.webSamModelStatus === "error" || draft.webSamModelStatus === "missing-url" ? "websam-retry" : "websam-load-model"}">${iconLoopArrows()}再試行</button>
-      </div>
-      ${draft.webSamError ? `<p class="websam-error">${escapeHtml(draft.webSamError)}</p>` : ""}
-      <label>Prompt mode
-        <select class="workflow-select" data-smart-mask-field="promptMode">
-          <option value="point" ${draft.webSamPromptMode === "point" ? "selected" : ""}>Point</option>
-          <option value="box" ${draft.webSamPromptMode === "box" ? "selected" : ""}>Box</option>
-          <option value="brush" ${draft.webSamPromptMode === "brush" ? "selected" : ""}>Brush prompt</option>
-        </select>
-      </label>
-      ${renderSmartMaskRange("threshold", "Threshold", draft.threshold, -10, 10, 0.1, "webSamThresholdValue")}
-      ${renderSmartMaskRange("smoothing", "Smoothing", draft.smoothing, 0, 4, 1, "webSamSmoothingValue")}
-      ${renderSmartMaskRange("maskOpacity", "Mask opacity", draft.maskOpacity, 0, 1, 0.05, "webSamOpacityValue")}
-      <div class="websam-actions">
-        <button class="button-secondary compact" type="button" data-action="websam-decode" ${canDecode ? "" : "disabled"}>${iconPlay()}候補生成</button>
-        <button class="button-secondary compact" type="button" data-action="websam-clear-prompts">${iconReset()}点クリア</button>
-        <button class="button-secondary compact" type="button" data-action="websam-clear-result">${iconTrash()}SAM結果クリア</button>
-      </div>
-      ${renderSamCandidateButtons(draft)}
-      <div class="websam-counts">
-        <span>FG/BG ${draft.foregroundPoints.filter((point) => point.label === 1).length}/${draft.foregroundPoints.filter((point) => point.label === 0).length}</span>
-        <span>Brush ${draft.foregroundPoints.filter((point) => point.source === "brush").length}</span>
-        <span>Zoom ${Math.round(draft.zoomScale * 100)}%</span>
-      </div>
-    </div>
-  `;
-}
-
-function renderSmartMaskRange(field: string, label: string, value: number, min: number, max: number, step: number, valueId: string) {
-  return `
-    <div class="range-control smart-mask-range">
-      <div class="range-label"><span>${escapeHtml(label)}</span><strong id="${valueId}">${formatNumber(value)}</strong></div>
-      <input type="range" min="${min}" max="${max}" step="${step}" value="${formatCssNumber(value)}" data-value-target="${valueId}" data-smart-mask-field="${field}" />
-    </div>
-  `;
-}
-
-function renderSamCandidateButtons(draft: InpaintDraft) {
-  if (draft.samCandidates.length === 0) {
-    return `<div class="websam-candidates empty-candidates"><span>Mask 1</span><span>Mask 2</span><span>Mask 3</span></div>`;
-  }
-  return `
-    <div class="websam-candidates">
-      ${draft.samCandidates.map((candidate) => `
-        <button class="websam-candidate ${candidate.index === draft.selectedSamCandidateIndex ? "active" : ""}" type="button" data-action="websam-candidate" data-index="${candidate.index}">
-          <span>Mask ${candidate.index + 1}</span>
-          <small>${candidate.score === null ? "-" : `${(candidate.score * 100).toFixed(1)}%`}</small>
-        </button>
-      `).join("")}
-    </div>
-  `;
-}
-
-function webSamStatusLabel(status: WebSamModelStatus) {
-  if (status === "idle") return "未取得";
-  if (status === "missing-url") return "URL未設定";
-  if (status === "not-cached") return "未取得";
-  if (status === "downloading") return "ダウンロード中";
-  if (status === "cached") return "キャッシュ済み";
-  if (status === "initializing") return "初期化中";
-  if (status === "encoding") return "Encoding";
-  if (status === "ready") return "Ready";
-  if (status === "decoding") return "Decoding";
-  return "Error";
+  const batchSizeValue = currentBatchSizeValue();
+  return renderAssetModal(asset, inpaint, editing, promptValue, batchSizeValue);
 }
 
 function currentPositivePromptValue(asset: Asset) {
@@ -3950,77 +3227,6 @@ function currentPositivePromptValue(asset: Asset) {
 function currentBatchSizeValue() {
   const activeRound = state.detail ? getActiveRound(state.detail) : null;
   return draftNumber(state.generationDraft, "batchSize") ?? activeRound?.request?.batchSize ?? 16;
-}
-
-function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string) {
-  const batchSizeValue = currentBatchSizeValue();
-  const active = hasActiveMaskData(draft);
-  const canApplyCandidate = draft.samCandidates.length > 0 && !!draft.previewSamMaskDataUrl;
-  const webSamProvider = SMART_MASK_PROVIDERS.find((provider) => provider.id !== "manual")?.id ?? "websam-slimsam-77";
-  const smartActive = draft.selectedSmartMaskProvider !== "manual";
-  return `
-    <aside class="mask-editor-panel mask-prompt-panel">
-      <div class="mask-panel-header">
-        <h2>マスク・プロンプト</h2>
-        <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
-      </div>
-      <div class="mask-panel-tabs">
-        <button class="mask-tab ${smartActive ? "" : "active"}" type="button" data-action="set-smart-mask-provider" data-provider="manual">手動編集</button>
-        <button class="mask-tab ${smartActive ? "active" : ""}" type="button" data-action="set-smart-mask-provider" data-provider="${webSamProvider}">${iconPlay()}候補生成</button>
-        <button class="mask-tab" type="button" data-action="websam-clear-prompts">${iconReset()}点クリア</button>
-      </div>
-      <div class="mask-toolbar-row">
-        <button class="mask-tool-button ${!smartActive && !draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ" title="ブラシ">${iconBrush()}</button>
-        <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム" title="消しゴム">${iconEraser()}</button>
-        <button class="mask-tool-button" type="button" data-action="clear-mask" aria-label="マスクをクリア" title="マスクをクリア">${iconReset()}</button>
-      </div>
-      <div class="range-control mask-brush-control">
-        <div class="range-label"><span>ブラシサイズ</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
-        <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
-      </div>
-      <div class="mask-options-grid">
-        <label class="mask-prompt-field">Positive prompt
-          <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
-        </label>
-        <div class="range-control mask-batch-control">
-          <div class="range-label"><span>バッチサイズ</span><strong id="modalBatchValue">${formatNumber(batchSizeValue)}</strong></div>
-          <input type="range" min="1" max="32" step="1" value="${batchSizeValue}" data-value-target="modalBatchValue" data-generation-field="batchSize" />
-          <div class="range-minmax"><span>1</span><span>32</span></div>
-        </div>
-        <label>Masked content
-          <select class="workflow-select" data-inpaint-field="maskedContent">
-            ${maskedContentOptions.map((option) => `
-              <option value="${option.value}" ${draft.maskedContent === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>
-            `).join("")}
-          </select>
-        </label>
-        <label>Inpaint area
-          <select class="workflow-select" data-inpaint-field="inpaintArea">
-            <option value="only_masked" selected>Only masked</option>
-          </select>
-        </label>
-        <div class="range-control mask-padding-control">
-          <div class="range-label"><span>Only masked padding</span><strong id="modalMaskPaddingValue">${formatNumber(draft.onlyMaskedPadding)}px</strong></div>
-          <input type="range" min="0" max="512" step="1" value="${draft.onlyMaskedPadding}" data-value-target="modalMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
-        </div>
-      </div>
-      <div class="mask-panel-actions">
-        <button class="button-primary" type="button" data-action="apply-mask-editor">${iconCheck()}${canApplyCandidate ? "候補を適用" : "適用"}</button>
-        <button class="button-secondary" type="button" data-action="websam-clear-manual">${iconEraser()}手動修正クリア</button>
-      </div>
-    </aside>
-  `;
-}
-
-function renderSmartMaskSidebar(draft: InpaintDraft) {
-  return `
-    <aside class="mask-editor-panel smart-mask-panel">
-      <div class="mask-panel-header">
-        <h2>スマート選択</h2>
-      </div>
-      ${renderSmartMaskSection(draft)}
-    </aside>
-  `;
 }
 
 function getActiveRound(detail: ProjectDetail) {
@@ -4043,10 +3249,6 @@ function getActiveRoundAssets() {
     return [];
   }
   return state.detail.assets.filter((asset) => asset.roundId === activeRound.id);
-}
-
-function sortRoundsAsc(rounds: Round[]) {
-  return [...rounds].sort((a, b) => a.roundIndex - b.roundIndex);
 }
 
 function findAsset(assetId: string | null) {
