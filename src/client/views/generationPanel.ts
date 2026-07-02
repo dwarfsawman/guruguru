@@ -257,6 +257,11 @@ export function renderInpaintSidebarSection(inpaint: InpaintDraft) {
         <input type="range" min="0" max="512" step="1" value="${inpaint.onlyMaskedPadding}" data-value-target="sidebarMaskPaddingValue" data-inpaint-field="onlyMaskedPadding" />
         <div class="range-minmax"><span>0px</span><span>512px</span></div>
       </div>
+      <div class="range-control">
+        <div class="range-label"><span>Mask feather</span><strong id="sidebarMaskFeatherValue">${formatNumber(inpaint.featherRadius)}px</strong></div>
+        <input type="range" min="0" max="30" step="1" value="${inpaint.featherRadius}" data-value-target="sidebarMaskFeatherValue" data-inpaint-field="featherRadius" />
+        <div class="range-minmax"><span>0px</span><span>30px</span></div>
+      </div>
       <button class="button-danger compact" type="button" data-action="clear-inpaint">${iconTrash()}マスクを解除</button>
     </section>
   `;
