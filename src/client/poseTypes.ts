@@ -37,6 +37,73 @@ export const OPENPOSE_JOINT_NAMES = [
 
 export const OPENPOSE_JOINT_COUNT = OPENPOSE_JOINT_NAMES.length;
 
+/**
+ * OpenPose(COCO 18) 標準の bone 接続（joint index ペア）。
+ * ControlNet 学習時の標準 limbSeq と同じ並び。SVG 表示・スケルトン PNG 描画で共用する。
+ */
+export const OPENPOSE_BONES: ReadonlyArray<readonly [number, number]> = [
+  [1, 2],
+  [1, 5],
+  [2, 3],
+  [3, 4],
+  [5, 6],
+  [6, 7],
+  [1, 8],
+  [8, 9],
+  [9, 10],
+  [1, 11],
+  [11, 12],
+  [12, 13],
+  [1, 0],
+  [0, 14],
+  [14, 16],
+  [0, 15],
+  [15, 17]
+];
+
+/** bone ごとの OpenPose 標準配色（`OPENPOSE_BONES` と同順、RGB）。 */
+export const OPENPOSE_BONE_COLORS: ReadonlyArray<readonly [number, number, number]> = [
+  [255, 0, 0],
+  [255, 85, 0],
+  [255, 170, 0],
+  [255, 255, 0],
+  [170, 255, 0],
+  [85, 255, 0],
+  [0, 255, 0],
+  [0, 255, 85],
+  [0, 255, 170],
+  [0, 255, 255],
+  [0, 170, 255],
+  [0, 85, 255],
+  [0, 0, 255],
+  [85, 0, 255],
+  [170, 0, 255],
+  [255, 0, 255],
+  [255, 0, 170]
+];
+
+/** joint ごとの OpenPose 標準配色（joint index 順、RGB）。 */
+export const OPENPOSE_JOINT_COLORS: ReadonlyArray<readonly [number, number, number]> = [
+  [255, 0, 0],
+  [255, 85, 0],
+  [255, 170, 0],
+  [255, 255, 0],
+  [170, 255, 0],
+  [85, 255, 0],
+  [0, 255, 0],
+  [0, 255, 85],
+  [0, 255, 170],
+  [0, 255, 255],
+  [0, 170, 255],
+  [0, 85, 255],
+  [0, 0, 255],
+  [85, 0, 255],
+  [170, 0, 255],
+  [255, 0, 255],
+  [255, 0, 170],
+  [255, 0, 85]
+];
+
 export interface PoseDraft {
   parentAssetId: string;
   /** 次回生成に添付するか（InpaintDraft.enabled と同義） */
