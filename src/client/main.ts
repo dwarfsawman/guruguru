@@ -175,6 +175,8 @@ const state: {
   maskEditMode: boolean;
   maskToolbarMinimized: boolean;
   maskToolbarPos: { left: number; top: number } | null;
+  showMaskGridTag: boolean;
+  copiedSeedAssetId: string | null;
   deletePreviewRoundId: string | null;
   workflowImportModalOpen: boolean;
   workflowImportDraft: WorkflowImportDraft;
@@ -206,6 +208,8 @@ const state: {
   maskEditMode: false,
   maskToolbarMinimized: false,
   maskToolbarPos: null,
+  showMaskGridTag: true,
+  copiedSeedAssetId: null,
   deletePreviewRoundId: null,
   workflowImportModalOpen: false,
   workflowImportDraft: defaultWorkflowImportDraft(),
@@ -710,7 +714,8 @@ function preserveGenerationDenoise() {
 
 function openAssetDetail(assetId: string) {
   state.activeAssetId = assetId;
-  state.maskEditMode = false;
+  const draft = inpaintDraftForAsset(assetId);
+  state.maskEditMode = draft?.enabled === true;
   state.maskToolbarMinimized = false;
   state.maskToolbarPos = null;
   activeImagePan = null;
@@ -839,6 +844,27 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       closeAssetDetail();
     } else if (action === "toggle-mask-editor") {
       toggleMaskEditor();
+    } else if (action === "toggle-mask-grid-tag") {
+      state.showMaskGridTag = !state.showMaskGridTag;
+      render();
+    } else if (action === "copy-seed") {
+      const seedText = target.dataset.seed ?? "";
+      if (seedText) {
+        try {
+          await navigator.clipboard.writeText(seedText);
+        } catch {
+          state.message = "クリップボードへのコピーに失敗しました。";
+          render();
+          return;
+        }
+        state.copiedSeedAssetId = id;
+        render();
+        await delay(1500);
+        if (state.copiedSeedAssetId === id) {
+          state.copiedSeedAssetId = null;
+          render();
+        }
+      }
     } else if (action === "apply-mask-editor") {
       await applyMaskEditor();
     } else if (action === "set-smart-mask-provider") {
@@ -2483,8 +2509,8 @@ function renderAssetTile(asset: Asset) {
         ${iconZoom()}
       </button>
       <span class="card-number">#${asset.batchIndex + 1}</span>
-      ${masked ? `<span class="mask-badge">${iconMask()}MASK</span>` : ""}
-      <span class="seed-chip">seed ${asset.seed ?? "-"}</span>
+      ${masked ? `<button class="mask-badge ${state.showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="マスクタグ表示切替">${iconMask()}MASK</button>` : ""}
+      <span class="seed-chip" data-action="copy-seed" data-id="${asset.id}" data-seed="${asset.seed ?? ""}">${state.copiedSeedAssetId === asset.id ? "copied" : `seed ${asset.seed ?? "-"}`}</span>
     </article>
   `;
 }
