@@ -29,6 +29,7 @@ export function defaultInpaintDraft(assetId: string): InpaintDraft {
     maskedContent: "original",
     inpaintArea: "only_masked",
     onlyMaskedPadding: 32,
+    featherRadius: 0,
     brushSize: 48,
     eraser: false,
     selectedSmartMaskProvider: "manual",
