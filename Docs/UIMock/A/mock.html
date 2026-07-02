@@ -1,0 +1,1318 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GURUGURU UI Mock — 案A: Refined Continuity</title>
+<style>
+/* ============================================================
+   案A「Refined Continuity(洗練継承)」デザイントークン
+   現行 styles.css の変数名を踏襲し、実CSSへ移植しやすくする
+   ============================================================ */
+:root {
+  color-scheme: dark;
+  --bg: #0a0a0f;
+  --panel: rgba(255, 255, 255, 0.035);
+  --panel-strong: #12121f;
+  --panel-soft: rgba(255, 255, 255, 0.06);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --ink: #f4f4f7;
+  --muted: rgba(244, 244, 247, 0.58);
+  --faint: rgba(244, 244, 247, 0.35);
+  --accent: #8b5cf6;
+  --accent-strong: #6d28d9;
+  --accent-soft: rgba(139, 92, 246, 0.16);
+  --good: #34d399;
+  --good-soft: rgba(52, 211, 153, 0.14);
+  --warn: #fbbf24;
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.12);
+
+  /* Refined Continuity 追加トークン */
+  --radius: 12px;          /* パネル */
+  --radius-sm: 10px;       /* ボタン・入力 */
+  --radius-xs: 8px;        /* チップ・バッジ */
+  --fs-xs: 11px;
+  --fs-sm: 12.5px;
+  --fs-md: 14px;
+  --fs-lg: 17px;
+  --fs-xl: 22px;
+  --fs-2xl: 28px;
+  --ring: 0 0 0 3px rgba(139, 92, 246, 0.22);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --shadow-2: 0 24px 80px rgba(0, 0, 0, 0.55);
+  --glass: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.022));
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", sans-serif;
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+.mono { font-family: ui-monospace, Consolas, monospace; }
+
+/* ---------- 画面フレームと撮影モード ---------- */
+.mock-index { padding: 32px; display: grid; gap: 40px; justify-content: start; }
+.mock-label { font-size: var(--fs-sm); color: var(--muted); letter-spacing: 0.08em; margin: 0 0 10px 2px; text-transform: uppercase; }
+.screen {
+  position: relative;
+  width: 1600px;
+  height: 1000px;
+  overflow: hidden;
+  background:
+    radial-gradient(720px 480px at 0% 0%, rgba(139, 92, 246, 0.075), transparent 70%),
+    radial-gradient(720px 480px at 100% 0%, rgba(109, 40, 217, 0.06), transparent 70%),
+    radial-gradient(760px 520px at 0% 100%, rgba(76, 29, 149, 0.07), transparent 70%),
+    radial-gradient(760px 520px at 100% 100%, rgba(139, 92, 246, 0.055), transparent 70%),
+    var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+body.shot { overflow: hidden; }
+body.shot .mock-index { padding: 0; gap: 0; }
+body.shot .mock-label { display: none; }
+body.shot .screen { display: none; border: none; border-radius: 0; }
+body.shot .screen.shot-active { display: block; }
+
+/* ---------- 汎用: パネル・タイポ ---------- */
+.panel {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-1);
+  padding: 24px;
+}
+.section-kicker {
+  margin: 0 0 4px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+h1 { margin: 0; font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -0.01em; }
+h2 { margin: 0; font-size: var(--fs-xl); font-weight: 700; letter-spacing: -0.01em; }
+.panel-heading { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+
+/* ---------- 汎用: ボタン ---------- */
+button, .btn {
+  min-height: 36px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  transition: box-shadow 0.15s, background 0.15s, border-color 0.15s, filter 0.15s;
+}
+button svg, .i svg { width: 15px; height: 15px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.button-primary {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(109, 40, 217, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+.button-primary:hover { filter: brightness(1.08); box-shadow: var(--ring), 0 6px 18px rgba(109, 40, 217, 0.4); }
+.button-secondary {
+  background: var(--panel-soft);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.button-secondary:hover { border-color: rgba(139, 92, 246, 0.5); box-shadow: var(--ring); }
+.button-danger {
+  background: var(--danger-soft);
+  border-color: rgba(239, 68, 68, 0.28);
+  color: #fca5a5;
+}
+.button-danger:hover { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18); }
+.compact { min-height: 30px; padding: 0 10px; font-size: var(--fs-xs); border-radius: var(--radius-xs); }
+.icon-button {
+  min-height: 34px; width: 34px; padding: 0;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-soft); color: var(--muted);
+}
+.icon-button:hover { color: var(--ink); border-color: rgba(139, 92, 246, 0.5); box-shadow: var(--ring); }
+.button-count {
+  min-width: 20px; height: 20px; padding: 0 6px;
+  display: inline-grid; place-items: center;
+  border-radius: 999px;
+  background: rgba(10, 10, 15, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  font-size: var(--fs-xs);
+}
+
+/* ---------- 汎用: 入力 ---------- */
+input, textarea, select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--ink);
+  padding: 9px 12px;
+  font: inherit;
+  font-size: var(--fs-sm);
+}
+input:hover, textarea:hover, select:hover { border-color: var(--line-strong); }
+input:focus, textarea:focus, select:focus { border-color: rgba(139, 92, 246, 0.6); box-shadow: var(--ring); }
+textarea { resize: vertical; line-height: 1.5; }
+select {
+  appearance: none;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http%3A//www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="%23a9a9c0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>');
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+label.field { display: grid; gap: 5px; font-size: var(--fs-sm); color: var(--muted); font-weight: 600; }
+.form-stack { display: grid; gap: 14px; }
+.button-row { display: flex; gap: 8px; }
+
+/* ---------- 汎用: レンジスライダー ---------- */
+.range-control { display: grid; gap: 5px; }
+.range-label { display: flex; justify-content: space-between; align-items: baseline; font-size: var(--fs-sm); color: var(--muted); font-weight: 600; }
+.range-label strong { color: var(--ink); font-size: var(--fs-sm); font-family: ui-monospace, Consolas, monospace; font-weight: 600; }
+.range-minmax { display: flex; justify-content: space-between; font-size: var(--fs-xs); color: var(--faint); margin-top: -2px; }
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  height: 14px; padding: 0; border: none; background: transparent;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent) var(--p, 50%), rgba(255, 255, 255, 0.12) var(--p, 50%));
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px; height: 14px; margin-top: -5px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+input[type="range"]:hover::-webkit-slider-thumb { box-shadow: var(--ring); }
+
+/* ---------- 汎用: バッジ・チップ・タグ(統一言語) ---------- */
+.tag, .chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 9px;
+  border-radius: 999px;
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-soft); color: var(--muted);
+}
+.tag.accent { background: var(--accent-soft); border-color: rgba(139, 92, 246, 0.4); color: #c4b5fd; }
+.tag.good { background: var(--good-soft); border-color: rgba(52, 211, 153, 0.38); color: var(--good); }
+
+/* ---------- アプリヘッダー ---------- */
+.app-header {
+  height: 56px;
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
+  backdrop-filter: blur(8px);
+}
+.brand { display: flex; align-items: center; gap: 11px; }
+.brand-mark {
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border-radius: 10px;
+  color: #fff;
+  background: linear-gradient(145deg, var(--accent), var(--accent-strong));
+  box-shadow: 0 4px 14px rgba(109, 40, 217, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+.brand-mark svg { width: 18px; height: 18px; }
+.brand-copy strong { display: block; font-size: var(--fs-lg); font-weight: 800; letter-spacing: 0.04em; }
+.brand-copy small { display: block; font-size: var(--fs-xs); color: var(--faint); letter-spacing: 0.08em; margin-top: -2px; }
+.header-spacer { flex: 1; }
+.conn-status {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 30px; padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(52, 211, 153, 0.32);
+  background: var(--good-soft);
+  color: var(--good); font-size: var(--fs-sm); font-weight: 600;
+}
+.conn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 8px rgba(52, 211, 153, 0.9); }
+
+/* ============================================================
+   画面1: Home
+   ============================================================ */
+.home-layout {
+  height: 944px;
+  display: grid;
+  grid-template-columns: 1fr 400px;
+  gap: 24px;
+  padding: 24px 32px 32px;
+  overflow: hidden;
+}
+.home-side { display: grid; gap: 16px; align-content: start; overflow: hidden; }
+.home-side .panel { padding: 20px; }
+.home-side h2 { font-size: var(--fs-lg); }
+.home-side .panel-heading { margin-bottom: 14px; }
+.home-side .form-stack { gap: 10px; }
+.home-side input { padding: 7px 11px; font-size: var(--fs-xs); }
+.project-form { margin-bottom: 20px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius); background: rgba(255, 255, 255, 0.018); }
+.project-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.project-form-grid .span2 { grid-column: 1 / -1; }
+.project-form-footer { display: flex; justify-content: flex-end; margin-top: 14px; }
+.project-list { display: grid; gap: 12px; }
+.project-card {
+  display: grid;
+  grid-template-columns: 96px 1fr auto;
+  gap: 18px; align-items: center;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--glass);
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+.project-card:hover { border-color: rgba(139, 92, 246, 0.45); box-shadow: var(--ring), var(--shadow-1); transform: translateY(-1px); }
+.project-thumb {
+  width: 96px; height: 96px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-strong);
+}
+.project-thumb svg { display: block; width: 100%; height: 100%; }
+.project-copy h3 { margin: 0 0 3px; font-size: var(--fs-lg); font-weight: 700; }
+.project-copy p { margin: 0 0 8px; font-size: var(--fs-sm); color: var(--muted); }
+.project-copy p.empty-desc { color: var(--faint); font-style: italic; }
+.meta-line { font-size: var(--fs-xs); color: var(--faint); letter-spacing: 0.03em; font-family: ui-monospace, Consolas, monospace; }
+.project-actions { display: grid; gap: 8px; }
+.template-list { display: grid; gap: 8px; }
+.template-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+.template-row:hover { border-color: rgba(139, 92, 246, 0.4); }
+.template-row-main strong { display: block; font-size: var(--fs-sm); font-weight: 650; }
+.template-row-main span { font-size: var(--fs-xs); color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 999px; padding: 1px 8px; display: inline-block; margin-top: 4px; }
+.template-row-actions { display: flex; gap: 6px; }
+.template-row-actions .icon-button { min-height: 28px; width: 28px; border-radius: var(--radius-xs); }
+.template-row-actions .icon-button svg { width: 13px; height: 13px; }
+.icon-button.danger { color: #fca5a5; border-color: rgba(239, 68, 68, 0.28); background: var(--danger-soft); }
+.workflow-import-panel { display: grid; }
+.workflow-import-panel .button-primary { width: 100%; }
+
+/* ============================================================
+   画面2: Project詳細
+   ============================================================ */
+.studio-shell {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  height: 944px;
+  overflow: hidden;
+}
+.studio-sidebar {
+  border-right: 1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.012));
+  backdrop-filter: blur(8px);
+  padding: 10px;
+  overflow: hidden;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  font-size: var(--fs-sm);
+}
+.sidebar-section {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.018);
+  padding: 8px 10px;
+  display: grid; gap: 6px;
+}
+.sidebar-section .section-kicker { margin: 0; font-size: 10px; }
+.sidebar-section label.field { gap: 2px; font-size: 10px; }
+.sidebar-section input, .sidebar-section select, .sidebar-section textarea { padding: 4px 8px; font-size: 10.5px; }
+.sidebar-section select { padding-right: 26px; background-position: right 8px center; }
+.sidebar-section .range-control { gap: 1px; }
+.sidebar-section .range-label { font-size: 10.5px; }
+.sidebar-section .range-label strong { font-size: 11px; }
+.sidebar-section .collapsible-summary { font-size: 10px; }
+.mm { font-style: normal; font-weight: 500; font-size: 10px; color: var(--faint); margin-left: 6px; letter-spacing: 0.02em; }
+.section-header-row { display: flex; align-items: center; justify-content: space-between; }
+.mini-button { min-height: 24px; padding: 0 8px; font-size: var(--fs-xs); }
+.collapsible-summary {
+  display: flex; align-items: center; justify-content: space-between;
+  cursor: pointer; list-style: none; user-select: none;
+  color: var(--muted); font-size: var(--fs-xs); font-weight: 600;
+}
+.collapsible-summary .section-kicker { color: var(--accent); }
+.collapsible-summary:hover { color: var(--ink); }
+details > summary::-webkit-details-marker { display: none; }
+details[open] > .collapsible-summary .chev { transform: rotate(180deg); }
+.chev { transition: transform 0.15s; color: var(--faint); display: inline-flex; }
+.prompt-input { min-height: 72px; }
+.negative-input { min-height: 34px; }
+.seed-row .icon-button, .resolution-row .icon-button { min-height: 25px; height: 25px; width: 28px; }
+.resolution-row { display: grid; grid-template-columns: 1fr 28px 1fr 28px 28px; gap: 5px; align-items: end; }
+.seed-row { display: grid; grid-template-columns: 1fr 28px; gap: 5px; }
+.select-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.model-readout { display: grid; gap: 4px; font-size: 10px; }
+.model-row { display: grid; grid-template-columns: 70px 1fr; gap: 8px; align-items: baseline; }
+.model-row span { color: var(--faint); }
+.model-row code { font-family: ui-monospace, Consolas, monospace; color: var(--muted); font-size: 10px; word-break: break-all; }
+
+.studio-main { display: grid; grid-template-rows: auto 1fr auto auto; overflow: hidden; }
+.round-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 24px 10px;
+}
+.round-toolbar h2 { display: flex; align-items: center; gap: 10px; font-size: var(--fs-xl); }
+.round-toolbar .sub { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--muted); }
+.toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.toolbar-divider { width: 1px; height: 22px; background: var(--line-strong); margin: 0 4px; }
+.compact-select { width: auto; min-height: 30px; padding: 4px 28px 4px 10px; font-size: var(--fs-xs); border-radius: var(--radius-xs); }
+
+.gallery-scroll { padding: 4px 24px 0; overflow: hidden; }
+.image-grid { display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); gap: 10px; height: 100%; }
+.image-card {
+  position: relative;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.image-card:hover { border-color: rgba(139, 92, 246, 0.55); box-shadow: var(--ring); }
+.image-card svg.art { position: absolute; inset: 0; width: 100%; height: 100%; }
+.image-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 6px 20px rgba(109, 40, 217, 0.35); }
+.image-card.rejected svg.art { opacity: 0.28; filter: grayscale(0.6); }
+.image-card.rejected::after { content: ""; position: absolute; inset: 0; background: rgba(10, 10, 15, 0.35); }
+.card-badge {
+  position: absolute; z-index: 2;
+  width: 26px; height: 26px;
+  display: grid; place-items: center;
+  border-radius: var(--radius-xs);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(10, 10, 15, 0.55);
+  backdrop-filter: blur(4px);
+  color: rgba(244, 244, 247, 0.75);
+  cursor: pointer; padding: 0; min-height: 26px;
+}
+.card-badge:hover { border-color: rgba(139, 92, 246, 0.65); color: #fff; }
+.card-badge svg { width: 14px; height: 14px; }
+.select-badge { top: 8px; left: 8px; }
+.image-card.selected .select-badge { background: var(--accent); border-color: rgba(255, 255, 255, 0.4); color: #fff; }
+.star-badge { top: 8px; right: 8px; }
+.image-card.favorite .star-badge { color: var(--warn); border-color: rgba(251, 191, 36, 0.5); }
+.image-card.favorite .star-badge svg { fill: var(--warn); }
+.zoom-btn { bottom: 30px; right: 8px; }
+.card-number {
+  position: absolute; left: 8px; bottom: 30px; z-index: 2;
+  font-size: var(--fs-xs); font-weight: 700;
+  color: rgba(244, 244, 247, 0.85);
+  background: rgba(10, 10, 15, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: var(--radius-xs);
+  padding: 2px 7px;
+  backdrop-filter: blur(4px);
+}
+.mask-badge {
+  position: absolute; top: 8px; left: 42px; z-index: 2;
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 22px; padding: 0 8px; min-height: 22px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  color: #c4b5fd;
+  background: rgba(76, 29, 149, 0.55);
+  border: 1px solid rgba(139, 92, 246, 0.55);
+  border-radius: 999px;
+  backdrop-filter: blur(4px);
+}
+.mask-badge svg { width: 11px; height: 11px; }
+.seed-chip {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
+  display: block; text-align: center;
+  font-size: 10px; letter-spacing: 0.04em;
+  font-family: ui-monospace, Consolas, monospace;
+  color: rgba(244, 244, 247, 0.72);
+  background: linear-gradient(180deg, rgba(10, 10, 15, 0.1), rgba(10, 10, 15, 0.78) 55%);
+  padding: 8px 4px 4px;
+}
+.image-card:hover .seed-chip { color: #fff; }
+
+/* イテレーションツリー */
+.iteration-tracker {
+  margin: 10px 24px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--glass);
+  backdrop-filter: blur(8px);
+  overflow: hidden;
+  position: relative;
+}
+.iteration-tracker::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(90deg, transparent 94%, rgba(10, 10, 15, 0.7));
+}
+.iteration-scroll { overflow: hidden; padding: 6px 16px; }
+.iter-node-circle { cursor: pointer; }
+@keyframes iterBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.iter-running { animation: iterBlink 1.1s ease-in-out infinite; }
+
+/* 下部アクションバー */
+.bottom-action-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin: 10px 24px 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-1);
+}
+.bottom-left { display: flex; align-items: center; gap: 12px; }
+.selected-thumbs { display: flex; }
+.selected-thumbs .sel-thumb {
+  width: 40px; height: 40px;
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  border: 2px solid var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  margin-left: -8px;
+  background: var(--panel-strong);
+}
+.selected-thumbs .sel-thumb:first-child { margin-left: 0; }
+.selected-thumbs svg { display: block; width: 100%; height: 100%; }
+.selected-label { font-size: var(--fs-sm); color: var(--muted); font-weight: 600; }
+.bottom-actions { display: flex; gap: 8px; }
+
+/* ============================================================
+   画面3: Assetモーダル(マスク編集)
+   ============================================================ */
+.modal-backdrop-scene { position: absolute; inset: 0; filter: blur(9px) brightness(0.42) saturate(0.8); transform: scale(1.02); }
+.backdrop-toolbar { height: 60px; border-bottom: 1px solid var(--line); background: rgba(255, 255, 255, 0.03); }
+.backdrop-body { display: grid; grid-template-columns: 320px 1fr; height: 940px; }
+.backdrop-sidebar { border-right: 1px solid var(--line); background: rgba(255, 255, 255, 0.025); }
+.backdrop-grid { display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(4, 1fr); gap: 10px; padding: 24px; }
+.backdrop-grid > div { border-radius: var(--radius-sm); overflow: hidden; }
+.backdrop-grid svg { display: block; width: 100%; height: 100%; }
+.modal-scrim { position: absolute; inset: 0; background: rgba(6, 6, 11, 0.55); }
+
+.preview-modal {
+  position: absolute; inset: 22px;
+  border-radius: 16px;
+  border: 1px solid var(--line-strong);
+  background:
+    radial-gradient(700px 400px at 50% 0%, rgba(139, 92, 246, 0.06), transparent 70%),
+    #0d0d16;
+  box-shadow: var(--shadow-2);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+.preview-top-controls {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px 10px;
+}
+.preview-mask-toggle {
+  height: 36px; padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(139, 92, 246, 0.55);
+  background: var(--accent-soft);
+  color: #d6c8ff; font-weight: 700; font-size: var(--fs-sm);
+}
+.preview-mask-toggle.active { background: linear-gradient(180deg, var(--accent), var(--accent-strong)); color: #fff; box-shadow: 0 4px 16px rgba(109, 40, 217, 0.45); border-color: rgba(255, 255, 255, 0.2); }
+.mask-mode-indicator {
+  display: inline-flex; align-items: center; gap: 10px;
+  height: 32px; padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-soft);
+  font-size: var(--fs-xs); font-weight: 600; color: var(--muted);
+}
+.mask-mode-indicator .lead { display: inline-flex; align-items: center; gap: 6px; color: #c4b5fd; }
+.mask-mode-indicator svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.preview-close {
+  margin-left: auto;
+  width: 36px; min-height: 36px; padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--muted);
+}
+.preview-close:hover { color: var(--ink); border-color: rgba(139, 92, 246, 0.5); box-shadow: var(--ring); }
+
+.mask-editor-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr 300px;
+  gap: 14px;
+  padding: 0 18px 18px;
+  overflow: hidden;
+}
+.mask-editor-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--glass);
+  backdrop-filter: blur(8px);
+  padding: 14px;
+  display: grid;
+  gap: 11px;
+  align-content: start;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+}
+.mask-editor-panel label.field { gap: 4px; font-size: var(--fs-xs); }
+.mask-editor-panel select { padding: 6px 28px 6px 10px; font-size: var(--fs-xs); }
+.mask-panel-header { display: flex; align-items: center; justify-content: space-between; }
+.mask-panel-header h3 { margin: 0; font-size: var(--fs-md); font-weight: 700; }
+.mask-status {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 21px; padding: 0 9px;
+  border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.05em;
+  background: var(--accent-soft); border: 1px solid rgba(139, 92, 246, 0.45); color: #c4b5fd;
+}
+.mask-status.good { background: var(--good-soft); border-color: rgba(52, 211, 153, 0.4); color: var(--good); }
+.mask-panel-tabs {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(10, 10, 15, 0.4);
+}
+.mask-tab { min-height: 27px; padding: 0 4px; font-size: var(--fs-xs); border-radius: 7px; color: var(--muted); font-weight: 600; }
+.mask-tab:hover { color: var(--ink); }
+.mask-tab.active { background: var(--accent-soft); border: 1px solid rgba(139, 92, 246, 0.5); color: #d6c8ff; }
+.mask-toolbar-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.mask-tool-button {
+  min-height: 34px; padding: 0;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03); color: var(--muted);
+}
+.mask-tool-button:hover { color: var(--ink); border-color: rgba(139, 92, 246, 0.5); }
+.mask-tool-button.active {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  color: #fff; border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 3px 12px rgba(109, 40, 217, 0.4);
+}
+.mask-prompt-input { min-height: 88px; font-size: var(--fs-xs); }
+.mask-panel-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 2px; }
+
+.preview-center { display: grid; grid-template-rows: 1fr auto; gap: 12px; overflow: hidden; }
+.preview-media {
+  position: relative;
+  display: grid; place-items: center;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background:
+    radial-gradient(480px 320px at 50% 45%, rgba(139, 92, 246, 0.08), transparent 70%),
+    rgba(6, 6, 11, 0.55);
+  overflow: hidden;
+}
+.preview-stage { position: relative; height: 96%; aspect-ratio: 320 / 448; border-radius: var(--radius-sm); overflow: hidden; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6); }
+.preview-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.preview-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--glass);
+}
+.preview-info p { margin: 0; font-size: var(--fs-sm); font-weight: 600; font-family: ui-monospace, Consolas, monospace; color: var(--ink); }
+.preview-info small { display: block; margin-top: 3px; font-size: var(--fs-xs); color: var(--faint); max-width: 560px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.preview-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
+.websam-model-card {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, rgba(139, 92, 246, 0.09), rgba(139, 92, 246, 0.03));
+}
+.websam-model-card strong { display: block; font-size: var(--fs-sm); }
+.websam-model-card small { display: block; margin-top: 3px; font-size: 10.5px; color: var(--muted); line-height: 1.45; }
+.websam-progress { height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.09); overflow: hidden; }
+.websam-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--good)); }
+.websam-status-line { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-xs); color: var(--good); font-weight: 600; }
+.websam-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.websam-actions .button-secondary { font-size: 10.5px; padding: 0 4px; }
+.websam-candidates { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+.websam-candidate {
+  display: grid; gap: 1px; place-items: center;
+  min-height: 44px; padding: 5px 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: var(--fs-xs); font-weight: 700;
+}
+.websam-candidate small { font-size: 10px; color: var(--muted); font-weight: 600; font-family: ui-monospace, Consolas, monospace; }
+.websam-candidate:hover { border-color: rgba(139, 92, 246, 0.5); }
+.websam-candidate.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: var(--ring); }
+.websam-candidate.active small { color: #d6c8ff; }
+.websam-counts {
+  display: flex; justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(10, 10, 15, 0.4);
+  font-size: 10.5px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+}
+.websam-point { fill: var(--accent); stroke: #fff; stroke-width: 2.5; }
+.websam-point.background { fill: var(--danger); }
+.mask-blob { fill: rgba(139, 92, 246, 0.42); stroke: rgba(196, 181, 253, 0.75); stroke-width: 2; stroke-dasharray: 6 5; }
+</style>
+</head>
+<body>
+<div class="mock-index">
+
+  <!-- ============================== 画面1: Home ============================== -->
+  <div>
+    <p class="mock-label">1. Home</p>
+    <section class="screen" id="screen-home">
+      <header class="app-header">
+        <button class="icon-button" data-icon="menu" aria-label="メニュー"></button>
+        <div class="brand">
+          <span class="brand-mark" data-icon="loop"></span>
+          <div class="brand-copy"><strong>GURUGURU</strong><small>Iterative Generation Studio</small></div>
+        </div>
+        <div class="header-spacer"></div>
+        <div class="conn-status"><span class="conn-dot"></span>ComfyUI 接続済み</div>
+      </header>
+
+      <main class="home-layout">
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-kicker">Projects</p>
+              <h1>Project一覧</h1>
+            </div>
+          </div>
+          <form class="project-form">
+            <div class="project-form-grid">
+              <label class="field">Project名<input placeholder="Daily Scene Character Exploration" /></label>
+              <label class="field">デフォルトWorkflowTemplate
+                <select>
+                  <option>未指定</option>
+                  <option>SDXL Basic v3</option>
+                  <option>SDXL Inpaint v2</option>
+                  <option>Flux ControlNet v1</option>
+                </select>
+              </label>
+              <label class="field span2">説明<textarea rows="2"></textarea></label>
+            </div>
+            <div class="project-form-footer">
+              <button class="button-primary" type="button"><span data-icon="plus"></span>新規Project作成</button>
+            </div>
+          </form>
+          <div class="project-list">
+            <article class="project-card">
+              <div class="project-thumb" data-art="270"></div>
+              <div class="project-copy">
+                <h3>Daily Scene Character Exploration</h3>
+                <p>毎日のキャラ探索。ポーズと衣装のバリエーション出し。</p>
+                <div class="meta-line">Rounds 12 / Assets 214 / Updated 2026/07/01</div>
+              </div>
+              <div class="project-actions">
+                <button class="button-secondary" type="button">開く</button>
+                <button class="button-danger" type="button"><span data-icon="trash"></span>削除</button>
+              </div>
+            </article>
+            <article class="project-card">
+              <div class="project-thumb" data-art="140"></div>
+              <div class="project-copy">
+                <h3>Fantasy Landscape Series</h3>
+                <p>背景素材のシリーズ生成。朝・夕・夜の光違い。</p>
+                <div class="meta-line">Rounds 5 / Assets 96 / Updated 2026/06/28</div>
+              </div>
+              <div class="project-actions">
+                <button class="button-secondary" type="button">開く</button>
+                <button class="button-danger" type="button"><span data-icon="trash"></span>削除</button>
+              </div>
+            </article>
+            <article class="project-card">
+              <div class="project-thumb" data-art="20"></div>
+              <div class="project-copy">
+                <h3>Portrait Style Test</h3>
+                <p class="empty-desc">説明なし</p>
+                <div class="meta-line">Rounds 2 / Assets 31 / Updated 2026/06/15</div>
+              </div>
+              <div class="project-actions">
+                <button class="button-secondary" type="button">開く</button>
+                <button class="button-danger" type="button"><span data-icon="trash"></span>削除</button>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <div class="home-side">
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">Connection</p>
+                <h2>ComfyUI接続</h2>
+              </div>
+            </div>
+            <form class="form-stack">
+              <label class="field">Base URL<input class="mono" value="http://127.0.0.1:8188" /></label>
+              <label class="field">WebSocket URL<input class="mono" value="ws://127.0.0.1:8188/ws" /></label>
+              <label class="field">Timeout秒<input type="number" value="60" /></label>
+              <label class="field">保存先<input placeholder="./storage" /></label>
+              <label class="field">WebSAM model base URL<input class="mono" value="/api/websam-models" /></label>
+              <div class="button-row">
+                <button class="button-secondary compact" type="button"><span data-icon="save"></span>保存</button>
+                <button class="button-secondary compact" type="button"><span data-icon="pulse"></span>接続テスト</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel workflow-import-panel">
+            <button class="button-primary" type="button"><span data-icon="plus"></span>テンプレート登録</button>
+          </section>
+
+          <section class="panel">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">Workflow</p>
+                <h2>WorkflowTemplate</h2>
+              </div>
+            </div>
+            <div class="template-list">
+              <article class="template-row">
+                <div class="template-row-main"><strong>SDXL Basic v3</strong><span>txt2img</span></div>
+                <div class="template-row-actions">
+                  <button class="icon-button" data-icon="diagram" title="diagram" aria-label="diagram"></button>
+                  <button class="icon-button" data-icon="download" title="export" aria-label="export"></button>
+                  <button class="icon-button danger" data-icon="trash" title="削除" aria-label="削除"></button>
+                </div>
+              </article>
+              <article class="template-row">
+                <div class="template-row-main"><strong>SDXL Inpaint v2</strong><span>img2img</span></div>
+                <div class="template-row-actions">
+                  <button class="icon-button" data-icon="diagram" title="diagram" aria-label="diagram"></button>
+                  <button class="icon-button" data-icon="download" title="export" aria-label="export"></button>
+                  <button class="icon-button danger" data-icon="trash" title="削除" aria-label="削除"></button>
+                </div>
+              </article>
+              <article class="template-row">
+                <div class="template-row-main"><strong>Flux ControlNet v1</strong><span>controlnet</span></div>
+                <div class="template-row-actions">
+                  <button class="icon-button" data-icon="diagram" title="diagram" aria-label="diagram"></button>
+                  <button class="icon-button" data-icon="download" title="export" aria-label="export"></button>
+                  <button class="icon-button danger" data-icon="trash" title="削除" aria-label="削除"></button>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </main>
+    </section>
+  </div>
+
+  <!-- ============================== 画面2: Project詳細 ============================== -->
+  <div>
+    <p class="mock-label">2. Project詳細</p>
+    <section class="screen" id="screen-project">
+      <header class="app-header">
+        <button class="icon-button" data-icon="menu" aria-label="メニュー"></button>
+        <div class="brand">
+          <span class="brand-mark" data-icon="loop"></span>
+          <div class="brand-copy"><strong>GURUGURU</strong><small>Iterative Generation Studio</small></div>
+        </div>
+        <div class="header-spacer"></div>
+        <div class="conn-status"><span class="conn-dot"></span>ComfyUI 接続済み</div>
+      </header>
+
+      <div class="studio-shell">
+        <aside class="studio-sidebar">
+          <section class="sidebar-section">
+            <p class="section-kicker">ワークフロー</p>
+            <label class="field">txt2img WorkflowTemplate
+              <select>
+                <option selected>SDXL Basic v3 (txt2img)</option>
+                <option>SDXL Inpaint v2 (img2img)</option>
+                <option>Flux ControlNet v1 (controlnet)</option>
+              </select>
+            </label>
+            <label class="field">img2img WorkflowTemplate
+              <select>
+                <option>SDXL Basic v3 (txt2img)</option>
+                <option selected>SDXL Inpaint v2 (img2img)</option>
+                <option>Flux ControlNet v1 (controlnet)</option>
+              </select>
+            </label>
+            <details>
+              <summary class="collapsible-summary"><span style="display:inline-flex;align-items:center;gap:6px"><span data-icon="plus"></span>Workflow操作</span><span class="chev" data-icon="chevron"></span></summary>
+            </details>
+          </section>
+
+          <section class="sidebar-section">
+            <p class="section-kicker">親画像</p>
+            <button class="button-secondary compact" type="button"><span data-icon="image"></span>source asset をアップロード</button>
+          </section>
+
+          <section class="sidebar-section">
+            <p class="section-kicker">プロンプト</p>
+            <textarea class="prompt-input">masterpiece, best quality, 1girl, beautiful detailed eyes, flowing hair, fantasy landscape, dramatic lighting, ethereal atmosphere</textarea>
+          </section>
+
+          <details class="sidebar-section" open>
+            <summary class="collapsible-summary"><span class="section-kicker">ネガティブプロンプト</span><span class="chev" data-icon="chevron"></span></summary>
+            <textarea class="negative-input">low quality, worst quality, blurry, deformed</textarea>
+          </details>
+
+          <section class="sidebar-section">
+            <div class="section-header-row">
+              <p class="section-kicker">生成パラメータ</p>
+              <button class="button-secondary mini-button" type="button"><span data-icon="reset"></span>JSON初期値</button>
+            </div>
+            <div class="range-control">
+              <div class="range-label"><span>バッチサイズ<em class="mm">1 – 32</em></span><strong>16</strong></div>
+              <input type="range" min="1" max="32" value="16" style="--p:48%" />
+            </div>
+            <div class="range-control">
+              <div class="range-label"><span>ステップ数<em class="mm">1 – 50</em></span><strong>20</strong></div>
+              <input type="range" min="1" max="50" value="20" style="--p:39%" />
+            </div>
+            <div class="range-control">
+              <div class="range-label"><span>CFGスケール<em class="mm">1 – 20</em></span><strong>7</strong></div>
+              <input type="range" min="1" max="20" value="7" style="--p:32%" />
+            </div>
+            <div class="range-control">
+              <div class="range-label"><span>デノイズ強度<em class="mm">0 – 1</em></span><strong>0.55</strong></div>
+              <input type="range" min="0" max="1" step="0.05" value="0.55" style="--p:55%" />
+            </div>
+            <div class="resolution-row">
+              <label class="field">幅<input class="mono" type="number" value="832" /></label>
+              <button class="icon-button" data-icon="swap" title="幅と高さを入れ替え" aria-label="幅と高さを入れ替え"></button>
+              <label class="field">高さ<input class="mono" type="number" value="1216" /></label>
+              <button class="icon-button" data-icon="minimize" title="縦横比を保って縮小" aria-label="縮小"></button>
+              <button class="icon-button" data-icon="plus" title="縦横比を保って拡大" aria-label="拡大"></button>
+            </div>
+            <div class="select-grid">
+              <label class="field">シード
+                <div class="seed-row">
+                  <input class="mono" type="number" value="-1" />
+                  <button class="icon-button" data-icon="shuffle" title="ランダムseed" aria-label="ランダムseed"></button>
+                </div>
+              </label>
+              <label class="field">seed mode
+                <select><option selected>random</option><option>fixed</option><option>increment</option><option>reuse_parent_seed</option></select>
+              </label>
+              <label class="field">サンプラー
+                <select><option>euler</option><option selected>dpmpp_2m</option><option>dpmpp_2m_sde</option><option>ddim</option></select>
+              </label>
+              <label class="field">scheduler
+                <select><option>normal</option><option selected>karras</option><option>exponential</option><option>simple</option></select>
+              </label>
+              <label class="field" style="grid-column: 1 / -1;">mode
+                <select><option>txt2img</option><option selected>img2img</option><option>ipadapter</option><option>controlnet</option></select>
+              </label>
+            </div>
+          </section>
+
+          <details class="sidebar-section" open>
+            <summary class="collapsible-summary"><span class="section-kicker">モデル</span><span class="chev" data-icon="chevron"></span></summary>
+            <div class="model-readout">
+              <div class="model-row"><span>checkpoint</span><code>sdxl_base_1.0.safetensors</code></div>
+              <div class="model-row"><span>VAE</span><code>sdxl_vae.safetensors</code></div>
+              <div class="model-row"><span>LoRA 1</span><code>detail-tweaker-xl v1.5</code></div>
+            </div>
+          </details>
+        </aside>
+
+        <main class="studio-main">
+          <div class="round-toolbar">
+            <div>
+              <h2>イテレーション #7<span class="tag accent"><span data-icon="dot"></span>img2img</span></h2>
+              <p class="sub">16枚生成・3枚選択中・completed</p>
+            </div>
+            <div class="toolbar-actions">
+              <button class="button-secondary compact" type="button">全選択</button>
+              <button class="button-secondary compact" type="button">選択解除</button>
+              <button class="button-secondary compact" type="button">選択反転</button>
+              <span class="toolbar-divider"></span>
+              <select class="compact-select" aria-label="グリッド列数"><option selected>4x4</option><option>3列</option><option>2列</option></select>
+              <button class="button-secondary compact" type="button"><span data-icon="download"></span>生成結果取得</button>
+            </div>
+          </div>
+
+          <div class="gallery-scroll">
+            <div class="image-grid" id="tileGrid"></div>
+          </div>
+
+          <div class="iteration-tracker" aria-label="イテレーション">
+            <div class="iteration-scroll" id="iterTree"></div>
+          </div>
+
+          <div class="bottom-action-bar">
+            <div class="bottom-left">
+              <div class="selected-thumbs">
+                <span class="sel-thumb" data-art="246"></span>
+                <span class="sel-thumb" data-art="1"></span>
+                <span class="sel-thumb" data-art="93"></span>
+              </div>
+              <span class="selected-label">3枚の画像を次のブランチングに使用</span>
+            </div>
+            <div class="bottom-actions">
+              <button class="button-danger" type="button"><span data-icon="trash"></span>リセット</button>
+              <button class="button-secondary" type="button"><span data-icon="download"></span>保存</button>
+              <button class="button-primary" type="button"><span data-icon="play"></span>画像無しで生成</button>
+              <button class="button-primary" type="button"><span data-icon="loop"></span>選択画像でブランチング <span class="button-count">3</span></button>
+            </div>
+          </div>
+        </main>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============================== 画面3: Assetモーダル(マスク編集) ============================== -->
+  <div>
+    <p class="mock-label">3. Assetモーダル(マスク編集モード)</p>
+    <section class="screen" id="screen-modal">
+      <div class="modal-backdrop-scene">
+        <div class="backdrop-toolbar"></div>
+        <div class="backdrop-body">
+          <div class="backdrop-sidebar"></div>
+          <div class="backdrop-grid" id="backdropGrid"></div>
+        </div>
+      </div>
+      <div class="modal-scrim"></div>
+
+      <div class="preview-modal" role="dialog" aria-modal="true">
+        <div class="preview-top-controls">
+          <button class="preview-mask-toggle active" type="button"><span data-icon="mask"></span><span>マスク編集 ON</span></button>
+          <div class="mask-mode-indicator" aria-live="polite">
+            <span class="lead"><span data-icon="mask"></span>マスク編集モード</span>
+            <small>ブラシ / 48px</small>
+          </div>
+          <button class="preview-close" type="button" data-icon="close" aria-label="閉じる"></button>
+        </div>
+
+        <div class="mask-editor-layout">
+          <!-- 左パネル: マスク・プロンプト -->
+          <aside class="mask-editor-panel">
+            <div class="mask-panel-header">
+              <h3>マスク・プロンプト</h3>
+              <span class="mask-status">mask active</span>
+            </div>
+            <div class="mask-panel-tabs">
+              <button class="mask-tab active" type="button">手動編集</button>
+              <button class="mask-tab" type="button">候補生成</button>
+              <button class="mask-tab" type="button">点クリア</button>
+            </div>
+            <div class="mask-toolbar-row">
+              <button class="mask-tool-button active" data-icon="brush" title="ブラシ" aria-label="ブラシ"></button>
+              <button class="mask-tool-button" data-icon="eraser" title="消しゴム" aria-label="消しゴム"></button>
+              <button class="mask-tool-button" data-icon="invert" title="マスク領域を反転" aria-label="反転"></button>
+              <button class="mask-tool-button" data-icon="reset" title="マスクをクリア" aria-label="クリア"></button>
+            </div>
+            <div class="range-control">
+              <div class="range-label"><span>ブラシサイズ</span><strong>48px</strong></div>
+              <input type="range" min="1" max="256" value="48" style="--p:18%" />
+              <div class="range-minmax"><span>1</span><span>256</span></div>
+            </div>
+            <label class="field">Positive prompt
+              <textarea class="mask-prompt-input">masterpiece, best quality, 1girl, beautiful detailed eyes, flowing hair, fantasy landscape, dramatic lighting, ethereal atmosphere</textarea>
+            </label>
+            <div class="range-control">
+              <div class="range-label"><span>バッチサイズ</span><strong>16</strong></div>
+              <input type="range" min="1" max="32" value="16" style="--p:48%" />
+              <div class="range-minmax"><span>1</span><span>32</span></div>
+            </div>
+            <label class="field">Masked content
+              <select><option selected>original</option><option>fill</option><option>latent noise</option></select>
+            </label>
+            <label class="field">Inpaint area
+              <select><option selected>Only masked</option></select>
+            </label>
+            <div class="range-control">
+              <div class="range-label"><span>Only masked padding</span><strong>32px</strong></div>
+              <input type="range" min="0" max="512" value="32" style="--p:6%" />
+              <div class="range-minmax"><span>0</span><span>512</span></div>
+            </div>
+            <div class="range-control">
+              <div class="range-label"><span>Mask feather</span><strong>8px</strong></div>
+              <input type="range" min="0" max="30" value="8" style="--p:27%" />
+              <div class="range-minmax"><span>0</span><span>30</span></div>
+            </div>
+            <div class="mask-panel-actions">
+              <button class="button-primary" type="button"><span data-icon="check"></span>適用</button>
+              <button class="button-secondary" type="button"><span data-icon="eraser"></span>手動修正クリア</button>
+            </div>
+          </aside>
+
+          <!-- 中央プレビュー -->
+          <main class="preview-center">
+            <div class="preview-media">
+              <div class="preview-stage" id="modalStage"></div>
+            </div>
+            <div class="preview-footer">
+              <div class="preview-info">
+                <p>Seed: 3735928557 / Steps: 20 / CFG: 7 / Sampler: dpmpp_2m</p>
+                <small>masterpiece, best quality, 1girl, beautiful detailed eyes, flowing hair, fantasy landscape, dramatic lighting, ethereal atmosphere</small>
+              </div>
+              <div class="preview-actions">
+                <button class="button-secondary" type="button">選択切替</button>
+                <button class="button-primary" type="button"><span data-icon="loop"></span>この画像からブランチング</button>
+              </div>
+            </div>
+          </main>
+
+          <!-- 右パネル: スマート選択 -->
+          <aside class="mask-editor-panel">
+            <div class="mask-panel-header">
+              <h3>スマート選択</h3>
+            </div>
+            <label class="field">Smart selection
+              <select><option selected>SlimSAM-77</option><option>手動のみ</option></select>
+            </label>
+            <div class="websam-model-card">
+              <div>
+                <strong>SlimSAM-77</strong>
+                <small>軽量SAM。Encoder 32MB / Decoder 5MB</small>
+              </div>
+              <span class="mask-status good">Ready</span>
+            </div>
+            <div class="websam-progress"><span style="width:100%"></span></div>
+            <div class="websam-status-line">
+              <span>Ready</span>
+              <button class="button-secondary mini-button" type="button"><span data-icon="loop"></span>再試行</button>
+            </div>
+            <label class="field">Prompt mode
+              <select><option selected>Point</option><option>Box</option><option>Brush prompt</option></select>
+            </label>
+            <div class="range-control">
+              <div class="range-label"><span>Threshold</span><strong>0</strong></div>
+              <input type="range" min="-10" max="10" value="0" style="--p:50%" />
+              <div class="range-minmax"><span>-10</span><span>10</span></div>
+            </div>
+            <div class="range-control">
+              <div class="range-label"><span>Smoothing</span><strong>2</strong></div>
+              <input type="range" min="0" max="4" value="2" style="--p:50%" />
+              <div class="range-minmax"><span>0</span><span>4</span></div>
+            </div>
+            <div class="range-control">
+              <div class="range-label"><span>Mask opacity</span><strong>0.6</strong></div>
+              <input type="range" min="0" max="1" step="0.05" value="0.6" style="--p:60%" />
+              <div class="range-minmax"><span>0</span><span>1</span></div>
+            </div>
+            <div class="websam-actions">
+              <button class="button-secondary compact" type="button">候補生成</button>
+              <button class="button-secondary compact" type="button">点クリア</button>
+              <button class="button-secondary compact" type="button">SAM結果クリア</button>
+            </div>
+            <div class="websam-candidates">
+              <button class="websam-candidate active" type="button"><span>Mask 1</span><small>92.4%</small></button>
+              <button class="websam-candidate" type="button"><span>Mask 2</span><small>88.1%</small></button>
+              <button class="websam-candidate" type="button"><span>Mask 3</span><small>71.5%</small></button>
+            </div>
+            <div class="websam-counts">
+              <span>FG/BG 4/1</span>
+              <span>Brush 0</span>
+              <span>Zoom 100%</span>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+  </div>
+
+</div>
+
+<script>
+/* ============================================================
+   インラインJS: アイコン注入・サムネイルSVG量産・ツリー描画・
+   ハッシュによる単一画面撮影モード
+   ============================================================ */
+
+/* ---------- アイコン(インラインSVG) ---------- */
+var ICONS = {
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  loop: '<path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  trash: '<path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>',
+  save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  pulse: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+  diagram: '<rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="15" y="15" width="6" height="6" rx="1.5"/><path d="M9 6h6a2 2 0 0 1 2 2v7"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  chevron: '<polyline points="6 9 12 15 18 9"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
+  shuffle: '<polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>',
+  swap: '<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
+  minimize: '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  reset: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+  zoom: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>',
+  mask: '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none"/>',
+  close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  brush: '<path d="M9.06 11.9l8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3 3.02 0 1.33-2.5 1.52-2 2.02 1.08 1.1 2.49 2.02 4 2.02 2.2 0 4-1.8 4-4.04a3.01 3.01 0 0 0-3-3.02z"/>',
+  eraser: '<path d="M20 20H7L3 16a2 2 0 0 1 0-2.8L13.2 3a2 2 0 0 1 2.8 0l5 5a2 2 0 0 1 0 2.8L13 19"/><line x1="9" y1="9" x2="15" y2="15"/>',
+  invert: '<circle cx="12" cy="12" r="9"/><path d="M12 3v18"/><path d="M12 3a9 9 0 0 1 0 18" fill="currentColor" stroke="none" opacity="0.55"/>',
+  dot: '<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/>'
+};
+document.querySelectorAll('[data-icon]').forEach(function (el) {
+  var name = el.getAttribute('data-icon');
+  if (ICONS[name]) {
+    el.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true">' + ICONS[name] + '</svg>';
+  }
+});
+
+/* ---------- サムネイルSVG共通レシピ(1テンプレート・hueだけ変える) ---------- */
+var artSeq = 0;
+function art(hue, cls) {
+  var id = 'g' + (artSeq++);
+  var h2 = (hue + 40) % 360;
+  var hl = (hue + 60) % 360;
+  return '' +
+    '<svg class="' + (cls || 'art') + '" viewBox="0 0 320 448" preserveAspectRatio="xMidYMid slice" xmlns="http' + ':/' + '/www.w3.org/2000/svg" aria-hidden="true">' +
+      '<defs>' +
+        '<linearGradient id="sky' + id + '" x1="0" y1="0" x2="0" y2="1">' +
+          '<stop offset="0" stop-color="hsl(' + hue + ',52%,60%)"/>' +
+          '<stop offset="0.62" stop-color="hsl(' + h2 + ',56%,40%)"/>' +
+          '<stop offset="1" stop-color="hsl(' + h2 + ',50%,26%)"/>' +
+        '</linearGradient>' +
+        '<radialGradient id="sun' + id + '" cx="0.5" cy="0.5" r="0.5">' +
+          '<stop offset="0" stop-color="hsl(' + hl + ',92%,80%)" stop-opacity="0.95"/>' +
+          '<stop offset="0.55" stop-color="hsl(' + hl + ',90%,72%)" stop-opacity="0.4"/>' +
+          '<stop offset="1" stop-color="hsl(' + hl + ',90%,70%)" stop-opacity="0"/>' +
+        '</radialGradient>' +
+        '<linearGradient id="gnd' + id + '" x1="0" y1="0" x2="0" y2="1">' +
+          '<stop offset="0" stop-color="hsl(' + hue + ',32%,15%)"/>' +
+          '<stop offset="1" stop-color="hsl(' + hue + ',30%,8%)"/>' +
+        '</linearGradient>' +
+      '</defs>' +
+      '<rect width="320" height="304" fill="url(#sky' + id + ')"/>' +
+      '<circle cx="226" cy="128" r="118" fill="url(#sun' + id + ')"/>' +
+      '<circle cx="226" cy="128" r="34" fill="hsl(' + hl + ',94%,84%)" opacity="0.85"/>' +
+      '<rect y="298" width="320" height="150" fill="url(#gnd' + id + ')"/>' +
+      '<ellipse cx="160" cy="300" rx="200" ry="10" fill="hsl(' + hl + ',70%,60%)" opacity="0.28"/>' +
+      '<circle cx="160" cy="242" r="35" fill="hsl(' + hue + ',34%,9%)"/>' +
+      '<rect x="116" y="276" width="88" height="150" rx="32" fill="hsl(' + hue + ',34%,9%)"/>' +
+    '</svg>';
+}
+
+/* Projectサムネ・選択サムネ */
+document.querySelectorAll('[data-art]').forEach(function (el) {
+  el.innerHTML = art(parseInt(el.getAttribute('data-art'), 10), 'art');
+});
+
+/* ---------- 画面2: 16タイル生成 ---------- */
+var SELECTED = { 2: true, 7: true, 11: true };
+var FAVORITE = { 7: true };
+var REJECTED = { 13: true };
+var MASKED = { 3: true, 9: true };
+var gridHtml = '';
+for (var i = 1; i <= 16; i++) {
+  var hue = (i * 23 + 200) % 360;
+  var cls = 'image-card' +
+    (SELECTED[i] ? ' selected' : '') +
+    (FAVORITE[i] ? ' favorite' : '') +
+    (REJECTED[i] ? ' rejected' : '') +
+    (MASKED[i] ? ' masked' : '');
+  gridHtml +=
+    '<article class="' + cls + '">' +
+      art(hue) +
+      '<button class="card-badge select-badge" type="button" aria-label="選択切替"><svg viewBox="0 0 24 24">' + ICONS.check + '</svg></button>' +
+      '<button class="card-badge star-badge" type="button" aria-label="favorite切替"><svg viewBox="0 0 24 24">' + ICONS.star + '</svg></button>' +
+      '<button class="card-badge zoom-btn" type="button" aria-label="拡大"><svg viewBox="0 0 24 24">' + ICONS.zoom + '</svg></button>' +
+      '<span class="card-number">#' + i + '</span>' +
+      (MASKED[i] ? '<span class="mask-badge"><svg viewBox="0 0 24 24">' + ICONS.mask + '</svg>MASK</span>' : '') +
+      '<span class="seed-chip">seed ' + (3735928540 + i) + '</span>' +
+    '</article>';
+}
+document.getElementById('tileGrid').innerHTML = gridHtml;
+
+/* ---------- 画面3: 背景(画面2の簡略版)+ 中央プレビュー ---------- */
+var backdrop = '';
+for (var j = 1; j <= 16; j++) {
+  backdrop += '<div>' + art((j * 23 + 200) % 360) + '</div>';
+}
+document.getElementById('backdropGrid').innerHTML = backdrop;
+
+/* モーダル中央: タイル#7と同色相(hue = (7*23+200)%360 = 1) + マスク塗り + プロンプト点 */
+var stage = document.getElementById('modalStage');
+stage.innerHTML =
+  art(1, 'art-full') +
+  '<svg viewBox="0 0 320 448" xmlns="http' + ':/' + '/www.w3.org/2000/svg" aria-hidden="true">' +
+    '<path class="mask-blob" d="M126 214 C120 190 142 176 160 178 C186 180 202 198 200 226 C216 240 214 282 206 320 C202 356 190 404 160 406 C130 408 120 360 116 322 C110 284 112 244 126 214 Z"/>' +
+    '<circle class="websam-point" cx="160" cy="238" r="7"/>' +
+    '<circle class="websam-point" cx="142" cy="310" r="7"/>' +
+    '<circle class="websam-point" cx="178" cy="316" r="7"/>' +
+    '<circle class="websam-point" cx="160" cy="378" r="7"/>' +
+    '<circle class="websam-point background" cx="252" cy="120" r="7"/>' +
+  '</svg>';
+stage.querySelectorAll('svg').forEach(function (s) {
+  s.style.position = 'absolute'; s.style.inset = '0'; s.style.width = '100%'; s.style.height = '100%';
+});
+
+/* ---------- イテレーションツリー(SVG) ----------
+   ルートA: 1→2→3、3から(4)(5)、5→6→7 / ルートB: 8→9、9から(10)(11)、10→12
+   #7 active, #12 running, 他 completed。ルート/ブランチで色相を変える */
+var NODES = [
+  { n: 1,  x: 44,  y: 48, hue: 270 }, { n: 2, x: 116, y: 48, hue: 270 }, { n: 3, x: 188, y: 48, hue: 270 },
+  { n: 4,  x: 260, y: 22, hue: 296 },
+  { n: 5,  x: 260, y: 74, hue: 288 }, { n: 6, x: 332, y: 74, hue: 288 }, { n: 7, x: 404, y: 74, hue: 288, state: 'active' },
+  { n: 8,  x: 512, y: 48, hue: 327 }, { n: 9, x: 584, y: 48, hue: 327 },
+  { n: 10, x: 656, y: 22, hue: 350 }, { n: 12, x: 728, y: 22, hue: 350, state: 'running' },
+  { n: 11, x: 656, y: 74, hue: 344 }
+];
+var EDGES = [[1,2],[2,3],[3,4],[3,5],[5,6],[6,7],[8,9],[9,10],[9,11],[10,12]];
+function nodeByN(n) { for (var k = 0; k < NODES.length; k++) if (NODES[k].n === n) return NODES[k]; return null; }
+var tree = '<svg width="770" height="96" viewBox="0 0 770 96" xmlns="http' + ':/' + '/www.w3.org/2000/svg" aria-hidden="true" style="display:block">';
+EDGES.forEach(function (e) {
+  var a = nodeByN(e[0]), b = nodeByN(e[1]);
+  var hue = b.hue;
+  if (a.y === b.y) {
+    tree += '<line x1="' + (a.x + 14) + '" y1="' + a.y + '" x2="' + (b.x - 14) + '" y2="' + b.y + '" stroke="hsl(' + hue + ',60%,52%)" stroke-opacity="0.55" stroke-width="2"/>';
+  } else {
+    var mx = (a.x + b.x) / 2;
+    tree += '<path d="M' + (a.x + 13) + ' ' + a.y + ' C ' + mx + ' ' + a.y + ', ' + mx + ' ' + b.y + ', ' + (b.x - 13) + ' ' + b.y + '" fill="none" stroke="hsl(' + hue + ',60%,52%)" stroke-opacity="0.55" stroke-width="2"/>';
+  }
+});
+NODES.forEach(function (d) {
+  var r = d.state === 'active' ? 15 : 12;
+  var g = '<g class="iter-node-circle' + (d.state === 'running' ? ' iter-running' : '') + '">';
+  if (d.state === 'active') {
+    g += '<circle cx="' + d.x + '" cy="' + d.y + '" r="19" fill="none" stroke="hsl(' + d.hue + ',75%,62%)" stroke-opacity="0.4" stroke-width="2"/>';
+    g += '<circle cx="' + d.x + '" cy="' + d.y + '" r="' + r + '" fill="hsl(' + d.hue + ',70%,52%)" stroke="hsl(' + d.hue + ',85%,80%)" stroke-width="2"/>';
+    g += '<text x="' + d.x + '" y="' + (d.y + 4) + '" text-anchor="middle" font-size="12" font-weight="800" fill="#fff">' + d.n + '</text>';
+  } else if (d.state === 'running') {
+    g += '<circle cx="' + d.x + '" cy="' + d.y + '" r="' + r + '" fill="hsl(45,80%,18%)" stroke="hsl(45,93%,58%)" stroke-width="2" stroke-dasharray="4 3"/>';
+    g += '<text x="' + d.x + '" y="' + (d.y + 4) + '" text-anchor="middle" font-size="11" font-weight="700" fill="hsl(45,93%,70%)">' + d.n + '</text>';
+  } else {
+    g += '<circle cx="' + d.x + '" cy="' + d.y + '" r="' + r + '" fill="hsl(' + d.hue + ',45%,16%)" stroke="hsl(' + d.hue + ',60%,52%)" stroke-width="1.6"/>';
+    g += '<text x="' + d.x + '" y="' + (d.y + 4) + '" text-anchor="middle" font-size="11" font-weight="700" fill="hsl(' + d.hue + ',45%,82%)">' + d.n + '</text>';
+  }
+  g += '</g>';
+  tree += g;
+});
+tree += '</svg>';
+document.getElementById('iterTree').innerHTML = tree;
+
+/* ---------- ハッシュによる単一画面撮影モード ---------- */
+function applyHash() {
+  var hash = location.hash.replace('#', '');
+  var ids = ['screen-home', 'screen-project', 'screen-modal'];
+  document.querySelectorAll('.screen').forEach(function (s) { s.classList.remove('shot-active'); });
+  if (ids.indexOf(hash) >= 0) {
+    document.body.classList.add('shot');
+    document.getElementById(hash).classList.add('shot-active');
+  } else {
+    document.body.classList.remove('shot');
+  }
+}
+window.addEventListener('hashchange', applyHash);
+applyHash();
+</script>
+</body>
+</html>
