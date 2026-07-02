@@ -18,6 +18,7 @@ async function main() {
   await mkdir(join(root, "dist", "server"), { recursive: true });
   await mkdir(join(root, "dist", "public"), { recursive: true });
   await mkdir(join(root, "dist", "public", "ort"), { recursive: true });
+  await mkdir(join(root, "dist", "public", "mediapipe-wasm"), { recursive: true });
 
   run([
     "src/server/index.ts",
@@ -49,9 +50,20 @@ async function main() {
     "--log-level=warning"
   ]);
 
+  run([
+    "src/client/pose/worker.ts",
+    "--bundle",
+    "--platform=browser",
+    "--format=iife",
+    "--target=es2022",
+    "--outfile=dist/public/pose-worker.js",
+    "--log-level=warning"
+  ]);
+
   await copyFile(join(root, "src", "client", "index.html"), join(root, "dist", "public", "index.html"));
   await copyFile(join(root, "src", "client", "styles.css"), join(root, "dist", "public", "styles.css"));
   await copyOrtRuntimeAssets();
+  await copyMediapipeWasmAssets();
 }
 
 async function copyOrtRuntimeAssets() {
@@ -68,6 +80,23 @@ async function copyOrtRuntimeAssets() {
       continue;
     }
     await copyFile(join(sourceDir, entry.name), join(root, "dist", "public", "ort", entry.name));
+  }
+}
+
+async function copyMediapipeWasmAssets() {
+  const sourceDir = join(root, "node_modules", "@mediapipe", "tasks-vision", "wasm");
+  if (!existsSync(sourceDir)) {
+    return;
+  }
+  const entries = await readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+    if (!/\.(wasm|js)$/i.test(entry.name)) {
+      continue;
+    }
+    await copyFile(join(sourceDir, entry.name), join(root, "dist", "public", "mediapipe-wasm", entry.name));
   }
 }
 
