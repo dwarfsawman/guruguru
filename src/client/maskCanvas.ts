@@ -64,19 +64,94 @@ export function drawDataUrlIntoCanvas(canvas: HTMLCanvasElement, dataUrl: string
   });
 }
 
-export function renderFinalMaskToCanvas(canvas: HTMLCanvasElement, layers: MaskLayerSet, draft: InpaintDraft, includePreview: boolean) {
+export interface DirtyRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * `renderFinalMaskToCanvas` に省略可能な `dirtyRect` を渡すと、その矩形だけを
+ * `clearRect` + 9引数 `drawImage`（sub-rect 指定）で再合成する。省略時（undefined）は
+ * 従来どおり全面再合成する。合成順序・globalCompositeOperation の意味論は不変。
+ */
+export function renderFinalMaskToCanvas(canvas: HTMLCanvasElement, layers: MaskLayerSet, draft: InpaintDraft, includePreview: boolean, dirtyRect?: DirtyRect) {
   const context = canvas.getContext("2d");
   if (!context) {
     return;
   }
-  context.clearRect(0, 0, canvas.width, canvas.height);
   const samSource = includePreview && draft.previewSamMaskDataUrl ? layers.previewSamMask : layers.samMask;
   context.globalCompositeOperation = "source-over";
+  if (dirtyRect) {
+    const rect = clampDirtyRectToCanvas(dirtyRect, canvas.width, canvas.height);
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    context.clearRect(rect.x, rect.y, rect.width, rect.height);
+    context.drawImage(samSource, rect.x, rect.y, rect.width, rect.height, rect.x, rect.y, rect.width, rect.height);
+    context.drawImage(layers.manualInclude, rect.x, rect.y, rect.width, rect.height, rect.x, rect.y, rect.width, rect.height);
+    context.globalCompositeOperation = "destination-out";
+    context.drawImage(layers.manualErase, rect.x, rect.y, rect.width, rect.height, rect.x, rect.y, rect.width, rect.height);
+    context.globalCompositeOperation = "source-over";
+    return;
+  }
+  context.clearRect(0, 0, canvas.width, canvas.height);
   context.drawImage(samSource, 0, 0, canvas.width, canvas.height);
   context.drawImage(layers.manualInclude, 0, 0, canvas.width, canvas.height);
   context.globalCompositeOperation = "destination-out";
   context.drawImage(layers.manualErase, 0, 0, canvas.width, canvas.height);
   context.globalCompositeOperation = "source-over";
+}
+
+/**
+ * 1 線分（brush stroke segment）の bbox をブラシ半径 + margin ぶん拡張した DirtyRect を返す。
+ * from===to（点描画）の場合も arc 半径ぶん正しく含む。
+ */
+export function segmentDirtyRect(from: { x: number; y: number }, to: { x: number; y: number }, brushSize: number, margin = 0): DirtyRect {
+  const radius = brushSize / 2 + margin;
+  const minX = Math.min(from.x, to.x) - radius;
+  const minY = Math.min(from.y, to.y) - radius;
+  const maxX = Math.max(from.x, to.x) + radius;
+  const maxY = Math.max(from.y, to.y) + radius;
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/** 2つの DirtyRect の和集合（bounding box）を返す。 */
+export function mergeDirtyRects(a: DirtyRect, b: DirtyRect): DirtyRect {
+  const minX = Math.min(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxX = Math.max(a.x + a.width, b.x + b.width);
+  const maxY = Math.max(a.y + a.height, b.y + b.height);
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * 複数線分（1 rAF フレームぶんの pending queue）をまとめた DirtyRect を返す。
+ * 空配列の場合は null（呼び出し側は全面再合成にフォールバックすること）。
+ */
+export function dirtyRectForSegments(segments: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }>, brushSize: number, margin = 0): DirtyRect | null {
+  if (segments.length === 0) {
+    return null;
+  }
+  let rect = segmentDirtyRect(segments[0]!.from, segments[0]!.to, brushSize, margin);
+  for (let index = 1; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    rect = mergeDirtyRects(rect, segmentDirtyRect(segment.from, segment.to, brushSize, margin));
+  }
+  return rect;
+}
+
+/**
+ * DirtyRect を canvas 境界内・整数ピクセルへクランプする。`clearRect` / sub-rect `drawImage` の
+ * 引数は整数座標である必要はないが、境界外の負サイズ・NaN を避けるために正規化する。
+ */
+export function clampDirtyRectToCanvas(rect: DirtyRect, canvasWidth: number, canvasHeight: number): DirtyRect {
+  const x1 = Math.max(0, Math.floor(rect.x));
+  const y1 = Math.max(0, Math.floor(rect.y));
+  const x2 = Math.min(canvasWidth, Math.ceil(rect.x + rect.width));
+  const y2 = Math.min(canvasHeight, Math.ceil(rect.y + rect.height));
+  return { x: x1, y: y1, width: Math.max(0, x2 - x1), height: Math.max(0, y2 - y1) };
 }
 
 export function composeFinalMaskDataUrl(layers: MaskLayerSet, includeSamPreview = false) {

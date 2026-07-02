@@ -11,7 +11,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { distanceToSegmentSq, normalizePromptBox, sampleBrushPromptPoints } from "./maskCanvas.ts";
+import {
+  clampDirtyRectToCanvas,
+  dirtyRectForSegments,
+  distanceToSegmentSq,
+  mergeDirtyRects,
+  normalizePromptBox,
+  sampleBrushPromptPoints,
+  segmentDirtyRect
+} from "./maskCanvas.ts";
 
 test("distanceToSegmentSq: distance to a degenerate segment (from === to) is distance to that point", () => {
   const point = { x: 3, y: 4 };
@@ -119,4 +127,68 @@ test("sampleBrushPromptPoints: only samples pixels at painted grid cells, skippi
   assert.equal(points.length, 1);
   assert.equal(points[0]!.x, 15);
   assert.equal(points[0]!.y, 5);
+});
+
+test("segmentDirtyRect: bbox of a point stroke (from === to) is centered arc of radius brushSize/2", () => {
+  const rect = segmentDirtyRect({ x: 10, y: 10 }, { x: 10, y: 10 }, 8, 0);
+  assert.deepEqual(rect, { x: 6, y: 6, width: 8, height: 8 });
+});
+
+test("segmentDirtyRect: bbox of a diagonal segment expands by brush radius and margin on all sides", () => {
+  const rect = segmentDirtyRect({ x: 0, y: 0 }, { x: 10, y: 20 }, 4, 1);
+  // radius = brushSize/2 + margin = 2 + 1 = 3
+  assert.deepEqual(rect, { x: -3, y: -3, width: 16, height: 26 });
+});
+
+test("segmentDirtyRect: handles reversed from/to (to before from) the same as forward order", () => {
+  const forward = segmentDirtyRect({ x: 0, y: 0 }, { x: 10, y: 10 }, 2, 0);
+  const reversed = segmentDirtyRect({ x: 10, y: 10 }, { x: 0, y: 0 }, 2, 0);
+  assert.deepEqual(forward, reversed);
+});
+
+test("mergeDirtyRects: union of two disjoint rects covers both", () => {
+  const a = { x: 0, y: 0, width: 10, height: 10 };
+  const b = { x: 20, y: 5, width: 5, height: 5 };
+  assert.deepEqual(mergeDirtyRects(a, b), { x: 0, y: 0, width: 25, height: 10 });
+});
+
+test("mergeDirtyRects: a rect fully inside another is absorbed without changing the bbox", () => {
+  const outer = { x: 0, y: 0, width: 100, height: 100 };
+  const inner = { x: 40, y: 40, width: 5, height: 5 };
+  assert.deepEqual(mergeDirtyRects(outer, inner), outer);
+});
+
+test("dirtyRectForSegments: returns null for an empty segment queue", () => {
+  assert.equal(dirtyRectForSegments([], 10), null);
+});
+
+test("dirtyRectForSegments: single segment matches segmentDirtyRect", () => {
+  const segments = [{ from: { x: 0, y: 0 }, to: { x: 10, y: 0 } }];
+  assert.deepEqual(dirtyRectForSegments(segments, 4, 0), segmentDirtyRect({ x: 0, y: 0 }, { x: 10, y: 0 }, 4, 0));
+});
+
+test("dirtyRectForSegments: multiple segments produce the union bbox across the whole queue", () => {
+  const segments = [
+    { from: { x: 0, y: 0 }, to: { x: 5, y: 0 } },
+    { from: { x: 50, y: 50 }, to: { x: 60, y: 55 } }
+  ];
+  const rect = dirtyRectForSegments(segments, 2, 0);
+  // radius = 1; combined bbox of [-1,-1]..[6,1] and [49,49]..[61,56]
+  assert.deepEqual(rect, { x: -1, y: -1, width: 62, height: 57 });
+});
+
+test("clampDirtyRectToCanvas: rect fully inside canvas rounds outward to integer pixels", () => {
+  const rect = clampDirtyRectToCanvas({ x: 1.5, y: 2.4, width: 10.2, height: 5.1 }, 100, 100);
+  assert.deepEqual(rect, { x: 1, y: 2, width: 11, height: 6 });
+});
+
+test("clampDirtyRectToCanvas: clamps negative origin and overflow to the canvas bounds", () => {
+  const rect = clampDirtyRectToCanvas({ x: -5, y: -5, width: 20, height: 20 }, 10, 10);
+  assert.deepEqual(rect, { x: 0, y: 0, width: 10, height: 10 });
+});
+
+test("clampDirtyRectToCanvas: a rect entirely outside the canvas clamps to zero size", () => {
+  const rect = clampDirtyRectToCanvas({ x: 200, y: 200, width: 10, height: 10 }, 100, 100);
+  assert.equal(rect.width, 0);
+  assert.equal(rect.height, 0);
 });
