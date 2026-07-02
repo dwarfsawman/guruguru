@@ -5,7 +5,7 @@ import {
   requiresFullDenoise,
   requiresParentAsset
 } from "../shared/generationMode";
-import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
+import { DEFAULT_POSE_MODEL_BASE_URL, DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { ComfySettings, GenerationMode, GenerationRequest, InpaintOptions } from "../shared/types";
 import type {
   Asset,
@@ -45,7 +45,7 @@ import { renderHome } from "./views/homeView";
 import { renderIterationTracker } from "./views/iterationTree";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
 import { defaultPrompt, defaultNegativePrompt, renderGenerationPanel } from "./views/generationPanel";
-import { renderAssetModal } from "./views/assetModal";
+import { renderAssetModal, type MaskPanelTab } from "./views/assetModal";
 import type {
   WebSamModelStatus,
   WebSamPromptMode,
@@ -98,6 +98,10 @@ import {
   snapshotPaintLayer
 } from "./paintCanvas";
 import { renderPaintToolPanel } from "./views/paintPanel";
+import { buildPoseModelUrls, defaultPoseModel } from "./pose/models";
+import type { PoseWorkerProgress, PoseWorkerRequest, PoseWorkerResponse } from "./pose/types";
+import type { PoseDraft } from "./poseTypes";
+import { defaultPoseDraft, mediapipeToOpenPose, normalizePoseDraft } from "./poseDraft";
 
 type ComfyConnectionState = "unknown" | "checking" | "connected" | "disconnected";
 
@@ -160,6 +164,11 @@ let webSamRequestId = 0;
 let latestWebSamLoadRequestId = 0;
 let latestWebSamEncodeRequestId = 0;
 let latestWebSamDecodeRequestId = 0;
+let poseWorker: Worker | null = null;
+let poseRequestId = 0;
+let latestPoseLoadRequestId = 0;
+let latestPoseDetectRequestId = 0;
+let posePendingDetect = false;
 
 const state: {
   settings: ComfySettings | null;
@@ -191,6 +200,8 @@ const state: {
   activeWorkflowDiagramTemplateId: string | null;
   paintEditMode: boolean;
   paintDrafts: Record<string, PaintDraft>;
+  maskPanelTab: MaskPanelTab;
+  poseDrafts: Record<string, PoseDraft>;
 } = {
   settings: null,
   projects: [],
@@ -226,7 +237,9 @@ const state: {
   workflowImportDraft: defaultWorkflowImportDraft(),
   activeWorkflowDiagramTemplateId: null,
   paintEditMode: false,
-  paintDrafts: {}
+  paintDrafts: {},
+  maskPanelTab: "mask",
+  poseDrafts: {}
 };
 
 const pendingAutoCollectRoundIds = new Set<string>();
@@ -362,6 +375,10 @@ function bindEvents() {
       updateSmartMaskDraftFromControl(target);
       return;
     }
+    if (target.dataset.poseField) {
+      updatePoseDraftFromControl(target);
+      return;
+    }
     if (target.dataset.inpaintField) {
       updateInpaintDraftFromControl(target);
       return;
@@ -421,6 +438,10 @@ function bindEvents() {
     }
     if (target.dataset.smartMaskField) {
       updateSmartMaskDraftFromControl(target);
+      return;
+    }
+    if (target.dataset.poseField) {
+      updatePoseDraftFromControl(target);
       return;
     }
   });
@@ -603,7 +624,7 @@ function bindEvents() {
     if (target.id !== "maskCanvas") {
       return;
     }
-    if (!state.maskEditMode) {
+    if (!state.maskEditMode || state.maskPanelTab === "pose") {
       return;
     }
     event.preventDefault();
@@ -824,6 +845,7 @@ function selectRound(roundId: string) {
   state.deletePreviewRoundId = null;
   state.maskEditMode = false;
   state.paintEditMode = false;
+  state.maskPanelTab = "mask";
   activeImagePan = null;
   render();
 }
@@ -840,6 +862,7 @@ function openAssetDetail(assetId: string) {
   const draft = inpaintDraftForAsset(assetId);
   state.maskEditMode = draft?.enabled === true;
   state.paintEditMode = false;
+  state.maskPanelTab = "mask";
   state.maskToolbarMinimized = false;
   state.maskToolbarPos = null;
   activeImagePan = null;
@@ -856,9 +879,12 @@ function closeAssetDetail() {
   activePaintStroke = null;
   activeImagePan = null;
   void destroyWebSamWorkerSession();
+  void destroyPoseWorkerSession();
+  posePendingDetect = false;
   state.activeAssetId = null;
   state.maskEditMode = false;
   state.paintEditMode = false;
+  state.maskPanelTab = "mask";
   state.maskToolbarMinimized = false;
   state.maskToolbarPos = null;
   maskToolbarDrag = null;
@@ -1025,6 +1051,14 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       clearActiveMaskCanvas();
     } else if (action === "invert-mask") {
       await invertActiveMask();
+    } else if (action === "set-mask-panel-tab") {
+      setMaskPanelTab(target.dataset.tab === "pose" ? "pose" : "mask");
+    } else if (action === "pose-load-model") {
+      await loadActivePoseModel();
+    } else if (action === "pose-detect") {
+      await requestPoseDetect();
+    } else if (action === "pose-reset") {
+      await resetPoseDetection();
     } else if (action === "websam-load-model" || action === "websam-retry") {
       await loadActiveWebSamModel();
     } else if (action === "websam-decode") {
@@ -1097,6 +1131,8 @@ async function loadHome() {
   state.maskEditMode = false;
   state.paintEditMode = false;
   state.paintDrafts = {};
+  state.maskPanelTab = "mask";
+  state.poseDrafts = {};
   state.deletePreviewRoundId = null;
   state.iterationScroll = null;
   state.workflowImportModalOpen = false;
@@ -1120,6 +1156,8 @@ async function openProject(projectId: string) {
   state.maskEditMode = false;
   state.paintEditMode = false;
   state.paintDrafts = {};
+  state.maskPanelTab = "mask";
+  state.poseDrafts = {};
   state.deletePreviewRoundId = null;
   state.iterationScroll = null;
   state.workflowImportModalOpen = false;
@@ -1929,7 +1967,7 @@ function getMaskBrushCursorElement(): SVGCircleElement | null {
 
 function updateMaskBrushCursor(event: PointerEvent) {
   const canvas = event.currentTarget as HTMLCanvasElement | null;
-  if (!canvas || !state.maskEditMode) {
+  if (!canvas || !state.maskEditMode || state.maskPanelTab === "pose") {
     return;
   }
   const assetId = canvas.dataset.assetId ?? state.activeAssetId;
@@ -3377,6 +3415,316 @@ async function destroyWebSamWorkerSession() {
   postWebSamMessage({ type: "destroy", requestId });
 }
 
+// ---- Pose（MediaPipe Pose Landmarker）worker 統合 ----
+// WebSAM worker 統合（ensureWebSamWorker / handleWebSamWorkerResponse）と同型。
+// pose-worker.js は IIFE bundle のクラシック worker（MediaPipe の wasm グルーが
+// module worker 非対応のため `{ type: "module" }` を付けない）。
+
+function ensurePoseWorker() {
+  if (poseWorker) {
+    return poseWorker;
+  }
+  poseWorker = new Worker("/pose-worker.js");
+  poseWorker.addEventListener("message", (event: MessageEvent<PoseWorkerResponse>) => {
+    void handlePoseWorkerResponse(event.data);
+  });
+  poseWorker.addEventListener("error", (event) => {
+    updateActivePoseDraft({
+      modelStatus: "error",
+      modelError: event.message || "Pose Worker initialization failed.",
+      modelStatusText: "Error"
+    });
+  });
+  return poseWorker;
+}
+
+function postPoseMessage(message: PoseWorkerRequest) {
+  ensurePoseWorker().postMessage(message);
+}
+
+function nextPoseRequestId() {
+  poseRequestId += 1;
+  return poseRequestId;
+}
+
+function poseDraftForAsset(assetId: string | null | undefined) {
+  const stored = assetId ? state.poseDrafts[assetId] : null;
+  if (!stored) {
+    return null;
+  }
+  const normalized = normalizePoseDraft(stored);
+  state.poseDrafts[normalized.parentAssetId] = normalized;
+  return normalized;
+}
+
+function setPoseDraft(draft: PoseDraft) {
+  const normalized = normalizePoseDraft(draft);
+  state.poseDrafts[normalized.parentAssetId] = normalized;
+}
+
+function ensurePoseDraft(assetId: string) {
+  const draft = poseDraftForAsset(assetId) ?? defaultPoseDraft(assetId);
+  state.poseDrafts[assetId] = draft;
+  return draft;
+}
+
+function updateActivePoseDraft(patch: Partial<PoseDraft>) {
+  const assetId = state.activeAssetId;
+  const draft = assetId ? poseDraftForAsset(assetId) : null;
+  if (!assetId || !draft) {
+    return;
+  }
+  setPoseDraft({ ...draft, ...patch });
+  render();
+}
+
+function setMaskPanelTab(tab: MaskPanelTab) {
+  if (state.maskPanelTab === tab) {
+    return;
+  }
+  if (tab === "pose") {
+    // マスクタブを離れる前に描画途中のストロークを確定しておく
+    commitActiveMaskCanvas();
+    if (state.activeAssetId) {
+      ensurePoseDraft(state.activeAssetId);
+    }
+  }
+  state.maskPanelTab = tab;
+  render();
+}
+
+async function loadActivePoseModel() {
+  const assetId = state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const draft = ensurePoseDraft(assetId);
+  const model = defaultPoseModel();
+  const urls = buildPoseModelUrls(DEFAULT_POSE_MODEL_BASE_URL, model);
+  if (!urls) {
+    setPoseDraft({
+      ...draft,
+      modelStatus: "missing-url",
+      modelError: "ポーズモデルURLが未設定です。",
+      modelStatusText: "モデルURL未設定"
+    });
+    render();
+    return;
+  }
+  const requestId = nextPoseRequestId();
+  latestPoseLoadRequestId = requestId;
+  setPoseDraft({
+    ...draft,
+    modelStatus: "downloading",
+    modelDownloadProgress: 0,
+    modelError: "",
+    modelStatusText: "モデル確認中"
+  });
+  render();
+  postPoseMessage({ type: "load-model", requestId, model, urls });
+}
+
+async function requestPoseDetect() {
+  const assetId = state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const draft = ensurePoseDraft(assetId);
+  if (draft.modelStatus !== "ready") {
+    posePendingDetect = true;
+    if (
+      draft.modelStatus === "idle" ||
+      draft.modelStatus === "not-cached" ||
+      draft.modelStatus === "cached" ||
+      draft.modelStatus === "missing-url" ||
+      draft.modelStatus === "error"
+    ) {
+      await loadActivePoseModel();
+    }
+    return;
+  }
+  await sendPoseDetect(assetId);
+}
+
+async function sendPoseDetect(assetId: string) {
+  const image = document.querySelector<HTMLImageElement>("#previewImage");
+  const draft = poseDraftForAsset(assetId);
+  if (!image || !draft) {
+    return;
+  }
+  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
+    await new Promise<void>((resolve, reject) => {
+      image.addEventListener("load", () => resolve(), { once: true });
+      image.addEventListener("error", () => reject(new Error("画像を読み込めませんでした。")), { once: true });
+    });
+  }
+  const raw = imageToRawData(image);
+  const requestId = nextPoseRequestId();
+  latestPoseDetectRequestId = requestId;
+  setPoseDraft({
+    ...draft,
+    modelStatus: "detecting",
+    modelStatusText: "ポーズ検出中",
+    modelError: "",
+    imageWidth: raw.width,
+    imageHeight: raw.height
+  });
+  render();
+  postPoseMessage({ type: "detect", requestId, imageData: raw });
+}
+
+async function resetPoseDetection() {
+  const assetId = state.activeAssetId;
+  if (!assetId) {
+    return;
+  }
+  const current = ensurePoseDraft(assetId);
+  setPoseDraft({ ...current, points: null, source: "detected", enabled: false });
+  render();
+  await requestPoseDetect();
+}
+
+async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
+  const assetId = state.activeAssetId;
+  const draft = assetId ? poseDraftForAsset(assetId) : null;
+  if (!assetId || !draft) {
+    return;
+  }
+
+  if (message.type === "progress") {
+    if (message.requestId < latestPoseLoadRequestId && message.progress.status !== "detecting") {
+      return;
+    }
+    setPoseDraft({
+      ...draft,
+      modelStatus: message.progress.status,
+      modelDownloadProgress: message.progress.totalBytes > 0 ? message.progress.bytesDownloaded / message.progress.totalBytes : 0,
+      modelStatusText: poseProgressText(message.progress),
+      modelError: ""
+    });
+    render();
+    return;
+  }
+
+  if (message.type === "model-ready") {
+    if (message.requestId !== latestPoseLoadRequestId) {
+      return;
+    }
+    setPoseDraft({
+      ...draft,
+      modelStatus: "ready",
+      modelDownloadProgress: 1,
+      modelStatusText: message.fallback ? "GPU不可のためCPUで初期化" : `${message.backend} 初期化済み`,
+      modelError: ""
+    });
+    render();
+    if (posePendingDetect) {
+      posePendingDetect = false;
+      await sendPoseDetect(assetId);
+    }
+    return;
+  }
+
+  if (message.type === "detected") {
+    if (message.requestId !== latestPoseDetectRequestId) {
+      return;
+    }
+    const current = poseDraftForAsset(assetId);
+    if (!current) {
+      return;
+    }
+    const width = current.imageWidth ?? 0;
+    const height = current.imageHeight ?? 0;
+    const landmarks = message.landmarks[0] ?? null;
+    if (!landmarks || landmarks.length === 0 || width <= 0 || height <= 0) {
+      setPoseDraft({
+        ...current,
+        modelStatus: "ready",
+        modelStatusText: "人物ポーズを検出できませんでした",
+        modelError: "",
+        points: null
+      });
+      render();
+      return;
+    }
+    setPoseDraft({
+      ...current,
+      modelStatus: "ready",
+      modelStatusText: "検出完了",
+      modelError: "",
+      points: mediapipeToOpenPose(landmarks, width, height),
+      source: "detected",
+      enabled: true
+    });
+    render();
+    return;
+  }
+
+  if (message.type === "error") {
+    if (message.requestId < Math.max(latestPoseLoadRequestId, latestPoseDetectRequestId)) {
+      return;
+    }
+    posePendingDetect = false;
+    setPoseDraft({
+      ...draft,
+      modelStatus: "error",
+      modelError: message.message,
+      modelStatusText: "Error"
+    });
+    render();
+  }
+}
+
+function poseProgressText(progress: PoseWorkerProgress) {
+  if (progress.status === "cached") {
+    return "キャッシュ済み";
+  }
+  if (progress.status === "downloading") {
+    return `ダウンロード中 ${formatModelBytes(progress.bytesDownloaded)} / ${formatModelBytes(progress.totalBytes)}`;
+  }
+  if (progress.status === "initializing") {
+    return "初期化中";
+  }
+  if (progress.status === "detecting") {
+    return "ポーズ検出中";
+  }
+  if (progress.status === "not-cached") {
+    return "未取得";
+  }
+  return progress.status;
+}
+
+function updatePoseDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
+  const field = control.dataset.poseField;
+  const assetId = state.activeAssetId;
+  if (!field || !assetId) {
+    return;
+  }
+  const current = ensurePoseDraft(assetId);
+  const next: PoseDraft = { ...current };
+  if (field === "enabled" && control instanceof HTMLInputElement) {
+    next.enabled = control.checked;
+  } else if (field === "strength") {
+    next.strength = clampNumber(Number(control.value), 0, 2, 1);
+  } else if (field === "startPercent") {
+    next.startPercent = clampNumber(Number(control.value), 0, 1, 0);
+  } else if (field === "endPercent") {
+    next.endPercent = clampNumber(Number(control.value), 0, 1, 1);
+  }
+  setPoseDraft(next);
+  if (field === "enabled") {
+    render();
+  }
+}
+
+async function destroyPoseWorkerSession() {
+  if (!poseWorker) {
+    return;
+  }
+  const requestId = nextPoseRequestId();
+  postPoseMessage({ type: "destroy", requestId });
+}
+
 function inpaintRequestForParent(parentAssetId: string | null, generationMode: string): InpaintOptions | null {
   if (generationMode !== "img2img" || !parentAssetId) {
     return null;
@@ -4015,7 +4363,19 @@ function renderAssetModalView() {
   const promptValue = currentPositivePromptValue(asset);
   const batchSizeValue = currentBatchSizeValue();
   const paintDraft = state.paintEditMode ? paintDraftForAsset(asset.id) ?? defaultPaintDraft(asset.id) : null;
-  return renderAssetModal(asset, inpaint, editing, promptValue, batchSizeValue, state.maskPanelWidths, state.paintEditMode, paintDraft);
+  const poseDraft = poseDraftForAsset(asset.id);
+  return renderAssetModal(
+    asset,
+    inpaint,
+    editing,
+    promptValue,
+    batchSizeValue,
+    state.maskPanelWidths,
+    state.paintEditMode,
+    paintDraft,
+    state.maskPanelTab,
+    poseDraft
+  );
 }
 
 function currentPositivePromptValue(asset: Asset) {
