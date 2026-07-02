@@ -21,6 +21,8 @@ import type { WebSamModelStatus } from "../websam/types";
 import type { InpaintDraft } from "../maskTypes";
 import { defaultInpaintDraft, hasActiveMaskData, maskedContentOptions } from "../maskDraft";
 import { normalizePromptBox } from "../maskCanvas";
+import type { PaintDraft } from "../paintTypes";
+import { renderPaintToggleButton, renderPaintToolPanel } from "./paintPanel";
 
 function clampNumber(value: number, min: number, max: number, fallback: number) {
   if (!Number.isFinite(value)) {
@@ -43,21 +45,27 @@ export function renderAssetModal(
   inpaint: InpaintDraft | null,
   editing: boolean,
   promptValue: string,
-  batchSizeValue: number
+  batchSizeValue: number,
+  paintEditing = false,
+  paintDraft: PaintDraft | null = null
 ) {
   if (!asset) {
     return "";
   }
   const draft = inpaint ?? defaultInpaintDraft(asset.id);
-  const zoomStyle = ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`;
+  const anyEditing = editing || paintEditing;
+  const zoomStyle = paintEditing && paintDraft
+    ? ` style="--mask-zoom: ${formatCssNumber(paintDraft.zoomScale)}; --mask-pan-x: ${formatCssNumber(paintDraft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(paintDraft.panOffset.y)}px;"`
+    : ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`;
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
-  const media = renderPreviewMedia(asset, draft, editing, zoomStyle);
+  const media = renderPreviewMedia(asset, draft, editing, zoomStyle, paintEditing);
   const footer = renderPreviewFooter(asset, info);
   return `
-    <div class="preview-modal ${editing ? "mask-editor-open" : ""}" role="dialog" aria-modal="true">
-      <div class="preview-content ${editing ? "mask-mode" : ""}">
+    <div class="preview-modal ${anyEditing ? "mask-editor-open" : ""}" role="dialog" aria-modal="true">
+      <div class="preview-content ${anyEditing ? "mask-mode" : ""}">
         <div class="preview-top-controls">
           ${renderMaskToggleButton(editing)}
+          ${renderPaintToggleButton(paintEditing)}
           ${editing ? renderMaskModeIndicator(inpaint, asset.id) : ""}
         </div>
         ${editing ? `
@@ -69,6 +77,14 @@ export function renderAssetModal(
             </main>
             ${renderSmartMaskSidebar(draft)}
           </div>
+        ` : paintEditing && paintDraft ? `
+          <div class="mask-editor-layout paint-editor-layout">
+            ${renderPaintToolPanel(paintDraft)}
+            <main class="preview-center">
+              ${media}
+              ${footer}
+            </main>
+          </div>
         ` : `
           ${media}
           ${footer}
@@ -79,12 +95,13 @@ export function renderAssetModal(
   `;
 }
 
-export function renderPreviewMedia(asset: Asset, draft: InpaintDraft, editing: boolean, zoomStyle: string) {
+export function renderPreviewMedia(asset: Asset, draft: InpaintDraft, editing: boolean, zoomStyle: string, paintEditing = false) {
   return `
-    <div class="preview-media${editing ? " mask-preview-media" : ""}"${zoomStyle}>
+    <div class="preview-media${editing || paintEditing ? " mask-preview-media" : ""}"${zoomStyle}>
       <div class="mask-zoom-stage">
         <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
         ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
+        ${paintEditing ? `<canvas id="paintCanvas" class="mask-canvas paint-canvas" data-asset-id="${asset.id}" aria-label="ペイントキャンバス"></canvas>` : ""}
       </div>
     </div>
   `;
