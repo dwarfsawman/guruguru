@@ -164,7 +164,8 @@
       "positive": ["748", 0],
       "negative": ["749", 0],
       "control_net": ["753", 0],
-      "image": ["754", 0]
+      "image": ["754", 0],
+      "vae": ["710", 0]
     },
     "class_type": "ControlNetApplyAdvanced",
     "_meta": {
