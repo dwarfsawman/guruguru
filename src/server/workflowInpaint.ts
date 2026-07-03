@@ -164,7 +164,9 @@ export function patchInpaintLatentPath(
 // inpaint latent path. If the resolved node is already claimed as the ControlNet control-image
 // supplier (roleMap.controlnet_image_node), a fresh LoadImage is added instead -- otherwise the
 // parent image and the pose/control image would collide on the same node (one would clobber the
-// other depending on patch order).
+// other depending on patch order). A node that is not actually a LoadImage (a stale roleMap
+// pointing at e.g. ControlNetApplyAdvanced -- normally already stripped by sanitizeRoleMap) is
+// likewise never reused: wiring the latent path off its output would corrupt the graph.
 function resolveParentLoadImageNode(workflow: JsonObject, roleMap: Record<string, unknown>, uploadedImageName: string): string {
   const controlImageNodeId = stringRole(roleMap.controlnet_image_node);
   const resolvedNodeId =
@@ -172,7 +174,7 @@ function resolveParentLoadImageNode(workflow: JsonObject, roleMap: Record<string
     nodeIdFromRolePath(roleMap.load_image_input) ??
     findNodeIdByExactClass(workflow, "LoadImage");
 
-  if (resolvedNodeId && resolvedNodeId !== controlImageNodeId) {
+  if (resolvedNodeId && resolvedNodeId !== controlImageNodeId && nodeClassIncludes(workflow, resolvedNodeId, ["LoadImage"])) {
     return resolvedNodeId;
   }
 

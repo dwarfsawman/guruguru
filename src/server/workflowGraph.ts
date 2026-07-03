@@ -201,12 +201,20 @@ export function sanitizeRoleMap(workflow: JsonObject, roleMap: Record<string, un
     delete sanitized.vae_encode_image_input;
   }
 
-  // load_image_node / load_image_input: drop if it points at the ControlNetApplyAdvanced
-  // control-supplier LoadImage, and move that node id into controlnet_image_node (if unset) so
-  // the "parent image as control image" behavior (generationMode "controlnet") is preserved.
+  // load_image_node / load_image_input: drop if the referenced node is not a LoadImage node at
+  // all (e.g. a stale roleMap pointing at ControlNetApplyAdvanced.inputs.image -- left as-is, the
+  // img2img patch would wire an ImageScale's image input straight to that node's CONDITIONING
+  // output and ComfyUI would reject the whole prompt with a return_type_mismatch).
   const controlImageNodeId = findControlNetImageNodeId(workflow, sanitized);
   const loadImageNodeId = stringRole(sanitized.load_image_node) ?? nodeIdFromRolePath(sanitized.load_image_input);
-  if (controlImageNodeId && loadImageNodeId === controlImageNodeId) {
+  if (loadImageNodeId && !nodeClassIncludes(workflow, loadImageNodeId, ["LoadImage"])) {
+    delete sanitized.load_image_node;
+    delete sanitized.load_image_input;
+  }
+  // ... and drop if it points at the ControlNetApplyAdvanced control-supplier LoadImage, moving
+  // that node id into controlnet_image_node (if unset) so the "parent image as control image"
+  // behavior (generationMode "controlnet") is preserved.
+  else if (controlImageNodeId && loadImageNodeId === controlImageNodeId) {
     delete sanitized.load_image_node;
     delete sanitized.load_image_input;
     if (!stringRole(sanitized.controlnet_image_node)) {
