@@ -1362,7 +1362,8 @@ input[type="range"]::-webkit-slider-thumb {
 
 .card-number,
 .seed-chip,
-.mask-badge {
+.mask-badge,
+.pose-badge {
   position: absolute;
   z-index: 9;
   border-radius: 5px;
@@ -1416,6 +1417,32 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .mask-badge.inactive svg {
+  opacity: 0.5;
+}
+
+.pose-badge {
+  right: 8px;
+  bottom: 76px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(76, 29, 149, 0.78);
+  color: #ddd6fe;
+  padding: 4px 7px;
+  text-transform: uppercase;
+}
+
+.pose-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+.pose-badge.inactive {
+  background: rgba(100, 100, 110, 0.55);
+  color: rgba(180, 180, 190, 0.6);
+}
+
+.pose-badge.inactive svg {
   opacity: 0.5;
 }
 

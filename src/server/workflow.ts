@@ -2,6 +2,7 @@ import { randomInt } from "node:crypto";
 import type { GenerationRequest } from "../shared/types";
 import { type JsonObject, deepClone, ensureWorkflowObject, hashJson, normalizeRoleMap, setNodeInput, setRolePath } from "./workflowGraph";
 import { patchImg2ImgLatentPath, patchInpaintLatentPath } from "./workflowInpaint";
+import { patchControlNetPath } from "./workflowControlNet";
 
 export { ensureWorkflowObject, hashJson, normalizeRoleMap };
 
@@ -12,6 +13,7 @@ export interface PatchContext {
   request: GenerationRequest;
   uploadedImageName?: string | null;
   uploadedMaskName?: string | null;
+  uploadedControlImageName?: string | null;
 }
 
 export function resolveSeed(request: GenerationRequest, parentSeed?: number | null): number {
@@ -61,15 +63,24 @@ export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unk
   if (context.uploadedImageName) {
     setRolePath(workflow, roleMap.load_image_input, context.uploadedImageName);
     setRolePath(workflow, roleMap.ipadapter_image_input, context.uploadedImageName);
-    setRolePath(workflow, roleMap.controlnet_image_input, context.uploadedImageName);
     setNodeInput(workflow, roleMap.load_image_node, ["image"], context.uploadedImageName);
     setNodeInput(workflow, roleMap.ipadapter_image_node, ["image"], context.uploadedImageName);
-    setNodeInput(workflow, roleMap.controlnet_image_node, ["image"], context.uploadedImageName);
+    // A pose attachment claims the controlnet_image_* role exclusively -- otherwise the parent
+    // image injected here would be clobbered/reclobbered by patchControlNetPath below anyway,
+    // and skipping it avoids wiring the parent image into an unrelated control image slot.
+    if (!request.controlnet) {
+      setRolePath(workflow, roleMap.controlnet_image_input, context.uploadedImageName);
+      setNodeInput(workflow, roleMap.controlnet_image_node, ["image"], context.uploadedImageName);
+    }
     if (request.generationMode === "img2img" && request.inpaint && context.uploadedMaskName) {
       patchInpaintLatentPath(workflow, roleMap, context.uploadedImageName, context.uploadedMaskName, request);
     } else if (request.generationMode === "img2img") {
       patchImg2ImgLatentPath(workflow, roleMap, context.uploadedImageName, request);
     }
+  }
+
+  if (context.uploadedControlImageName && request.controlnet) {
+    patchControlNetPath(workflow, roleMap, context.uploadedControlImageName, request);
   }
 
   const savePrefix = typeof context.batchIndex === "number"

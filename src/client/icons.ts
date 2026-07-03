@@ -34,6 +34,10 @@ export function iconSave() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"></path><path d="M7 21v-8h10v8M7 3v5h8"></path></svg>`;
 }
 
+export function iconPose() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4.5" r="2.2"></circle><path d="M12 6.7v6M12 9l-4.5 2M12 9l4.5 2M12 12.7 8 20M12 12.7l4 7.3"></path></svg>`;
+}
+
 export function iconPulse() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6"></path></svg>`;
 }

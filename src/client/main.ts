@@ -6,7 +6,7 @@ import {
   requiresParentAsset
 } from "../shared/generationMode";
 import { DEFAULT_POSE_MODEL_BASE_URL, DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
-import type { ComfySettings, GenerationMode, GenerationRequest, InpaintOptions } from "../shared/types";
+import type { ComfySettings, ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions } from "../shared/types";
 import type {
   Asset,
   AssetParent,
@@ -102,7 +102,8 @@ import { renderPaintToolPanel } from "./views/paintPanel";
 import { buildPoseModelUrls, defaultPoseModel } from "./pose/models";
 import type { PoseWorkerProgress, PoseWorkerRequest, PoseWorkerResponse } from "./pose/types";
 import type { PoseDraft } from "./poseTypes";
-import { defaultPoseDraft, mediapipeToOpenPose, normalizePoseDraft } from "./poseDraft";
+import { defaultPoseDraft, hasActivePoseData, mediapipeToOpenPose, normalizePoseDraft } from "./poseDraft";
+import { renderPoseSkeletonDataUrl } from "./poseSkeleton";
 
 type ComfyConnectionState = "unknown" | "checking" | "connected" | "disconnected";
 
@@ -1568,6 +1569,7 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     generationMode
   );
   const inpaint = inpaintRequestForParent(parentAssetId, generationMode);
+  const controlnet = controlnetRequestForParent(parentAssetId, template);
   const request: GenerationRequest = {
     templateId: template.id,
     prompt: form.prompt,
@@ -1588,6 +1590,9 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
   };
   if (inpaint) {
     request.inpaint = inpaint;
+  }
+  if (controlnet) {
+    request.controlnet = controlnet;
   }
   setGenerationDraftValue(generationMode === "img2img" ? "img2imgTemplateId" : "templateId", template.id);
   setGenerationDraftValue("generationMode", generationMode);
@@ -2685,6 +2690,7 @@ function renderProjectDetailView(detail: ProjectDetail) {
     state.busy,
     renderGenerationPanelView(detail, activeAsset),
     (assetId: string) => inpaintDraftForAsset(assetId),
+    (assetId: string) => poseDraftForAsset(assetId),
     state.showMaskGridTag,
     state.copiedSeedAssetId
   );
@@ -3902,6 +3908,38 @@ function inpaintRequestForParent(parentAssetId: string | null, generationMode: s
     onlyMaskedPadding: draft.onlyMaskedPadding,
     featherRadius: draft.featherRadius
   };
+}
+
+function controlnetRequestForParent(parentAssetId: string | null, template: { workflowJson: unknown }): ControlNetOptions | null {
+  if (!parentAssetId) {
+    return null;
+  }
+  const draft = poseDraftForAsset(parentAssetId);
+  if (!hasActivePoseData(draft) || draft.imageWidth === null || draft.imageHeight === null) {
+    return null;
+  }
+  if (!workflowHasControlNetApply(template.workflowJson)) {
+    return null;
+  }
+  const poseImageDataUrl = renderPoseSkeletonDataUrl(draft.points, draft.imageWidth, draft.imageHeight);
+  if (!poseImageDataUrl.startsWith("data:image/png;base64,")) {
+    return null;
+  }
+  return {
+    poseImageDataUrl,
+    strength: draft.strength,
+    startPercent: draft.startPercent,
+    endPercent: draft.endPercent
+  };
+}
+
+function workflowHasControlNetApply(workflowJson: unknown): boolean {
+  if (!workflowJson || typeof workflowJson !== "object") {
+    return false;
+  }
+  return Object.values(workflowJson as Record<string, unknown>).some((node) => {
+    return !!node && typeof node === "object" && (node as { class_type?: unknown }).class_type === "ControlNetApplyAdvanced";
+  });
 }
 
 /**

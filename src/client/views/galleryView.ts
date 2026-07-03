@@ -11,7 +11,9 @@
  */
 import type { Asset, ProjectDetail, Round } from "../../shared/apiTypes";
 import type { InpaintDraft } from "../maskTypes";
+import type { PoseDraft } from "../poseTypes";
 import { hasActiveMaskData } from "../maskDraft";
+import { poseDraftHasAttachment } from "../poseDraft";
 import { escapeHtml } from "../format";
 import {
   iconCheck,
@@ -21,6 +23,7 @@ import {
   iconImage,
   iconMask,
   iconPlay,
+  iconPose,
   iconStar,
   iconStop,
   iconTrash,
@@ -45,6 +48,7 @@ export function renderProjectDetail(
   busy: boolean,
   generationPanelHtml: string,
   getInpaintDraft: (assetId: string) => InpaintDraft | null,
+  getPoseDraft: (assetId: string) => PoseDraft | null,
   showMaskGridTag: boolean,
   copiedSeedAssetId: string | null
 ) {
@@ -78,7 +82,7 @@ export function renderProjectDetail(
         </div>
         <div class="gallery-scroll">
           <div class="image-grid cols-${gridCols}">
-            ${assets.length ? assets.map((asset) => renderAssetTile(asset, getInpaintDraft, showMaskGridTag, copiedSeedAssetId)).join("") : renderEmptyGallery(activeRound)}
+            ${assets.length ? assets.map((asset) => renderAssetTile(asset, getInpaintDraft, getPoseDraft, showMaskGridTag, copiedSeedAssetId)).join("") : renderEmptyGallery(activeRound)}
           </div>
         </div>
         ${renderIterationTracker(detail.rounds, activeRoundId, deletePreviewRoundId)}
@@ -128,6 +132,7 @@ export function renderSourceUploadButton(label: string) {
 export function renderAssetTile(
   asset: Asset,
   getInpaintDraft: (assetId: string) => InpaintDraft | null,
+  getPoseDraft: (assetId: string) => PoseDraft | null,
   showMaskGridTag: boolean,
   copiedSeedAssetId: string | null
 ) {
@@ -135,8 +140,9 @@ export function renderAssetTile(
   const favorite = asset.status === "favorite";
   const rejected = asset.status === "rejected";
   const masked = assetHasMaskIndicator(asset, getInpaintDraft);
+  const posed = poseDraftHasAttachment(getPoseDraft(asset.id));
   return `
-    <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""} ${masked ? "masked" : ""}">
+    <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""} ${masked ? "masked" : ""} ${posed ? "posed" : ""}">
       <button class="asset-card-main" data-id="${asset.id}" type="button" aria-label="Asset #${asset.batchIndex + 1}">
         <img class="gen-image" src="${asset.thumbnailMediumUrl || asset.thumbnailUrl}" alt="" loading="lazy" />
       </button>
@@ -151,6 +157,7 @@ export function renderAssetTile(
       </button>
       <span class="card-number">#${asset.batchIndex + 1}</span>
       ${masked ? `<button class="mask-badge ${showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="マスクタグ表示切替">${iconMask()}MASK</button>` : ""}
+      ${posed ? `<button class="pose-badge ${showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="ポーズタグ表示切替">${iconPose()}POSE</button>` : ""}
       <span class="seed-chip" data-action="copy-seed" data-id="${asset.id}" data-seed="${asset.seed ?? ""}">${copiedSeedAssetId === asset.id ? "copied" : `seed ${asset.seed ?? "-"}`}</span>
     </article>
   `;
