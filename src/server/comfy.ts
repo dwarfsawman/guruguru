@@ -153,9 +153,35 @@ export async function fetchViewImage(info: ComfyImageInfo): Promise<Buffer> {
 }
 
 export async function uploadImageToComfy(imagePath: string) {
-  const bytes = await readFile(imagePath);
+  return uploadImageBytesToComfy(await readFile(imagePath), basename(imagePath));
+}
+
+// 1x1 opaque black PNG. Unified-switch templates (Docs/ReferenceFlows/
+// Reference-UnifiedSwitchWorkflow.md) keep every branch's LoadImage/LoadImageMask nodes in the
+// graph even when a mode does not use them, and ComfyUI's prompt validation requires those
+// filenames to exist regardless of lazy evaluation -- so this placeholder is uploaded once per
+// process and written into every unused image input. Lazy evaluation ensures it is never read.
+const DUMMY_IMAGE_NAME = "guruguru-dummy.png";
+const DUMMY_IMAGE_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
+let dummyImageNamePromise: Promise<string> | null = null;
+
+export function ensureDummyComfyImage(): Promise<string> {
+  if (!dummyImageNamePromise) {
+    dummyImageNamePromise = uploadImageBytesToComfy(Buffer.from(DUMMY_IMAGE_BASE64, "base64"), DUMMY_IMAGE_NAME)
+      .then((uploaded) => uploaded.name)
+      .catch((error) => {
+        // Drop the cached failure so a later generation retries (e.g. after a ComfyUI restart).
+        dummyImageNamePromise = null;
+        throw error;
+      });
+  }
+  return dummyImageNamePromise;
+}
+
+async function uploadImageBytesToComfy(bytes: Buffer<ArrayBuffer>, filename: string) {
   const form = new FormData();
-  form.set("image", new Blob([bytes]), basename(imagePath));
+  form.set("image", new Blob([bytes]), filename);
   form.set("type", "input");
   form.set("overwrite", "true");
 
@@ -173,7 +199,7 @@ export async function uploadImageToComfy(imagePath: string) {
     ? uploaded.name
     : typeof uploaded.filename === "string"
       ? uploaded.filename
-      : basename(imagePath);
+      : filename;
 
   return {
     name,

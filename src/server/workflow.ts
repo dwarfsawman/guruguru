@@ -14,8 +14,9 @@ import {
 } from "./workflowGraph";
 import { patchImg2ImgLatentPath, patchInpaintLatentPath } from "./workflowInpaint";
 import { patchControlNetPath } from "./workflowControlNet";
+import { isUnifiedSwitchWorkflow, patchUnifiedSwitchWorkflow } from "./workflowUnifiedSwitch";
 
-export { ensureWorkflowObject, hashJson, normalizeRoleMap };
+export { ensureWorkflowObject, hashJson, normalizeRoleMap, isUnifiedSwitchWorkflow };
 
 export interface PatchContext {
   projectId: string;
@@ -25,6 +26,9 @@ export interface PatchContext {
   uploadedImageName?: string | null;
   uploadedMaskName?: string | null;
   uploadedControlImageName?: string | null;
+  // Placeholder image filename (already uploaded to ComfyUI) for image inputs on branches a
+  // unified-switch template does not execute; unused by the dynamic-patch path.
+  dummyImageName?: string | null;
 }
 
 export function resolveSeed(request: GenerationRequest, parentSeed?: number | null): number {
@@ -46,6 +50,13 @@ export function resolveSeed(request: GenerationRequest, parentSeed?: number | nu
 export function patchWorkflow(workflowJson: unknown, rawRoleMap: Record<string, unknown>, context: PatchContext) {
   const workflow = deepClone(workflowJson) as JsonObject;
   const { request } = context;
+
+  // Unified-switch templates (Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.md) are patched
+  // by value writes only -- no node insertion/rewiring and no roleMap involvement, so none of the
+  // roleMap misinference failure modes below apply to them.
+  if (isUnifiedSwitchWorkflow(workflow)) {
+    return patchUnifiedSwitchWorkflow(workflow, context, savePrefixForContext(context));
+  }
   // Defends against DB-stored templates whose roleMap was inferred before the inferRoleMap fix
   // (workflowRoleMap.ts) -- see Docs/Feature-PoseControlNet-Img2Img.md.
   const roleMap = sanitizeRoleMap(workflow, rawRoleMap);
@@ -109,11 +120,15 @@ export function patchWorkflow(workflowJson: unknown, rawRoleMap: Record<string, 
     }
   }
 
-  const savePrefix = typeof context.batchIndex === "number"
-    ? `guruguru/${context.projectId}/round_${String(context.roundIndex).padStart(3, "0")}/job_${String(context.batchIndex).padStart(3, "0")}`
-    : `guruguru/${context.projectId}/round_${String(context.roundIndex).padStart(3, "0")}`;
+  const savePrefix = savePrefixForContext(context);
   setRolePath(workflow, roleMap.save_prefix_input, savePrefix);
   setNodeInput(workflow, roleMap.save_image_node, ["filename_prefix"], savePrefix);
 
   return workflow;
+}
+
+function savePrefixForContext(context: PatchContext): string {
+  return typeof context.batchIndex === "number"
+    ? `guruguru/${context.projectId}/round_${String(context.roundIndex).padStart(3, "0")}/job_${String(context.batchIndex).padStart(3, "0")}`
+    : `guruguru/${context.projectId}/round_${String(context.roundIndex).padStart(3, "0")}`;
 }
