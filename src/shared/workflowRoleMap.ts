@@ -43,10 +43,18 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
   // captured separately below as controlnet_image_node).
   const controlNetApply = findNode(nodes, ["ControlNetApplyAdvanced"]);
   const controlNetImageNodeId = controlNetApply ? traceLoadImageConnection(nodes, controlNetApply, "image") : null;
+  // No unrestricted fallback here (unlike findInput's usual behavior): when the only LoadImage node
+  // in the workflow is excluded above (e.g. the reference ControlNet workflow, which has just one
+  // LoadImage and it is claimed by ControlNetApplyAdvanced), findInput's generic fallback would
+  // misinfer ControlNetApplyAdvanced.inputs.image itself as load_image_input (it happens to have an
+  // "image" input too) -- later wiring an ImageScale node straight to its CONDITIONING output.
   addInputPath(
     roleMap,
     "load_image_input",
-    findInput(nodes.filter((node) => node.id !== controlNetImageNodeId), ["image"], ["LoadImage"])
+    findInputInNodes(
+      nodes.filter((node) => node.id !== controlNetImageNodeId && node.classType.includes("LoadImage")),
+      ["image"]
+    )
   );
   const vaeEncode = findNode(nodes, ["VAEEncode"]);
   if (vaeEncode) {
