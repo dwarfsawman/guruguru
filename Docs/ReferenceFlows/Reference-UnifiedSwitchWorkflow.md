@@ -61,3 +61,9 @@ lazy によりダミーが実際に読まれることはない。
 
 - `761` VAEEncode に欠けていた `vae: ["710", 0]` を追加（元 JSON は実行エラーになる）
 - 孤立していた `755`（2個目の ControlNetLoader）を削除
+- `752` ControlNetApplyAdvanced に `vae: ["710", 0]` を追加（2026-07-03）。Chroma/Flux 系
+  ControlNet は VAE 接続が必須で、無いと prompt 検証は通るがサンプリング時に
+  `This Controlnet needs a VAE but none was provided` で失敗する（実機で発生）。
+  SD1.5/SDXL 系 ControlNet は vae 入力を無視するため接続していて害はない。
+  なお `patchUnifiedSwitchWorkflow` は vae 未接続の旧インポート済みテンプレートにも
+  自動でこの接続を復元するため、登録済みテンプレートの再インポートは不要。
