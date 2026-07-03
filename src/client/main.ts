@@ -1228,7 +1228,7 @@ async function openProject(projectId: string) {
   state.paintEditMode = false;
   state.paintDrafts = {};
   state.maskPanelTab = "mask";
-  state.poseDrafts = {};
+  state.poseDrafts = restoredDraft?.poseDrafts ?? {};
   state.deletePreviewRoundId = null;
   state.iterationScroll = null;
   state.workflowImportModalOpen = false;
@@ -2894,23 +2894,32 @@ function persistProjectDraft(projectId: string) {
   try {
     window.localStorage.setItem(
       draftStorageKey(projectId),
-      JSON.stringify({ generationDraft: state.generationDraft, inpaintDrafts: state.inpaintDrafts })
+      JSON.stringify({
+        generationDraft: state.generationDraft,
+        inpaintDrafts: state.inpaintDrafts,
+        poseDrafts: state.poseDrafts
+      })
     );
   } catch {
     // localStorage が使えない環境（プライベートブラウジング等）では永続化を諦める。
   }
 }
 
-function restoreProjectDraft(projectId: string): { generationDraft: GenerationDraft | null; inpaintDrafts: Record<string, InpaintDraft> } | null {
+function restoreProjectDraft(projectId: string): { generationDraft: GenerationDraft | null; inpaintDrafts: Record<string, InpaintDraft>; poseDrafts: Record<string, PoseDraft> } | null {
   try {
     const raw = window.localStorage.getItem(draftStorageKey(projectId));
     if (!raw) {
       return null;
     }
-    const parsed = JSON.parse(raw) as { generationDraft?: GenerationDraft | null; inpaintDrafts?: Record<string, InpaintDraft> };
+    const parsed = JSON.parse(raw) as {
+      generationDraft?: GenerationDraft | null;
+      inpaintDrafts?: Record<string, InpaintDraft>;
+      poseDrafts?: Record<string, PoseDraft>;
+    };
     return {
       generationDraft: parsed.generationDraft ?? null,
-      inpaintDrafts: parsed.inpaintDrafts ?? {}
+      inpaintDrafts: parsed.inpaintDrafts ?? {},
+      poseDrafts: parsed.poseDrafts ?? {}
     };
   } catch {
     return null;
@@ -3665,6 +3674,9 @@ function poseDraftForAsset(assetId: string | null | undefined) {
 function setPoseDraft(draft: PoseDraft) {
   const normalized = normalizePoseDraft(draft);
   state.poseDrafts[normalized.parentAssetId] = normalized;
+  if (state.currentProjectId) {
+    persistProjectDraft(state.currentProjectId);
+  }
 }
 
 function ensurePoseDraft(assetId: string) {
