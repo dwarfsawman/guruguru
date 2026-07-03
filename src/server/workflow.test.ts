@@ -1269,3 +1269,58 @@ test("resolveSeed: seedMode=increment but seed is null falls back to random", ()
   assert.equal(typeof seed, "number");
   assert.ok(seed >= 0 && seed < 2 ** 31);
 });
+
+test("patchWorkflow img2img x controlnet (stale roleMap): a stale load_image_input pointing at the ControlNetApplyAdvanced node itself is sanitized away -- no ImageScale reads its CONDITIONING output", () => {
+  // Reproduces the ComfyUI 400 "return_type_mismatch ... received_type(CONDITIONING)" failure:
+  // a DB-stored roleMap (inferred before the inferRoleMap fix) has load_image_input pointing at
+  // node 8 (ControlNetApplyAdvanced).inputs.image. Without sanitization, patchImg2ImgLatentPath
+  // treats node 8 as the parent LoadImage and wires the dynamically-added ImageScale's image
+  // input to ["8", 0] -- a CONDITIONING output.
+  const workflow = baseWorkflowWithControlNet();
+  const roleMap = {
+    ...baseRoleMapWithControlNet(),
+    load_image_input: "8.inputs.image"
+  };
+  const request = baseRequest({
+    generationMode: "img2img",
+    denoise: 0.6,
+    parentAssetId: "asset_ctrl_stale",
+    relationType: "img2img",
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1.2, startPercent: 0, endPercent: 1 }
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl_stale",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: "pose_control.png"
+  }) as Record<string, any>;
+
+  // No image-typed input anywhere reads from node 8's CONDITIONING outputs.
+  for (const [nodeId, node] of Object.entries(patched)) {
+    if (node.class_type === "ImageScale" || node.class_type === "VAEEncode") {
+      const source = node.inputs.image ?? node.inputs.pixels;
+      assert.notEqual(source?.[0], "8", `${nodeId} must not read from ControlNetApplyAdvanced`);
+    }
+  }
+
+  // Node 8's own image input was neither clobbered with the parent filename string nor left
+  // dangling -- it connects to a LoadImage node holding the pose image.
+  const applyImage = patched["8"].inputs.image;
+  assert.ok(Array.isArray(applyImage), "apply image input must stay a connection");
+  assert.equal(patched[applyImage[0]].class_type, "LoadImage");
+  assert.equal(patched[applyImage[0]].inputs.image, "pose_control.png");
+  assert.equal(patched["8"].inputs.strength, 1.2);
+
+  // The parent image reaches the sampler through a real LoadImage -> ImageScale -> VAEEncode chain.
+  const vaeEncodeEntry = Object.entries(patched).find(([, node]) => (node as any).class_type === "VAEEncode");
+  assert.ok(vaeEncodeEntry, "expected a dynamically-added VAEEncode node");
+  const scaleNodeId = (vaeEncodeEntry![1] as any).inputs.pixels[0];
+  assert.equal(patched[scaleNodeId].class_type, "ImageScale");
+  const parentLoadNodeId = patched[scaleNodeId].inputs.image[0];
+  assert.equal(patched[parentLoadNodeId].class_type, "LoadImage");
+  assert.equal(patched[parentLoadNodeId].inputs.image, "parent_upload.png");
+});
