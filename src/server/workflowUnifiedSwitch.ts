@@ -141,6 +141,20 @@ export function patchUnifiedSwitchWorkflow(
     setNodeInput(workflow, roles.controlNetApplyNodeId, ["end_percent"], request.controlnet.endPercent);
   }
 
+  // Chroma/Flux-style controlnets fail at sampling time ("This Controlnet needs a VAE but none
+  // was provided") unless the apply node's optional vae input is connected; regular controlnets
+  // simply ignore it. Templates imported before the reference workflow gained this connection
+  // lack it, so restore it from the VAE that already feeds the img2img VAEEncode node.
+  if (roles.controlNetApplyNodeId) {
+    const applyNode = workflow[roles.controlNetApplyNodeId];
+    if (isObject(applyNode) && isObject(applyNode.inputs) && !isConnection(applyNode.inputs.vae)) {
+      const vaeConnection = getNodeInput(workflow, roles.vaeEncodeNodeId, ["vae"]);
+      if (isConnection(vaeConnection)) {
+        applyNode.inputs.vae = [...vaeConnection];
+      }
+    }
+  }
+
   setNodeInput(workflow, roles.saveImageNodeId, ["filename_prefix"], savePrefix);
 
   return workflow;
