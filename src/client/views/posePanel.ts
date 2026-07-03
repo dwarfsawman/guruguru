@@ -104,7 +104,7 @@ export function renderPoseOverlay(draft: PoseDraft, asset: Asset) {
       return "";
     }
     const [r, g, b] = OPENPOSE_BONE_COLORS[index] ?? [255, 255, 255];
-    return `<line class="pose-bone" x1="${formatCssNumber(from.x)}" y1="${formatCssNumber(from.y)}" x2="${formatCssNumber(to.x)}" y2="${formatCssNumber(to.y)}" stroke="rgb(${r},${g},${b})" stroke-width="${formatCssNumber(strokeWidth)}"></line>`;
+    return `<line class="pose-bone" data-bone-index="${index}" data-bone-from="${bone[0]}" data-bone-to="${bone[1]}" x1="${formatCssNumber(from.x)}" y1="${formatCssNumber(from.y)}" x2="${formatCssNumber(to.x)}" y2="${formatCssNumber(to.y)}" stroke="rgb(${r},${g},${b})" stroke-width="${formatCssNumber(strokeWidth)}"></line>`;
   }).join("");
   const joints = points.map((point, index) => {
     const [r, g, b] = OPENPOSE_JOINT_COLORS[index] ?? [255, 255, 255];
