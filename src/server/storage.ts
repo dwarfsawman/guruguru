@@ -18,6 +18,12 @@ export interface StoredMask {
   height: number | null;
 }
 
+export interface StoredControlImage {
+  controlPath: string;
+  width: number | null;
+  height: number | null;
+}
+
 export function ensureProjectStorage(projectId: string) {
   const projectRoot = join(dataRoot, "projects", projectId);
   const paths = {
@@ -25,6 +31,7 @@ export function ensureProjectStorage(projectId: string) {
     original: join(projectRoot, "assets", "original"),
     thumbnails: join(projectRoot, "assets", "thumbnails"),
     masks: join(projectRoot, "masks"),
+    control: join(projectRoot, "control"),
     workflows: join(projectRoot, "workflows"),
     exports: join(projectRoot, "exports")
   };
@@ -73,6 +80,26 @@ export async function storeMaskImage(projectId: string, roundId: string, bytes: 
   const size = readImageSize(bytes);
   return {
     maskPath: resolvedMaskPath,
+    width: size?.width ?? null,
+    height: size?.height ?? null
+  };
+}
+
+export async function storeControlImage(projectId: string, roundId: string, bytes: Buffer): Promise<StoredControlImage> {
+  const storage = ensureProjectStorage(projectId);
+  const baseName = `${sanitizeBaseName(roundId)}_pose.png`;
+  const controlPath = join(storage.control, baseName);
+  const resolvedControlPath = resolve(controlPath);
+  const resolvedProjectRoot = resolve(storage.projectRoot);
+
+  if (!isPathInside(resolvedControlPath, resolvedProjectRoot)) {
+    throw new Error("Control image storage path is outside the project directory");
+  }
+
+  await writeFile(resolvedControlPath, bytes);
+  const size = readImageSize(bytes);
+  return {
+    controlPath: resolvedControlPath,
     width: size?.width ?? null,
     height: size?.height ?? null
   };
