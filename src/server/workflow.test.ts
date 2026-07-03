@@ -962,6 +962,67 @@ test("patchWorkflow controlnet: no ControlNetApplyAdvanced node in the template 
   assert.deepEqual(Object.keys(patched).sort(), Object.keys(baseWorkflow()).sort());
 });
 
+test("patchWorkflow controlnet: a pose attachment skips the roleMap-based controlnet_image_input/controlnet_image_node parent-image injection", () => {
+  const workflow = baseWorkflowWithControlNet() as Record<string, any>;
+  // A separate legacy controlnet_image_* role target, distinct from the ControlNetApplyAdvanced-
+  // connected LoadImage(9) -- e.g. a hand-authored roleMap pointing at a different node entirely.
+  workflow["11"] = {
+    class_type: "LoadImage",
+    inputs: { image: "legacy_control.png" },
+    _meta: { title: "Legacy ControlNet Image" }
+  };
+  const roleMap = {
+    ...baseRoleMapWithControlNet(),
+    controlnet_image_input: "11.inputs.image",
+    controlnet_image_node: "11"
+  };
+  const request = baseRequest({
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1, startPercent: 0, endPercent: 1 }
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl5",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: "pose_control.png"
+  }) as Record<string, any>;
+
+  // The controlnet_image_* role injection is skipped entirely (node 11 keeps its old value);
+  // the actual attachment happens on node 9 via patchControlNetPath's connection trace.
+  assert.equal(patched["11"].inputs.image, "legacy_control.png");
+  assert.equal(patched["9"].inputs.image, "pose_control.png");
+});
+
+test("patchWorkflow controlnet: without a pose attachment, the roleMap-based controlnet_image_input/controlnet_image_node still receives the parent image", () => {
+  const workflow = baseWorkflowWithControlNet() as Record<string, any>;
+  workflow["11"] = {
+    class_type: "LoadImage",
+    inputs: { image: "legacy_control.png" },
+    _meta: { title: "Legacy ControlNet Image" }
+  };
+  const roleMap = {
+    ...baseRoleMapWithControlNet(),
+    controlnet_image_input: "11.inputs.image",
+    controlnet_image_node: "11"
+  };
+  const request = baseRequest({ controlnet: null });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl6",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: null
+  }) as Record<string, any>;
+
+  assert.equal(patched["11"].inputs.image, "parent_upload.png");
+});
+
 test("resolveSeed: seedMode=fixed returns request.seed", () => {
   assert.equal(resolveSeed(baseRequest({ seedMode: "fixed", seed: 777 }), null), 777);
 });
