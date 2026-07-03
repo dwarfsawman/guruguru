@@ -83,6 +83,7 @@ import {
   normalizePromptBox,
   paintStroke,
   pointerToMaskCanvasPoint,
+  pointerToSvgViewBoxPoint,
   renderFinalMaskToCanvas,
   sampleBrushPromptPoints
 } from "./maskCanvas";
@@ -142,6 +143,19 @@ let pendingIterationDotSelect: { timer: number } | null = null;
 let activeMaskStroke: ActiveMaskStroke | null = null;
 let activeBoxPrompt: ActiveBoxPrompt | null = null;
 let activeImagePan: ActiveImagePan | null = null;
+
+interface ActivePoseJointDrag {
+  pointerId: number;
+  assetId: string;
+  jointIndex: number;
+  start: { x: number; y: number };
+  current: { x: number; y: number };
+  /** 閾値を超えて動いたら true。click（visible トグル）と drag（移動）の判定に使う。 */
+  moved: boolean;
+}
+
+const POSE_JOINT_DRAG_THRESHOLD = 3;
+let activePoseJointDrag: ActivePoseJointDrag | null = null;
 
 interface ActiveWorkflowDiagramPan {
   pointerId: number;
@@ -563,6 +577,14 @@ function bindEvents() {
   app.addEventListener("pointerdown", (event) => {
     const target = event.target as HTMLElement;
     closeOpenActionDropdowns(target);
+    if (state.maskEditMode && state.maskPanelTab === "pose" && (event.button === 0 || event.button === 2)) {
+      const joint = (target as Element).closest<SVGCircleElement>(".pose-joint");
+      if (joint) {
+        event.preventDefault();
+        beginPoseJointDrag(event, joint);
+        return;
+      }
+    }
     const handle = target.closest<HTMLElement>("[data-mask-toolbar-handle]");
     if (handle) {
       if (target.closest("button")) {
@@ -679,6 +701,18 @@ function bindEvents() {
       continueWebSamBoxPrompt(event, canvas);
       return;
     }
+    if (activePoseJointDrag) {
+      if (event.pointerId !== activePoseJointDrag.pointerId) {
+        return;
+      }
+      const svg = document.querySelector<SVGSVGElement>(".pose-overlay");
+      if (!svg) {
+        return;
+      }
+      event.preventDefault();
+      continuePoseJointDrag(event, svg);
+      return;
+    }
     if (activePaintStroke) {
       if (event.pointerId !== activePaintStroke.pointerId) {
         return;
@@ -729,6 +763,11 @@ function bindEvents() {
       }
       return;
     }
+    if (activePoseJointDrag && event.pointerId === activePoseJointDrag.pointerId) {
+      event.preventDefault();
+      finishPoseJointDrag();
+      return;
+    }
     if (activePaintStroke && event.pointerId === activePaintStroke.pointerId) {
       const paintCanvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
       if (paintCanvas) {
@@ -766,6 +805,10 @@ function bindEvents() {
     }
     if (activeBoxPrompt && event.pointerId === activeBoxPrompt.pointerId) {
       activeBoxPrompt = null;
+      return;
+    }
+    if (activePoseJointDrag && event.pointerId === activePoseJointDrag.pointerId) {
+      activePoseJointDrag = null;
       return;
     }
     if (activePaintStroke && event.pointerId === activePaintStroke.pointerId) {
@@ -3715,6 +3758,121 @@ function updatePoseDraftFromControl(control: HTMLInputElement | HTMLTextAreaElem
   if (field === "enabled") {
     render();
   }
+}
+
+/**
+ * ポーズタブの関節ドラッグ編集（`Docs/Feature-PoseControlNet.md` §4）。
+ * pointerdown で最近傍関節（`.pose-joint` circle 自体）を掴み、pointermove では
+ * `render()` を呼ばずに SVG 属性（joint circle の cx/cy + 接続する bone line の該当端点）を
+ * 直接書き換える（`updateMaskBrushCursor` と同じ「操作中は再描画しない」パターン）。
+ * pointerup で移動量が閾値以下なら「クリック」とみなし visible をトグルし、
+ * 閾値を超えていれば座標を `PoseDraft.points` へコミットする。どちらも `source: "edited"` にして render()。
+ */
+function beginPoseJointDrag(event: PointerEvent, joint: SVGCircleElement) {
+  const assetId = state.activeAssetId;
+  const svg = joint.closest<SVGSVGElement>(".pose-overlay");
+  if (!assetId || !svg) {
+    return;
+  }
+  const jointIndex = Number(joint.dataset.jointIndex ?? "-1");
+  const draft = poseDraftForAsset(assetId);
+  if (!draft || !draft.points || jointIndex < 0 || jointIndex >= draft.points.length) {
+    return;
+  }
+  const point = pointerToSvgViewBoxPoint(svg, event);
+  activePoseJointDrag = {
+    pointerId: event.pointerId,
+    assetId,
+    jointIndex,
+    start: point,
+    current: point,
+    moved: false
+  };
+  try {
+    joint.setPointerCapture(event.pointerId);
+  } catch {
+    // Capture may not be supported in test environments; dragging still works via document-level events.
+  }
+  joint.classList.add("dragging");
+}
+
+function continuePoseJointDrag(event: PointerEvent, svg: SVGSVGElement) {
+  if (!activePoseJointDrag) {
+    return;
+  }
+  const point = pointerToSvgViewBoxPoint(svg, event);
+  activePoseJointDrag.current = point;
+  const dx = point.x - activePoseJointDrag.start.x;
+  const dy = point.y - activePoseJointDrag.start.y;
+  if (!activePoseJointDrag.moved && Math.hypot(dx, dy) > POSE_JOINT_DRAG_THRESHOLD) {
+    activePoseJointDrag.moved = true;
+  }
+  if (!activePoseJointDrag.moved) {
+    return;
+  }
+  const clamped = clampPointToPoseBounds(point, svg);
+  const jointEl = svg.querySelector<SVGCircleElement>(`.pose-joint[data-joint-index="${activePoseJointDrag.jointIndex}"]`);
+  if (jointEl) {
+    jointEl.setAttribute("cx", formatCssNumber(clamped.x));
+    jointEl.setAttribute("cy", formatCssNumber(clamped.y));
+  }
+  const bones = svg.querySelectorAll<SVGLineElement>(".pose-bone");
+  bones.forEach((bone) => {
+    const from = Number(bone.dataset.boneFrom ?? "-1");
+    const to = Number(bone.dataset.boneTo ?? "-1");
+    if (from === activePoseJointDrag!.jointIndex) {
+      bone.setAttribute("x1", formatCssNumber(clamped.x));
+      bone.setAttribute("y1", formatCssNumber(clamped.y));
+    }
+    if (to === activePoseJointDrag!.jointIndex) {
+      bone.setAttribute("x2", formatCssNumber(clamped.x));
+      bone.setAttribute("y2", formatCssNumber(clamped.y));
+    }
+  });
+}
+
+function clampPointToPoseBounds(point: { x: number; y: number }, svg: SVGSVGElement) {
+  const viewBox = svg.viewBox.baseVal;
+  const width = viewBox && viewBox.width > 0 ? viewBox.width : Number.POSITIVE_INFINITY;
+  const height = viewBox && viewBox.height > 0 ? viewBox.height : Number.POSITIVE_INFINITY;
+  return {
+    x: Math.min(Math.max(point.x, 0), width),
+    y: Math.min(Math.max(point.y, 0), height)
+  };
+}
+
+function finishPoseJointDrag() {
+  const drag = activePoseJointDrag;
+  activePoseJointDrag = null;
+  if (!drag) {
+    return;
+  }
+  const jointEl = document.querySelector<SVGCircleElement>(`.pose-joint[data-joint-index="${drag.jointIndex}"]`);
+  jointEl?.classList.remove("dragging");
+  try {
+    jointEl?.releasePointerCapture(drag.pointerId);
+  } catch {
+    // Capture may already be released.
+  }
+  const draft = poseDraftForAsset(drag.assetId);
+  if (!draft || !draft.points) {
+    return;
+  }
+  const currentPoint = draft.points[drag.jointIndex];
+  if (!currentPoint) {
+    return;
+  }
+  const svg = document.querySelector<SVGSVGElement>(".pose-overlay");
+  const nextPoints = draft.points.slice();
+  if (!drag.moved) {
+    // クリック（ドラッグなし）: visible トグル
+    nextPoints[drag.jointIndex] = { ...currentPoint, visible: !currentPoint.visible };
+  } else {
+    const clamped = svg ? clampPointToPoseBounds(drag.current, svg) : drag.current;
+    nextPoints[drag.jointIndex] = { ...currentPoint, x: clamped.x, y: clamped.y };
+  }
+  setPoseDraft({ ...draft, points: nextPoints, source: "edited" });
+  render();
 }
 
 async function destroyPoseWorkerSession() {

@@ -264,6 +264,24 @@ export function pointerToMaskCanvasPoint(canvas: HTMLCanvasElement, event: Point
   };
 }
 
+/**
+ * `pointerToMaskCanvasPoint` の SVG 版。`.pose-overlay` は `viewBox` を画像 natural size に
+ * 一致させているため、`getBoundingClientRect`（表示サイズ、zoom/pan 込み）と `viewBox.baseVal`
+ * （natural px 空間）の比でスケールし直す。
+ */
+export function pointerToSvgViewBoxPoint(svg: SVGSVGElement, event: PointerEvent) {
+  const rect = svg.getBoundingClientRect();
+  const viewBox = svg.viewBox.baseVal;
+  const boxWidth = viewBox && viewBox.width > 0 ? viewBox.width : rect.width;
+  const boxHeight = viewBox && viewBox.height > 0 ? viewBox.height : rect.height;
+  const scaleX = rect.width > 0 ? boxWidth / rect.width : 1;
+  const scaleY = rect.height > 0 ? boxHeight / rect.height : 1;
+  return {
+    x: (event.clientX - rect.left) * scaleX,
+    y: (event.clientY - rect.top) * scaleY
+  };
+}
+
 export function normalizePromptBox(box: WebSamBox | null): WebSamBox | null {
   if (!box) {
     return null;
