@@ -237,3 +237,16 @@ test("inferRoleMap: a VAEEncode node elsewhere in a ControlNet workflow is still
   assert.equal(roleMap.vae_encode_node, "13");
   assert.equal(roleMap.vae_encode_image_input, "13.inputs.pixels");
 });
+
+// Matches the actual reference workflow (Docs/ReferenceFlows/ComfyUI_00147_controlnet.json): only
+// ONE LoadImage node exists (754) and it is claimed as the ControlNet control-image supplier.
+// Before the fix, findInput's unrestricted fallback misinferred ControlNetApplyAdvanced(752).
+// inputs.image itself as load_image_input once the sole LoadImage was excluded -- later wiring an
+// img2img ImageScale node straight to node 752's CONDITIONING output (400: return_type_mismatch).
+test("inferRoleMap: load_image_input is NOT inferred when the only LoadImage is claimed by ControlNet", () => {
+  const workflow = controlNetWorkflowWithoutVaeEncode() as Record<string, unknown>;
+  delete workflow["12"];
+  const roleMap = inferRoleMap(workflow);
+  assert.equal(roleMap.load_image_input, undefined);
+  assert.equal(roleMap.controlnet_image_node, "754");
+});
