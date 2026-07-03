@@ -3918,12 +3918,6 @@ function controlnetRequestForParent(
   if (!parentAssetId) {
     return null;
   }
-  // ControlNet-template x img2img is not supported yet: patchImg2ImgLatentPath/patchInpaintLatentPath
-  // misinfer vae_encode_image_input onto ControlNetApplyAdvanced.inputs.image when the template has
-  // no VAEEncode node, corrupting the workflow (Docs/Done/Feature-PoseControlNet.md §5 "img2img モードとの組合せ").
-  if (generationMode === "img2img") {
-    return null;
-  }
   const draft = poseDraftForAsset(parentAssetId);
   if (!hasActivePoseData(draft) || draft.imageWidth === null || draft.imageHeight === null) {
     return null;

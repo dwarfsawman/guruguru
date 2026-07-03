@@ -24,11 +24,7 @@ export function patchImg2ImgLatentPath(
   uploadedImageName: string,
   request: GenerationRequest
 ) {
-  const loadImageNodeId =
-    stringRole(roleMap.load_image_node) ??
-    nodeIdFromRolePath(roleMap.load_image_input) ??
-    findNodeIdByExactClass(workflow, "LoadImage") ??
-    addLoadImageNode(workflow, uploadedImageName);
+  const loadImageNodeId = resolveParentLoadImageNode(workflow, roleMap, uploadedImageName);
 
   setNodeInput(workflow, loadImageNodeId, ["image"], uploadedImageName);
 
@@ -71,11 +67,7 @@ export function patchInpaintLatentPath(
     return;
   }
 
-  const loadImageNodeId =
-    stringRole(roleMap.load_image_node) ??
-    nodeIdFromRolePath(roleMap.load_image_input) ??
-    findNodeIdByExactClass(workflow, "LoadImage") ??
-    addLoadImageNode(workflow, uploadedImageName);
+  const loadImageNodeId = resolveParentLoadImageNode(workflow, roleMap, uploadedImageName);
   setNodeInput(workflow, loadImageNodeId, ["image"], uploadedImageName);
 
   const loadMaskNodeId =
@@ -166,6 +158,25 @@ export function patchInpaintLatentPath(
   setRolePath(workflow, roleMap.ksampler_latent_image_input, latentConnection);
   setNodeInput(workflow, ksamplerNodeId, ["latent_image"], latentConnection);
   patchSaveImageForInpaintComposite(workflow, roleMap, resizedImageConnection, compositeMaskConnection);
+}
+
+// Resolves (or creates) the LoadImage node that should receive the parent image for the img2img/
+// inpaint latent path. If the resolved node is already claimed as the ControlNet control-image
+// supplier (roleMap.controlnet_image_node), a fresh LoadImage is added instead -- otherwise the
+// parent image and the pose/control image would collide on the same node (one would clobber the
+// other depending on patch order).
+function resolveParentLoadImageNode(workflow: JsonObject, roleMap: Record<string, unknown>, uploadedImageName: string): string {
+  const controlImageNodeId = stringRole(roleMap.controlnet_image_node);
+  const resolvedNodeId =
+    stringRole(roleMap.load_image_node) ??
+    nodeIdFromRolePath(roleMap.load_image_input) ??
+    findNodeIdByExactClass(workflow, "LoadImage");
+
+  if (resolvedNodeId && resolvedNodeId !== controlImageNodeId) {
+    return resolvedNodeId;
+  }
+
+  return addLoadImageNode(workflow, uploadedImageName);
 }
 
 function repeatLatentForBatchSize(
