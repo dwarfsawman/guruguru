@@ -1,6 +1,6 @@
 # 新機能実装 進捗・再開メモ
 
-- 最終更新: 2026-07-03（使用量制限のため中断。PoseControlNet フェーズ4の途中 — 下記「中断中」参照）
+- 最終更新: 2026-07-03（PoseControlNet フェーズ4 完了・マージ済み）
 - **ユーザー指示: 以降のポーズ（PoseControlNet）関連の作業はサブエージェントに委譲せず、Fable 5（メインセッション）が直接実装すること**
 - 方式: ブランチ + サブエージェント監督方式（サブエージェントは sonnet、worktree 分離）。設計仕様は `Docs/Feature-*.md` / `Docs/Fix-*.md`
 
@@ -28,24 +28,25 @@
 - 注意: smoke 用フィクスチャ画像は 1x1 プレースホルダ。合成 PointerEvent では `setPointerCapture` が NotFoundError を投げるため、eval からの smoke 時はスタブが必要（実ポインタでは問題なし）
 - 両 worktree（`agent-a36e377ab17013e36` / `agent-a20d1f6f42bd4c92d`）は削除してよい
 
-## 中断中（2026-07-03、使用量制限）: PoseControlNet フェーズ4（ブランチ `feature/pose-4-edit`）
+## PoseControlNet フェーズ4 — 2026-07-03 完了・マージ済み
 
-- worktree: `.claude/worktrees/pose-4-edit`（main の `bbac81f` ベース、npm ci 済み）
-- コミット済み: `55561d4` "Add pure OpenPose skeleton PNG draw-ops + renderer" — `src/client/poseSkeleton.ts`（`buildPoseSkeletonDrawOps` / `poseSkeletonLineWidth` / `renderPoseSkeletonDataUrl`）+ `poseSkeleton.test.ts`（10件）。まだ呼び出し元なし（フェーズ5用、意図どおり）
-- 未コミット変更（関節ドラッグ + クリックで visible トグル。実装は一貫、typecheck/test 249 pass/build/check 通過済みだが**実ブラウザ検証が未実施**）:
-  - `maskCanvas.ts`: `pointerToSvgViewBoxPoint(svg, event)` 追加
-  - `views/posePanel.ts`: `<line class="pose-bone">` に `data-bone-index`/`data-bone-from`/`data-bone-to` 付与
+- ブランチ `feature/pose-4-edit`（worktree `.claude/worktrees/pose-4-edit`、main の `bbac81f` ベース）で Fable 5 が直接再開・完走。マージ後 worktree・ブランチとも削除済み
+- 引き継ぎ時点の未コミット diff（`poseDraft.ts` 含む）を全レビュー → 問題なしと判断（`nearestPoseJointIndex` ヘルパーは妥当な純粋関数）
+- コミット `43f37e9` "Add pose joint drag/click editing" として確定:
+  - `maskCanvas.ts`: `pointerToSvgViewBoxPoint(svg, event)`
+  - `views/posePanel.ts`: `.pose-bone` に `data-bone-index`/`data-bone-from`/`data-bone-to`
   - `styles.css`: `.pose-joint { pointer-events:all; cursor:grab; touch-action:none }` + `.pose-joint.dragging`
-  - `main.ts`: `ActivePoseJointDrag` + pointerdown 分岐（`state.maskEditMode && state.maskPanelTab === "pose"` でゲート）+ `beginPoseJointDrag` / `continuePoseJointDrag` / `clampPointToPoseBounds` / `finishPoseJointDrag`（ドラッグで座標確定、クリックで visible トグル、いずれも `source:"edited"` → `render()`）
-  - `poseDraft.ts`: 引き継ぎエージェントが停止直前に触った可能性あり — 再開時に diff を要確認
-- 残作業: ①未コミット diff の全レビュー（特に `poseDraft.ts`）②実ブラウザでのドラッグ/クリック検証（関節ドラッグで座標更新・オーバーレイと `PoseDraft.points` の整合、クリックで visible トグル、マスクブラシ/SAM box prompt/ペイントと非干渉。テスト DB・非 5177/5599 ポート）③検証一式再実行 ④意味単位コミット ⑤マージ（監督フロー）
-- **再開時は上記ユーザー指示によりサブエージェントを使わず Fable 5 が直接この worktree で作業すること**
+  - `main.ts`: `ActivePoseJointDrag` + pointerdown/move/up 分岐（`state.maskEditMode && state.maskPanelTab==="pose"` でゲート）。ドラッグ中は `render()` を呼ばず SVG 属性を直接更新、pointerup で `PoseDraft.points` へコミット（移動なしはクリック＝visible トグル、移動ありは座標確定・`clampPointToPoseBounds` で画像範囲にクランプ）。いずれも `source:"edited"`
+- ブラウザ実機検証（テスト DB、ポート3000、`.claude/launch.json` に一時追加した `guruguru-pose4-edit` 設定は検証後削除）:
+  - MediaPipe は極小テスト画像（64x96 の棒人間シルエット）を人物として検出できなかったため、`window.__poseDebug`（`state`/`setPoseDraft`/`render` を露出する一時デバッグフック）を `main.ts` に追加し、合成した18関節の `PoseDraft.points` を直接注入して検証。**検証完了後にフックは削除済み**（コミット済みコードには含まれない）
+  - 確認内容: オーバーレイが18関節/17ボーンを正しく描画 / クリック（移動なし pointerdown→pointerup）で `visible` トグル・`source:"edited"` / ドラッグ（pointerdown→pointermove→pointerup）で関節と接続ボーンの端点がライブ更新され pointerup で座標確定 / 画像範囲外へのドラッグは `[0,width]×[0,height]` にクランプ / pose タブ表示中は `#maskCanvas` が `pointer-events:none` でマスクブラシ/SAM等と非干渉
+- マージ後 main: typecheck 0 / **249 pass** / build / check すべて成功確認済み（衝突なしのクリーンマージ）
 
 ## その後の残タスク（未着手）
 
 1. **Feature-PaintTool** — ✅ マージ済み `7f0d864`（フェーズ1〜5: PaintDraft / brush・eraser・eyedropper / パレット + recent colors / rAF バッチ描画（mask と同一パス、`paintStroke` に color 引数追加）/ Undo リング5 / Alt 一時スポイト / Ctrl+Z / 保存は既存 source-assets API で新規 root round。フェーズ6（ツリー親子リンク）は設計上任意のため未実装）。マージ時に `a5c0b9c` と `main.ts` / `assetModal.ts` で衝突 → `renderAssetModal` へ `maskPanelWidths` と `paintEditing`/`paintDraft` を両立させて手動統合。マージ後 main: typecheck 0 / 228 pass / check 成功。ブラウザ smoke 済み（paint パネル UI、赤ストローク描画 → Undo で消去 → 再描画 → 保存で新 round/asset 生成・保存画像に 1600x1200 で合成確認、mask/paint 相互排他、mask 側の feather スライダー・invert・リサイザも健在、コンソールエラー / 失敗リクエストなし）
-2. **Feature-PoseControlNet フェーズ 4〜6**（`Docs/Feature-PoseControlNet.md` の実装フェーズ節参照）— フェーズ2は ✅ マージ済み `2fec090`（`@mediapipe/tasks-vision@0.10.35` + `src/client/pose/`（types/models/worker）+ build.mjs の worker バンドル & wasm コピー + OPFS キャッシュ。ブラウザ実機で DL→OPFS→model-ready(GPU)→detect まで確認済み）。**重要な知見: MediaPipe の wasm グルーは module worker 非対応のため pose-worker は IIFE + クラシック worker（`{type:"module"}` を付けない）で起動すること**。`main.ts` への worker 統合はフェーズ3（タブ UI + 検出）の範囲。以降 4（関節ドラッグ編集 + スケルトン PNG）→ 5（サーバ添付パイプライン、**characterization test 先行**）→ 6（棒人間バッジ）
-3. 最終検証 + `操作メモ.md` 追記 + 完了ドキュメントの実施記録追記（完了後に本ファイルと各設計ドキュメントを `Docs/Done/` へ移す）
+2. **Feature-PoseControlNet フェーズ 5〜6** — ✅ 完了（下記変更履歴参照）。これで PoseControlNet 機能（フェーズ1〜6）はすべて完了。
+3. 最終検証 + `操作メモ.md` 追記 — ✅ 完了（下記変更履歴参照）。本ファイルと各設計ドキュメントは本コミットで `Docs/Done/` へ移動する。
 
 ## 変更履歴
 
@@ -56,3 +57,5 @@
   - 補足: `.claude/launch.json` は別チャットの dev サーバとポート競合したため `autoPort: true` + セッション別データディレクトリ方式へ変更。
 - 2026-07-03: PoseControlNet フェーズ4 着手、途中で使用量制限により中断（上記「中断中」節参照）。担当エージェントが無断で孫エージェントへ再委譲する問題があり（成果自体は孫が実装）、以降のポーズ作業はエージェント委譲禁止・Fable 5 直接実装とする（ユーザー指示）。
 - 2026-07-03: PoseControlNet フェーズ3 完了・マージ（`b3fcd62`）。pose タブ UI（マスク/ポーズタブ、`posePanel.ts`、SVG スケルトンオーバーレイ、MediaPipe33→OpenPose18 変換 `poseDraft.ts` + テスト11件）。担当エージェントが実人物写真で 18 関節・17 bone の検出&オーバーレイ整合を実機確認済み。マージ後 main: typecheck 0 / **239 pass** / check 成功、タブ切替・相互排他（pose 中 maskCanvas pointer-events:none）の smoke 済み。途中セッション使用量制限で中断→同エージェントを transcript から再開して完走。次はフェーズ4（関節ドラッグ編集 + スケルトン PNG）。
+- 2026-07-03: PoseControlNet フェーズ4 完了・マージ（`43f37e9`）。Fable 5 が直接実装・検証（サブエージェント不使用、ユーザー指示どおり）。関節ドラッグ編集＋クリックで visible トグル。MediaPipe が極小テスト画像を検出できなかったため、一時デバッグフックで合成ポーズ点を注入してブラウザ実機検証（検証後フックは削除）。マージ後 main: typecheck 0 / **249 pass** / check 成功。worktree・ブランチとも削除済み。残りはフェーズ5（サーバ添付パイプライン）・6（棒人間バッジ）のみ。
+- 2026-07-03: PoseControlNet フェーズ5〜6 完了・マージ。メインセッション（サブエージェント不使用、ユーザー指示どおり）がブランチ `feature/pose-5-server-pipeline` で直接実装。フェーズ5: `ControlNetOptions` 型・`workflowControlNet.ts`（`patchControlNetPath`、`ControlNetApplyAdvanced.inputs.image` の connection トレース方式）・`rounds.ts` の `prepareControlNetRequest`（`storeControlImage`/`decodeControlImageDataUrl`、`request_json` 保存前 `poseImageDataUrl` null 化）・`workflowRoleMap.ts` の `controlnet_apply_node` 等推論・`workflow.test.ts` への characterization test 4件（`load_image_input` 誤推論との衝突で pose が勝つケース含む）を先行実装。フェーズ6: client `controlnetRequestForParent`（テンプレート capability 判定）・`iconPose`・`.pose-badge`・`galleryView.ts` の `getPoseDraft` 配線。マージ後 main: typecheck 0 / **253 pass** / build / check 成功。ブラウザ smoke（test DB、port 3000）: pose タブ・スケルトンオーバーレイ・pose パネルが既存機能と相互排他したまま正常表示、console/server error なし。PoseControlNet 機能（フェーズ1〜6）完了。`操作メモ.md` に「ポーズ ControlNet 添付」節を追記。

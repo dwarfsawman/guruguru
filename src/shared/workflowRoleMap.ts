@@ -54,6 +54,14 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
   }
   addInputPath(roleMap, "save_prefix_input", findInput(nodes, ["filename_prefix"], ["SaveImage"]));
 
+  const controlNetApply = findNode(nodes, ["ControlNetApplyAdvanced"]);
+  if (controlNetApply) {
+    roleMap.controlnet_apply_node = controlNetApply.id;
+  }
+  addInputPath(roleMap, "controlnet_strength_input", findInput(nodes, ["strength"], ["ControlNetApplyAdvanced"]));
+  addInputPath(roleMap, "controlnet_start_percent_input", findInput(nodes, ["start_percent"], ["ControlNetApplyAdvanced"]));
+  addInputPath(roleMap, "controlnet_end_percent_input", findInput(nodes, ["end_percent"], ["ControlNetApplyAdvanced"]));
+
   return roleMap;
 }
 
