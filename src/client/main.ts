@@ -84,7 +84,9 @@ import {
   paintStroke,
   pointerToMaskCanvasPoint,
   pointerToSvgViewBoxPoint,
+  removeMaskIslandsFromLayers,
   renderFinalMaskToCanvas,
+  renderMaskFeatherPreview,
   sampleBrushPromptPoints
 } from "./maskCanvas";
 import type { PaintDraft, PaintToolKind } from "./paintTypes";
@@ -991,6 +993,10 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       await saveSettings();
     } else if (action === "test-comfy") {
       await testComfy();
+    } else if (action === "check-comfy-connection") {
+      if (state.comfyConnection !== "checking") {
+        await refreshComfyStatus(true);
+      }
     } else if (action === "open-template-import") {
       openWorkflowImportModal();
     } else if (action === "close-template-import") {
@@ -1095,6 +1101,8 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       clearActiveMaskCanvas();
     } else if (action === "invert-mask") {
       await invertActiveMask();
+    } else if (action === "remove-mask-islands") {
+      removeSmallMaskIslands();
     } else if (action === "set-mask-panel-tab") {
       setMaskPanelTab(target.dataset.tab === "pose" ? "pose" : "mask");
     } else if (action === "pose-load-model") {
@@ -1958,10 +1966,16 @@ function syncAssetModalMaskCanvas() {
 
     canvas.width = width;
     canvas.height = height;
+    const featherCanvas = document.querySelector<HTMLCanvasElement>("#maskFeatherPreview");
+    if (featherCanvas) {
+      featherCanvas.width = width;
+      featherCanvas.height = height;
+    }
     const draft = inpaintDraftForAsset(canvas.dataset.assetId);
     if (!draft) {
       const context = canvas.getContext("2d");
       context?.clearRect(0, 0, width, height);
+      featherCanvas?.getContext("2d")?.clearRect(0, 0, width, height);
       return;
     }
     if (draft.imageWidth !== width || draft.imageHeight !== height) {
@@ -1973,6 +1987,9 @@ function syncAssetModalMaskCanvas() {
         return;
       }
       renderFinalMaskToCanvas(canvas, layers, draft, true);
+      if (featherCanvas) {
+        renderMaskFeatherPreview(featherCanvas, layers, draft);
+      }
     });
   };
 
@@ -2097,6 +2114,10 @@ function commitMaskLayers(assetId: string) {
     brushPromptMaskDataUrl: canvasHasMaskPixels(layers.brushPrompt) ? layers.brushPrompt.toDataURL("image/png") : "",
     maskDataUrl: composeFinalMaskDataUrl(layers, false)
   });
+  const featherCanvas = document.querySelector<HTMLCanvasElement>("#maskFeatherPreview");
+  if (featherCanvas && featherCanvas.dataset.assetId === assetId) {
+    renderMaskFeatherPreview(featherCanvas, layers, inpaintDraftForAsset(assetId) ?? draft);
+  }
 }
 
 function getOrCreateMaskLayerSet(assetId: string, width: number, height: number): MaskLayerSet {
@@ -2645,10 +2666,10 @@ function renderHeader() {
         </button>
       </div>
       <div class="header-right">
-        <div class="connection">
+        <button class="connection" type="button" data-action="check-comfy-connection" title="クリックして接続状態を再確認" ${state.comfyConnection === "checking" ? "disabled" : ""}>
           <span class="status-dot ${connection.className}"></span>
           <span title="${escapeAttr(state.comfyStatusText)}">${escapeHtml(connection.label)}</span>
-        </div>
+        </button>
       </div>
     </header>
   `;
@@ -2850,6 +2871,19 @@ function updateInpaintDraftFromControl(control: HTMLInputElement | HTMLTextAreaE
     next.brushSize = clampNumber(Number(control.value), 1, 256, 48);
   }
   setInpaintDraft(next);
+  if (field === "featherRadius") {
+    refreshMaskFeatherPreview(assetId, next);
+  }
+}
+
+/** feather スライダー操作中に、全体 render() なしで境界プレビューだけを更新する軽量パス。 */
+function refreshMaskFeatherPreview(assetId: string, draft: InpaintDraft) {
+  const featherCanvas = document.querySelector<HTMLCanvasElement>("#maskFeatherPreview");
+  const layers = maskLayerCache.get(assetId);
+  if (!featherCanvas || !layers || featherCanvas.dataset.assetId !== assetId) {
+    return;
+  }
+  renderMaskFeatherPreview(featherCanvas, layers, draft);
 }
 
 function updateSmartMaskDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
@@ -3353,6 +3387,7 @@ function clearWebSamResult() {
   render();
 }
 
+/** SAM マスクを含む全マスク層をクリアする（旧: 手動修正のみクリア）。ボタン表示は「マスクをクリア」。 */
 function clearManualMaskLayers() {
   const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
   const draft = assetId ? inpaintDraftForAsset(assetId) : null;
@@ -3363,14 +3398,28 @@ function clearManualMaskLayers() {
   if (layers) {
     clearCanvas(layers.manualInclude);
     clearCanvas(layers.manualErase);
+    clearCanvas(layers.samMask);
+    clearCanvas(layers.previewSamMask);
     setInpaintDraft({
       ...draft,
       manualIncludeMaskDataUrl: "",
       manualEraseMaskDataUrl: "",
+      samMaskDataUrl: "",
+      previewSamMaskDataUrl: "",
+      samCandidates: [],
+      selectedSamCandidateIndex: 0,
       maskDataUrl: composeFinalMaskDataUrl(layers, false)
     });
   } else {
-    setInpaintDraft({ ...draft, manualIncludeMaskDataUrl: "", manualEraseMaskDataUrl: "" });
+    setInpaintDraft({
+      ...draft,
+      manualIncludeMaskDataUrl: "",
+      manualEraseMaskDataUrl: "",
+      samMaskDataUrl: "",
+      previewSamMaskDataUrl: "",
+      samCandidates: [],
+      selectedSamCandidateIndex: 0
+    });
   }
   render();
 }
@@ -4066,6 +4115,49 @@ async function invertActiveMask() {
   setInpaintDraft(nextDraft);
   renderFinalMaskToCanvas(canvas, layers, nextDraft, false);
   state.message = "マスク領域を反転しました。";
+  render();
+}
+
+/**
+ * 微小な島マスク除去のしきい値（面積 px^2）。画像解像度に比例させ、短辺の 0.4% を半径とする
+ * 円の面積を目安にする（例: 短辺1024pxなら半径約4px、短辺4000pxなら半径16px）。
+ */
+function maskIslandMinAreaPx(width: number, height: number) {
+  const radius = Math.max(3, Math.round(Math.min(width, height) * 0.004));
+  return Math.round(Math.PI * radius * radius);
+}
+
+function removeSmallMaskIslands() {
+  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
+  if (!canvas || !assetId || canvas.width <= 0 || canvas.height <= 0) {
+    return;
+  }
+  const draft = inpaintDraftForAsset(assetId);
+  const layers = maskLayerCache.get(assetId);
+  if (!draft || !layers) {
+    return;
+  }
+  const minAreaPx = maskIslandMinAreaPx(canvas.width, canvas.height);
+  const changed = removeMaskIslandsFromLayers(layers, !!draft.previewSamMaskDataUrl, minAreaPx);
+  if (!changed) {
+    state.message = "微小なマスク領域は見つかりませんでした。";
+    render();
+    return;
+  }
+  const nextDraft: InpaintDraft = {
+    ...draft,
+    samMaskDataUrl: "",
+    previewSamMaskDataUrl: "",
+    samCandidates: [],
+    selectedSamCandidateIndex: 0,
+    manualIncludeMaskDataUrl: canvasHasMaskPixels(layers.manualInclude) ? layers.manualInclude.toDataURL("image/png") : "",
+    manualEraseMaskDataUrl: "",
+    maskDataUrl: composeFinalMaskDataUrl(layers, false)
+  };
+  setInpaintDraft(nextDraft);
+  renderFinalMaskToCanvas(canvas, layers, nextDraft, false);
+  state.message = "微小なマスク領域を除去しました。";
   render();
 }
 

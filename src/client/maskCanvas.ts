@@ -204,6 +204,198 @@ export function invertMaskLayers(layers: MaskLayerSet, includeSamPreview: boolea
   clearCanvas(layers.manualErase);
 }
 
+/**
+ * feather 境界プレビューを overlay canvas に描画する。
+ * blur した最終マスクと元の最終マスクの差分（外側ハロー）と、blur した背景と元マスクの
+ * 交差（内側ハロー）を合わせて「境界にまたがるぼかしリング」を作り、半透明の色で塗る。
+ * `featherRadius <= 0` の場合や無マスク時は overlay を空にするだけ。
+ */
+export function renderMaskFeatherPreview(canvas: HTMLCanvasElement, layers: MaskLayerSet, draft: InpaintDraft) {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return;
+  }
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  const radius = Math.max(0, Math.trunc(draft.featherRadius));
+  if (radius <= 0 || canvas.width <= 0 || canvas.height <= 0) {
+    return;
+  }
+
+  const source = createLayerCanvas(canvas.width, canvas.height);
+  const sourceContext = source.getContext("2d");
+  if (!sourceContext) {
+    return;
+  }
+  const samSource = draft.previewSamMaskDataUrl ? layers.previewSamMask : layers.samMask;
+  sourceContext.drawImage(samSource, 0, 0);
+  sourceContext.drawImage(layers.manualInclude, 0, 0);
+  sourceContext.globalCompositeOperation = "destination-out";
+  sourceContext.drawImage(layers.manualErase, 0, 0);
+  sourceContext.globalCompositeOperation = "source-over";
+  if (!canvasHasMaskPixels(source)) {
+    return;
+  }
+
+  const inverted = createLayerCanvas(canvas.width, canvas.height);
+  const invertedContext = inverted.getContext("2d");
+  if (!invertedContext) {
+    return;
+  }
+  invertedContext.fillStyle = "rgba(255, 255, 255, 1)";
+  invertedContext.fillRect(0, 0, canvas.width, canvas.height);
+  invertedContext.globalCompositeOperation = "destination-out";
+  invertedContext.drawImage(source, 0, 0);
+  invertedContext.globalCompositeOperation = "source-over";
+
+  const ring = createLayerCanvas(canvas.width, canvas.height);
+  const ringContext = ring.getContext("2d");
+  if (!ringContext) {
+    return;
+  }
+  // 外側ハロー: マスクを blur した結果から元マスクを差し引いた、境界の外へ広がる部分。
+  ringContext.filter = `blur(${radius}px)`;
+  ringContext.drawImage(source, 0, 0);
+  ringContext.filter = "none";
+  ringContext.globalCompositeOperation = "destination-out";
+  ringContext.drawImage(source, 0, 0);
+  ringContext.globalCompositeOperation = "source-over";
+
+  // 内側ハロー: 背景を blur した結果と元マスクの交差で、境界の内側へ食い込む部分。
+  const blurredInverted = createLayerCanvas(canvas.width, canvas.height);
+  const blurredInvertedContext = blurredInverted.getContext("2d");
+  if (blurredInvertedContext) {
+    blurredInvertedContext.filter = `blur(${radius}px)`;
+    blurredInvertedContext.drawImage(inverted, 0, 0);
+    blurredInvertedContext.filter = "none";
+    blurredInvertedContext.globalCompositeOperation = "destination-in";
+    blurredInvertedContext.drawImage(source, 0, 0);
+    blurredInvertedContext.globalCompositeOperation = "source-over";
+    ringContext.drawImage(blurredInverted, 0, 0);
+  }
+
+  context.drawImage(ring, 0, 0);
+  context.globalCompositeOperation = "source-in";
+  context.fillStyle = "rgba(250, 204, 21, 0.55)";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.globalCompositeOperation = "source-over";
+}
+
+/**
+ * alpha > 0 の連結成分（4近傍）を洗い出し、面積が `minAreaPx` 未満の孤立領域（微小な島）を
+ * 透明化する。破壊的に `canvas` を書き換える。戻り値は実際に何か消去したかどうか。
+ */
+export function removeMaskIslands(canvas: HTMLCanvasElement, minAreaPx: number): boolean {
+  const context = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  if (!context || width <= 0 || height <= 0) {
+    return false;
+  }
+
+  const imageData = context.getImageData(0, 0, width, height);
+  const alpha = imageData.data;
+  const total = width * height;
+  const visited = new Uint8Array(total);
+  const isMasked = (index: number) => alpha[index * 4 + 3]! > 0;
+  const stack = new Int32Array(total);
+  let changed = false;
+
+  for (let start = 0; start < total; start += 1) {
+    if (visited[start] || !isMasked(start)) {
+      continue;
+    }
+    let stackLength = 0;
+    stack[stackLength] = start;
+    stackLength += 1;
+    visited[start] = 1;
+    const region: number[] = [];
+    while (stackLength > 0) {
+      stackLength -= 1;
+      const index = stack[stackLength]!;
+      region.push(index);
+      const x = index % width;
+      const y = (index / width) | 0;
+      if (x > 0) {
+        const neighbor = index - 1;
+        if (!visited[neighbor] && isMasked(neighbor)) {
+          visited[neighbor] = 1;
+          stack[stackLength] = neighbor;
+          stackLength += 1;
+        }
+      }
+      if (x < width - 1) {
+        const neighbor = index + 1;
+        if (!visited[neighbor] && isMasked(neighbor)) {
+          visited[neighbor] = 1;
+          stack[stackLength] = neighbor;
+          stackLength += 1;
+        }
+      }
+      if (y > 0) {
+        const neighbor = index - width;
+        if (!visited[neighbor] && isMasked(neighbor)) {
+          visited[neighbor] = 1;
+          stack[stackLength] = neighbor;
+          stackLength += 1;
+        }
+      }
+      if (y < height - 1) {
+        const neighbor = index + width;
+        if (!visited[neighbor] && isMasked(neighbor)) {
+          visited[neighbor] = 1;
+          stack[stackLength] = neighbor;
+          stackLength += 1;
+        }
+      }
+    }
+    if (region.length < minAreaPx) {
+      for (const index of region) {
+        alpha[index * 4 + 3] = 0;
+      }
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    context.putImageData(imageData, 0, 0);
+  }
+  return changed;
+}
+
+/**
+ * 最終合成マスク（(sam OR manualInclude) AND NOT manualErase）から微小な孤立領域を除去し、
+ * 結果を単一の `manualInclude` 層へ格納する（`invertMaskLayers` と同じ「collapse」手法）。
+ * 変化がなければ layers は変更せず false を返す。
+ */
+export function removeMaskIslandsFromLayers(layers: MaskLayerSet, includeSamPreview: boolean, minAreaPx: number): boolean {
+  const final = createLayerCanvas(layers.width, layers.height);
+  const finalContext = final.getContext("2d");
+  if (!finalContext) {
+    return false;
+  }
+  finalContext.drawImage(includeSamPreview ? layers.previewSamMask : layers.samMask, 0, 0);
+  finalContext.drawImage(layers.manualInclude, 0, 0);
+  finalContext.globalCompositeOperation = "destination-out";
+  finalContext.drawImage(layers.manualErase, 0, 0);
+  finalContext.globalCompositeOperation = "source-over";
+
+  const changed = removeMaskIslands(final, minAreaPx);
+  if (!changed) {
+    return false;
+  }
+
+  const includeContext = layers.manualInclude.getContext("2d");
+  if (!includeContext) {
+    return false;
+  }
+  includeContext.clearRect(0, 0, layers.width, layers.height);
+  includeContext.drawImage(final, 0, 0);
+  clearCanvas(layers.samMask);
+  clearCanvas(layers.previewSamMask);
+  clearCanvas(layers.manualErase);
+  return true;
+}
+
 export function maskLayerForStroke(layers: MaskLayerSet, kind: MaskStrokeKind) {
   if (kind === "manual-erase") {
     return layers.manualErase;

@@ -119,7 +119,7 @@ export function renderPreviewMedia(
     <div class="preview-media${editing || paintEditing ? " mask-preview-media" : ""}${poseTabActive ? " pose-tab-active" : ""}"${zoomStyle}>
       <div class="mask-zoom-stage">
         <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
-        ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
+        ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas><canvas id="maskFeatherPreview" class="mask-feather-preview" data-asset-id="${asset.id}" aria-hidden="true"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
         ${poseTabActive && poseDraft ? renderPoseOverlay(poseDraft, asset) : ""}
         ${paintEditing ? `<canvas id="paintCanvas" class="mask-canvas paint-canvas" data-asset-id="${asset.id}" aria-label="ペイントキャンバス"></canvas>` : ""}
       </div>
@@ -304,6 +304,7 @@ export function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string
         <button class="mask-tool-button ${!smartActive && !draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ" title="ブラシ">${iconBrush()}</button>
         <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム" title="消しゴム">${iconEraser()}</button>
         <button class="mask-tool-button" type="button" data-action="invert-mask" aria-label="マスク領域を反転" title="マスク領域を反転">${iconInvert()}</button>
+        <button class="mask-tool-button" type="button" data-action="remove-mask-islands" aria-label="微小なマスク領域を除去" title="微小なマスク領域を除去">${iconTrash()}</button>
         <button class="mask-tool-button" type="button" data-action="clear-mask" aria-label="マスクをクリア" title="マスクをクリア">${iconReset()}</button>
       </div>
       <div class="range-control mask-brush-control">
@@ -342,7 +343,7 @@ export function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string
       </div>
       <div class="mask-panel-actions">
         <button class="button-primary" type="button" data-action="apply-mask-editor">${iconCheck()}${canApplyCandidate ? "候補を適用" : "適用"}</button>
-        <button class="button-secondary" type="button" data-action="websam-clear-manual">${iconEraser()}手動修正クリア</button>
+        <button class="button-secondary" type="button" data-action="websam-clear-manual">${iconEraser()}マスクをクリア</button>
       </div>
     </aside>
   `;
