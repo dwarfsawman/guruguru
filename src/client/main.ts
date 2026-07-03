@@ -45,7 +45,7 @@ import { renderHome } from "./views/homeView";
 import { renderIterationTracker } from "./views/iterationTree";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
 import { defaultPrompt, defaultNegativePrompt, renderGenerationPanel } from "./views/generationPanel";
-import { renderAssetModal, type MaskPanelTab } from "./views/assetModal";
+import { renderAssetModal, type MaskGenerationParams, type MaskPanelTab } from "./views/assetModal";
 import type {
   WebSamModelStatus,
   WebSamPromptMode,
@@ -198,6 +198,7 @@ const state: {
   filter: "all" | "selected" | "rejected" | "favorite" | "unmarked";
   gridCols: 2 | 3 | 4;
   sidebarOpen: boolean;
+  sidebarCollapsed: boolean;
   comfyConnection: ComfyConnectionState;
   comfyStatusText: string;
   busy: boolean;
@@ -230,6 +231,7 @@ const state: {
   filter: "all",
   gridCols: 4,
   sidebarOpen: false,
+  sidebarCollapsed: loadSidebarCollapsedPreference(),
   comfyConnection: "unknown",
   comfyStatusText: "未確認",
   busy: false,
@@ -404,6 +406,15 @@ function bindEvents() {
       setPaintColor(target.value);
       return;
     }
+    if (target.dataset.generationField && target.dataset.generationField !== "prompt" && target.dataset.generationField !== "batchSize") {
+      const field = target.dataset.generationField as GenerationDraftField;
+      setGenerationDraftValue(field, target.value);
+      const form = document.querySelector<HTMLFormElement>("#generation-form");
+      if (form) {
+        setFormValue(form, field, target.value);
+      }
+      return;
+    }
     if (target.closest("#generation-form")) {
       captureGenerationDraft();
     }
@@ -416,8 +427,12 @@ function bindEvents() {
       setPositivePromptDraft(target.value);
       return;
     }
-    if (target.dataset.generationField === "batchSize" && target instanceof HTMLInputElement) {
-      setGenerationSliderDraft("batchSize", target);
+    if (
+      target.dataset.generationField &&
+      target.dataset.generationField !== "prompt" &&
+      target instanceof HTMLInputElement
+    ) {
+      setGenerationSliderDraft(target.dataset.generationField as GenerationDraftField, target);
     }
     if (target.dataset.inpaintField) {
       updateInpaintDraftFromControl(target);
@@ -989,6 +1004,9 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     } else if (action === "toggle-sidebar") {
       state.sidebarOpen = !state.sidebarOpen;
       render();
+    } else if (action === "toggle-sidebar-collapse") {
+      toggleSidebarCollapsed();
+      render();
     } else if (action === "save-settings") {
       await saveSettings();
     } else if (action === "test-comfy") {
@@ -1203,8 +1221,9 @@ async function openProject(projectId: string) {
   state.activeRoundId = state.detail.rounds[0]?.id ?? null;
   state.activeAssetId = null;
   state.sidebarOpen = false;
-  state.generationDraft = null;
-  state.inpaintDrafts = {};
+  const restoredDraft = restoreProjectDraft(projectId);
+  state.generationDraft = restoredDraft?.generationDraft ?? null;
+  state.inpaintDrafts = restoredDraft?.inpaintDrafts ?? {};
   state.maskEditMode = false;
   state.paintEditMode = false;
   state.paintDrafts = {};
@@ -1496,12 +1515,30 @@ function fileToDataUrl(file: File) {
   });
 }
 
+const DEFAULT_PROJECT_NAME = "New Project";
+
+function nextDefaultProjectName(existingNames: string[]) {
+  let maxIndex = 0;
+  for (const name of existingNames) {
+    if (name === DEFAULT_PROJECT_NAME) {
+      maxIndex = Math.max(maxIndex, 1);
+      continue;
+    }
+    const match = /^New Project\((\d+)\)$/.exec(name);
+    if (match) {
+      maxIndex = Math.max(maxIndex, Number(match[1]));
+    }
+  }
+  return maxIndex === 0 ? DEFAULT_PROJECT_NAME : `${DEFAULT_PROJECT_NAME}(${maxIndex + 1})`;
+}
+
 async function createProject() {
   const form = readForm("project-form");
+  const name = form.name.trim() || nextDefaultProjectName(state.projects.map((project) => project.name));
   const result = await api<{ project: ProjectRow }>("/api/projects", {
     method: "POST",
     body: JSON.stringify({
-      name: form.name,
+      name,
       description: form.description,
       defaultTemplateId: form.defaultTemplateId || null
     })
@@ -1523,6 +1560,11 @@ async function deleteProject(projectId: string) {
   const result = await api<{ deleted: boolean; storageDeleted: boolean; storageError?: string }>(`/api/projects/${projectId}`, {
     method: "DELETE"
   });
+  try {
+    window.localStorage.removeItem(draftStorageKey(projectId));
+  } catch {
+    // localStorage が使えない環境では無視する。
+  }
 
   if (state.currentProjectId === projectId) {
     state.message = result.storageError
@@ -1909,9 +1951,12 @@ function render(options: RenderOptions = {}) {
   } else {
     state.iterationScroll = null;
   }
+  if (state.currentProjectId) {
+    persistProjectDraft(state.currentProjectId);
+  }
   app.innerHTML = `
     ${renderHeader()}
-    ${state.message ? `<pre class="message"><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button>${escapeHtml(state.message)}</pre>` : ""}
+    ${state.message ? `<div class="message"><pre class="message-text">${escapeHtml(state.message)}</pre><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button></div>` : ""}
     ${state.detail ? renderProjectDetailView(state.detail) : renderHome(state.projects, state.settings, state.templates)}
     ${renderAssetModalView()}
     ${renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft)}
@@ -2713,7 +2758,8 @@ function renderProjectDetailView(detail: ProjectDetail) {
     (assetId: string) => inpaintDraftForAsset(assetId),
     (assetId: string) => poseDraftForAsset(assetId),
     state.showMaskGridTag,
-    state.copiedSeedAssetId
+    state.copiedSeedAssetId,
+    state.sidebarCollapsed
   );
 }
 
@@ -2723,6 +2769,9 @@ function captureGenerationDraft() {
     return;
   }
   state.generationDraft = generationDraftFromForm(form);
+  if (state.currentProjectId) {
+    persistProjectDraft(state.currentProjectId);
+  }
 }
 
 function generationDraftFromForm(form: HTMLFormElement): GenerationDraft {
@@ -2766,6 +2815,9 @@ function setGenerationDraftValue(field: GenerationDraftField, value: string) {
     ...(state.generationDraft ?? {}),
     [field]: value
   };
+  if (state.currentProjectId) {
+    persistProjectDraft(state.currentProjectId);
+  }
 }
 
 function draftNumber(draft: GenerationDraft | null, field: GenerationDraftField) {
@@ -2808,6 +2860,61 @@ function setInpaintDraft(draft: InpaintDraft | null) {
     ...(state.generationDraft ?? {}),
     inpaint: normalized
   };
+  if (state.currentProjectId) {
+    persistProjectDraft(state.currentProjectId);
+  }
+}
+
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "guruguru:sidebarCollapsed";
+
+function loadSidebarCollapsedPreference() {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function toggleSidebarCollapsed() {
+  state.sidebarCollapsed = !state.sidebarCollapsed;
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, state.sidebarCollapsed ? "1" : "0");
+  } catch {
+    // localStorage が使えない環境では次回起動時に既定値へ戻る。
+  }
+}
+
+const DRAFT_STORAGE_PREFIX = "guruguru:draft:";
+
+function draftStorageKey(projectId: string) {
+  return `${DRAFT_STORAGE_PREFIX}${projectId}`;
+}
+
+function persistProjectDraft(projectId: string) {
+  try {
+    window.localStorage.setItem(
+      draftStorageKey(projectId),
+      JSON.stringify({ generationDraft: state.generationDraft, inpaintDrafts: state.inpaintDrafts })
+    );
+  } catch {
+    // localStorage が使えない環境（プライベートブラウジング等）では永続化を諦める。
+  }
+}
+
+function restoreProjectDraft(projectId: string): { generationDraft: GenerationDraft | null; inpaintDrafts: Record<string, InpaintDraft> } | null {
+  try {
+    const raw = window.localStorage.getItem(draftStorageKey(projectId));
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as { generationDraft?: GenerationDraft | null; inpaintDrafts?: Record<string, InpaintDraft> };
+    return {
+      generationDraft: parsed.generationDraft ?? null,
+      inpaintDrafts: parsed.inpaintDrafts ?? {}
+    };
+  } catch {
+    return null;
+  }
 }
 
 function ensureInpaintDraft(assetId: string) {
@@ -4656,6 +4763,17 @@ function renderAssetModalView() {
   const batchSizeValue = currentBatchSizeValue();
   const paintDraft = state.paintEditMode ? paintDraftForAsset(asset.id) ?? defaultPaintDraft(asset.id) : null;
   const poseDraft = poseDraftForAsset(asset.id);
+  const generationParams: MaskGenerationParams = {
+    steps: currentStepsValue(),
+    cfg: currentCfgValue(),
+    denoise: currentDenoiseValue(),
+    width: currentWidthValue(),
+    height: currentHeightValue(),
+    seed: currentSeedValue(),
+    seedMode: currentSeedModeValue(),
+    sampler: currentSamplerValue(),
+    scheduler: currentSchedulerValue()
+  };
   return renderAssetModal(
     asset,
     inpaint,
@@ -4666,7 +4784,9 @@ function renderAssetModalView() {
     state.paintEditMode,
     paintDraft,
     state.maskPanelTab,
-    poseDraft
+    poseDraft,
+    generationParams,
+    state.sidebarCollapsed
   );
 }
 
@@ -4678,6 +4798,59 @@ function currentPositivePromptValue(asset: Asset) {
 function currentBatchSizeValue() {
   const activeRound = state.detail ? getActiveRound(state.detail) : null;
   return draftNumber(state.generationDraft, "batchSize") ?? activeRound?.request?.batchSize ?? 16;
+}
+
+function currentGenerationModeValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  const requestMode = activeRound?.request?.generationMode;
+  return (state.generationDraft?.generationMode ?? (requestMode === "manual_upload" ? "img2img" : requestMode) ?? "txt2img") as GenerationMode;
+}
+
+function currentStepsValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return draftNumber(state.generationDraft, "steps") ?? activeRound?.request?.steps ?? 20;
+}
+
+function currentCfgValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return draftNumber(state.generationDraft, "cfg") ?? activeRound?.request?.cfg ?? 7;
+}
+
+function currentDenoiseValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  const mode = currentGenerationModeValue();
+  const raw = draftNumber(state.generationDraft, "denoise") ?? activeRound?.request?.denoise ?? defaultDenoiseForMode(mode);
+  return normalizeDenoiseForMode(raw, mode);
+}
+
+function currentWidthValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return draftNumber(state.generationDraft, "width") ?? activeRound?.request?.width ?? 512;
+}
+
+function currentHeightValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return draftNumber(state.generationDraft, "height") ?? activeRound?.request?.height ?? 768;
+}
+
+function currentSeedValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return state.generationDraft?.seed ?? String(activeRound?.request?.seed ?? -1);
+}
+
+function currentSeedModeValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return state.generationDraft?.seedMode ?? activeRound?.request?.seedMode ?? "random";
+}
+
+function currentSamplerValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return state.generationDraft?.sampler ?? activeRound?.request?.sampler ?? "euler";
+}
+
+function currentSchedulerValue() {
+  const activeRound = state.detail ? getActiveRound(state.detail) : null;
+  return state.generationDraft?.scheduler ?? activeRound?.request?.scheduler ?? "normal";
 }
 
 function getActiveRound(detail: ProjectDetail) {

@@ -3,7 +3,7 @@
  * `assetModal.ts` と同様、state は引数で受け取るため main.ts への逆依存を持たない。
  */
 import { escapeAttr } from "../format";
-import { iconBrush, iconEraser, iconLoopArrows, iconReset, iconSave, iconZoom } from "../icons";
+import { iconBrush, iconChevronDouble, iconEraser, iconLoopArrows, iconReset, iconSave, iconZoom } from "../icons";
 import { PAINT_BASE_PALETTE, type PaintDraft } from "../paintTypes";
 
 export function renderPaintToggleButton(editing: boolean) {
@@ -14,11 +14,12 @@ export function renderPaintToggleButton(editing: boolean) {
   `;
 }
 
-export function renderPaintToolPanel(draft: PaintDraft) {
+export function renderPaintToolPanel(draft: PaintDraft, sidebarCollapsed = false) {
   return `
-    <aside class="mask-editor-panel paint-tool-panel">
+    <aside class="mask-editor-panel paint-tool-panel ${sidebarCollapsed ? "collapsed" : ""}">
       <div class="mask-panel-header">
         <h2>ペイントツール</h2>
+        <button class="sidebar-collapse-toggle" type="button" data-action="toggle-sidebar-collapse" aria-label="${sidebarCollapsed ? "パネルを展開" : "パネルを折りたたむ"}" title="${sidebarCollapsed ? "パネルを展開" : "パネルを折りたたむ"}" aria-pressed="${sidebarCollapsed}">${iconChevronDouble()}</button>
       </div>
       <div class="mask-toolbar-row">
         <button class="mask-tool-button ${draft.tool === "brush" ? "active" : ""}" type="button" data-action="paint-tool" data-tool="brush" aria-label="ブラシ" title="ブラシ">${iconBrush()}</button>
