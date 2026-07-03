@@ -11,6 +11,7 @@ import { iconPlus, iconPulse, iconSave, iconTrash } from "../icons";
 import { renderTemplatePanel, renderWorkflowImportPanel } from "../workflowUi";
 
 export function renderHome(projects: ProjectSummary[], settings: ComfySettings | null, templates: WorkflowTemplate[]) {
+  const totalAssets = projects.reduce((sum, project) => sum + (project.assetCount ?? 0), 0);
   return `
     <main class="home-layout">
       <section class="panel">
@@ -19,17 +20,20 @@ export function renderHome(projects: ProjectSummary[], settings: ComfySettings |
             <p class="section-kicker">Projects</p>
             <h1>Project一覧</h1>
           </div>
+          <span class="panel-count"><b>${projects.length}</b> projects · <b>${totalAssets}</b> assets</span>
         </div>
         <form id="project-form" class="form-stack">
           <label>Project名<input name="name" placeholder="未入力の場合は自動採番されます" /></label>
-          <label>説明<textarea name="description" rows="3"></textarea></label>
           <label>デフォルトWorkflowTemplate
             <select name="defaultTemplateId">
               <option value="">未指定</option>
               ${templates.map((template) => `<option value="${template.id}">${escapeHtml(template.name)} v${template.version}</option>`).join("")}
             </select>
           </label>
-          <button class="button-primary" type="button" data-action="create-project">${iconPlus()}新規Project作成</button>
+          <label class="form-span">説明<textarea name="description" rows="2"></textarea></label>
+          <div class="form-submit-row">
+            <button class="button-primary" type="button" data-action="create-project">${iconPlus()}新規Project作成</button>
+          </div>
         </form>
         <div class="project-list">
           ${projects.length ? projects.map(renderProjectCard).join("") : `<div class="empty">Projectはまだありません。</div>`}
@@ -52,8 +56,8 @@ export function renderProjectCard(project: ProjectSummary) {
       </button>
       <div class="project-copy">
         <h2>${escapeHtml(project.name)}</h2>
-        <p>${escapeHtml(project.description || "説明なし")}</p>
-        <div class="meta-line">Rounds ${project.roundCount ?? 0} / Assets ${project.assetCount ?? 0} / Updated ${formatDate(project.updatedAt)}</div>
+        <p class="${project.description ? "" : "desc-empty"}">${escapeHtml(project.description || "説明なし")}</p>
+        <div class="meta-line">Rounds <b>${project.roundCount ?? 0}</b> · Assets <b>${project.assetCount ?? 0}</b> · Updated <b>${formatDate(project.updatedAt)}</b></div>
       </div>
       <div class="project-actions">
         <button class="button-secondary" type="button" data-action="open-project" data-id="${project.id}">開く</button>

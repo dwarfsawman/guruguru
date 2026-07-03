@@ -62,6 +62,7 @@ async function main() {
 
   await copyFile(join(root, "src", "client", "index.html"), join(root, "dist", "public", "index.html"));
   await copyFile(join(root, "src", "client", "styles.css"), join(root, "dist", "public", "styles.css"));
+  await copyFile(join(root, "src", "client", "spiral.svg"), join(root, "dist", "public", "spiral.svg"));
   await copyOrtRuntimeAssets();
   await copyMediapipeWasmAssets();
 }
