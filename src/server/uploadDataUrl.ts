@@ -55,6 +55,31 @@ export function decodeMaskDataUrl(rawValue: unknown): { bytes: Buffer } {
   return { bytes };
 }
 
+export function decodeControlImageDataUrl(rawValue: unknown): { bytes: Buffer } {
+  const dataUrl = requiredString(rawValue, "controlnet.poseImageDataUrl");
+  if (dataUrl.length > Math.ceil(maxMaskImageBytes * 1.4) + 128) {
+    throw new HttpError(413, `Control image is too large. The maximum upload size is ${formatBytes(maxMaskImageBytes)}.`);
+  }
+
+  const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/i.exec(dataUrl);
+  if (!match) {
+    throw new HttpError(400, "controlnet.poseImageDataUrl must be a base64 PNG data URL.");
+  }
+
+  const bytes = Buffer.from(match[1]!, "base64");
+  if (bytes.length === 0) {
+    throw new HttpError(400, "Control image is empty.");
+  }
+  if (bytes.length > maxMaskImageBytes) {
+    throw new HttpError(413, `Control image is too large. The maximum upload size is ${formatBytes(maxMaskImageBytes)}.`);
+  }
+  if (!bytesMatchMimeType(bytes, "image/png")) {
+    throw new HttpError(400, "Control image data URL content is not a PNG image.");
+  }
+
+  return { bytes };
+}
+
 export function normalizedUploadFileName(filename: string, mimeType: string) {
   const trimmed = filename.trim() || "source";
   if (/\.(png|jpe?g|webp)$/i.test(trimmed)) {

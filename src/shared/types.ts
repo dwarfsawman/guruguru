@@ -42,6 +42,14 @@ export interface InpaintOptions {
   maskHeight?: number | null;
 }
 
+export interface ControlNetOptions {
+  poseImageDataUrl: string | null;
+  poseImagePath?: string | null;
+  strength: number;
+  startPercent: number;
+  endPercent: number;
+}
+
 export interface ComfySettings {
   baseUrl: string;
   websocketUrl: string;
@@ -69,6 +77,7 @@ export interface GenerationRequest {
   parentAssetId?: string | null;
   relationType?: ParentRelation | null;
   inpaint?: InpaintOptions | null;
+  controlnet?: ControlNetOptions | null;
 }
 
 export interface ApiErrorBody {

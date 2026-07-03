@@ -10,20 +10,20 @@ import {
   queuePrompt,
   uploadImageToComfy
 } from "./comfy";
-import { readImageSize, storeImage, storeMaskImage } from "./storage";
+import { readImageSize, storeControlImage, storeImage, storeMaskImage } from "./storage";
 import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
 import { HttpError } from "./http";
 import { isJsonObject, numberOr, stringOrNull, stringOr } from "./validate";
 import { patchWorkflow, resolveSeed } from "./workflow";
 import { decorateAsset } from "./assets";
 import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
-import { decodeMaskDataUrl } from "./uploadDataUrl";
+import { decodeControlImageDataUrl, decodeMaskDataUrl } from "./uploadDataUrl";
 import {
   relationForGenerationMode,
   requiresParentAsset
 } from "../shared/generationMode";
 import { nodeIdFromRolePath } from "../shared/workflowRolePath";
-import type { GenerationMode, GenerationRequest, InpaintOptions, MaskedContent } from "../shared/types";
+import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent } from "../shared/types";
 import type { Asset, Round } from "../shared/apiTypes";
 
 type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
@@ -103,6 +103,7 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
   const seed = resolveSeed(requestBody, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
   let request: GenerationRequest = normalizeGenerationRequest({ ...requestBody, generationMode, parentAssetId: requestedParentAssetId, seed });
   request = await prepareInpaintRequest(projectId, roundId, parentAsset, requestBody, request);
+  request = await prepareControlNetRequest(projectId, roundId, requestBody, request);
   const branch = branchAssignmentForRound(projectId, parentAsset, roundId, "txt2img_root");
 
   runSql(
@@ -134,6 +135,9 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
     const uploadedMask = request.inpaint?.maskPath
       ? await uploadImageToComfy(request.inpaint.maskPath)
       : null;
+    const uploadedControlImage = request.controlnet?.poseImagePath
+      ? await uploadImageToComfy(request.controlnet.poseImagePath)
+      : null;
     const clientId = createId("comfy_client");
     const jobCount = clampInteger(request.batchSize, 1, maxBatchSize);
     const firstSeed = typeof request.seed === "number" ? request.seed : resolveSeed(request, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
@@ -160,7 +164,8 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
         batchIndex,
         request: jobRequest,
         uploadedImageName: uploaded?.name ?? null,
-        uploadedMaskName: uploadedMask?.name ?? null
+        uploadedMaskName: uploadedMask?.name ?? null,
+        uploadedControlImageName: uploadedControlImage?.name ?? null
       });
 
       if (!firstPatchedWorkflow) {
@@ -272,6 +277,51 @@ async function prepareInpaintRequest(
       maskHeight: storedMask.height
     }
   };
+}
+
+async function prepareControlNetRequest(
+  projectId: string,
+  roundId: string,
+  rawRequest: GenerationRequest,
+  normalizedRequest: GenerationRequest
+): Promise<GenerationRequest> {
+  const rawRequestRecord = rawRequest as unknown as Record<string, unknown>;
+  const rawControlNet = isJsonObject(rawRequestRecord.controlnet)
+    ? rawRequestRecord.controlnet as Record<string, unknown>
+    : null;
+  const hasPoseDataUrl = typeof rawControlNet?.poseImageDataUrl === "string" && rawControlNet.poseImageDataUrl.trim() !== "";
+
+  if (!hasPoseDataUrl) {
+    return {
+      ...normalizedRequest,
+      controlnet: null
+    };
+  }
+
+  const control = decodeControlImageDataUrl(rawControlNet.poseImageDataUrl);
+  const stored = await storeControlImage(projectId, roundId, control.bytes);
+
+  return {
+    ...normalizedRequest,
+    controlnet: normalizeControlNetOptions(rawControlNet, stored.controlPath)
+  };
+}
+
+function normalizeControlNetOptions(rawControlNet: Record<string, unknown>, poseImagePath: string): ControlNetOptions {
+  return {
+    poseImageDataUrl: null,
+    poseImagePath,
+    strength: clampFloat(numberOr(rawControlNet.strength, 1), 0, 2),
+    startPercent: clampFloat(numberOr(rawControlNet.startPercent, 0), 0, 1),
+    endPercent: clampFloat(numberOr(rawControlNet.endPercent, 1), 0, 1)
+  };
+}
+
+function clampFloat(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 export function normalizeInpaintOptions(rawInpaint: Record<string, unknown>): InpaintOptions {

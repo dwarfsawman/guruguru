@@ -844,6 +844,124 @@ test("patchWorkflow: throws when img2img workflow has no sampler node with a lat
   );
 });
 
+function baseWorkflowWithControlNet(): Record<string, unknown> {
+  const workflow = baseWorkflow() as Record<string, any>;
+  // ControlNetApplyAdvanced(8) reads its control image from a LoadImage(9) node -- mirroring
+  // the reference workflow's 752/754 pair (Docs/Feature-PoseControlNet.md "参照ワークフローの構成").
+  workflow["8"] = {
+    class_type: "ControlNetApplyAdvanced",
+    inputs: { image: ["9", 0], strength: 1, start_percent: 0, end_percent: 1 },
+    _meta: { title: "Apply ControlNet" }
+  };
+  workflow["9"] = {
+    class_type: "LoadImage",
+    inputs: { image: "old_control.png" },
+    _meta: { title: "Load Control Image" }
+  };
+  return workflow;
+}
+
+function baseRoleMapWithControlNet(): Record<string, unknown> {
+  return {
+    ...baseRoleMap(),
+    controlnet_apply_node: "8",
+    controlnet_strength_input: "8.inputs.strength",
+    controlnet_start_percent_input: "8.inputs.start_percent",
+    controlnet_end_percent_input: "8.inputs.end_percent"
+  };
+}
+
+test("patchWorkflow controlnet: pose image overwrites the ControlNetApplyAdvanced-connected LoadImage and strength/percent are patched", () => {
+  const workflow = baseWorkflowWithControlNet();
+  // load_image_input is misinferred onto the SAME control LoadImage node (the documented
+  // inferRoleMap gotcha) -- the pose attachment must still win because patchControlNetPath
+  // runs after patchWorkflow's own load_image_input injection.
+  const roleMap = { ...baseRoleMapWithControlNet(), load_image_input: "9.inputs.image" };
+  const request = baseRequest({
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1.4, startPercent: 0.1, endPercent: 0.9 }
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: "pose_control.png"
+  }) as Record<string, any>;
+
+  assert.equal(patched["9"].inputs.image, "pose_control.png");
+  assert.equal(patched["8"].inputs.strength, 1.4);
+  assert.equal(patched["8"].inputs.start_percent, 0.1);
+  assert.equal(patched["8"].inputs.end_percent, 0.9);
+});
+
+test("patchWorkflow controlnet: without controlnet_apply_node role, falls back to an exact ControlNetApplyAdvanced class search and adds a LoadImage when the image input is not a connection", () => {
+  const workflow = baseWorkflowWithControlNet() as Record<string, any>;
+  workflow["8"].inputs.image = null;
+  const roleMap: Record<string, unknown> = { ...baseRoleMap() };
+  const request = baseRequest({
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1, startPercent: 0, endPercent: 1 }
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl2",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: null,
+    uploadedMaskName: null,
+    uploadedControlImageName: "pose_control.png"
+  }) as Record<string, any>;
+
+  assert.deepEqual(patched["10"], {
+    inputs: { image: "pose_control.png" },
+    class_type: "LoadImage",
+    _meta: { title: "GURUGURU ControlNet Load Image" }
+  });
+  assert.deepEqual(patched["8"].inputs.image, ["10", 0]);
+});
+
+test("patchWorkflow controlnet: request.controlnet is null leaves the ControlNet nodes untouched by patchControlNetPath (load_image_input still applies the parent image)", () => {
+  const workflow = baseWorkflowWithControlNet();
+  const roleMap = { ...baseRoleMapWithControlNet(), load_image_input: "9.inputs.image" };
+  const request = baseRequest({ controlnet: null });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl3",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: null
+  }) as Record<string, any>;
+
+  assert.equal(patched["9"].inputs.image, "parent_upload.png");
+  assert.equal(patched["8"].inputs.strength, 1);
+});
+
+test("patchWorkflow controlnet: no ControlNetApplyAdvanced node in the template is a silent no-op (pose attachment is optional)", () => {
+  const workflow = baseWorkflow();
+  const roleMap = baseRoleMap();
+  const request = baseRequest({
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1, startPercent: 0, endPercent: 1 }
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl4",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: null,
+    uploadedMaskName: null,
+    uploadedControlImageName: "pose_control.png"
+  }) as Record<string, any>;
+
+  assert.deepEqual(Object.keys(patched).sort(), Object.keys(baseWorkflow()).sort());
+});
+
 test("resolveSeed: seedMode=fixed returns request.seed", () => {
   assert.equal(resolveSeed(baseRequest({ seedMode: "fixed", seed: 777 }), null), 777);
 });
