@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import {
   deleteQueuedPrompts,
+  ensureDummyComfyImage,
   fetchViewImage,
   getHistory,
   getQueue,
@@ -14,7 +15,7 @@ import { readImageSize, storeControlImage, storeImage, storeMaskImage } from "./
 import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
 import { HttpError } from "./http";
 import { isJsonObject, numberOr, stringOrNull, stringOr } from "./validate";
-import { patchWorkflow, resolveSeed } from "./workflow";
+import { isUnifiedSwitchWorkflow, patchWorkflow, resolveSeed } from "./workflow";
 import { decorateAsset } from "./assets";
 import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
 import { decodeControlImageDataUrl, decodeMaskDataUrl } from "./uploadDataUrl";
@@ -138,6 +139,12 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
     const uploadedControlImage = request.controlnet?.poseImagePath
       ? await uploadImageToComfy(request.controlnet.poseImagePath)
       : null;
+    // Unified-switch templates keep every branch's LoadImage nodes in the graph; unused image
+    // inputs are pointed at a pre-uploaded 1px dummy so ComfyUI's graph-wide filename validation
+    // passes (lazy evaluation never actually reads it).
+    const dummyImageName = isUnifiedSwitchWorkflow(workflow)
+      ? await ensureDummyComfyImage()
+      : null;
     const clientId = createId("comfy_client");
     const jobCount = clampInteger(request.batchSize, 1, maxBatchSize);
     const firstSeed = typeof request.seed === "number" ? request.seed : resolveSeed(request, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
@@ -165,7 +172,8 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
         request: jobRequest,
         uploadedImageName: uploaded?.name ?? null,
         uploadedMaskName: uploadedMask?.name ?? null,
-        uploadedControlImageName: uploadedControlImage?.name ?? null
+        uploadedControlImageName: uploadedControlImage?.name ?? null,
+        dummyImageName
       });
 
       if (!firstPatchedWorkflow) {
