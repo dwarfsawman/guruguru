@@ -21,7 +21,8 @@ export function patchControlNetPath(
   workflow: JsonObject,
   roleMap: Record<string, unknown>,
   uploadedControlImageName: string,
-  request: GenerationRequest
+  request: GenerationRequest,
+  parentUploadedImageName: string | null = null
 ) {
   const controlnet = request.controlnet;
   if (!controlnet) {
@@ -37,8 +38,19 @@ export function patchControlNetPath(
 
   const imageConnection = getNodeInput(workflow, applyNodeId, ["image"]);
   const connectedNodeId = isConnection(imageConnection) ? imageConnection[0] : null;
-  const loadImageNodeId = typeof connectedNodeId === "string" && nodeClassIncludes(workflow, connectedNodeId, ["LoadImage"])
+  const resolvedLoadImageNodeId = typeof connectedNodeId === "string" && nodeClassIncludes(workflow, connectedNodeId, ["LoadImage"])
     ? connectedNodeId
+    : null;
+  // If the traced LoadImage is already claimed as the parent-image loader (e.g. img2img's own
+  // LoadImage fallback resolved to the same node because the roleMap/class search collided), do
+  // not overwrite it with the pose image -- add a fresh LoadImage for the pose instead, so the
+  // parent image and the control image never share a node.
+  const isClaimedByParentImage =
+    resolvedLoadImageNodeId !== null &&
+    parentUploadedImageName !== null &&
+    getNodeInput(workflow, resolvedLoadImageNodeId, ["image"]) === parentUploadedImageName;
+  const loadImageNodeId = resolvedLoadImageNodeId && !isClaimedByParentImage
+    ? resolvedLoadImageNodeId
     : addLoadImageNode(workflow, uploadedControlImageName);
 
   setNodeInput(workflow, loadImageNodeId, ["image"], uploadedControlImageName);

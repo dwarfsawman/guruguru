@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { nodeIdFromRolePath } from "../shared/workflowRolePath";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -184,6 +185,48 @@ export function deepClone<T>(value: T): T {
 
 export function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null;
+}
+
+// Defends against roleMaps inferred before the inferRoleMap fix (workflowRoleMap.ts) and stored in
+// the DB: strips roles that inferRoleMap would no longer produce for the given workflow, so stale
+// templates get correctly-patched workflows without needing to be re-registered.
+export function sanitizeRoleMap(workflow: JsonObject, roleMap: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = { ...roleMap };
+
+  // vae_encode_node / vae_encode_image_input: drop if the referenced node is not a VAEEncode node
+  // (e.g. a stale roleMap pointing at ControlNetApplyAdvanced.inputs.image).
+  const vaeEncodeNodeId = stringRole(sanitized.vae_encode_node) ?? nodeIdFromRolePath(sanitized.vae_encode_image_input);
+  if (vaeEncodeNodeId && !nodeClassIncludes(workflow, vaeEncodeNodeId, ["VAEEncode"])) {
+    delete sanitized.vae_encode_node;
+    delete sanitized.vae_encode_image_input;
+  }
+
+  // load_image_node / load_image_input: drop if it points at the ControlNetApplyAdvanced
+  // control-supplier LoadImage, and move that node id into controlnet_image_node (if unset) so
+  // the "parent image as control image" behavior (generationMode "controlnet") is preserved.
+  const controlImageNodeId = findControlNetImageNodeId(workflow, sanitized);
+  const loadImageNodeId = stringRole(sanitized.load_image_node) ?? nodeIdFromRolePath(sanitized.load_image_input);
+  if (controlImageNodeId && loadImageNodeId === controlImageNodeId) {
+    delete sanitized.load_image_node;
+    delete sanitized.load_image_input;
+    if (!stringRole(sanitized.controlnet_image_node)) {
+      sanitized.controlnet_image_node = controlImageNodeId;
+    }
+  }
+
+  return sanitized;
+}
+
+function findControlNetImageNodeId(workflow: JsonObject, roleMap: Record<string, unknown>): string | null {
+  const applyNodeId = stringRole(roleMap.controlnet_apply_node) ?? findNodeIdByExactClass(workflow, "ControlNetApplyAdvanced");
+  if (!applyNodeId) {
+    return null;
+  }
+  const imageConnection = getNodeInput(workflow, applyNodeId, ["image"]);
+  const connectedNodeId = isConnection(imageConnection) ? imageConnection[0] : null;
+  return typeof connectedNodeId === "string" && nodeClassIncludes(workflow, connectedNodeId, ["LoadImage"])
+    ? connectedNodeId
+    : null;
 }
 
 export function findVaeConnection(workflow: JsonObject): unknown[] {

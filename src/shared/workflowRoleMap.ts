@@ -38,7 +38,16 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
   addInputPath(roleMap, "repeat_latent_batch_samples_input", findInput(nodes, ["samples"], ["RepeatLatentBatch"]));
   addInputPath(roleMap, "width_input", findInput(nodes, ["width"], ["EmptyLatent", "EmptySD3Latent"]));
   addInputPath(roleMap, "height_input", findInput(nodes, ["height"], ["EmptyLatent", "EmptySD3Latent"]));
-  addInputPath(roleMap, "load_image_input", findInput(nodes, ["image"], ["LoadImage"]));
+  // The LoadImage feeding ControlNetApplyAdvanced.inputs.image is a control-image supplier, not a
+  // general "parent image" input -- exclude it so load_image_input does not collide with it (it is
+  // captured separately below as controlnet_image_node).
+  const controlNetApply = findNode(nodes, ["ControlNetApplyAdvanced"]);
+  const controlNetImageNodeId = controlNetApply ? traceLoadImageConnection(nodes, controlNetApply, "image") : null;
+  addInputPath(
+    roleMap,
+    "load_image_input",
+    findInput(nodes.filter((node) => node.id !== controlNetImageNodeId), ["image"], ["LoadImage"])
+  );
   const vaeEncode = findNode(nodes, ["VAEEncode"]);
   if (vaeEncode) {
     roleMap.vae_encode_node = vaeEncode.id;
@@ -47,14 +56,19 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
   if (repeatLatentBatch) {
     roleMap.repeat_latent_batch_node = repeatLatentBatch.id;
   }
-  addInputPath(roleMap, "vae_encode_image_input", findInput(nodes, ["pixels", "image"], ["VAEEncode"]));
+  // No unrestricted fallback here (unlike findInput's usual behavior): a workflow without a
+  // VAEEncode node (e.g. the ControlNet reference workflow, which has no VAEEncode at all) must
+  // NOT have this role inferred at all, otherwise it would misinfer onto the first unrelated node
+  // with a "pixels"/"image" input -- notably ControlNetApplyAdvanced.inputs.image -- and later
+  // corrupt conditioning wiring when patchImg2ImgLatentPath/patchInpaintLatentPath treat that node
+  // as a VAEEncode node (Docs/Feature-PoseControlNet-Img2Img.md).
+  addInputPath(roleMap, "vae_encode_image_input", findInputInNodes(nodes.filter((node) => node.classType.includes("VAEEncode")), ["pixels", "image"]));
   const saveImage = findNode(nodes, ["SaveImage"]);
   if (saveImage) {
     roleMap.save_image_node = saveImage.id;
   }
   addInputPath(roleMap, "save_prefix_input", findInput(nodes, ["filename_prefix"], ["SaveImage"]));
 
-  const controlNetApply = findNode(nodes, ["ControlNetApplyAdvanced"]);
   if (controlNetApply) {
     roleMap.controlnet_apply_node = controlNetApply.id;
     // Only look for these inputs when a ControlNetApplyAdvanced node actually exists -- otherwise
@@ -63,6 +77,9 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
     addInputPath(roleMap, "controlnet_strength_input", findInput(nodes, ["strength"], ["ControlNetApplyAdvanced"]));
     addInputPath(roleMap, "controlnet_start_percent_input", findInput(nodes, ["start_percent"], ["ControlNetApplyAdvanced"]));
     addInputPath(roleMap, "controlnet_end_percent_input", findInput(nodes, ["end_percent"], ["ControlNetApplyAdvanced"]));
+    if (controlNetImageNodeId) {
+      roleMap.controlnet_image_node = controlNetImageNodeId;
+    }
   }
 
   return roleMap;
@@ -159,6 +176,22 @@ function findInputInNodes(nodes: WorkflowNode[], inputNames: string[]): { node: 
     }
   }
   return null;
+}
+
+// Follows a node's `inputs[inputName]` connection (ComfyUI API-format `[nodeId, outputIndex]`
+// tuple) and returns the source node's id, but only if that source node is a LoadImage node.
+function traceLoadImageConnection(nodes: WorkflowNode[], node: WorkflowNode, inputName: string): string | null {
+  const connection = node.inputs[inputName];
+  if (!isConnection(connection)) {
+    return null;
+  }
+  const sourceNodeId = connection[0];
+  const sourceNode = nodes.find((candidate) => candidate.id === sourceNodeId);
+  return sourceNode && sourceNode.classType.includes("LoadImage") ? sourceNode.id : null;
+}
+
+function isConnection(value: unknown): value is [string, number] {
+  return Array.isArray(value) && typeof value[0] === "string" && typeof value[1] === "number";
 }
 
 function findNode(nodes: WorkflowNode[], preferredClassFragments: string[]): WorkflowNode | null {

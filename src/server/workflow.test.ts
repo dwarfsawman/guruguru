@@ -1023,6 +1023,216 @@ test("patchWorkflow controlnet: without a pose attachment, the roleMap-based con
   assert.equal(patched["11"].inputs.image, "parent_upload.png");
 });
 
+test("patchWorkflow img2img x controlnet: parent image gets a fresh LoadImage distinct from the control-supplier LoadImage, and CFGGuider-style positive/negative wiring on the apply node is left untouched", () => {
+  // baseWorkflowWithControlNet has no VAEEncode node (mirrors the reference workflow), so
+  // patchImg2ImgLatentPath's LoadImage fallback would normally resolve to findNodeIdByExactClass's
+  // first LoadImage match -- node 9, which is ALSO the ControlNetApplyAdvanced-connected control
+  // image supplier. Sharing that node would let the img2img resize path clobber node 9's `image`
+  // input with the parent upload, then patchControlNetPath would overwrite it again with the pose
+  // image, breaking the parent-image resize/VAEEncode chain's actual source. The fix adds a
+  // separate LoadImage node for the parent image instead of reusing node 9.
+  const workflow = baseWorkflowWithControlNet();
+  const roleMap = { ...baseRoleMapWithControlNet(), controlnet_image_node: "9" };
+  const request = baseRequest({
+    generationMode: "img2img",
+    denoise: 0.6,
+    batchSize: 1,
+    width: 512,
+    height: 512,
+    parentAssetId: "asset_ctrl_1",
+    relationType: "img2img",
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1.2, startPercent: 0, endPercent: 1 }
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl7",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: "pose_control.png"
+  }) as Record<string, any>;
+
+  // Node 9 (the control-supplier LoadImage) keeps receiving the pose image, not the parent image.
+  assert.equal(patched["9"].inputs.image, "pose_control.png");
+  assert.equal(patched["9"].class_type, "LoadImage");
+
+  // A NEW LoadImage node (10) is added for the parent image instead of reusing node 9.
+  assert.deepEqual(patched["10"], {
+    inputs: { image: "parent_upload.png" },
+    class_type: "LoadImage",
+    _meta: { title: "GURUGURU img2img Load Image" }
+  });
+
+  // The img2img resize/VAEEncode chain is built off the new node 10, not node 9.
+  // Locate the dynamically-added VAEEncode node and confirm its pixels source traces back to 10.
+  const vaeEncodeEntry = Object.entries(patched).find(([, node]) => (node as any).class_type === "VAEEncode");
+  assert.ok(vaeEncodeEntry, "expected a dynamically-added VAEEncode node");
+  const [, vaeEncodeNode] = vaeEncodeEntry!;
+  const resizeNodeIdActual = (vaeEncodeNode as any).inputs.pixels[0];
+  assert.equal(patched[resizeNodeIdActual].class_type, "ImageScale");
+  assert.equal(patched[resizeNodeIdActual].inputs.image[0], "10");
+
+  // ControlNetApplyAdvanced's own positive/negative/image wiring is unaffected structurally --
+  // still a connection into node 6/7, and image still points at node 9 (now holding the pose image).
+  assert.deepEqual(patched["8"].inputs.image, ["9", 0]);
+  assert.equal(patched["8"].inputs.strength, 1.2);
+});
+
+test("patchWorkflow img2img x controlnet (stale roleMap): a stale vae_encode_image_input pointing at the ControlNetApplyAdvanced node is sanitized away and does not corrupt the apply node's inputs", () => {
+  // Simulates a DB-stored template whose roleMap was inferred before the inferRoleMap fix landed:
+  // vae_encode_image_input erroneously points at node 8 (ControlNetApplyAdvanced).inputs.image.
+  // sanitizeRoleMap must drop this stale role at the start of patchWorkflow so patchImg2ImgLatentPath
+  // never treats node 8 as a VAEEncode node.
+  const workflow = baseWorkflowWithControlNet();
+  const roleMap = {
+    ...baseRoleMapWithControlNet(),
+    load_image_input: "9.inputs.image",
+    vae_encode_image_input: "8.inputs.image"
+  };
+  const request = baseRequest({
+    generationMode: "img2img",
+    denoise: 0.6,
+    batchSize: 1,
+    width: 512,
+    height: 512,
+    parentAssetId: "asset_ctrl_2",
+    relationType: "img2img"
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl8",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: null
+  }) as Record<string, any>;
+
+  // No pose is attached in this test, so the img2img strength=0 rule also applies -- strength is
+  // forced to 0 (not left at the stale roleMap's misdirected value), and start_percent is
+  // untouched by the sanitizer. Its image input is not the raw parent image string (would
+  // indicate the sanitizer failed and the parent image clobbered it).
+  assert.equal(patched["8"].inputs.strength, 0);
+  assert.equal(patched["8"].inputs.start_percent, 0);
+  assert.notEqual(patched["8"].inputs.image, "parent_upload.png");
+
+  // A real VAEEncode node was dynamically added elsewhere and used for the img2img latent path.
+  const vaeEncodeEntry = Object.entries(patched).find(([, node]) => (node as any).class_type === "VAEEncode");
+  assert.ok(vaeEncodeEntry, "expected a dynamically-added VAEEncode node");
+
+  // Also: since load_image_input was stale-pointed at the control-supplier LoadImage (9), the
+  // sanitizer drops that role too and moves node 9 into controlnet_image_node, so the parent-image
+  // injection at the top of patchWorkflow does not clobber node 9's image with the parent upload
+  // (no pose attached in this test, so node 9 receives the parent image via controlnet_image_node
+  // instead, preserving the "parent image as control image" behavior for generationMode img2img
+  // without pose -- see the strength=0 test below for the full no-pose flow).
+});
+
+test("patchWorkflow img2img x controlnet, no pose attached: ControlNetApplyAdvanced strength is forced to 0 (no-op) and the control image slot receives the parent image so LoadImage does not reference a missing file", () => {
+  const workflow = baseWorkflowWithControlNet();
+  const roleMap = { ...baseRoleMapWithControlNet(), controlnet_image_node: "9" };
+  const request = baseRequest({
+    generationMode: "img2img",
+    denoise: 0.6,
+    batchSize: 1,
+    width: 512,
+    height: 512,
+    parentAssetId: "asset_ctrl_3",
+    relationType: "img2img",
+    controlnet: null
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl9",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: null
+  }) as Record<string, any>;
+
+  // strength is forced to 0 so ControlNetApplyAdvanced is a no-op passthrough, making this
+  // behave like plain img2img even though the template has a ControlNet section.
+  assert.equal(patched["8"].inputs.strength, 0);
+
+  // The control image slot (node 9, via controlnet_image_node) still receives the parent image --
+  // this avoids ComfyUI failing on a stale/missing control image filename left over in the template.
+  assert.equal(patched["9"].inputs.image, "parent_upload.png");
+});
+
+test("patchWorkflow controlnet mode (generationMode=\"controlnet\") is not affected by the img2img strength=0 rule even when request.controlnet is null", () => {
+  const workflow = baseWorkflowWithControlNet();
+  const roleMap = { ...baseRoleMapWithControlNet(), controlnet_image_node: "9" };
+  const request = baseRequest({
+    generationMode: "controlnet",
+    controlnet: null
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl10",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: null,
+    uploadedControlImageName: null
+  }) as Record<string, any>;
+
+  // strength is left at the template's original value (1) -- the strength=0 override only
+  // applies to generationMode "img2img".
+  assert.equal(patched["8"].inputs.strength, 1);
+  assert.equal(patched["9"].inputs.image, "parent_upload.png");
+});
+
+test("patchWorkflow inpaint x controlnet: pose image and parent/mask images do not collide on the same LoadImage node", () => {
+  const workflow = baseWorkflowWithControlNet();
+  const roleMap = { ...baseRoleMapWithControlNet(), controlnet_image_node: "9" };
+  const request = baseRequest({
+    generationMode: "img2img",
+    batchSize: 1,
+    width: 512,
+    height: 512,
+    inpaint: {
+      maskedContent: "original",
+      inpaintArea: "only_masked",
+      onlyMaskedPadding: 0,
+      maskDataUrl: null,
+      maskPath: "/tmp/mask.png",
+      maskWidth: 512,
+      maskHeight: 512
+    },
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1, startPercent: 0, endPercent: 1 }
+  });
+
+  const patched = patchWorkflow(workflow, roleMap, {
+    projectId: "project_ctrl11",
+    roundIndex: 1,
+    batchIndex: 0,
+    request,
+    uploadedImageName: "parent_upload.png",
+    uploadedMaskName: "mask_upload.png",
+    uploadedControlImageName: "pose_control.png"
+  }) as Record<string, any>;
+
+  // The control-supplier LoadImage (9) receives the pose image.
+  assert.equal(patched["9"].inputs.image, "pose_control.png");
+
+  // A separate LoadImage node was added for the parent image (inpaint's own LoadImage fallback
+  // must not reuse node 9 either).
+  const loadImageNodes = Object.entries(patched).filter(
+    ([, node]) => (node as any).class_type === "LoadImage" && (node as any).inputs.image === "parent_upload.png"
+  );
+  assert.equal(loadImageNodes.length, 1);
+  assert.notEqual(loadImageNodes[0]![0], "9");
+
+  // ControlNetApplyAdvanced's strength/percent wiring is untouched by the collision-avoidance fix.
+  assert.equal(patched["8"].inputs.strength, 1);
+});
+
 test("resolveSeed: seedMode=fixed returns request.seed", () => {
   assert.equal(resolveSeed(baseRequest({ seedMode: "fixed", seed: 777 }), null), 777);
 });

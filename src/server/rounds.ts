@@ -298,13 +298,6 @@ async function prepareControlNetRequest(
     };
   }
 
-  // ControlNet-template x img2img is not supported yet: patchImg2ImgLatentPath/patchInpaintLatentPath
-  // misinfer vae_encode_image_input onto ControlNetApplyAdvanced.inputs.image when the template has
-  // no VAEEncode node, corrupting the workflow (Docs/Done/Feature-PoseControlNet.md §5 "img2img モードとの組合せ").
-  if (normalizedRequest.generationMode === "img2img") {
-    throw new HttpError(400, "ControlNet pose attachment is not supported together with img2img generation yet.");
-  }
-
   const control = decodeControlImageDataUrl(rawControlNet.poseImageDataUrl);
   const stored = await storeControlImage(projectId, roundId, control.bytes);
 
