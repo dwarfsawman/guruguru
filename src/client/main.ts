@@ -1569,7 +1569,7 @@ async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
     generationMode
   );
   const inpaint = inpaintRequestForParent(parentAssetId, generationMode);
-  const controlnet = controlnetRequestForParent(parentAssetId, template);
+  const controlnet = controlnetRequestForParent(parentAssetId, generationMode, template);
   const request: GenerationRequest = {
     templateId: template.id,
     prompt: form.prompt,
@@ -3910,8 +3910,18 @@ function inpaintRequestForParent(parentAssetId: string | null, generationMode: s
   };
 }
 
-function controlnetRequestForParent(parentAssetId: string | null, template: { workflowJson: unknown }): ControlNetOptions | null {
+function controlnetRequestForParent(
+  parentAssetId: string | null,
+  generationMode: string,
+  template: { workflowJson: unknown }
+): ControlNetOptions | null {
   if (!parentAssetId) {
+    return null;
+  }
+  // ControlNet-template x img2img is not supported yet: patchImg2ImgLatentPath/patchInpaintLatentPath
+  // misinfer vae_encode_image_input onto ControlNetApplyAdvanced.inputs.image when the template has
+  // no VAEEncode node, corrupting the workflow (Docs/Done/Feature-PoseControlNet.md §5 "img2img モードとの組合せ").
+  if (generationMode === "img2img") {
     return null;
   }
   const draft = poseDraftForAsset(parentAssetId);

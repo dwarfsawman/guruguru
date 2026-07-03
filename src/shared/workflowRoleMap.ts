@@ -57,10 +57,13 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
   const controlNetApply = findNode(nodes, ["ControlNetApplyAdvanced"]);
   if (controlNetApply) {
     roleMap.controlnet_apply_node = controlNetApply.id;
+    // Only look for these inputs when a ControlNetApplyAdvanced node actually exists -- otherwise
+    // findInput's unrestricted fallback would misinfer an unrelated node's "strength"/etc. input
+    // (e.g. IPAdapter) as a controlnet role.
+    addInputPath(roleMap, "controlnet_strength_input", findInput(nodes, ["strength"], ["ControlNetApplyAdvanced"]));
+    addInputPath(roleMap, "controlnet_start_percent_input", findInput(nodes, ["start_percent"], ["ControlNetApplyAdvanced"]));
+    addInputPath(roleMap, "controlnet_end_percent_input", findInput(nodes, ["end_percent"], ["ControlNetApplyAdvanced"]));
   }
-  addInputPath(roleMap, "controlnet_strength_input", findInput(nodes, ["strength"], ["ControlNetApplyAdvanced"]));
-  addInputPath(roleMap, "controlnet_start_percent_input", findInput(nodes, ["start_percent"], ["ControlNetApplyAdvanced"]));
-  addInputPath(roleMap, "controlnet_end_percent_input", findInput(nodes, ["end_percent"], ["ControlNetApplyAdvanced"]));
 
   return roleMap;
 }
