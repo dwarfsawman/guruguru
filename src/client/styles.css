@@ -2783,10 +2783,15 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .mask-generation-params-section summary {
-  font-size: 12px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.72);
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--faint);
   cursor: pointer;
+}
+
+.mask-generation-params-section summary:hover {
+  color: var(--muted);
 }
 
 .paint-tool-panel .mask-panel-actions {

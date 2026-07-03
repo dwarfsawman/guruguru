@@ -1010,6 +1010,8 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       await saveSettings();
     } else if (action === "test-comfy") {
       await testComfy();
+    } else if (action === "connect-comfy") {
+      await connectComfy();
     } else if (action === "check-comfy-connection") {
       if (state.comfyConnection !== "checking") {
         await refreshComfyStatus(true);
@@ -1285,7 +1287,7 @@ function terminalRoundMessage(status: string) {
   return `生成状態: ${status}`;
 }
 
-async function saveSettings() {
+async function persistComfySettings() {
   const form = readForm("settings-form");
   state.settings = await api<ComfySettings>("/api/settings/comfy", {
     method: "PUT",
@@ -1297,9 +1299,19 @@ async function saveSettings() {
       webSamModelBaseUrl: form.webSamModelBaseUrl
     })
   });
+}
+
+async function saveSettings() {
+  await persistComfySettings();
   state.message = "ComfyUI接続設定を保存しました。";
   render();
   await refreshComfyStatus(true);
+}
+
+/** 「接続」ボタン: 設定の保存と接続テストを1操作にまとめる */
+async function connectComfy() {
+  await persistComfySettings();
+  await testComfy();
 }
 
 async function testComfy() {
