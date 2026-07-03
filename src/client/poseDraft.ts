@@ -114,6 +114,36 @@ export function mediapipeToOpenPose(
   return points;
 }
 
+/**
+ * `(x, y)`（画像 natural px）から `maxDistance` 以内で最も近い関節の index を返す。
+ * 見つからなければ null。不可視（`visible: false`）の関節も対象に含める
+ * （半透明ハンドルをクリックして visible を復帰できるようにするため）。
+ */
+export function nearestPoseJointIndex(
+  points: PosePoint[] | null | undefined,
+  x: number,
+  y: number,
+  maxDistance: number
+): number | null {
+  if (!points || points.length === 0 || !(maxDistance >= 0)) {
+    return null;
+  }
+  let bestIndex: number | null = null;
+  let bestDistance = maxDistance;
+  for (let index = 0; index < points.length; index += 1) {
+    const point = points[index];
+    if (!point) {
+      continue;
+    }
+    const distance = Math.hypot(point.x - x, point.y - y);
+    if (distance <= bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  }
+  return bestIndex;
+}
+
 export function hasActivePoseData(draft: PoseDraft | null | undefined): draft is PoseDraft {
   return draft?.enabled === true && !!draft.points && draft.points.length === OPENPOSE_JOINT_COUNT;
 }
