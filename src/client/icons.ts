@@ -82,6 +82,10 @@ export function iconChevron() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>`;
 }
 
+export function iconChevronDouble() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m11 6-6 6 6 6M19 6l-6 6 6 6"></path></svg>`;
+}
+
 export function iconDot() {
   return `<svg viewBox="0 0 16 16" aria-hidden="true" class="tag-dot"><circle cx="8" cy="8" r="6"></circle></svg>`;
 }
