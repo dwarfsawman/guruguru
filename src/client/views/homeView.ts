@@ -7,7 +7,7 @@ import type { ComfySettings } from "../../shared/types";
 import type { ProjectSummary, WorkflowTemplate } from "../../shared/apiTypes";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../../shared/constants";
 import { escapeAttr, escapeHtml, formatDate } from "../format";
-import { iconPlus, iconPulse, iconSave, iconTrash } from "../icons";
+import { iconPlus, iconTrash } from "../icons";
 import { renderTemplatePanel, renderWorkflowImportPanel } from "../workflowUi";
 
 export function renderHome(projects: ProjectSummary[], settings: ComfySettings | null, templates: WorkflowTemplate[]) {
@@ -82,10 +82,7 @@ export function renderSettingsPanel(settings: ComfySettings | null) {
         <label>Timeout秒<input name="timeoutSeconds" type="number" min="1" value="${settings?.timeoutSeconds ?? 60}" /></label>
         <label>保存先<input name="storageDir" value="${escapeAttr(settings?.storageDir ?? "")}" /></label>
         <label>WebSAM model base URL<input name="webSamModelBaseUrl" value="${escapeAttr(settings?.webSamModelBaseUrl ?? DEFAULT_WEB_SAM_MODEL_BASE_URL)}" placeholder="${escapeAttr(DEFAULT_WEB_SAM_MODEL_BASE_URL)}" /></label>
-        <div class="button-row">
-          <button class="button-secondary" type="button" data-action="save-settings">${iconSave()}保存</button>
-          <button class="button-secondary" type="button" data-action="test-comfy">${iconPulse()}接続テスト</button>
-        </div>
+        <button class="button-primary" type="button" data-action="connect-comfy">接続</button>
       </form>
     </section>
   `;

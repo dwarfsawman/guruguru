@@ -16,10 +16,10 @@
 ## 画面別の変更
 
 - **ヘッダー**: 44px化、`spiral.svg` ロゴ（accent地 24px・scale 1.55）、`GURUGURU` + mono サブラベル、接続ステータスをピル型に
-- **Home**: メイン + 右サイド 376px（`border-left`）の2カラム。新規Projectフォームは 2カラムグリッド化（名前/テンプレート → 説明全幅 → 右寄せ作成ボタン）。プロジェクトカードはサムネ 132×98 + mono メタ行（`Rounds · Assets · Updated`）。見出しに `N projects · N assets` カウント。**New Project の自動採番ルールは変更なし**
+- **Home**: メイン + 右サイド 376px（`border-left`）の2カラム。ComfyUI接続カードの「保存」「接続テスト」は accent 全幅の**「接続」1ボタンに統合**（`connect-comfy` = 設定保存 → 接続テスト。旧 `save-settings` / `test-comfy` アクションも互換のため残置）。新規Projectフォームは 2カラムグリッド化（名前/テンプレート → 説明全幅 → 右寄せ作成ボタン）。プロジェクトカードはサムネ 132×98 + mono メタ行（`Rounds · Assets · Updated`）。見出しに `N projects · N assets` カウント。**New Project の自動採番ルールは変更なし**
 - **Project**: 左サイドバー 324px。セクションラベルは mono 10px uppercase。ツールバーに全選択/選択解除/選択反転のセグメントグループ（`.segment-group`）。タイルは下部 20px メタバー（seed チップ + 解像度）付き、選択= accent 1px ボーダー、却下= 画像 28% 不透明、MASK バッジ= warn 地
 - **イテレーションツリー**: コンパクト化（高さ clamp(96px,14vh,200px)）。ノードは `--branch-hue` による色ボーダーの丸ノード、active= accent 塗り + リング、実行中(pending)= warn パルス。**独立ツリー（複数ルート）はトラッカーの縦空間が小さいとき（container query `max-height:140px`）に縦積みではなく横並び**
-- **アセットモーダル（マスク編集）**: 左 302px マスク・プロンプト / 中央 `#050506` プレビュー / 右 302px スマート選択。タブは accent 下線式。フッターは mono のSeed/Steps/CFG/Sampler 表示。**サイドバー折りたたみ（アイコンのみ表示）機能は維持**。**「マスクをクリア」の名称は維持**
+- **アセットモーダル（マスク編集）**: 左 302px マスク・プロンプト / 中央 `#050506` プレビュー / 右 302px スマート選択。タブは accent 下線式。フッターは mono のSeed/Steps/CFG/Sampler 表示。**サイドバー折りたたみ（アイコンのみ表示）機能は維持**。**「マスクをクリア」の名称は維持**。モック作成後に追加された**生成パラメータセクション（ステップ数/CFG/デノイズ強度/幅/高さ/シード/seed mode/サンプラー/scheduler）も維持**（見出しを mono uppercase のセクションラベルに統一）
 - **pose / paint パネル**: モック作成後に実装された機能。`websam-panel` / `mask-status` / `range-control` 等の共通クラスを再利用しているため新スタイルを自動継承（マークアップ変更なし）
 
 ## 実装メモ
