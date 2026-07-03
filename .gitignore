@@ -5,3 +5,4 @@ data/
 *.log
 *.db
 *.db-*
+.claude/
