@@ -31,7 +31,7 @@ export const defaultPrompt =
   "masterpiece, best quality, 1girl, beautiful detailed eyes, flowing hair, fantasy landscape, dramatic lighting, ethereal atmosphere";
 export const defaultNegativePrompt = "low quality, worst quality, blurry, deformed";
 
-const samplerOptions = [
+export const samplerOptions = [
   "euler",
   "euler_ancestral",
   "heun",
@@ -52,7 +52,7 @@ const samplerOptions = [
   "uni_pc",
   "uni_pc_bh2"
 ];
-const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
+export const schedulerOptions = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
 
 interface GenerationDraftLike {
   templateId?: string;

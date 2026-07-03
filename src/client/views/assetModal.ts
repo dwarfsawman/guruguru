@@ -4,10 +4,11 @@
  * UI 文言・HTML 構造・CSS class・data-action・selector は移動前と同一。
  */
 import type { Asset } from "../../shared/apiTypes";
-import { escapeHtml, formatCssNumber, formatNumber } from "../format";
+import { escapeAttr, escapeHtml, formatCssNumber, formatNumber } from "../format";
 import {
   iconBrush,
   iconCheck,
+  iconChevronDouble,
   iconClose,
   iconEraser,
   iconInvert,
@@ -26,8 +27,21 @@ import type { PaintDraft } from "../paintTypes";
 import { renderPaintToggleButton, renderPaintToolPanel } from "./paintPanel";
 import type { PoseDraft } from "../poseTypes";
 import { renderPoseOverlay, renderPosePanelSection } from "./posePanel";
+import { renderOptions, samplerOptions, schedulerOptions } from "./generationPanel";
 
 export type MaskPanelTab = "mask" | "pose";
+
+export interface MaskGenerationParams {
+  steps: number;
+  cfg: number;
+  denoise: number;
+  width: number;
+  height: number;
+  seed: string;
+  seedMode: string;
+  sampler: string;
+  scheduler: string;
+}
 
 function clampNumber(value: number, min: number, max: number, fallback: number) {
   if (!Number.isFinite(value)) {
@@ -55,7 +69,9 @@ export function renderAssetModal(
   paintEditing = false,
   paintDraft: PaintDraft | null = null,
   maskPanelTab: MaskPanelTab = "mask",
-  poseDraft: PoseDraft | null = null
+  poseDraft: PoseDraft | null = null,
+  generationParams: MaskGenerationParams | null = null,
+  sidebarCollapsed = false
 ) {
   if (!asset) {
     return "";
@@ -77,8 +93,8 @@ export function renderAssetModal(
           ${editing ? renderMaskModeIndicator(inpaint, asset.id) : ""}
         </div>
         ${editing ? `
-          <div class="mask-editor-layout" style="--mask-left-panel: ${formatCssNumber(maskPanelWidths.left)}px; --mask-right-panel: ${formatCssNumber(maskPanelWidths.right)}px;">
-            ${renderMaskPromptSidebar(draft, promptValue, batchSizeValue)}
+          <div class="mask-editor-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}" style="--mask-left-panel: ${formatCssNumber(maskPanelWidths.left)}px; --mask-right-panel: ${formatCssNumber(maskPanelWidths.right)}px;">
+            ${renderMaskPromptSidebar(draft, promptValue, batchSizeValue, generationParams, sidebarCollapsed)}
             <div class="mask-panel-resizer" data-mask-panel-resizer="left" role="separator" aria-orientation="vertical" aria-label="左パネル幅を調整"></div>
             <main class="preview-center">
               ${media}
@@ -88,8 +104,8 @@ export function renderAssetModal(
             ${renderSmartMaskSidebar(draft, maskPanelTab, poseDraft, asset.id)}
           </div>
         ` : paintEditing && paintDraft ? `
-          <div class="mask-editor-layout paint-editor-layout">
-            ${renderPaintToolPanel(paintDraft)}
+          <div class="mask-editor-layout paint-editor-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}">
+            ${renderPaintToolPanel(paintDraft, sidebarCollapsed)}
             <main class="preview-center">
               ${media}
               ${footer}
@@ -284,16 +300,65 @@ export function webSamStatusLabel(status: WebSamModelStatus) {
   return "Error";
 }
 
-export function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string, batchSizeValue: number) {
+function renderMaskGenerationParamsSection(params: MaskGenerationParams) {
+  return `
+    <details class="mask-generation-params-section collapsible" open>
+      <summary class="section-kicker">生成パラメータ</summary>
+      <div class="range-control">
+        <div class="range-label"><span>ステップ数</span><strong id="modalStepsValue">${formatNumber(params.steps)}</strong></div>
+        <input type="range" min="1" max="50" step="1" value="${params.steps}" data-value-target="modalStepsValue" data-generation-field="steps" />
+      </div>
+      <div class="range-control">
+        <div class="range-label"><span>CFGスケール</span><strong id="modalCfgValue">${formatNumber(params.cfg)}</strong></div>
+        <input type="range" min="1" max="20" step="0.5" value="${params.cfg}" data-value-target="modalCfgValue" data-generation-field="cfg" />
+      </div>
+      <div class="range-control">
+        <div class="range-label"><span>デノイズ強度</span><strong id="modalDenoiseValue">${formatNumber(params.denoise)}</strong></div>
+        <input type="range" min="0" max="1" step="0.05" value="${params.denoise}" data-value-target="modalDenoiseValue" data-generation-field="denoise" />
+      </div>
+      <div class="resolution-row">
+        <label>幅<input class="input-field center" type="number" step="64" value="${params.width}" data-generation-field="width" /></label>
+        <label>高さ<input class="input-field center" type="number" step="64" value="${params.height}" data-generation-field="height" /></label>
+      </div>
+      <label>シード
+        <input class="input-field mono" type="number" value="${escapeAttr(params.seed)}" data-generation-field="seed" />
+      </label>
+      <label>seed mode
+        <select class="workflow-select" data-generation-field="seedMode">
+          ${["random", "fixed", "increment", "reuse_parent_seed"].map((mode) => `<option value="${mode}" ${params.seedMode === mode ? "selected" : ""}>${mode}</option>`).join("")}
+        </select>
+      </label>
+      <label>サンプラー
+        <select class="workflow-select" data-generation-field="sampler">
+          ${renderOptions(samplerOptions, params.sampler)}
+        </select>
+      </label>
+      <label>scheduler
+        <select class="workflow-select" data-generation-field="scheduler">
+          ${renderOptions(schedulerOptions, params.scheduler)}
+        </select>
+      </label>
+    </details>
+  `;
+}
+
+export function renderMaskPromptSidebar(
+  draft: InpaintDraft,
+  promptValue: string,
+  batchSizeValue: number,
+  generationParams: MaskGenerationParams | null = null,
+  sidebarCollapsed = false
+) {
   const active = hasActiveMaskData(draft);
   const canApplyCandidate = draft.samCandidates.length > 0 && !!draft.previewSamMaskDataUrl;
   const webSamProvider = SMART_MASK_PROVIDERS.find((provider) => provider.id !== "manual")?.id ?? "websam-slimsam-77";
   const smartActive = draft.selectedSmartMaskProvider !== "manual";
   return `
-    <aside class="mask-editor-panel mask-prompt-panel">
+    <aside class="mask-editor-panel mask-prompt-panel ${sidebarCollapsed ? "collapsed" : ""}">
       <div class="mask-panel-header">
         <h2>マスク・プロンプト</h2>
         <span class="mask-status ${active ? "active" : ""}">${active ? "mask active" : "no mask"}</span>
+        <button class="sidebar-collapse-toggle" type="button" data-action="toggle-sidebar-collapse" aria-label="${sidebarCollapsed ? "パネルを展開" : "パネルを折りたたむ"}" title="${sidebarCollapsed ? "パネルを展開" : "パネルを折りたたむ"}" aria-pressed="${sidebarCollapsed}">${iconChevronDouble()}</button>
       </div>
       <div class="mask-panel-tabs">
         <button class="mask-tab ${smartActive ? "" : "active"}" type="button" data-action="set-smart-mask-provider" data-provider="manual">手動編集</button>
@@ -320,6 +385,7 @@ export function renderMaskPromptSidebar(draft: InpaintDraft, promptValue: string
           <input type="range" min="1" max="32" step="1" value="${batchSizeValue}" data-value-target="modalBatchValue" data-generation-field="batchSize" />
           <div class="range-minmax"><span>1</span><span>32</span></div>
         </div>
+        ${generationParams ? renderMaskGenerationParamsSection(generationParams) : ""}
         <label>Masked content
           <select class="workflow-select" data-inpaint-field="maskedContent">
             ${maskedContentOptions.map((option) => `

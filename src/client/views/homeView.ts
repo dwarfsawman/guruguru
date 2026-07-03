@@ -21,7 +21,7 @@ export function renderHome(projects: ProjectSummary[], settings: ComfySettings |
           </div>
         </div>
         <form id="project-form" class="form-stack">
-          <label>Project名<input name="name" placeholder="Daily Scene Character Exploration" required /></label>
+          <label>Project名<input name="name" placeholder="未入力の場合は自動採番されます" /></label>
           <label>説明<textarea name="description" rows="3"></textarea></label>
           <label>デフォルトWorkflowTemplate
             <select name="defaultTemplateId">

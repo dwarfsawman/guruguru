@@ -17,6 +17,7 @@ import { poseDraftHasAttachment } from "../poseDraft";
 import { escapeHtml } from "../format";
 import {
   iconCheck,
+  iconChevronDouble,
   iconDot,
   iconDownload,
   iconLoopArrows,
@@ -50,15 +51,17 @@ export function renderProjectDetail(
   getInpaintDraft: (assetId: string) => InpaintDraft | null,
   getPoseDraft: (assetId: string) => PoseDraft | null,
   showMaskGridTag: boolean,
-  copiedSeedAssetId: string | null
+  copiedSeedAssetId: string | null,
+  sidebarCollapsed = false
 ) {
   const mode = activeRound?.generationMode ?? "txt2img";
 
   return `
     <div class="studio-shell">
       <div class="sidebar-overlay ${sidebarOpen ? "active" : ""}" data-action="toggle-sidebar"></div>
-      <aside class="studio-sidebar ${sidebarOpen ? "open" : ""}">
-        ${generationPanelHtml}
+      <aside class="studio-sidebar ${sidebarOpen ? "open" : ""} ${sidebarCollapsed ? "collapsed" : ""}">
+        <button class="sidebar-collapse-toggle" type="button" data-action="toggle-sidebar-collapse" aria-label="${sidebarCollapsed ? "サイドバーを展開" : "サイドバーを折りたたむ"}" title="${sidebarCollapsed ? "サイドバーを展開" : "サイドバーを折りたたむ"}" aria-pressed="${sidebarCollapsed}">${iconChevronDouble()}</button>
+        <div class="studio-sidebar-content">${generationPanelHtml}</div>
       </aside>
       <main class="studio-main">
         <div class="round-toolbar">
