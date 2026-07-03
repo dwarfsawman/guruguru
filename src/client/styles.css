@@ -540,6 +540,9 @@ h3 {
   right: 20px;
   top: 64px;
   z-index: 70;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   max-width: min(560px, calc(100vw - 40px));
   max-height: 36vh;
   margin: 0;
@@ -548,15 +551,20 @@ h3 {
   border-radius: 10px;
   background: rgba(37, 31, 12, 0.94);
   color: #fde68a;
-  padding: 12px 42px 12px 14px;
+  padding: 12px 14px;
   box-shadow: var(--shadow);
+}
+
+.message-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
   white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .message-close {
-  position: absolute;
-  top: 8px;
-  right: 8px;
+  flex: 0 0 auto;
   display: grid;
   width: 24px;
   min-width: 24px;
@@ -885,6 +893,7 @@ h3 {
 }
 
 .studio-sidebar {
+  position: relative;
   width: 320px;
   min-width: 320px;
   height: calc(100vh - 64px);
@@ -892,6 +901,54 @@ h3 {
   border-right: 1px solid var(--line);
   background: #0b0b12;
   padding: 20px;
+}
+
+.sidebar-collapse-toggle {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--faint);
+}
+
+.sidebar-collapse-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+}
+
+.sidebar-collapse-toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.studio-sidebar.collapsed {
+  width: 56px;
+  min-width: 56px;
+  overflow: hidden;
+  padding: 12px 8px;
+}
+
+.studio-sidebar.collapsed .sidebar-collapse-toggle {
+  position: static;
+  transform: rotate(180deg);
+  margin: 0 auto 12px;
+}
+
+.studio-sidebar.collapsed .studio-sidebar-content {
+  display: none;
 }
 
 .studio-main {
@@ -1881,6 +1938,41 @@ input[type="range"]::-webkit-slider-thumb {
   grid-template-columns: minmax(300px, 390px) minmax(420px, 1fr);
 }
 
+.mask-editor-layout.sidebar-collapsed {
+  grid-template-columns: 56px auto minmax(420px, 1fr) auto clamp(220px, var(--mask-right-panel, 300px), 460px);
+}
+
+.paint-editor-layout.sidebar-collapsed {
+  grid-template-columns: 56px minmax(420px, 1fr);
+}
+
+.mask-prompt-panel.collapsed,
+.paint-tool-panel.collapsed {
+  overflow: hidden;
+  padding: 12px 8px;
+}
+
+.mask-prompt-panel.collapsed > *:not(.mask-panel-header):not(.mask-toolbar-row),
+.paint-tool-panel.collapsed > *:not(.mask-panel-header):not(.mask-toolbar-row) {
+  display: none;
+}
+
+.mask-prompt-panel.collapsed .mask-panel-header h2,
+.mask-prompt-panel.collapsed .mask-panel-header .mask-status,
+.paint-tool-panel.collapsed .mask-panel-header h2 {
+  display: none;
+}
+
+.mask-prompt-panel.collapsed .mask-toolbar-row,
+.paint-tool-panel.collapsed .mask-toolbar-row {
+  flex-direction: column;
+}
+
+.mask-prompt-panel .mask-panel-header .sidebar-collapse-toggle,
+.paint-tool-panel .mask-panel-header .sidebar-collapse-toggle {
+  position: static;
+}
+
 .preview-center {
   display: grid;
   min-width: 0;
@@ -2430,6 +2522,20 @@ input[type="range"]::-webkit-slider-thumb {
 .mask-options-grid {
   display: grid;
   gap: 10px;
+}
+
+.mask-generation-params-section {
+  display: grid;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mask-generation-params-section summary {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
 }
 
 .paint-tool-panel .mask-panel-actions {
