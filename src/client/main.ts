@@ -20,7 +20,6 @@ import type {
 import {
   iconClose,
   iconDiagram,
-  iconLoop,
   iconMenu
 } from "./icons";
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
@@ -2703,7 +2702,7 @@ function renderHeader() {
       <div class="header-left">
         <button class="icon-button menu-button" data-action="toggle-sidebar" type="button" aria-label="設定を開く">${iconMenu()}</button>
         <button class="brand" data-action="home" type="button">
-          <span class="brand-mark">${iconLoop()}</span>
+          <span class="brand-mark"><img src="/spiral.svg" alt="" draggable="false" /></span>
           <span>
             <strong>GURUGURU</strong>
             <small>Iterative Generation Studio</small>

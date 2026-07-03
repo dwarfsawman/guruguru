@@ -67,12 +67,14 @@ export function renderProjectDetail(
         <div class="round-toolbar">
           <div>
             <h1>イテレーション ${activeRound ? `#${activeRound.roundIndex}` : ""}<span class="tag">${iconDot()}${escapeHtml(generationModeLabel(mode))}</span></h1>
-            <p>${activeRound ? `${activeRound.assetCount ?? 0}枚生成・${selectedAssets.length}枚選択中・${escapeHtml(activeRound.status)}` : "新規Roundを生成してください。"}</p>
+            <p>${activeRound ? `<b>${activeRound.assetCount ?? 0}</b>枚生成 · <b>${selectedAssets.length}</b>枚選択中 · ${escapeHtml(activeRound.status)}` : "新規Roundを生成してください。"}</p>
           </div>
           <div class="toolbar-actions">
-            <button class="button-secondary compact" type="button" data-action="select-all">全選択</button>
-            <button class="button-secondary compact" type="button" data-action="clear-selection">選択解除</button>
-            <button class="button-secondary compact" type="button" data-action="invert-selection">選択反転</button>
+            <div class="segment-group">
+              <button class="button-secondary compact" type="button" data-action="select-all">全選択</button>
+              <button class="button-secondary compact" type="button" data-action="clear-selection">選択解除</button>
+              <button class="button-secondary compact" type="button" data-action="invert-selection">選択反転</button>
+            </div>
             <span class="toolbar-divider"></span>
             <select id="grid-cols" class="compact-select" aria-label="グリッド列数">
               <option value="4" ${gridCols === 4 ? "selected" : ""}>4x4</option>
@@ -161,7 +163,10 @@ export function renderAssetTile(
       <span class="card-number">#${asset.batchIndex + 1}</span>
       ${masked ? `<button class="mask-badge ${showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="マスクタグ表示切替">${iconMask()}MASK</button>` : ""}
       ${posed ? `<button class="pose-badge ${showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="ポーズタグ表示切替">${iconPose()}POSE</button>` : ""}
-      <span class="seed-chip" data-action="copy-seed" data-id="${asset.id}" data-seed="${asset.seed ?? ""}">${copiedSeedAssetId === asset.id ? "copied" : `seed ${asset.seed ?? "-"}`}</span>
+      <div class="card-meta">
+        <span class="seed-chip" data-action="copy-seed" data-id="${asset.id}" data-seed="${asset.seed ?? ""}" title="クリックでseedをコピー">${copiedSeedAssetId === asset.id ? "copied" : `seed ${asset.seed ?? "-"}`}</span>
+        <span class="card-dims">${asset.width && asset.height ? `${asset.width}×${asset.height}` : ""}</span>
+      </div>
     </article>
   `;
 }
@@ -184,13 +189,13 @@ export function renderBottomActionBar(selectedAssets: Asset[], activeRound: Roun
             ${selectedAssets.slice(0, 5).map((asset) => `<img src="${asset.thumbnailUrl}" alt="" />`).join("")}
             ${selectedAssets.length > 5 ? `<span>+${selectedAssets.length - 5}</span>` : ""}
           </div>
-          <span class="selected-label">${selectedAssets.length}枚の画像を次のブランチングに使用</span>
+          <span class="selected-label"><b>${selectedAssets.length}</b>枚の画像を次のブランチングに使用</span>
         `}
       </div>
       <div class="bottom-actions">
         <button class="button-danger" type="button" data-action="reset-session">${iconTrash()}リセット</button>
         <button class="button-secondary" type="button" data-action="export-selected">${iconDownload()}保存</button>
-        <button class="button-primary" type="button" data-action="generate-round">${iconPlay()}${activeRound ? "画像無しで生成" : "初回生成"}</button>
+        <button class="button-secondary" type="button" data-action="generate-round">${iconPlay()}${activeRound ? "画像無しで生成" : "初回生成"}</button>
         <button class="button-primary" type="button" data-action="img2img-next" ${selectedAssets.length === 0 ? "disabled" : ""}>
           ${iconLoopArrows()}選択画像でブランチング <span class="button-count">${selectedAssets.length}</span>
         </button>

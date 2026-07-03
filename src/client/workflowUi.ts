@@ -24,12 +24,12 @@ mermaid.initialize({
     rankSpacing: 60
   },
   themeVariables: {
-    background: "#12121f",
-    primaryColor: "#171729",
-    primaryTextColor: "#f4f4f7",
+    background: "#0a0a0c",
+    primaryColor: "#141417",
+    primaryTextColor: "#f4f4f5",
     primaryBorderColor: "#4b5563",
-    lineColor: "#8b8ba8",
-    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
+    lineColor: "#8b8b93",
+    fontFamily: "'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif"
   }
 });
 
@@ -78,8 +78,8 @@ export async function renderWorkflowDiagramCanvases() {
 
 export function renderWorkflowImportPanel() {
   return `
-    <section class="panel workflow-import-collapsed">
-      <button class="button-primary workflow-import-trigger" type="button" data-action="open-template-import">
+    <section class="workflow-import-collapsed">
+      <button class="button-secondary workflow-import-trigger" type="button" data-action="open-template-import">
         ${iconPlus()}テンプレート登録
       </button>
     </section>
@@ -94,6 +94,7 @@ export function renderTemplatePanel(templates: WorkflowTemplate[]) {
           <p class="section-kicker">Workflow</p>
           <h2>WorkflowTemplate</h2>
         </div>
+        <span class="panel-count"><b>${templates.length}</b> 件</span>
       </div>
       <div class="template-list">
         ${templates.map((template) => `
