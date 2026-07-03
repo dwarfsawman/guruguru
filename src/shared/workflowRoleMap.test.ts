@@ -164,3 +164,76 @@ test("validateRoleMapReferences: throws when *_input path does not resolve to an
     /Role map path does not resolve to an object: 3\.inputs\.seed\.value/
   );
 });
+
+// Reduced form of the reference ControlNet workflow (Docs/ReferenceFlows/ComfyUI_00147_controlnet.json):
+// no VAEEncode node exists, and ControlNetApplyAdvanced(752) reads its control image from a
+// LoadImage(754) node. Before the fix, inferRoleMap's unrestricted vae_encode_image_input fallback
+// misinferred 752.inputs.image as vae_encode_image_input, and load_image_input pointed at 754.
+function controlNetWorkflowWithoutVaeEncode() {
+  return {
+    ...sampleWorkflowWithoutVaeEncode(),
+    "752": {
+      class_type: "ControlNetApplyAdvanced",
+      inputs: {
+        strength: 1,
+        start_percent: 0,
+        end_percent: 1,
+        positive: ["6", 0],
+        negative: ["7", 0],
+        control_net: ["753", 0],
+        image: ["754", 0]
+      },
+      _meta: { title: "Apply ControlNet" }
+    },
+    "753": {
+      class_type: "ControlNetLoader",
+      inputs: { control_net_name: "control.safetensors" },
+      _meta: { title: "Load ControlNet Model" }
+    },
+    "754": {
+      class_type: "LoadImage",
+      inputs: { image: "old_control.png" },
+      _meta: { title: "Load Image" }
+    }
+  };
+}
+
+function sampleWorkflowWithoutVaeEncode() {
+  const workflow = sampleWorkflow() as Record<string, unknown>;
+  const { "13": _vaeEncode, ...rest } = workflow;
+  return rest;
+}
+
+test("inferRoleMap: without a VAEEncode node, vae_encode_image_input is NOT inferred (no unrestricted fallback onto ControlNetApplyAdvanced.inputs.image)", () => {
+  const roleMap = inferRoleMap(controlNetWorkflowWithoutVaeEncode());
+  assert.equal(roleMap.vae_encode_image_input, undefined);
+  assert.equal(roleMap.vae_encode_node, undefined);
+});
+
+test("inferRoleMap: load_image_input does not point at the LoadImage feeding ControlNetApplyAdvanced.inputs.image", () => {
+  const roleMap = inferRoleMap(controlNetWorkflowWithoutVaeEncode());
+  // The only other LoadImage in this fixture is node 12 (from sampleWorkflow's img2img LoadImage).
+  assert.equal(roleMap.load_image_input, "12.inputs.image");
+});
+
+test("inferRoleMap: infers controlnet_image_node by tracing ControlNetApplyAdvanced.inputs.image to its LoadImage source", () => {
+  const roleMap = inferRoleMap(controlNetWorkflowWithoutVaeEncode());
+  assert.equal(roleMap.controlnet_image_node, "754");
+});
+
+test("inferRoleMap: controlnet_image_node is not set when ControlNetApplyAdvanced.inputs.image is not a LoadImage connection", () => {
+  const workflow = controlNetWorkflowWithoutVaeEncode() as Record<string, any>;
+  workflow["752"].inputs.image = null;
+  const roleMap = inferRoleMap(workflow);
+  assert.equal(roleMap.controlnet_image_node, undefined);
+});
+
+test("inferRoleMap: a VAEEncode node elsewhere in a ControlNet workflow is still inferred normally", () => {
+  const workflow = {
+    ...controlNetWorkflowWithoutVaeEncode(),
+    "13": sampleWorkflow()["13"]
+  };
+  const roleMap = inferRoleMap(workflow);
+  assert.equal(roleMap.vae_encode_node, "13");
+  assert.equal(roleMap.vae_encode_image_input, "13.inputs.pixels");
+});
