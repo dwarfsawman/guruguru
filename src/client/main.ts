@@ -1034,7 +1034,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       state.deletePreviewRoundId = null;
       render();
     } else if (action === "generate-round") {
-      await generateRound(null);
+      await generateRound(null, "txt2img");
     } else if (action === "img2img-next") {
       await generateFromSelected("img2img");
     } else if (action === "generate-from-preview") {
