@@ -272,6 +272,40 @@ test("patchUnifiedSwitchWorkflow generationMode=controlnet: the parent image fee
   assert.equal(patched["752"].inputs.strength, 1);
 });
 
+test("reference template: ControlNetApplyAdvanced has the vae connection Chroma/Flux controlnets require", () => {
+  // Without this the prompt validates but sampling fails with "This Controlnet needs a VAE but
+  // none was provided" (observed live with the Chroma controlnet on 2026-07-03).
+  assert.deepEqual(referenceWorkflow()["752"].inputs.vae, ["710", 0]);
+});
+
+test("patchUnifiedSwitchWorkflow: restores a missing vae connection on the CN apply node (pre-fix template imports)", () => {
+  const template = referenceWorkflow();
+  delete template["752"].inputs.vae;
+  const request = baseRequest({ generationMode: "controlnet", parentAssetId: "asset_1", controlnet: null });
+  const patched = patchUnifiedSwitchWorkflow(
+    template,
+    baseContext(request, { uploadedImageName: "parent_upload.png" }),
+    "prefix"
+  ) as Record<string, any>;
+
+  // Wired to the same VAE that feeds the img2img VAEEncode node (761.inputs.vae = ["710", 0]).
+  assert.deepEqual(patched["752"].inputs.vae, ["710", 0]);
+});
+
+test("patchUnifiedSwitchWorkflow: leaves an existing vae connection on the CN apply node untouched", () => {
+  const template = referenceWorkflow();
+  template["752"].inputs.vae = ["999", 0];
+  template["999"] = { class_type: "VAELoader", inputs: { vae_name: "other.safetensors" } };
+  const request = baseRequest({ generationMode: "controlnet", parentAssetId: "asset_1", controlnet: null });
+  const patched = patchUnifiedSwitchWorkflow(
+    template,
+    baseContext(request, { uploadedImageName: "parent_upload.png" }),
+    "prefix"
+  ) as Record<string, any>;
+
+  assert.deepEqual(patched["752"].inputs.vae, ["999", 0]);
+});
+
 test("patchUnifiedSwitchWorkflow: throws when an unused image input has no dummy name to fall back to", () => {
   const request = baseRequest();
   assert.throws(
