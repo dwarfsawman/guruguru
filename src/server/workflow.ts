@@ -1,6 +1,17 @@
 import { randomInt } from "node:crypto";
 import type { GenerationRequest } from "../shared/types";
-import { type JsonObject, deepClone, ensureWorkflowObject, hashJson, normalizeRoleMap, setNodeInput, setRolePath } from "./workflowGraph";
+import {
+  type JsonObject,
+  deepClone,
+  ensureWorkflowObject,
+  findNodeIdByExactClass,
+  hashJson,
+  normalizeRoleMap,
+  sanitizeRoleMap,
+  setNodeInput,
+  setRolePath,
+  stringRole
+} from "./workflowGraph";
 import { patchImg2ImgLatentPath, patchInpaintLatentPath } from "./workflowInpaint";
 import { patchControlNetPath } from "./workflowControlNet";
 
@@ -32,9 +43,12 @@ export function resolveSeed(request: GenerationRequest, parentSeed?: number | nu
   return randomInt(0, 2 ** 31 - 1);
 }
 
-export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unknown>, context: PatchContext) {
+export function patchWorkflow(workflowJson: unknown, rawRoleMap: Record<string, unknown>, context: PatchContext) {
   const workflow = deepClone(workflowJson) as JsonObject;
   const { request } = context;
+  // Defends against DB-stored templates whose roleMap was inferred before the inferRoleMap fix
+  // (workflowRoleMap.ts) -- see Docs/Feature-PoseControlNet-Img2Img.md.
+  const roleMap = sanitizeRoleMap(workflow, rawRoleMap);
 
   setNodeInput(workflow, roleMap.positive_prompt_node, ["text", "prompt", "positive"], request.prompt);
   setNodeInput(workflow, roleMap.negative_prompt_node, ["text", "prompt", "negative"], request.negativePrompt);
@@ -80,7 +94,19 @@ export function patchWorkflow(workflowJson: unknown, roleMap: Record<string, unk
   }
 
   if (context.uploadedControlImageName && request.controlnet) {
-    patchControlNetPath(workflow, roleMap, context.uploadedControlImageName, request);
+    patchControlNetPath(workflow, roleMap, context.uploadedControlImageName, request, context.uploadedImageName ?? null);
+  }
+
+  // Pose-less img2img on a ControlNet-capable template: force strength to 0 so
+  // ControlNetApplyAdvanced becomes a no-op passthrough (ComfyUI returns conditioning unchanged at
+  // strength 0), making this behave like plain img2img instead of failing or applying a stale pose.
+  // generationMode "controlnet" (parent image used directly as the control image) is unaffected.
+  if (!request.controlnet && request.generationMode === "img2img") {
+    const applyNodeId = stringRole(roleMap.controlnet_apply_node) ?? findNodeIdByExactClass(workflow, "ControlNetApplyAdvanced");
+    if (applyNodeId) {
+      setRolePath(workflow, roleMap.controlnet_strength_input, 0);
+      setNodeInput(workflow, applyNodeId, ["strength"], 0);
+    }
   }
 
   const savePrefix = typeof context.batchIndex === "number"
