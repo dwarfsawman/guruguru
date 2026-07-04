@@ -104,6 +104,7 @@ import { buildPoseModelUrls, defaultPoseModel, isCigposeModel, poseModelById } f
 import type { PoseWorkerProgress, PoseWorkerRequest, PoseWorkerResponse } from "./pose/types";
 import type { PoseDraft } from "./poseTypes";
 import {
+  applyPoseThreshold,
   defaultPoseDraft,
   hasActivePoseData,
   mediapipePosesToOpenPose,
@@ -407,7 +408,7 @@ function bindEvents() {
       return;
     }
     if (target.dataset.poseField) {
-      updatePoseDraftFromControl(target);
+      updatePoseDraftFromControl(target, { commit: true });
       return;
     }
     if (target.dataset.inpaintField) {
@@ -3895,7 +3896,7 @@ async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
     }
     const width = current.imageWidth ?? 0;
     const height = current.imageHeight ?? 0;
-    const poses = width > 0 && height > 0 ? mediapipePosesToOpenPose(message.landmarks, width, height) : [];
+    const poses = width > 0 && height > 0 ? mediapipePosesToOpenPose(message.landmarks, width, height, current.keypointThreshold) : [];
     if (poses.length === 0) {
       setPoseDraft({
         ...current,
@@ -3954,7 +3955,10 @@ function poseProgressText(progress: PoseWorkerProgress) {
   return progress.status;
 }
 
-function updatePoseDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
+function updatePoseDraftFromControl(
+  control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+  options: { commit?: boolean } = {}
+) {
   const field = control.dataset.poseField;
   const assetId = state.activeAssetId;
   if (!field || !assetId) {
@@ -3970,6 +3974,12 @@ function updatePoseDraftFromControl(control: HTMLInputElement | HTMLTextAreaElem
     next.startPercent = clampNumber(Number(control.value), 0, 1, 0);
   } else if (field === "endPercent") {
     next.endPercent = clampNumber(Number(control.value), 0, 1, 1);
+  } else if (field === "keypointThreshold") {
+    next.keypointThreshold = clampNumber(Number(control.value), 0, 1, 0.5);
+    // 検出済みポーズの visible をしきい値で再計算（座標・score は保持、再検出は不要）
+    if (next.poses) {
+      next.poses = applyPoseThreshold(next.poses, next.keypointThreshold);
+    }
   } else if (field === "modelId") {
     const model = poseModelById(control.value);
     if (!model || model.id === current.modelId) {
@@ -3984,7 +3994,7 @@ function updatePoseDraftFromControl(control: HTMLInputElement | HTMLTextAreaElem
     next.modelError = "";
   }
   setPoseDraft(next);
-  if (field === "enabled" || field === "modelId") {
+  if (field === "enabled" || field === "modelId" || (field === "keypointThreshold" && options.commit)) {
     render();
   }
 }
