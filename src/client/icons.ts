@@ -42,12 +42,12 @@ export function iconPulse() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6"></path></svg>`;
 }
 
-export function iconDownload(large = false) {
-  return `<svg viewBox="0 0 24 24" aria-hidden="true"${large ? ' style="width: 22px; height: 22px; transform: scale(1.25); transform-origin: center; stroke-width: 2.6;"' : ""}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>`;
+export function iconDownload() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>`;
 }
 
 export function iconDiagram() {
-  return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="6" height="5" rx="1"></rect><rect x="15" y="4" width="6" height="5" rx="1"></rect><rect x="9" y="15" width="6" height="5" rx="1"></rect><path d="M9 6.5h6M12 9v6"></path></svg>`;
+  return `<svg viewBox="0.1 1.9 18 8.2" aria-hidden="true" class="icon-diagram"><rect x="1" y="3" width="6" height="6" rx="1.4"></rect><path d="M8 6h2.8"></path><path d="M14 2.8 17.2 6 14 9.2 10.8 6Z"></path></svg>`;
 }
 
 export function iconPlay() {

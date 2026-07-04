@@ -603,7 +603,7 @@ h3 {
   top: 64px;
   z-index: 70;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
   max-width: min(560px, calc(100vw - 40px));
   max-height: 36vh;
@@ -887,8 +887,8 @@ h3 {
 }
 
 .template-action-button svg {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -896,15 +896,17 @@ h3 {
   stroke-width: 2;
 }
 
+/* 横長の図形アイコン: viewBox(18x8.2)に合わせ、線の見た目太さを他アイコン(約1.33px)と揃える */
+.template-action-button svg.icon-diagram {
+  width: 20px;
+  height: 9px;
+  stroke-width: 1.2;
+}
+
 .template-export-trigger {
   display: grid;
   place-items: center;
   line-height: 0;
-}
-
-.template-export-trigger svg {
-  width: 18px;
-  height: 18px;
 }
 
 .template-export-dropdown {
@@ -2037,8 +2039,8 @@ input[type="range"]::-webkit-slider-thumb {
   min-height: 360px;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--panel-strong);
+  border-radius: 8px;
+  background: #14141f;
   padding: 16px;
   cursor: grab;
   user-select: none;
