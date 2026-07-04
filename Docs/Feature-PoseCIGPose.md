@@ -57,6 +57,15 @@
 - MediaPipe 経路（`pose/worker.ts`）・既存 pose モデル（Full/Heavy）・下流の OpenPose 変換/編集/PNG/ControlNet 添付・API path/response・DB 保存形式
 - CIGPose は wholebody でも body 17点のみ使用（手/顔キーポイントは将来スコープ）
 
+## キーポイント閾値スライダー（全モデル共通）
+
+ポーズパネルに **Keypoint threshold**（0..1, 既定 0.5）スライダーを追加。top-down で上半身のみのクロップだと下半身を外挿してしまうケース等を、ユーザー側で信頼度により間引けるようにするもの。CIGPose 専用ではなく MediaPipe を含む全モデルで機能する（どちらも landmark に信頼度=visibility を持つため）。
+
+- `PosePoint.score`（0..1, 生の信頼度）を保持。`PoseDraft.keypointThreshold` を追加。
+- 検出時: `mediapipePosesToOpenPose(..., keypointThreshold)` が `visible = score >= threshold` を計算。
+- スライダー操作時: `applyPoseThreshold(poses, threshold)` が **座標・score を保持したまま visible だけ再計算**（再検出不要、関節ドラッグ編集も保持）。連続 render を避けるため overlay 反映は commit（change イベント）時のみ、値ラベルは input で即時更新。
+- 注意: スコアは人物/クロップごとにスケールが異なり、外挿された関節と本物の関節のスコア域が重なるため、しきい値は大まかな間引き。1点単位の精密な修正は既存の関節ドラッグ/可視トグルが適する。
+
 ## 未決事項 / 将来
 
 - wholebody の手・顔キーポイント活用（現状は先頭17点のみ）

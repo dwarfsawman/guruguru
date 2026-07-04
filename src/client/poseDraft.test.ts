@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_KEYPOINT_THRESHOLD,
+  applyPoseThreshold,
   defaultPoseDraft,
   hasActivePoseData,
   mediapipeToOpenPose,
@@ -140,8 +142,36 @@ test("mediapipeToOpenPose: missing landmarks fall back to invisible origin", () 
   const points = mediapipeToOpenPose([], 100, 100);
   assert.equal(points.length, 18);
   for (const point of points) {
-    assert.deepEqual(point, { x: 0, y: 0, visible: false });
+    assert.deepEqual(point, { x: 0, y: 0, visible: false, score: 0 });
   }
+});
+
+test("mediapipeToOpenPose: stores raw score and honors a custom threshold", () => {
+  const landmarks = makeLandmarks({ 0: { visibility: 0.55 } });
+  // nose (MP0) score 0.55: visible at 0.5, hidden at 0.6
+  assert.equal(mediapipeToOpenPose(landmarks, 100, 100, 0.5)[0]!.visible, true);
+  assert.equal(mediapipeToOpenPose(landmarks, 100, 100, 0.6)[0]!.visible, false);
+  const p = mediapipeToOpenPose(landmarks, 100, 100)[0]!;
+  assert.equal(p.score, 0.55);
+});
+
+test("applyPoseThreshold: recomputes visible from score, preserving x/y/score", () => {
+  const pose: PosePoint[] = [
+    { x: 10, y: 20, visible: true, score: 0.9 },
+    { x: 30, y: 40, visible: true, score: 0.45 }
+  ];
+  const out = applyPoseThreshold([pose], 0.6);
+  assert.equal(out[0]![0]!.visible, true); // 0.9 >= 0.6
+  assert.equal(out[0]![1]!.visible, false); // 0.45 < 0.6
+  assert.deepEqual(out[0]![0], { x: 10, y: 20, visible: true, score: 0.9 });
+  // legacy point without score falls back to visible ? 1 : 0
+  const legacy = applyPoseThreshold([[{ x: 1, y: 2, visible: true }]], 0.5);
+  assert.equal(legacy[0]![0]!.visible, true);
+});
+
+test("defaultPoseDraft: keypointThreshold defaults to 0.5", () => {
+  assert.equal(defaultPoseDraft("a").keypointThreshold, DEFAULT_KEYPOINT_THRESHOLD);
+  assert.equal(DEFAULT_KEYPOINT_THRESHOLD, 0.5);
 });
 
 test("hasActivePoseData: requires enabled and every pose having full 18 points", () => {
