@@ -12,7 +12,7 @@
 import { defaultPoseModel } from "./pose/models";
 import type { PoseWorkerLandmark } from "./pose/types";
 import type { PoseDraft, PosePoint } from "./poseTypes";
-import { OPENPOSE_JOINT_COUNT } from "./poseTypes";
+import { MAX_POSE_COUNT, OPENPOSE_JOINT_COUNT } from "./poseTypes";
 
 const VISIBILITY_THRESHOLD = 0.5;
 
@@ -48,7 +48,7 @@ export function defaultPoseDraft(assetId: string): PoseDraft {
   return {
     parentAssetId: assetId,
     enabled: false,
-    points: null,
+    poses: null,
     source: "detected",
     strength: 1,
     startPercent: 0,
@@ -65,11 +65,19 @@ export function defaultPoseDraft(assetId: string): PoseDraft {
 
 export function normalizePoseDraft(draft: PoseDraft): PoseDraft {
   const defaults = defaultPoseDraft(draft.parentAssetId);
-  return {
+  const normalized: PoseDraft = {
     ...defaults,
     ...draft,
-    points: draft.points ?? null
+    poses: draft.poses ?? null
   };
+  // 旧フォーマット（`points: PosePoint[]` 1人分）からの移行:
+  // localStorage に保存済みの draft は poses を持たないため、points があれば 1人分として包む。
+  const legacy = draft as PoseDraft & { points?: PosePoint[] | null };
+  if (!normalized.poses && Array.isArray(legacy.points) && legacy.points.length === OPENPOSE_JOINT_COUNT) {
+    normalized.poses = [legacy.points];
+  }
+  delete (normalized as PoseDraft & { points?: PosePoint[] | null }).points;
+  return normalized;
 }
 
 /**
@@ -117,6 +125,21 @@ export function mediapipeToOpenPose(
 }
 
 /**
+ * MediaPipe の複数人検出結果（人ごとの 33 landmarks）を OpenPose ポーズ一覧へ変換する。
+ * `MAX_POSE_COUNT` 人分に切り詰め、landmarks が空の人は除外する。
+ */
+export function mediapipePosesToOpenPose(
+  landmarksList: PoseWorkerLandmark[][],
+  imageWidth: number,
+  imageHeight: number
+): PosePoint[][] {
+  return landmarksList
+    .filter((landmarks) => landmarks.length > 0)
+    .slice(0, MAX_POSE_COUNT)
+    .map((landmarks) => mediapipeToOpenPose(landmarks, imageWidth, imageHeight));
+}
+
+/**
  * `(x, y)`（画像 natural px）から `maxDistance` 以内で最も近い関節の index を返す。
  * 見つからなければ null。不可視（`visible: false`）の関節も対象に含める
  * （半透明ハンドルをクリックして visible を復帰できるようにするため）。
@@ -147,7 +170,12 @@ export function nearestPoseJointIndex(
 }
 
 export function hasActivePoseData(draft: PoseDraft | null | undefined): draft is PoseDraft {
-  return draft?.enabled === true && !!draft.points && draft.points.length === OPENPOSE_JOINT_COUNT;
+  return (
+    draft?.enabled === true &&
+    !!draft.poses &&
+    draft.poses.length > 0 &&
+    draft.poses.every((pose) => pose.length === OPENPOSE_JOINT_COUNT)
+  );
 }
 
 export function poseDraftHasAttachment(draft: PoseDraft | null | undefined) {
