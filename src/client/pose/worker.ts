@@ -37,6 +37,8 @@ self.addEventListener("message", (event: MessageEvent<PoseWorkerRequest>) => {
     try {
       if (message.type === "load-model") {
         await loadModel(message.requestId, message.model, message.urls);
+      } else if (message.type === "probe-cache") {
+        await probeCache(message.requestId, message.model);
       } else if (message.type === "detect") {
         await detect(message.requestId, message.imageData);
       } else if (message.type === "destroy") {
@@ -196,6 +198,23 @@ async function fetchWithProgress(requestId: number, url: string, expectedSize: n
     offset += chunk.byteLength;
   }
   return output.buffer;
+}
+
+/** OPFS にモデルファイルが存在するかを確認して cache-status を返す（DL・セッション作成なし）。 */
+async function probeCache(requestId: number, model: PoseModelDefinition) {
+  if (!navigator.storage?.getDirectory) {
+    post({ type: "cache-status", requestId, modelId: model.id, cached: false });
+    return;
+  }
+  let cached = false;
+  try {
+    const dir = await getCacheDirectory();
+    await dir.getFileHandle(model.modelFile);
+    cached = true;
+  } catch {
+    cached = false;
+  }
+  post({ type: "cache-status", requestId, modelId: model.id, cached });
 }
 
 async function readCachedModelFile(filename: string) {

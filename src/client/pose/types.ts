@@ -73,6 +73,12 @@ export type PoseWorkerRequest =
       urls: PoseModelUrls;
     }
   | {
+      /** OPFS キャッシュにモデルファイルが揃っているかだけを確認する（セッションは作らない・DL しない）。 */
+      type: "probe-cache";
+      requestId: number;
+      model: PoseModelDefinition;
+    }
+  | {
       type: "detect";
       requestId: number;
       imageData: PoseRawImageData;
@@ -99,6 +105,13 @@ export type PoseWorkerResponse =
       type: "detected";
       requestId: number;
       landmarks: PoseWorkerLandmark[][];
+    }
+  | {
+      /** probe-cache の応答。cached=true なら DL 不要で即ロードできる。 */
+      type: "cache-status";
+      requestId: number;
+      modelId: string;
+      cached: boolean;
     }
   | {
       type: "destroyed";
