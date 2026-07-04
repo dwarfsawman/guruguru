@@ -1183,6 +1183,38 @@ details + details {
   font-size: 11px;
 }
 
+.prompt-input-wrap {
+  position: relative;
+}
+
+.prompt-improve-button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-grid;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--accent-line);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--accent);
+}
+
+.prompt-improve-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.prompt-improve-button svg {
+  width: 18px;
+  height: 18px;
+  stroke: none;
+}
+
 .link-button {
   display: inline-flex;
   width: fit-content;
@@ -1230,6 +1262,45 @@ details + details {
 
 .collapsible[open] summary svg {
   transform: rotate(180deg);
+}
+
+.connection-block {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 11px 12px;
+  background: var(--panel-strong);
+}
+
+.connection-block + .connection-block {
+  margin-top: 10px;
+}
+
+.connection-block-title {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.connection-block-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.connection-block-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.connection-block-body {
+  display: grid;
+  gap: 10px;
 }
 
 .range-control {

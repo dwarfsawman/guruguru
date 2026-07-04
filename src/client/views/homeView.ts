@@ -3,14 +3,31 @@
  * `src/client/main.ts` から抽出。state は引数で受け取るため main.ts への逆依存を持たない（circular import なし）。
  * UI 文言・HTML 構造・CSS class・data-action・selector は移動前と同一。
  */
-import type { ComfySettings } from "../../shared/types";
+import type { ComfySettings, LlmSettings } from "../../shared/types";
 import type { ProjectSummary, WorkflowTemplate } from "../../shared/apiTypes";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../../shared/constants";
 import { escapeAttr, escapeHtml, formatDate } from "../format";
-import { iconPlus, iconTrash } from "../icons";
+import { iconChevron, iconPlus, iconTrash } from "../icons";
 import { renderTemplatePanel, renderWorkflowImportPanel } from "../workflowUi";
+import { renderRangeControl } from "./generationPanel";
 
-export function renderHome(projects: ProjectSummary[], settings: ComfySettings | null, templates: WorkflowTemplate[]) {
+export type ConnectionState = "unknown" | "checking" | "connected" | "disconnected";
+
+export interface ConnectionSummary {
+  state: ConnectionState;
+  text: string;
+}
+
+const unknownConnectionSummary: ConnectionSummary = { state: "unknown", text: "未確認" };
+
+export function renderHome(
+  projects: ProjectSummary[],
+  settings: ComfySettings | null,
+  templates: WorkflowTemplate[],
+  llmSettings: LlmSettings | null = null,
+  comfyStatus: ConnectionSummary = unknownConnectionSummary,
+  llmStatus: ConnectionSummary = unknownConnectionSummary
+) {
   const totalAssets = projects.reduce((sum, project) => sum + (project.assetCount ?? 0), 0);
   return `
     <main class="home-layout">
@@ -40,7 +57,7 @@ export function renderHome(projects: ProjectSummary[], settings: ComfySettings |
         </div>
       </section>
       <div class="home-side">
-        ${renderSettingsPanel(settings)}
+        ${renderSettingsPanel(settings, llmSettings, comfyStatus, llmStatus)}
         ${renderWorkflowImportPanel()}
         ${renderTemplatePanel(templates)}
       </div>
@@ -67,23 +84,67 @@ export function renderProjectCard(project: ProjectSummary) {
   `;
 }
 
-export function renderSettingsPanel(settings: ComfySettings | null) {
+export function renderSettingsPanel(
+  settings: ComfySettings | null,
+  llmSettings: LlmSettings | null = null,
+  comfyStatus: ConnectionSummary = unknownConnectionSummary,
+  llmStatus: ConnectionSummary = unknownConnectionSummary
+) {
   return `
     <section class="panel">
       <div class="panel-heading">
         <div>
           <p class="section-kicker">Connection</p>
-          <h2>ComfyUI接続</h2>
         </div>
       </div>
-      <form id="settings-form" class="form-stack">
-        <label>Base URL<input name="baseUrl" value="${escapeAttr(settings?.baseUrl ?? "http://127.0.0.1:8188")}" /></label>
-        <label>WebSocket URL<input name="websocketUrl" value="${escapeAttr(settings?.websocketUrl ?? "ws://127.0.0.1:8188/ws")}" /></label>
-        <label>Timeout秒<input name="timeoutSeconds" type="number" min="1" value="${settings?.timeoutSeconds ?? 60}" /></label>
-        <label>保存先<input name="storageDir" value="${escapeAttr(settings?.storageDir ?? "")}" /></label>
-        <label>WebSAM model base URL<input name="webSamModelBaseUrl" value="${escapeAttr(settings?.webSamModelBaseUrl ?? DEFAULT_WEB_SAM_MODEL_BASE_URL)}" placeholder="${escapeAttr(DEFAULT_WEB_SAM_MODEL_BASE_URL)}" /></label>
-        <button class="button-primary" type="button" data-action="connect-comfy">接続</button>
-      </form>
+      <details class="collapsible connection-block" open>
+        <summary>
+          <span class="connection-block-title">ComfyUI接続</span>
+          <span class="connection-block-right">${renderConnectionBadge(comfyStatus)}${iconChevron()}</span>
+        </summary>
+        <div class="connection-block-body">
+          <form id="settings-form" class="form-stack">
+            <label>Base URL<input name="baseUrl" value="${escapeAttr(settings?.baseUrl ?? "http://127.0.0.1:8188")}" /></label>
+            <label>WebSocket URL<input name="websocketUrl" value="${escapeAttr(settings?.websocketUrl ?? "ws://127.0.0.1:8188/ws")}" /></label>
+            <label>Timeout秒<input name="timeoutSeconds" type="number" min="1" value="${settings?.timeoutSeconds ?? 60}" /></label>
+            <label>保存先<input name="storageDir" value="${escapeAttr(settings?.storageDir ?? "")}" /></label>
+            <label>WebSAM model base URL<input name="webSamModelBaseUrl" value="${escapeAttr(settings?.webSamModelBaseUrl ?? DEFAULT_WEB_SAM_MODEL_BASE_URL)}" placeholder="${escapeAttr(DEFAULT_WEB_SAM_MODEL_BASE_URL)}" /></label>
+            <button class="button-primary" type="button" data-action="connect-comfy">接続</button>
+          </form>
+        </div>
+      </details>
+      <details class="collapsible connection-block">
+        <summary>
+          <span class="connection-block-title">OpenAI互換プロンプト接続</span>
+          <span class="connection-block-right">${renderConnectionBadge(llmStatus)}${iconChevron()}</span>
+        </summary>
+        <div class="connection-block-body">
+          <form id="llm-settings-form" class="form-stack">
+            <label>Base URL<input name="baseUrl" value="${escapeAttr(llmSettings?.baseUrl ?? "")}" placeholder="http://127.0.0.1:1234/v1" /></label>
+            <label>Model<input name="model" value="${escapeAttr(llmSettings?.model ?? "")}" placeholder="qwen3-14b-instruct" /></label>
+            <label>System Prompt<textarea name="systemPrompt" rows="3" placeholder="ComfyUIのプロンプト作成を支援する指示を入力...">${escapeHtml(llmSettings?.systemPrompt ?? "")}</textarea></label>
+            ${renderRangeControl("temperature", "Temperature", llmSettings?.temperature ?? 0.4, 0, 2, 0.1, "llmTemperatureValue")}
+            <button class="button-primary" type="button" data-action="connect-llm">接続</button>
+          </form>
+        </div>
+      </details>
     </section>
   `;
+}
+
+function renderConnectionBadge(status: ConnectionSummary) {
+  return `<span class="connection-block-status" title="${escapeAttr(status.text)}"><span class="status-dot ${status.state}"></span><span>${escapeHtml(connectionBadgeLabel(status.state))}</span></span>`;
+}
+
+function connectionBadgeLabel(state: ConnectionState) {
+  if (state === "connected") {
+    return "接続済み";
+  }
+  if (state === "checking") {
+    return "確認中";
+  }
+  if (state === "disconnected") {
+    return "未接続";
+  }
+  return "未確認";
 }

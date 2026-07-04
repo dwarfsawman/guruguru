@@ -15,6 +15,14 @@ export interface ComfyStatus {
   error?: string;
 }
 
+export interface LlmStatus {
+  ok: boolean;
+  state: "connected" | "disconnected";
+  baseUrl: string;
+  checkedAt: string;
+  error?: string;
+}
+
 export interface ProjectRow {
   id: string;
   name: string;

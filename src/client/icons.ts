@@ -90,6 +90,14 @@ export function iconDot() {
   return `<svg viewBox="0 0 16 16" aria-hidden="true" class="tag-dot"><circle cx="8" cy="8" r="6"></circle></svg>`;
 }
 
+export function iconSparkle() {
+  return `<svg viewBox="0 0 32 32" aria-hidden="true" class="icon-sparkle">
+    <path d="M9.4 8.6L10.55 11.35L13.3 12.5L10.55 13.65L9.4 16.4L8.25 13.65L5.5 12.5L8.25 11.35L9.4 8.6Z" fill="currentColor"></path>
+    <path d="M16.5 11L18.9 16.6L24.5 19L18.9 21.4L16.5 27L14.1 21.4L8.5 19L14.1 16.6L16.5 11Z" fill="currentColor"></path>
+    <path d="M26 5.5L26.8 7.4L28.7 8.2L26.8 9L26 10.9L25.2 9L23.3 8.2L25.2 7.4L26 5.5Z" fill="currentColor"></path>
+  </svg>`;
+}
+
 export function iconBrush() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.4 3.6a2.1 2.1 0 0 1 3 3L10.5 17.5l-4 1 1-4L18.4 3.6Z"></path><path d="M6.5 18.5c-1.8 0-3 1.2-3 3 1.8 0 3-.4 4-1.4"></path></svg>`;
 }
