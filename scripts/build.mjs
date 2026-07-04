@@ -60,6 +60,16 @@ async function main() {
     "--log-level=warning"
   ]);
 
+  run([
+    "src/client/pose/cigposeWorker.ts",
+    "--bundle",
+    "--platform=browser",
+    "--format=esm",
+    "--target=es2022",
+    "--outfile=dist/public/pose-cigpose-worker.js",
+    "--log-level=warning"
+  ]);
+
   await copyFile(join(root, "src", "client", "index.html"), join(root, "dist", "public", "index.html"));
   await copyFile(join(root, "src", "client", "styles.css"), join(root, "dist", "public", "styles.css"));
   await copyFile(join(root, "src", "client", "spiral.svg"), join(root, "dist", "public", "spiral.svg"));

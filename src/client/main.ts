@@ -100,7 +100,7 @@ import {
   snapshotPaintLayer
 } from "./paintCanvas";
 import { renderPaintToolPanel } from "./views/paintPanel";
-import { buildPoseModelUrls, defaultPoseModel, poseModelById } from "./pose/models";
+import { buildPoseModelUrls, defaultPoseModel, isCigposeModel, poseModelById } from "./pose/models";
 import type { PoseWorkerProgress, PoseWorkerRequest, PoseWorkerResponse } from "./pose/types";
 import type { PoseDraft } from "./poseTypes";
 import {
@@ -193,6 +193,7 @@ let latestWebSamLoadRequestId = 0;
 let latestWebSamEncodeRequestId = 0;
 let latestWebSamDecodeRequestId = 0;
 let poseWorker: Worker | null = null;
+let poseCigposeWorker: Worker | null = null;
 let poseRequestId = 0;
 let latestPoseLoadRequestId = 0;
 let latestPoseDetectRequestId = 0;
@@ -3652,31 +3653,50 @@ async function destroyWebSamWorkerSession() {
   postWebSamMessage({ type: "destroy", requestId });
 }
 
-// ---- Pose（MediaPipe Pose Landmarker）worker 統合 ----
+// ---- Pose worker 統合（MediaPipe / CIGPose）----
 // WebSAM worker 統合（ensureWebSamWorker / handleWebSamWorkerResponse）と同型。
-// pose-worker.js は IIFE bundle のクラシック worker（MediaPipe の wasm グルーが
-// module worker 非対応のため `{ type: "module" }` を付けない）。
+// model.kind ごとに worker を使い分ける（両者は同じ PoseWorkerRequest/Response を話す）:
+//   - mediapipe: pose-worker.js（IIFE / classic worker。MediaPipe の wasm グルーが
+//     module worker 非対応のため `{ type: "module" }` を付けない）
+//   - cigpose:   pose-cigpose-worker.js（ESM / module worker。onnxruntime-web は
+//     import.meta を使う wasm ローダのため module worker 必須）
+type PoseWorkerKind = "mediapipe" | "cigpose";
 
-function ensurePoseWorker() {
-  if (poseWorker) {
-    return poseWorker;
-  }
-  poseWorker = new Worker("/pose-worker.js");
-  poseWorker.addEventListener("message", (event: MessageEvent<PoseWorkerResponse>) => {
+function poseWorkerKind(draft: PoseDraft): PoseWorkerKind {
+  const model = poseModelById(draft.modelId) ?? defaultPoseModel();
+  return isCigposeModel(model) ? "cigpose" : "mediapipe";
+}
+
+function attachPoseWorkerHandlers(worker: Worker) {
+  worker.addEventListener("message", (event: MessageEvent<PoseWorkerResponse>) => {
     void handlePoseWorkerResponse(event.data);
   });
-  poseWorker.addEventListener("error", (event) => {
+  worker.addEventListener("error", (event) => {
     updateActivePoseDraft({
       modelStatus: "error",
       modelError: event.message || "Pose Worker initialization failed.",
       modelStatusText: "Error"
     });
   });
+}
+
+function ensurePoseWorker(kind: PoseWorkerKind) {
+  if (kind === "cigpose") {
+    if (!poseCigposeWorker) {
+      poseCigposeWorker = new Worker("/pose-cigpose-worker.js", { type: "module" });
+      attachPoseWorkerHandlers(poseCigposeWorker);
+    }
+    return poseCigposeWorker;
+  }
+  if (!poseWorker) {
+    poseWorker = new Worker("/pose-worker.js");
+    attachPoseWorkerHandlers(poseWorker);
+  }
   return poseWorker;
 }
 
-function postPoseMessage(message: PoseWorkerRequest) {
-  ensurePoseWorker().postMessage(message);
+function postPoseMessage(message: PoseWorkerRequest, kind: PoseWorkerKind) {
+  ensurePoseWorker(kind).postMessage(message);
 }
 
 function nextPoseRequestId() {
@@ -3761,7 +3781,7 @@ async function loadActivePoseModel() {
     modelStatusText: "モデル確認中"
   });
   render();
-  postPoseMessage({ type: "load-model", requestId, model, urls });
+  postPoseMessage({ type: "load-model", requestId, model, urls }, isCigposeModel(model) ? "cigpose" : "mediapipe");
 }
 
 async function requestPoseDetect() {
@@ -3810,7 +3830,7 @@ async function sendPoseDetect(assetId: string) {
     imageHeight: raw.height
   });
   render();
-  postPoseMessage({ type: "detect", requestId, imageData: raw });
+  postPoseMessage({ type: "detect", requestId, imageData: raw }, poseWorkerKind(draft));
 }
 
 async function resetPoseDetection() {
@@ -4102,11 +4122,12 @@ function finishPoseJointDrag() {
 }
 
 async function destroyPoseWorkerSession() {
-  if (!poseWorker) {
-    return;
+  if (poseWorker) {
+    poseWorker.postMessage({ type: "destroy", requestId: nextPoseRequestId() });
   }
-  const requestId = nextPoseRequestId();
-  postPoseMessage({ type: "destroy", requestId });
+  if (poseCigposeWorker) {
+    poseCigposeWorker.postMessage({ type: "destroy", requestId: nextPoseRequestId() });
+  }
 }
 
 function inpaintRequestForParent(parentAssetId: string | null, generationMode: string): InpaintOptions | null {
