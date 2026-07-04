@@ -1,4 +1,5 @@
 import { FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
+import { MAX_POSE_COUNT } from "../poseTypes";
 import type {
   PoseModelDefinition,
   PoseModelUrls,
@@ -109,7 +110,7 @@ async function createLandmarkerSession(model: PoseModelDefinition, modelBuffer: 
           delegate
         },
         runningMode: "IMAGE",
-        numPoses: 1
+        numPoses: MAX_POSE_COUNT
       });
       return { landmarker, model, backend: delegate };
     } catch (error) {

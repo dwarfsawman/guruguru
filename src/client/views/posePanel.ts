@@ -9,7 +9,7 @@ import { iconLoopArrows, iconPlay, iconReset } from "../icons";
 import { POSE_MODELS, defaultPoseModel, formatModelBytes, poseModelById } from "../pose/models";
 import type { PoseModelStatus } from "../pose/types";
 import { defaultPoseDraft } from "../poseDraft";
-import type { PoseDraft } from "../poseTypes";
+import type { PoseDraft, PosePoint } from "../poseTypes";
 import { OPENPOSE_BONE_COLORS, OPENPOSE_BONES, OPENPOSE_JOINT_COLORS } from "../poseTypes";
 
 function clamp01(value: number) {
@@ -40,7 +40,7 @@ export function renderPosePanelSection(poseDraft: PoseDraft | null, assetId: str
       ? "error"
       : "";
   const busy = draft.modelStatus === "downloading" || draft.modelStatus === "initializing" || draft.modelStatus === "detecting";
-  const detected = !!draft.points;
+  const detected = !!draft.poses && draft.poses.length > 0;
   return `
     <div class="pose-panel websam-panel">
       <div class="websam-model-card">
@@ -73,11 +73,18 @@ export function renderPosePanelSection(poseDraft: PoseDraft | null, assetId: str
       ${renderPoseRange("startPercent", "Start percent", draft.startPercent, 0, 1, 0.05, "poseStartValue")}
       ${renderPoseRange("endPercent", "End percent", draft.endPercent, 0, 1, 0.05, "poseEndValue")}
       <div class="websam-counts">
-        <span>${detected ? `関節 ${draft.points!.filter((point) => point.visible).length}/${draft.points!.length}` : "未検出"}</span>
+        <span>${detected ? poseCountsLabel(draft.poses!) : "未検出"}</span>
         <span>${escapeHtml(draft.source === "edited" ? "編集済み" : "検出結果")}</span>
       </div>
     </div>
   `;
+}
+
+function poseCountsLabel(poses: PosePoint[][]) {
+  const visible = poses.reduce((sum, pose) => sum + pose.filter((point) => point.visible).length, 0);
+  const total = poses.reduce((sum, pose) => sum + pose.length, 0);
+  const people = poses.length > 1 ? `${poses.length}人 · ` : "";
+  return `${people}関節 ${visible}/${total}`;
 }
 
 function renderPoseRange(field: string, label: string, value: number, min: number, max: number, step: number, valueId: string) {
@@ -96,29 +103,33 @@ function renderPoseRange(field: string, label: string, value: number, min: numbe
 export function renderPoseOverlay(draft: PoseDraft, asset: Asset) {
   const width = draft.imageWidth ?? assetDimension(asset, "width") ?? 1;
   const height = draft.imageHeight ?? assetDimension(asset, "height") ?? 1;
-  const points = draft.points;
-  if (!points) {
+  const poses = draft.poses;
+  if (!poses || poses.length === 0) {
     return `<svg class="pose-overlay" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}" aria-hidden="true"></svg>`;
   }
   const strokeWidth = Math.max(2, Math.min(width, height) / 200);
   const jointRadius = Math.max(4, Math.min(width, height) / 128);
-  const bones = OPENPOSE_BONES.map((bone, index) => {
-    const from = points[bone[0]];
-    const to = points[bone[1]];
-    if (!from || !to || !from.visible || !to.visible) {
-      return "";
-    }
-    const [r, g, b] = OPENPOSE_BONE_COLORS[index] ?? [255, 255, 255];
-    return `<line class="pose-bone" data-bone-index="${index}" data-bone-from="${bone[0]}" data-bone-to="${bone[1]}" x1="${formatCssNumber(from.x)}" y1="${formatCssNumber(from.y)}" x2="${formatCssNumber(to.x)}" y2="${formatCssNumber(to.y)}" stroke="rgb(${r},${g},${b})" stroke-width="${formatCssNumber(strokeWidth)}"></line>`;
-  }).join("");
-  const joints = points.map((point, index) => {
-    const [r, g, b] = OPENPOSE_JOINT_COLORS[index] ?? [255, 255, 255];
-    return `<circle class="pose-joint ${point.visible ? "" : "hidden-joint"}" data-joint-index="${index}" cx="${formatCssNumber(point.x)}" cy="${formatCssNumber(point.y)}" r="${formatCssNumber(jointRadius)}" fill="rgb(${r},${g},${b})"></circle>`;
-  }).join("");
+  const body = poses
+    .map((points, poseIndex) => {
+      const bones = OPENPOSE_BONES.map((bone, index) => {
+        const from = points[bone[0]];
+        const to = points[bone[1]];
+        if (!from || !to || !from.visible || !to.visible) {
+          return "";
+        }
+        const [r, g, b] = OPENPOSE_BONE_COLORS[index] ?? [255, 255, 255];
+        return `<line class="pose-bone" data-pose-index="${poseIndex}" data-bone-index="${index}" data-bone-from="${bone[0]}" data-bone-to="${bone[1]}" x1="${formatCssNumber(from.x)}" y1="${formatCssNumber(from.y)}" x2="${formatCssNumber(to.x)}" y2="${formatCssNumber(to.y)}" stroke="rgb(${r},${g},${b})" stroke-width="${formatCssNumber(strokeWidth)}"></line>`;
+      }).join("");
+      const joints = points.map((point, index) => {
+        const [r, g, b] = OPENPOSE_JOINT_COLORS[index] ?? [255, 255, 255];
+        return `<circle class="pose-joint ${point.visible ? "" : "hidden-joint"}" data-pose-index="${poseIndex}" data-joint-index="${index}" cx="${formatCssNumber(point.x)}" cy="${formatCssNumber(point.y)}" r="${formatCssNumber(jointRadius)}" fill="rgb(${r},${g},${b})"></circle>`;
+      }).join("");
+      return bones + joints;
+    })
+    .join("");
   return `
     <svg class="pose-overlay" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}" aria-hidden="true">
-      ${bones}
-      ${joints}
+      ${body}
     </svg>
   `;
 }

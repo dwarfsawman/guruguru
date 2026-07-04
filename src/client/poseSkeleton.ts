@@ -44,16 +44,23 @@ export function poseSkeletonLineWidth(width: number, height: number): number {
 }
 
 /**
- * `points`（OpenPose 18点、null 可）から描画すべき bone(line) / joint(circle) の一覧を返す pure helper。
+ * `poses`（人ごとの OpenPose 18点、null 可）から描画すべき bone(line) / joint(circle) の一覧を返す pure helper。
  * DOM/canvas に依存しないため fake canvas なしでユニットテスト可能。
- * 描画順序: bone を先に全て、その後 joint を全て（`renderPoseOverlay` の重ね順と揃える）。
+ * 描画順序: 人ごとに bone を先に全て、その後 joint を全て（`renderPoseOverlay` の重ね順と揃える）。
  */
 export function buildPoseSkeletonDrawOps(
-  points: PosePoint[] | null | undefined,
+  poses: PosePoint[][] | null | undefined,
   width: number,
   height: number
 ): PoseSkeletonDrawOp[] {
-  if (!points || points.length === 0) {
+  if (!poses || poses.length === 0) {
+    return [];
+  }
+  return poses.flatMap((points) => buildSinglePoseDrawOps(points, width, height));
+}
+
+function buildSinglePoseDrawOps(points: PosePoint[], width: number, height: number): PoseSkeletonDrawOp[] {
+  if (points.length === 0) {
     return [];
   }
   const lineWidth = poseSkeletonLineWidth(width, height);
@@ -99,7 +106,7 @@ export function buildPoseSkeletonDrawOps(
  * Phase 5（サーバ添付パイプライン）から呼び出される想定。Phase 4 ではまだどこからも呼ばれない。
  */
 export function renderPoseSkeletonDataUrl(
-  points: PosePoint[] | null | undefined,
+  poses: PosePoint[][] | null | undefined,
   width: number,
   height: number
 ): string {
@@ -113,7 +120,7 @@ export function renderPoseSkeletonDataUrl(
   context.fillStyle = "#000000";
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  const ops = buildPoseSkeletonDrawOps(points, width, height);
+  const ops = buildPoseSkeletonDrawOps(poses, width, height);
   for (const op of ops) {
     const [r, g, b] = op.color;
     if (op.kind === "line") {
