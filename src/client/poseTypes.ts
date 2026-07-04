@@ -37,6 +37,9 @@ export const OPENPOSE_JOINT_NAMES = [
 
 export const OPENPOSE_JOINT_COUNT = OPENPOSE_JOINT_NAMES.length;
 
+/** 1画像あたりの最大検出/編集人数。worker の `numPoses` と検出結果の取り込み上限で共用する。 */
+export const MAX_POSE_COUNT = 4;
+
 /**
  * OpenPose(COCO 18) 標準の bone 接続（joint index ペア）。
  * ControlNet 学習時の標準 limbSeq と同じ並び。SVG 表示・スケルトン PNG 描画で共用する。
@@ -108,8 +111,8 @@ export interface PoseDraft {
   parentAssetId: string;
   /** 次回生成に添付するか（InpaintDraft.enabled と同義） */
   enabled: boolean;
-  /** OpenPose 18点。null = 未検出 */
-  points: PosePoint[] | null;
+  /** 検出/編集済みのポーズ一覧（各要素が1人分の OpenPose 18点、最大 `MAX_POSE_COUNT` 人）。null = 未検出 */
+  poses: PosePoint[][] | null;
   source: "detected" | "edited";
   strength: number;
   startPercent: number;
