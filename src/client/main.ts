@@ -103,7 +103,15 @@ import { renderPaintToolPanel } from "./views/paintPanel";
 import { buildPoseModelUrls, defaultPoseModel } from "./pose/models";
 import type { PoseWorkerProgress, PoseWorkerRequest, PoseWorkerResponse } from "./pose/types";
 import type { PoseDraft } from "./poseTypes";
-import { defaultPoseDraft, hasActivePoseData, mediapipeToOpenPose, normalizePoseDraft } from "./poseDraft";
+import {
+  defaultPoseDraft,
+  hasActivePoseData,
+  mediapipeToOpenPose,
+  normalizePoseDraft,
+  poseBoneConstraintForJoint,
+  projectPointToBoneCircle
+} from "./poseDraft";
+import type { PoseBoneConstraint } from "./poseDraft";
 import { renderPoseSkeletonDataUrl } from "./poseSkeleton";
 
 type ComfyConnectionState = "unknown" | "checking" | "connected" | "disconnected";
@@ -154,6 +162,8 @@ interface ActivePoseJointDrag {
   current: { x: number; y: number };
   /** 閾値を超えて動いたら true。click（visible トグル）と drag（移動）の判定に使う。 */
   moved: boolean;
+  /** Shift ドラッグ時の回転拘束（骨長固定）。親を持たない関節などは null。 */
+  constraint: PoseBoneConstraint | null;
 }
 
 const POSE_JOINT_DRAG_THRESHOLD = 3;
@@ -3971,7 +3981,8 @@ function beginPoseJointDrag(event: PointerEvent, joint: SVGCircleElement) {
     jointIndex,
     start: point,
     current: point,
-    moved: false
+    moved: false,
+    constraint: poseBoneConstraintForJoint(draft.points, jointIndex)
   };
   try {
     joint.setPointerCapture(event.pointerId);
@@ -3995,7 +4006,14 @@ function continuePoseJointDrag(event: PointerEvent, svg: SVGSVGElement) {
   if (!activePoseJointDrag.moved) {
     return;
   }
-  const clamped = clampPointToPoseBounds(point, svg);
+  // Shift ドラッグ: 親関節を中心にドラッグ開始時の骨長を保ったまま回転させる（回転拘束）。
+  // 拘束 → 境界クランプの順で適用する（画像端では骨長よりはみ出し防止を優先）。
+  const constrained =
+    event.shiftKey && activePoseJointDrag.constraint
+      ? projectPointToBoneCircle(activePoseJointDrag.constraint, point.x, point.y)
+      : point;
+  const clamped = clampPointToPoseBounds(constrained, svg);
+  activePoseJointDrag.current = clamped;
   const jointEl = svg.querySelector<SVGCircleElement>(`.pose-joint[data-joint-index="${activePoseJointDrag.jointIndex}"]`);
   if (jointEl) {
     jointEl.setAttribute("cx", formatCssNumber(clamped.x));

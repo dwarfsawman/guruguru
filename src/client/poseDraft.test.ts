@@ -159,3 +159,71 @@ test("poseDraftHasAttachment: mirrors hasActivePoseData", () => {
   assert.equal(poseDraftHasAttachment(base), false);
   assert.equal(poseDraftHasAttachment({ ...base, enabled: true, points: makePoints() }), true);
 });
+
+// --- 回転拘束（骨長固定）helpers ---
+
+import {
+  OPENPOSE_JOINT_PARENT,
+  poseBoneConstraintForJoint,
+  projectPointToBoneCircle
+} from "./poseDraft.ts";
+import { OPENPOSE_BONES } from "./poseTypes.ts";
+
+function makeConstraintPoints(overrides: Record<number, Partial<PosePoint>> = {}): PosePoint[] {
+  const points: PosePoint[] = [];
+  for (let i = 0; i < OPENPOSE_JOINT_COUNT; i += 1) {
+    points.push({ x: 100 + i, y: 200 + i, visible: true, ...overrides[i] });
+  }
+  return points;
+}
+
+test("OPENPOSE_JOINT_PARENT: every entry is an OPENPOSE_BONES pair and neck has no parent", () => {
+  assert.equal(OPENPOSE_JOINT_PARENT[1], undefined);
+  for (const [child, parent] of Object.entries(OPENPOSE_JOINT_PARENT)) {
+    const found = OPENPOSE_BONES.some(
+      ([a, b]) => a === parent && b === Number(child)
+    );
+    assert.ok(found, `parent map entry ${child}<-${parent} must exist in OPENPOSE_BONES`);
+  }
+  // neck 以外の全関節が親を持つ
+  for (let i = 0; i < OPENPOSE_JOINT_COUNT; i += 1) {
+    if (i === 1) continue;
+    assert.notEqual(OPENPOSE_JOINT_PARENT[i], undefined, `joint ${i} must have a parent`);
+  }
+});
+
+test("poseBoneConstraintForJoint: anchor is parent position, radius is bone length", () => {
+  const points = makeConstraintPoints({ 3: { x: 100, y: 100 }, 4: { x: 130, y: 140 } });
+  const constraint = poseBoneConstraintForJoint(points, 4);
+  assert.ok(constraint);
+  assert.deepEqual(constraint.anchor, { x: 100, y: 100 });
+  assert.equal(constraint.radius, 50);
+});
+
+test("poseBoneConstraintForJoint: neck / null points / zero-length bone return null", () => {
+  const points = makeConstraintPoints({ 2: { x: 100, y: 100 }, 3: { x: 100, y: 100 } });
+  assert.equal(poseBoneConstraintForJoint(points, 1), null);
+  assert.equal(poseBoneConstraintForJoint(null, 4), null);
+  assert.equal(poseBoneConstraintForJoint(points, 3), null);
+});
+
+test("poseBoneConstraintForJoint: parent visibility does not matter", () => {
+  const points = makeConstraintPoints({ 3: { x: 0, y: 0, visible: false }, 4: { x: 3, y: 4 } });
+  const constraint = poseBoneConstraintForJoint(points, 4);
+  assert.ok(constraint);
+  assert.equal(constraint.radius, 5);
+});
+
+test("projectPointToBoneCircle: projects onto circle preserving direction", () => {
+  const constraint = { anchor: { x: 100, y: 100 }, radius: 50 };
+  const projected = projectPointToBoneCircle(constraint, 100, 300);
+  assert.deepEqual(projected, { x: 100, y: 150 });
+  const diagonal = projectPointToBoneCircle(constraint, 103, 104);
+  assert.ok(Math.abs(Math.hypot(diagonal.x - 100, diagonal.y - 100) - 50) < 1e-9);
+  assert.ok(diagonal.x > 100 && diagonal.y > 100);
+});
+
+test("projectPointToBoneCircle: pointer at anchor falls back to +x direction", () => {
+  const constraint = { anchor: { x: 10, y: 20 }, radius: 5 };
+  assert.deepEqual(projectPointToBoneCircle(constraint, 10, 20), { x: 15, y: 20 });
+});
