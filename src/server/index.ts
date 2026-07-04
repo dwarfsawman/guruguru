@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
 import { getComfyStatus, testComfyConnection } from "./comfy";
+import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection } from "./llm";
 import { serveStatic } from "./files";
 import { HttpError, readJson, sendJson } from "./http";
 import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
@@ -21,7 +22,7 @@ import {
   GITHUB_POSE_RELEASE_API_URL,
   GITHUB_WEB_SAM_RELEASE_API_URL
 } from "../shared/constants";
-import type { ComfySettings, GenerationRequest } from "../shared/types";
+import type { ComfySettings, GenerationRequest, LlmSettings } from "../shared/types";
 
 const port = Number(process.env.PORT ?? 5177);
 let isShuttingDown = false;
@@ -105,6 +106,45 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "GET" && path === "/api/comfy/status") {
     sendJson(res, 200, await getComfyStatus());
+    return;
+  }
+
+  if (method === "GET" && path === "/api/settings/llm") {
+    sendJson(res, 200, getLlmSettings());
+    return;
+  }
+
+  if (method === "PUT" && path === "/api/settings/llm") {
+    const body = await readJson<Partial<LlmSettings>>(req);
+    const currentSettings = getLlmSettings();
+    const settings: LlmSettings = {
+      baseUrl: stringOr(body.baseUrl, currentSettings.baseUrl).trim().replace(/\/+$/, ""),
+      model: stringOr(body.model, currentSettings.model).trim(),
+      systemPrompt: stringOr(body.systemPrompt, currentSettings.systemPrompt),
+      temperature: Math.min(2, Math.max(0, numberOr(body.temperature, currentSettings.temperature)))
+    };
+    setSetting("llm", settings);
+    sendJson(res, 200, settings);
+    return;
+  }
+
+  if (method === "POST" && path === "/api/llm/test") {
+    sendJson(res, 200, await testLlmConnection());
+    return;
+  }
+
+  if (method === "GET" && path === "/api/llm/status") {
+    sendJson(res, 200, await getLlmStatus());
+    return;
+  }
+
+  if (method === "POST" && path === "/api/llm/improve-prompt") {
+    const body = await readJson<{ prompt?: string; negativePrompt?: string }>(req);
+    const improved = await improvePromptWithLlm(
+      stringOr(body.prompt, ""),
+      typeof body.negativePrompt === "string" ? body.negativePrompt : undefined
+    );
+    sendJson(res, 200, { prompt: improved });
     return;
   }
 

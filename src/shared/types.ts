@@ -59,6 +59,13 @@ export interface ComfySettings {
   webSamModelBaseUrl: string;
 }
 
+export interface LlmSettings {
+  baseUrl: string;
+  model: string;
+  systemPrompt: string;
+  temperature: number;
+}
+
 export interface GenerationRequest {
   templateId: string;
   prompt: string;

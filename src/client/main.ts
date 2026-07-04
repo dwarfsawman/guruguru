@@ -6,12 +6,13 @@ import {
   requiresParentAsset
 } from "../shared/generationMode";
 import { DEFAULT_POSE_MODEL_BASE_URL, DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
-import type { ComfySettings, ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions } from "../shared/types";
+import type { ComfySettings, ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, LlmSettings } from "../shared/types";
 import type {
   Asset,
   AssetParent,
   CollectRoundResponse,
   ComfyStatus,
+  LlmStatus,
   ProjectDetail,
   ProjectRow,
   ProjectSummary,
@@ -40,7 +41,7 @@ import {
   renderWorkflowImportModal,
   renderWorkflowImportPreview
 } from "./workflowUi";
-import { renderHome } from "./views/homeView";
+import { renderHome, type ConnectionState, type ConnectionSummary } from "./views/homeView";
 import { renderIterationTracker } from "./views/iterationTree";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
 import { defaultPrompt, defaultNegativePrompt, renderGenerationPanel } from "./views/generationPanel";
@@ -121,8 +122,6 @@ import {
 import type { PoseBoneConstraint } from "./poseDraft";
 import { OPENPOSE_JOINT_PARENT } from "./poseDraft";
 import { renderPoseSkeletonDataUrl } from "./poseSkeleton";
-
-type ComfyConnectionState = "unknown" | "checking" | "connected" | "disconnected";
 
 interface ScrollPosition {
   left: number;
@@ -274,8 +273,12 @@ const state: {
   gridCols: 2 | 3 | 4;
   sidebarOpen: boolean;
   sidebarCollapsed: boolean;
-  comfyConnection: ComfyConnectionState;
+  comfyConnection: ConnectionState;
   comfyStatusText: string;
+  llmSettings: LlmSettings | null;
+  llmConnection: ConnectionState;
+  llmStatusText: string;
+  llmImproving: boolean;
   busy: boolean;
   message: string;
   generationDraft: GenerationDraft | null;
@@ -309,6 +312,10 @@ const state: {
   sidebarCollapsed: loadSidebarCollapsedPreference(),
   comfyConnection: "unknown",
   comfyStatusText: "未確認",
+  llmSettings: null,
+  llmConnection: "unknown",
+  llmStatusText: "未確認",
+  llmImproving: false,
   busy: false,
   get message() {
     return messageValue;
@@ -1185,6 +1192,10 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       if (state.comfyConnection !== "checking") {
         await refreshComfyStatus(true);
       }
+    } else if (action === "connect-llm") {
+      await connectLlm();
+    } else if (action === "improve-prompt") {
+      await improvePrompt();
     } else if (action === "open-template-import") {
       openWorkflowImportModal();
     } else if (action === "close-template-import") {
@@ -1378,10 +1389,12 @@ async function loadHome() {
   state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
+  state.llmSettings = await api<LlmSettings>("/api/settings/llm");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
   state.projects = (await api<{ projects: ProjectSummary[] }>("/api/projects")).projects;
   render();
   void refreshComfyStatus();
+  void refreshLlmStatus();
 }
 
 async function openProject(projectId: string) {
@@ -1520,6 +1533,76 @@ function isComfyTestSuccessful(result: Json) {
   const queue = result.queue as { ok?: unknown } | undefined;
   const websocket = result.websocket as { ok?: unknown } | undefined;
   return objectInfo?.ok === true && queue?.ok === true && websocket?.ok === true;
+}
+
+async function persistLlmSettings() {
+  const form = readForm("llm-settings-form");
+  state.llmSettings = await api<LlmSettings>("/api/settings/llm", {
+    method: "PUT",
+    body: JSON.stringify({
+      baseUrl: form.baseUrl,
+      model: form.model,
+      systemPrompt: form.systemPrompt,
+      temperature: Number(form.temperature)
+    })
+  });
+}
+
+/** 「接続」ボタン: LLM設定の保存と接続テストを1操作にまとめる（ComfyUI側と同じ挙動） */
+async function connectLlm() {
+  await persistLlmSettings();
+  await testLlm();
+}
+
+async function testLlm() {
+  state.llmConnection = "checking";
+  state.llmStatusText = "接続確認中";
+  render();
+  const result = await api<Json>("/api/llm/test", { method: "POST", body: "{}" });
+  state.llmConnection = result.ok === true ? "connected" : "disconnected";
+  state.llmStatusText = state.llmConnection === "connected" ? "OpenAI互換 接続済み" : `OpenAI互換 未接続: ${result.error ?? ""}`;
+  state.message = JSON.stringify(result, null, 2);
+  render();
+}
+
+async function refreshLlmStatus() {
+  if (!state.llmSettings?.baseUrl.trim() || !state.llmSettings?.model.trim()) {
+    state.llmConnection = "unknown";
+    state.llmStatusText = "未設定";
+    render();
+    return;
+  }
+  state.llmConnection = "checking";
+  render();
+  try {
+    const status = await api<LlmStatus>("/api/llm/status");
+    state.llmConnection = status.ok ? "connected" : "disconnected";
+    state.llmStatusText = status.ok ? "OpenAI互換 接続済み" : `OpenAI互換 未接続: ${status.error ?? status.baseUrl}`;
+  } catch (error) {
+    state.llmConnection = "disconnected";
+    state.llmStatusText = error instanceof Error ? error.message : String(error);
+  }
+  render();
+}
+
+async function improvePrompt() {
+  if (state.llmImproving) {
+    return;
+  }
+  const promptValue = state.generationDraft?.prompt ?? "";
+  const negativePromptValue = state.generationDraft?.negativePrompt ?? "";
+  state.llmImproving = true;
+  render();
+  try {
+    const result = await api<{ prompt: string }>("/api/llm/improve-prompt", {
+      method: "POST",
+      body: JSON.stringify({ prompt: promptValue, negativePrompt: negativePromptValue })
+    });
+    setPositivePromptDraft(result.prompt);
+  } finally {
+    state.llmImproving = false;
+    render();
+  }
 }
 
 async function createTemplate() {
@@ -2137,7 +2220,14 @@ function render(options: RenderOptions = {}) {
   app.innerHTML = `
     ${renderHeader()}
     ${state.message ? `<div class="message"><pre class="message-text">${escapeHtml(state.message)}</pre><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button></div>` : ""}
-    ${state.detail ? renderProjectDetailView(state.detail) : renderHome(state.projects, state.settings, state.templates)}
+    ${state.detail ? renderProjectDetailView(state.detail) : renderHome(
+      state.projects,
+      state.settings,
+      state.templates,
+      state.llmSettings,
+      { state: state.comfyConnection, text: state.comfyStatusText } satisfies ConnectionSummary,
+      { state: state.llmConnection, text: state.llmStatusText } satisfies ConnectionSummary
+    )}
     ${renderAssetModalView()}
     ${renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft)}
     ${renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId)}
@@ -5525,7 +5615,8 @@ function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | n
   const draftParent = findAsset(draft?.parentAssetId ?? "");
   const previous = activeAsset ?? draftParent ?? getPreferredParentAsset();
   const activeInpaint = previous?.id ? inpaintDraftForAsset(previous.id) : null;
-  return renderGenerationPanel(detail, activeRound, previous, draft, activeInpaint);
+  const llmConfigured = Boolean(state.llmSettings?.baseUrl.trim() && state.llmSettings?.model.trim());
+  return renderGenerationPanel(detail, activeRound, previous, draft, activeInpaint, llmConfigured, state.llmImproving);
 }
 
 function updateDenoiseControlForMode(mode: string) {
