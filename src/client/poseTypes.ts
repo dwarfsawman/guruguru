@@ -115,6 +115,13 @@ export interface PoseDraft {
   enabled: boolean;
   /** 検出/編集済みのポーズ一覧（各要素が1人分の OpenPose 18点、最大 `MAX_POSE_COUNT` 人）。null = 未検出 */
   poses: PosePoint[][] | null;
+  /**
+   * 人物 index ごとに手動削除した bone（`OPENPOSE_BONES` の index）の一覧。
+   * `removedBones[poseIndex]` に含まれる bone は overlay・スケルトン PNG 双方で描画されない
+   * （＝ControlNet 添付画像からも除外）。両端の joint が visible でも描画されない点が joint 非表示との違い。
+   * 省略/未定義は「削除なし」。
+   */
+  removedBones?: number[][];
   source: "detected" | "edited";
   strength: number;
   startPercent: number;

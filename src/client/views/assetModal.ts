@@ -71,7 +71,8 @@ export function renderAssetModal(
   maskPanelTab: MaskPanelTab = "mask",
   poseDraft: PoseDraft | null = null,
   generationParams: MaskGenerationParams | null = null,
-  sidebarCollapsed = false
+  sidebarCollapsed = false,
+  selectedPoseEdges: ReadonlyArray<{ poseIndex: number; boneIndex: number }> = []
 ) {
   if (!asset) {
     return "";
@@ -82,7 +83,7 @@ export function renderAssetModal(
     ? ` style="--mask-zoom: ${formatCssNumber(paintDraft.zoomScale)}; --mask-pan-x: ${formatCssNumber(paintDraft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(paintDraft.panOffset.y)}px;"`
     : ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`;
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
-  const media = renderPreviewMedia(asset, draft, editing, zoomStyle, paintEditing, maskPanelTab, poseDraft);
+  const media = renderPreviewMedia(asset, draft, editing, zoomStyle, paintEditing, maskPanelTab, poseDraft, selectedPoseEdges);
   const footer = renderPreviewFooter(asset, info);
   return `
     <div class="preview-modal ${anyEditing ? "mask-editor-open" : ""}" role="dialog" aria-modal="true">
@@ -128,7 +129,8 @@ export function renderPreviewMedia(
   zoomStyle: string,
   paintEditing = false,
   maskPanelTab: MaskPanelTab = "mask",
-  poseDraft: PoseDraft | null = null
+  poseDraft: PoseDraft | null = null,
+  selectedPoseEdges: ReadonlyArray<{ poseIndex: number; boneIndex: number }> = []
 ) {
   const poseTabActive = editing && maskPanelTab === "pose";
   return `
@@ -136,7 +138,7 @@ export function renderPreviewMedia(
       <div class="mask-zoom-stage">
         <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
         ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas><canvas id="maskFeatherPreview" class="mask-feather-preview" data-asset-id="${asset.id}" aria-hidden="true"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
-        ${poseTabActive && poseDraft ? renderPoseOverlay(poseDraft, asset) : ""}
+        ${poseTabActive && poseDraft ? renderPoseOverlay(poseDraft, asset, selectedPoseEdges) : ""}
         ${paintEditing ? `<canvas id="paintCanvas" class="mask-canvas paint-canvas" data-asset-id="${asset.id}" aria-label="ペイントキャンバス"></canvas>` : ""}
       </div>
     </div>
@@ -166,14 +168,10 @@ export function renderMaskToggleButton(editing: boolean) {
   `;
 }
 
-export function renderMaskModeIndicator(inpaint: InpaintDraft | null, fallbackAssetId: string | null) {
-  const draft = inpaint ?? (fallbackAssetId ? defaultInpaintDraft(fallbackAssetId) : null);
-  const toolLabel = draft?.eraser ? "消しゴム" : "ブラシ";
-  const sizeLabel = draft ? `${formatNumber(draft.brushSize)}px` : "-";
+export function renderMaskModeIndicator(_inpaint: InpaintDraft | null, _fallbackAssetId: string | null) {
   return `
     <div class="mask-mode-indicator" aria-live="polite">
       <span>${iconMask()}マスク編集モード</span>
-      <small>${escapeHtml(toolLabel)} / ${escapeHtml(sizeLabel)}</small>
     </div>
   `;
 }
@@ -363,7 +361,6 @@ export function renderMaskPromptSidebar(
       <div class="mask-panel-tabs">
         <button class="mask-tab ${smartActive ? "" : "active"}" type="button" data-action="set-smart-mask-provider" data-provider="manual">手動編集</button>
         <button class="mask-tab ${smartActive ? "active" : ""}" type="button" data-action="set-smart-mask-provider" data-provider="${webSamProvider}">${iconPlay()}候補生成</button>
-        <button class="mask-tab" type="button" data-action="websam-clear-prompts">${iconReset()}点クリア</button>
       </div>
       <div class="mask-toolbar-row">
         <button class="mask-tool-button ${!smartActive && !draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ" title="ブラシ">${iconBrush()}</button>
@@ -376,16 +373,7 @@ export function renderMaskPromptSidebar(
         <div class="range-label"><span>ブラシサイズ</span><strong id="maskBrushValue">${formatNumber(draft.brushSize)}px</strong></div>
         <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="maskBrushValue" data-inpaint-field="brushSize" />
       </div>
-      <div class="mask-options-grid">
-        <label class="mask-prompt-field">Positive prompt
-          <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
-        </label>
-        <div class="range-control mask-batch-control">
-          <div class="range-label"><span>バッチサイズ</span><strong id="modalBatchValue">${formatNumber(batchSizeValue)}</strong></div>
-          <input type="range" min="1" max="32" step="1" value="${batchSizeValue}" data-value-target="modalBatchValue" data-generation-field="batchSize" />
-          <div class="range-minmax"><span>1</span><span>32</span></div>
-        </div>
-        ${generationParams ? renderMaskGenerationParamsSection(generationParams) : ""}
+      <div class="mask-content-controls">
         <label>Masked content
           <select class="workflow-select" data-inpaint-field="maskedContent">
             ${maskedContentOptions.map((option) => `
@@ -407,6 +395,17 @@ export function renderMaskPromptSidebar(
           <input type="range" min="0" max="30" step="1" value="${draft.featherRadius}" data-value-target="modalMaskFeatherValue" data-inpaint-field="featherRadius" />
         </div>
       </div>
+      <div class="mask-options-grid">
+        <label class="mask-prompt-field">Positive prompt
+          <textarea class="input-field mask-prompt-input" rows="4" data-generation-field="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
+        </label>
+        <div class="range-control mask-batch-control">
+          <div class="range-label"><span>バッチサイズ</span><strong id="modalBatchValue">${formatNumber(batchSizeValue)}</strong></div>
+          <input type="range" min="1" max="32" step="1" value="${batchSizeValue}" data-value-target="modalBatchValue" data-generation-field="batchSize" />
+          <div class="range-minmax"><span>1</span><span>32</span></div>
+        </div>
+        ${generationParams ? renderMaskGenerationParamsSection(generationParams) : ""}
+      </div>
       <div class="mask-panel-actions">
         <button class="button-primary" type="button" data-action="apply-mask-editor">${iconCheck()}${canApplyCandidate ? "候補を適用" : "適用"}</button>
         <button class="button-secondary" type="button" data-action="websam-clear-manual">${iconEraser()}マスクをクリア</button>
@@ -422,13 +421,22 @@ export function renderSmartMaskSidebar(
   assetId: string | null = null
 ) {
   const poseActive = maskPanelTab === "pose";
+  const maskAttachable = hasActiveMaskData(draft);
+  const poseDetected = !!poseDraft?.poses && poseDraft.poses.length > 0;
+  const poseAttached = poseDraft?.enabled === true;
   return `
     <aside class="mask-editor-panel smart-mask-panel">
       <div class="mask-panel-header">
         <h2>${poseActive ? "ポーズ" : "スマート選択"}</h2>
         <div class="mask-panel-tabs smart-panel-tabs">
-          <button class="mask-tab ${poseActive ? "" : "active"}" type="button" data-action="set-mask-panel-tab" data-tab="mask">マスク</button>
-          <button class="mask-tab ${poseActive ? "active" : ""}" type="button" data-action="set-mask-panel-tab" data-tab="pose">ポーズ</button>
+          <div class="smart-tab-item ${poseActive ? "" : "active"}">
+            <input type="checkbox" class="tab-attach-check" data-inpaint-field="enabled" ${draft.enabled ? "checked" : ""} ${maskAttachable ? "" : "disabled"} title="マスクを次回生成に添付" aria-label="マスクを次回生成に添付" />
+            <button class="mask-tab ${poseActive ? "" : "active"}" type="button" data-action="set-mask-panel-tab" data-tab="mask">マスク</button>
+          </div>
+          <div class="smart-tab-item ${poseActive ? "active" : ""}">
+            <input type="checkbox" class="tab-attach-check" data-pose-field="enabled" ${poseAttached ? "checked" : ""} ${poseDetected ? "" : "disabled"} title="ポーズを次回生成に添付" aria-label="ポーズを次回生成に添付" />
+            <button class="mask-tab ${poseActive ? "active" : ""}" type="button" data-action="set-mask-panel-tab" data-tab="pose">ポーズ</button>
+          </div>
         </div>
       </div>
       ${poseActive ? renderPosePanelSection(poseDraft ?? null, assetId) : renderSmartMaskSection(draft)}

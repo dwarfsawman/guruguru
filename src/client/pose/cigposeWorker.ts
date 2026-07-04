@@ -93,6 +93,8 @@ self.addEventListener("message", (event: MessageEvent<PoseWorkerRequest>) => {
     try {
       if (message.type === "load-model") {
         await loadModel(message.requestId, message.model, message.urls);
+      } else if (message.type === "probe-cache") {
+        await probeCache(message.requestId, message.model);
       } else if (message.type === "detect") {
         await detect(message.requestId, message.imageData);
       } else if (message.type === "destroy") {
@@ -552,6 +554,29 @@ async function readCachedModelFile(filename: string) {
   } catch {
     return null;
   }
+}
+
+/** OPFS にファイルが存在するか（中身は読まない）。probe-cache 用。 */
+async function hasCachedModelFile(filename: string) {
+  if (!navigator.storage?.getDirectory) {
+    return false;
+  }
+  try {
+    const dir = await getCacheDirectory();
+    await dir.getFileHandle(filename);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** detector + pose の両ファイルが OPFS に揃っているかを確認して cache-status を返す。 */
+async function probeCache(requestId: number, model: PoseModelDefinition) {
+  const detectorFile = model.detectorFile;
+  const cached = detectorFile
+    ? (await hasCachedModelFile(detectorFile)) && (await hasCachedModelFile(model.modelFile))
+    : await hasCachedModelFile(model.modelFile);
+  post({ type: "cache-status", requestId, modelId: model.id, cached });
 }
 
 async function writeCachedModelFile(filename: string, data: ArrayBuffer) {

@@ -51,15 +51,23 @@ export function poseSkeletonLineWidth(width: number, height: number): number {
 export function buildPoseSkeletonDrawOps(
   poses: PosePoint[][] | null | undefined,
   width: number,
-  height: number
+  height: number,
+  removedBones?: number[][] | null
 ): PoseSkeletonDrawOp[] {
   if (!poses || poses.length === 0) {
     return [];
   }
-  return poses.flatMap((points) => buildSinglePoseDrawOps(points, width, height));
+  return poses.flatMap((points, poseIndex) =>
+    buildSinglePoseDrawOps(points, width, height, removedBones?.[poseIndex])
+  );
 }
 
-function buildSinglePoseDrawOps(points: PosePoint[], width: number, height: number): PoseSkeletonDrawOp[] {
+function buildSinglePoseDrawOps(
+  points: PosePoint[],
+  width: number,
+  height: number,
+  removed?: number[] | null
+): PoseSkeletonDrawOp[] {
   if (points.length === 0) {
     return [];
   }
@@ -67,6 +75,9 @@ function buildSinglePoseDrawOps(points: PosePoint[], width: number, height: numb
   const ops: PoseSkeletonDrawOp[] = [];
 
   OPENPOSE_BONES.forEach((bone, index) => {
+    if (removed?.includes(index)) {
+      return;
+    }
     const from = points[bone[0]];
     const to = points[bone[1]];
     if (!from || !to || !from.visible || !to.visible) {
@@ -108,7 +119,8 @@ function buildSinglePoseDrawOps(points: PosePoint[], width: number, height: numb
 export function renderPoseSkeletonDataUrl(
   poses: PosePoint[][] | null | undefined,
   width: number,
-  height: number
+  height: number,
+  removedBones?: number[][] | null
 ): string {
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(width));
@@ -120,7 +132,7 @@ export function renderPoseSkeletonDataUrl(
   context.fillStyle = "#000000";
   context.fillRect(0, 0, canvas.width, canvas.height);
 
-  const ops = buildPoseSkeletonDrawOps(poses, width, height);
+  const ops = buildPoseSkeletonDrawOps(poses, width, height, removedBones);
   for (const op of ops) {
     const [r, g, b] = op.color;
     if (op.kind === "line") {

@@ -3,11 +3,17 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_KEYPOINT_THRESHOLD,
   applyPoseThreshold,
+  clonePoses,
   defaultPoseDraft,
   hasActivePoseData,
+  isBoneRemoved,
   mediapipeToOpenPose,
   normalizePoseDraft,
-  poseDraftHasAttachment
+  normalizeRemovedBones,
+  poseDescendants,
+  poseDraftHasAttachment,
+  rotatePointAround,
+  withRemovedBone
 } from "./poseDraft.ts";
 import type { PoseWorkerLandmark } from "./pose/types.ts";
 import type { PoseDraft, PosePoint } from "./poseTypes.ts";
@@ -65,6 +71,61 @@ test("normalizePoseDraft: fills in defaults for missing fields via spread", () =
   assert.equal(normalized.endPercent, 1);
   assert.equal(normalized.poses, null);
   assert.equal(normalized.modelStatus, "idle");
+  assert.equal(normalized.removedBones, undefined);
+});
+
+test("poseDescendants: rWrist(4) has no descendants; rShoulder(2) yields elbow+wrist", () => {
+  assert.deepEqual(poseDescendants(4), []);
+  assert.deepEqual(poseDescendants(2), [3, 4]);
+  // neck(1) is the root: every other joint is a descendant
+  assert.equal(poseDescendants(1).length, OPENPOSE_JOINT_COUNT - 1);
+  assert.ok(!poseDescendants(1).includes(1));
+});
+
+test("rotatePointAround: rotates 90° CCW-in-image-space about anchor", () => {
+  const rotated = rotatePointAround({ x: 10, y: 0 }, { x: 0, y: 0 }, Math.PI / 2);
+  assert.ok(Math.abs(rotated.x - 0) < 1e-9);
+  assert.ok(Math.abs(rotated.y - 10) < 1e-9);
+  // rotating about the anchor itself is a no-op
+  assert.deepEqual(rotatePointAround({ x: 5, y: 5 }, { x: 5, y: 5 }, 1.234), { x: 5, y: 5 });
+});
+
+test("withRemovedBone: adds a bone immutably, dedupes, and pads to pose count", () => {
+  const first = withRemovedBone(undefined, 2, 0, 3);
+  assert.deepEqual(first, [[3], []]);
+  const second = withRemovedBone(first, 2, 0, 1);
+  assert.deepEqual(second, [[1, 3], []]);
+  // adding an already-removed bone is a no-op for that entry
+  const third = withRemovedBone(second, 2, 0, 3);
+  assert.deepEqual(third[0], [1, 3]);
+  // original arrays are not mutated
+  assert.deepEqual(first, [[3], []]);
+});
+
+test("isBoneRemoved: reflects membership per pose index", () => {
+  const removed = [[1, 3], []];
+  assert.equal(isBoneRemoved(removed, 0, 3), true);
+  assert.equal(isBoneRemoved(removed, 0, 2), false);
+  assert.equal(isBoneRemoved(removed, 1, 3), false);
+  assert.equal(isBoneRemoved(undefined, 0, 3), false);
+});
+
+test("normalizeRemovedBones: sorts/dedupes and collapses empty to undefined", () => {
+  const poses = [makePoints(), makePoints()];
+  assert.deepEqual(normalizeRemovedBones([[3, 1, 3], []], poses), [[1, 3], []]);
+  assert.equal(normalizeRemovedBones([[], []], poses), undefined);
+  assert.equal(normalizeRemovedBones(undefined, poses), undefined);
+  assert.equal(normalizeRemovedBones([[1]], null), undefined);
+});
+
+test("clonePoses: deep-copies points so edits do not alias the source", () => {
+  const source = [makePoints()];
+  const clone = clonePoses(source);
+  assert.notEqual(clone, source);
+  assert.notEqual(clone![0], source[0]);
+  clone![0]![0]!.x = 999;
+  assert.notEqual(source[0]![0]!.x, 999);
+  assert.equal(clonePoses(null), null);
 });
 
 test("normalizePoseDraft: preserves provided poses and settings", () => {

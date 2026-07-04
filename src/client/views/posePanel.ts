@@ -65,10 +65,7 @@ export function renderPosePanelSection(poseDraft: PoseDraft | null, assetId: str
         <button class="button-secondary compact" type="button" data-action="pose-detect" ${busy ? "disabled" : ""}>${iconPlay()}ポーズ検出</button>
         <button class="button-secondary compact" type="button" data-action="pose-reset" ${detected && !busy ? "" : "disabled"}>${iconReset()}リセット（再検出）</button>
       </div>
-      <label class="pose-attach-toggle">
-        <input type="checkbox" data-pose-field="enabled" ${draft.enabled ? "checked" : ""} ${detected ? "" : "disabled"} />
-        <span>次回生成に添付する</span>
-      </label>
+      ${detected ? `<p class="pose-edit-hint">関節ドラッグ=移動 / Shift=1ボーン回転 / Alt=FK(子孫も回転)<br>空き地ドラッグ=範囲選択(Shiftで追加) / 選択をドラッグ=一括移動・Shift/Altで回転<br>エッジをクリックで選択 / ×またはDeleteで削除 / Ctrl+Zで戻す</p>` : ""}
       ${renderPoseRange("keypointThreshold", "Keypoint threshold", draft.keypointThreshold, 0, 1, 0.05, "poseKeypointThresholdValue")}
       ${renderPoseRange("strength", "Strength", draft.strength, 0, 2, 0.05, "poseStrengthValue")}
       ${renderPoseRange("startPercent", "Start percent", draft.startPercent, 0, 1, 0.05, "poseStartValue")}
@@ -101,36 +98,83 @@ function renderPoseRange(field: string, label: string, value: number, min: numbe
  * 中央プレビューへ重ねるポーズスケルトンの SVG オーバーレイ（フェーズ3では表示のみ・編集なし）。
  * `renderWebSamPromptOverlay` と同型で、viewBox は画像 natural size に一致させる。
  */
-export function renderPoseOverlay(draft: PoseDraft, asset: Asset) {
+export function renderPoseOverlay(
+  draft: PoseDraft,
+  asset: Asset,
+  selectedEdges: ReadonlyArray<{ poseIndex: number; boneIndex: number }> = []
+) {
   const width = draft.imageWidth ?? assetDimension(asset, "width") ?? 1;
   const height = draft.imageHeight ?? assetDimension(asset, "height") ?? 1;
   const poses = draft.poses;
   if (!poses || poses.length === 0) {
     return `<svg class="pose-overlay" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}" aria-hidden="true"></svg>`;
   }
+  const removedBones = draft.removedBones;
   const strokeWidth = Math.max(2, Math.min(width, height) / 200);
   const jointRadius = Math.max(4, Math.min(width, height) / 128);
+  // エッジ選択用の透明な当たり判定線幅（表示線より太く）と、削除×ボタンの半径。
+  const hitWidth = Math.max(strokeWidth * 4, Math.min(width, height) / 45);
+  const deleteRadius = Math.max(jointRadius * 2, Math.min(width, height) / 42);
+  const isSelected = (poseIndex: number, boneIndex: number) =>
+    selectedEdges.some((edge) => edge.poseIndex === poseIndex && edge.boneIndex === boneIndex);
+  // 選択ボーン中点の重心（× を1つだけそこに出す）
+  const selectedMidpoints: Array<{ x: number; y: number }> = [];
+  // マルチ選択時の当たり判定を広げるため、背景 rect を最初に置く（joint/bone より背面）
+  const backgroundRect = `<rect class="pose-overlay-bg" x="0" y="0" width="${formatCssNumber(width)}" height="${formatCssNumber(height)}" fill="transparent"></rect>`;
   const body = poses
     .map((points, poseIndex) => {
-      const bones = OPENPOSE_BONES.map((bone, index) => {
+      const removed = removedBones?.[poseIndex];
+      const visibleBones: string[] = [];
+      const hitBones: string[] = [];
+      OPENPOSE_BONES.forEach((bone, index) => {
+        if (removed?.includes(index)) {
+          return;
+        }
         const from = points[bone[0]];
         const to = points[bone[1]];
         if (!from || !to || !from.visible || !to.visible) {
-          return "";
+          return;
         }
         const [r, g, b] = OPENPOSE_BONE_COLORS[index] ?? [255, 255, 255];
-        return `<line class="pose-bone" data-pose-index="${poseIndex}" data-bone-index="${index}" data-bone-from="${bone[0]}" data-bone-to="${bone[1]}" x1="${formatCssNumber(from.x)}" y1="${formatCssNumber(from.y)}" x2="${formatCssNumber(to.x)}" y2="${formatCssNumber(to.y)}" stroke="rgb(${r},${g},${b})" stroke-width="${formatCssNumber(strokeWidth)}"></line>`;
-      }).join("");
+        const selected = isSelected(poseIndex, index);
+        const dataAttrs = `data-pose-index="${poseIndex}" data-bone-index="${index}" data-bone-from="${bone[0]}" data-bone-to="${bone[1]}"`;
+        const coords = `x1="${formatCssNumber(from.x)}" y1="${formatCssNumber(from.y)}" x2="${formatCssNumber(to.x)}" y2="${formatCssNumber(to.y)}"`;
+        visibleBones.push(
+          `<line class="pose-bone${selected ? " selected" : ""}" ${dataAttrs} ${coords} stroke="rgb(${r},${g},${b})" stroke-width="${formatCssNumber(strokeWidth)}"></line>`
+        );
+        hitBones.push(
+          `<line class="pose-bone-hit${selected ? " selected" : ""}" ${dataAttrs} ${coords} stroke="transparent" stroke-width="${formatCssNumber(hitWidth)}"></line>`
+        );
+        if (selected) {
+          selectedMidpoints.push({ x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
+        }
+      });
       const joints = points.map((point, index) => {
         const [r, g, b] = OPENPOSE_JOINT_COLORS[index] ?? [255, 255, 255];
         return `<circle class="pose-joint ${point.visible ? "" : "hidden-joint"}" data-pose-index="${poseIndex}" data-joint-index="${index}" cx="${formatCssNumber(point.x)}" cy="${formatCssNumber(point.y)}" r="${formatCssNumber(jointRadius)}" fill="rgb(${r},${g},${b})"></circle>`;
       }).join("");
-      return bones + joints;
+      // 重ね順: 表示ボーン → 透明ヒット線 → 関節（関節ドラッグをエッジ選択より優先）
+      return visibleBones.join("") + hitBones.join("") + joints;
     })
     .join("");
+  let deleteButton = "";
+  if (selectedMidpoints.length > 0) {
+    const cx = selectedMidpoints.reduce((sum, point) => sum + point.x, 0) / selectedMidpoints.length;
+    const cy = selectedMidpoints.reduce((sum, point) => sum + point.y, 0) / selectedMidpoints.length;
+    const cross = deleteRadius * 0.45;
+    const stroke = strokeWidth * 1.2;
+    deleteButton =
+      `<g class="pose-edge-delete" transform="translate(${formatCssNumber(cx)} ${formatCssNumber(cy)})">` +
+      `<circle class="pose-edge-delete-bg" r="${formatCssNumber(deleteRadius)}"></circle>` +
+      `<line class="pose-edge-delete-x" x1="${formatCssNumber(-cross)}" y1="${formatCssNumber(-cross)}" x2="${formatCssNumber(cross)}" y2="${formatCssNumber(cross)}" stroke-width="${formatCssNumber(stroke)}"></line>` +
+      `<line class="pose-edge-delete-x" x1="${formatCssNumber(-cross)}" y1="${formatCssNumber(cross)}" x2="${formatCssNumber(cross)}" y2="${formatCssNumber(-cross)}" stroke-width="${formatCssNumber(stroke)}"></line>` +
+      `</g>`;
+  }
   return `
-    <svg class="pose-overlay" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}" aria-hidden="true">
+    <svg class="pose-overlay" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}">
+      ${backgroundRect}
       ${body}
+      ${deleteButton}
     </svg>
   `;
 }

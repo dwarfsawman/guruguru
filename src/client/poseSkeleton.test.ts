@@ -102,6 +102,28 @@ test("buildPoseSkeletonDrawOps: all points invisible produces no ops", () => {
   assert.deepEqual(ops, []);
 });
 
+test("buildPoseSkeletonDrawOps: removedBones excludes only the listed bones (joints kept)", () => {
+  const points = makePoints();
+  const ops = buildPoseSkeletonDrawOps([points], 1280, 1280, [[0, 2]]);
+  const lines = ops.filter((op) => op.kind === "line");
+  const circles = ops.filter((op) => op.kind === "circle");
+  // two bones removed, all joints still drawn
+  assert.equal(lines.length, OPENPOSE_BONES.length - 2);
+  assert.equal(circles.length, OPENPOSE_JOINT_COUNT);
+  // the removed bone (index 0) must not appear at its coordinates
+  const removedBone = OPENPOSE_BONES[0]!;
+  const removedX1 = points[removedBone[0]]!.x;
+  assert.ok(!lines.some((op) => op.kind === "line" && op.x1 === removedX1 && op.x2 === points[removedBone[1]]!.x));
+});
+
+test("buildPoseSkeletonDrawOps: removedBones is per-person indexed", () => {
+  const a = makePoints();
+  const b = makePoints().map((point) => ({ ...point, x: point.x + 500 }));
+  // remove one bone from person B only
+  const ops = buildPoseSkeletonDrawOps([a, b], 1280, 1280, [[], [1]]);
+  assert.equal(ops.filter((op) => op.kind === "line").length, OPENPOSE_BONES.length * 2 - 1);
+});
+
 test("buildPoseSkeletonDrawOps: two poses produce ops for both people, per-person bones-then-joints", () => {
   const a = makePoints();
   const b = makePoints().map((point) => ({ ...point, x: point.x + 500 }));
