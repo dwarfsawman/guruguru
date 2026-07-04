@@ -151,3 +151,83 @@ export function hasActivePoseData(draft: PoseDraft | null | undefined): draft is
 export function poseDraftHasAttachment(draft: PoseDraft | null | undefined) {
   return hasActivePoseData(draft);
 }
+
+/**
+ * OpenPose(COCO 18) joint index → 親 joint index。`OPENPOSE_BONES` の [親, 子] ペアから導出した固定表。
+ * neck(1) はルートのため親を持たない（undefined）。
+ * Shift ドラッグの回転拘束（骨長固定）で「どの関節を中心に回すか」の決定に使う。
+ */
+export const OPENPOSE_JOINT_PARENT: Record<number, number> = {
+  0: 1, // nose ← neck
+  2: 1, // rShoulder ← neck
+  3: 2, // rElbow ← rShoulder
+  4: 3, // rWrist ← rElbow
+  5: 1, // lShoulder ← neck
+  6: 5, // lElbow ← lShoulder
+  7: 6, // lWrist ← lElbow
+  8: 1, // rHip ← neck
+  9: 8, // rKnee ← rHip
+  10: 9, // rAnkle ← rKnee
+  11: 1, // lHip ← neck
+  12: 11, // lKnee ← lHip
+  13: 12, // lAnkle ← lKnee
+  14: 0, // rEye ← nose
+  15: 0, // lEye ← nose
+  16: 14, // rEar ← rEye
+  17: 15 // lEar ← lEye
+};
+
+export interface PoseBoneConstraint {
+  /** 回転中心（親関節の座標、画像 natural px） */
+  anchor: { x: number; y: number };
+  /** 固定する骨長（ドラッグ開始時点の親子間距離、px） */
+  radius: number;
+}
+
+/**
+ * `jointIndex` の関節をドラッグする際の回転拘束を返す。
+ * 親関節が存在しない（neck）、点が欠けている、骨長が 0 の場合は null（拘束なし）。
+ * 親の visible は問わない（座標としては常に存在するため）。
+ */
+export function poseBoneConstraintForJoint(
+  points: PosePoint[] | null | undefined,
+  jointIndex: number
+): PoseBoneConstraint | null {
+  const parentIndex = OPENPOSE_JOINT_PARENT[jointIndex];
+  if (parentIndex === undefined || !points) {
+    return null;
+  }
+  const child = points[jointIndex];
+  const parent = points[parentIndex];
+  if (!child || !parent) {
+    return null;
+  }
+  const radius = Math.hypot(child.x - parent.x, child.y - parent.y);
+  if (!(radius > 0)) {
+    return null;
+  }
+  return { anchor: { x: parent.x, y: parent.y }, radius };
+}
+
+/**
+ * `(x, y)` を拘束円（anchor 中心・半径 radius）上へ射影する。
+ * ポインタが anchor と一致して方向が定まらない場合は現在角度が保てないため、
+ * anchor の真右（+x 方向）の点を返す（実操作ではほぼ到達しない縮退ケース）。
+ */
+export function projectPointToBoneCircle(
+  constraint: PoseBoneConstraint,
+  x: number,
+  y: number
+): { x: number; y: number } {
+  const dx = x - constraint.anchor.x;
+  const dy = y - constraint.anchor.y;
+  const distance = Math.hypot(dx, dy);
+  if (!(distance > 0)) {
+    return { x: constraint.anchor.x + constraint.radius, y: constraint.anchor.y };
+  }
+  const scale = constraint.radius / distance;
+  return {
+    x: constraint.anchor.x + dx * scale,
+    y: constraint.anchor.y + dy * scale
+  };
+}
