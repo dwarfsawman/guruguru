@@ -79,7 +79,111 @@ export function normalizePoseDraft(draft: PoseDraft): PoseDraft {
     normalized.poses = [legacy.points];
   }
   delete (normalized as PoseDraft & { points?: PosePoint[] | null }).points;
+  normalized.removedBones = normalizeRemovedBones(draft.removedBones, normalized.poses);
   return normalized;
+}
+
+/**
+ * `removedBones` を人物 index ごとの重複なし昇順配列へ正規化する。
+ * poses が null / 空、または全人物で削除が無い場合は `undefined`（＝削除なし）を返して draft を軽くする。
+ */
+export function normalizeRemovedBones(
+  removedBones: number[][] | null | undefined,
+  poses: PosePoint[][] | null
+): number[][] | undefined {
+  if (!removedBones || !poses || poses.length === 0) {
+    return undefined;
+  }
+  const normalized = poses.map((_pose, poseIndex) => {
+    const list = removedBones[poseIndex];
+    if (!Array.isArray(list) || list.length === 0) {
+      return [] as number[];
+    }
+    return Array.from(new Set(list.filter((index) => Number.isInteger(index) && index >= 0))).sort((a, b) => a - b);
+  });
+  return normalized.some((list) => list.length > 0) ? normalized : undefined;
+}
+
+/** `poses`（PosePoint[][]）を深いコピーで複製する。Undo スナップショット用。 */
+export function clonePoses(poses: PosePoint[][] | null | undefined): PosePoint[][] | null {
+  if (!poses) {
+    return null;
+  }
+  return poses.map((pose) => pose.map((point) => ({ ...point })));
+}
+
+/** `removedBones` を深いコピーで複製する（Undo スナップショット用、undefined はそのまま）。 */
+export function cloneRemovedBones(removedBones: number[][] | null | undefined): number[][] | undefined {
+  if (!removedBones) {
+    return undefined;
+  }
+  return removedBones.map((list) => list.slice());
+}
+
+/** `removedBones` の指定人物に `boneIndex` が含まれるか。 */
+export function isBoneRemoved(
+  removedBones: number[][] | null | undefined,
+  poseIndex: number,
+  boneIndex: number
+): boolean {
+  return !!removedBones?.[poseIndex]?.includes(boneIndex);
+}
+
+/**
+ * `removedBones` に `(poseIndex, boneIndex)` を追加した新しい配列を返す（immutable）。
+ * poses の人数に合わせて長さを揃える。
+ */
+export function withRemovedBone(
+  removedBones: number[][] | null | undefined,
+  poseCount: number,
+  poseIndex: number,
+  boneIndex: number
+): number[][] {
+  const next: number[][] = [];
+  for (let index = 0; index < poseCount; index += 1) {
+    next[index] = removedBones?.[index] ? removedBones[index]!.slice() : [];
+  }
+  if (poseIndex >= 0 && poseIndex < poseCount && !next[poseIndex]!.includes(boneIndex)) {
+    next[poseIndex]!.push(boneIndex);
+    next[poseIndex]!.sort((a, b) => a - b);
+  }
+  return next;
+}
+
+/**
+ * `jointIndex` の子孫関節 index を全て返す（自分自身は含まない）。
+ * `OPENPOSE_JOINT_PARENT` を親→子の隣接に反転して BFS する。回転FK で「一緒に回す関節」の決定に使う。
+ */
+export function poseDescendants(jointIndex: number): number[] {
+  const descendants: number[] = [];
+  const stack = [jointIndex];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    for (const [childStr, parent] of Object.entries(OPENPOSE_JOINT_PARENT)) {
+      const child = Number(childStr);
+      if (parent === current && !descendants.includes(child) && child !== jointIndex) {
+        descendants.push(child);
+        stack.push(child);
+      }
+    }
+  }
+  return descendants.sort((a, b) => a - b);
+}
+
+/** `point` を `anchor` を中心に `angleRad` だけ回転させた座標を返す（回転FK）。 */
+export function rotatePointAround(
+  point: { x: number; y: number },
+  anchor: { x: number; y: number },
+  angleRad: number
+): { x: number; y: number } {
+  const cos = Math.cos(angleRad);
+  const sin = Math.sin(angleRad);
+  const dx = point.x - anchor.x;
+  const dy = point.y - anchor.y;
+  return {
+    x: anchor.x + dx * cos - dy * sin,
+    y: anchor.y + dx * sin + dy * cos
+  };
 }
 
 /**

@@ -77,7 +77,7 @@ export function renderProjectDetail(
             </div>
             <span class="toolbar-divider"></span>
             <select id="grid-cols" class="compact-select" aria-label="グリッド列数">
-              <option value="4" ${gridCols === 4 ? "selected" : ""}>4x4</option>
+              <option value="4" ${gridCols === 4 ? "selected" : ""}>4列</option>
               <option value="3" ${gridCols === 3 ? "selected" : ""}>3列</option>
               <option value="2" ${gridCols === 2 ? "selected" : ""}>2列</option>
             </select>
