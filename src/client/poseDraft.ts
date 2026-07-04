@@ -14,7 +14,7 @@ import type { PoseWorkerLandmark } from "./pose/types";
 import type { PoseDraft, PosePoint } from "./poseTypes";
 import { MAX_POSE_COUNT, OPENPOSE_JOINT_COUNT } from "./poseTypes";
 
-const VISIBILITY_THRESHOLD = 0.5;
+export const DEFAULT_KEYPOINT_THRESHOLD = 0.5;
 
 /**
  * OpenPose(COCO 18) index → MediaPipe 33 landmark index（単純対応分のみ）。
@@ -53,6 +53,7 @@ export function defaultPoseDraft(assetId: string): PoseDraft {
     strength: 1,
     startPercent: 0,
     endPercent: 1,
+    keypointThreshold: DEFAULT_KEYPOINT_THRESHOLD,
     modelId: defaultPoseModel().id,
     modelStatus: "idle",
     modelDownloadProgress: 0,
@@ -68,6 +69,7 @@ export function normalizePoseDraft(draft: PoseDraft): PoseDraft {
   const normalized: PoseDraft = {
     ...defaults,
     ...draft,
+    keypointThreshold: draft.keypointThreshold ?? defaults.keypointThreshold,
     poses: draft.poses ?? null
   };
   // 旧フォーマット（`points: PosePoint[]` 1人分）からの移行:
@@ -87,7 +89,8 @@ export function normalizePoseDraft(draft: PoseDraft): PoseDraft {
 export function mediapipeToOpenPose(
   landmarks: PoseWorkerLandmark[],
   imageWidth: number,
-  imageHeight: number
+  imageHeight: number,
+  threshold: number = DEFAULT_KEYPOINT_THRESHOLD
 ): PosePoint[] {
   const points: PosePoint[] = new Array(OPENPOSE_JOINT_COUNT);
 
@@ -96,14 +99,15 @@ export function mediapipeToOpenPose(
       const left = landmarks[MEDIAPIPE_LEFT_SHOULDER];
       const right = landmarks[MEDIAPIPE_RIGHT_SHOULDER];
       if (!left || !right) {
-        points[openPoseIndex] = { x: 0, y: 0, visible: false };
+        points[openPoseIndex] = { x: 0, y: 0, visible: false, score: 0 };
         continue;
       }
-      const visibility = (left.visibility + right.visibility) / 2;
+      const score = (left.visibility + right.visibility) / 2;
       points[openPoseIndex] = {
         x: ((left.x + right.x) / 2) * imageWidth,
         y: ((left.y + right.y) / 2) * imageHeight,
-        visible: visibility >= VISIBILITY_THRESHOLD
+        visible: score >= threshold,
+        score
       };
       continue;
     }
@@ -111,17 +115,33 @@ export function mediapipeToOpenPose(
     const mediapipeIndex = OPENPOSE_TO_MEDIAPIPE[openPoseIndex];
     const landmark = mediapipeIndex === undefined ? undefined : landmarks[mediapipeIndex];
     if (!landmark) {
-      points[openPoseIndex] = { x: 0, y: 0, visible: false };
+      points[openPoseIndex] = { x: 0, y: 0, visible: false, score: 0 };
       continue;
     }
     points[openPoseIndex] = {
       x: landmark.x * imageWidth,
       y: landmark.y * imageHeight,
-      visible: landmark.visibility >= VISIBILITY_THRESHOLD
+      visible: landmark.visibility >= threshold,
+      score: landmark.visibility
     };
   }
 
   return points;
+}
+
+/**
+ * 検出済みポーズの各関節について `score >= threshold` で visible を再計算する。
+ * 座標（x, y）と score は保持するため、関節ドラッグ編集後でもしきい値だけを付け替えられる。
+ * score を持たない旧データは `visible ? 1 : 0` で補完する。
+ */
+export function applyPoseThreshold(poses: PosePoint[][], threshold: number): PosePoint[][] {
+  const t = Number.isFinite(threshold) ? threshold : DEFAULT_KEYPOINT_THRESHOLD;
+  return poses.map((pose) =>
+    pose.map((point) => {
+      const score = point.score ?? (point.visible ? 1 : 0);
+      return { ...point, visible: score >= t };
+    })
+  );
 }
 
 /**
@@ -131,12 +151,13 @@ export function mediapipeToOpenPose(
 export function mediapipePosesToOpenPose(
   landmarksList: PoseWorkerLandmark[][],
   imageWidth: number,
-  imageHeight: number
+  imageHeight: number,
+  threshold: number = DEFAULT_KEYPOINT_THRESHOLD
 ): PosePoint[][] {
   return landmarksList
     .filter((landmarks) => landmarks.length > 0)
     .slice(0, MAX_POSE_COUNT)
-    .map((landmarks) => mediapipeToOpenPose(landmarks, imageWidth, imageHeight));
+    .map((landmarks) => mediapipeToOpenPose(landmarks, imageWidth, imageHeight, threshold));
 }
 
 /**

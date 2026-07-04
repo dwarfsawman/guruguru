@@ -69,6 +69,7 @@ export function renderPosePanelSection(poseDraft: PoseDraft | null, assetId: str
         <input type="checkbox" data-pose-field="enabled" ${draft.enabled ? "checked" : ""} ${detected ? "" : "disabled"} />
         <span>次回生成に添付する</span>
       </label>
+      ${renderPoseRange("keypointThreshold", "Keypoint threshold", draft.keypointThreshold, 0, 1, 0.05, "poseKeypointThresholdValue")}
       ${renderPoseRange("strength", "Strength", draft.strength, 0, 2, 0.05, "poseStrengthValue")}
       ${renderPoseRange("startPercent", "Start percent", draft.startPercent, 0, 1, 0.05, "poseStartValue")}
       ${renderPoseRange("endPercent", "End percent", draft.endPercent, 0, 1, 0.05, "poseEndValue")}
