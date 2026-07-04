@@ -67,5 +67,8 @@ export function contentTypeFor(path: string) {
   if (ext === ".webp") {
     return "image/webp";
   }
+  if (ext === ".svg") {
+    return "image/svg+xml";
+  }
   return "application/octet-stream";
 }

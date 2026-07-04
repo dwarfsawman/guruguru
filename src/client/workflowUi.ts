@@ -24,12 +24,12 @@ mermaid.initialize({
     rankSpacing: 60
   },
   themeVariables: {
-    background: "#0a0a0c",
-    primaryColor: "#141417",
-    primaryTextColor: "#f4f4f5",
+    background: "#12121f",
+    primaryColor: "#171729",
+    primaryTextColor: "#f4f4f7",
     primaryBorderColor: "#4b5563",
-    lineColor: "#8b8b93",
-    fontFamily: "'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif"
+    lineColor: "#8b8ba8",
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif"
   }
 });
 
@@ -107,7 +107,7 @@ export function renderTemplatePanel(templates: WorkflowTemplate[]) {
             <div class="template-row-actions">
               <button class="button-secondary compact template-action-button" type="button" data-action="open-template-diagram" data-template-id="${escapeAttr(template.id)}" aria-label="diagram" title="diagram">${iconDiagram()}</button>
               <details class="template-export-dropdown">
-              <summary class="button-secondary compact template-action-button template-export-trigger" style="display:grid;place-items:center;line-height:0;" aria-label="export" title="export">${iconDownload(true)}</summary>
+              <summary class="button-secondary compact template-action-button template-export-trigger" style="display:grid;place-items:center;line-height:0;" aria-label="export" title="export">${iconDownload()}</summary>
                 <div class="template-export-menu">
                   <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${escapeAttr(template.id)}">${iconDownload()}raw export</button>
                   <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${escapeAttr(template.id)}">${iconDownload()}template export</button>
