@@ -45,7 +45,7 @@ test("defaultPoseDraft: sets documented defaults", () => {
   const draft = defaultPoseDraft("asset-1");
   assert.equal(draft.parentAssetId, "asset-1");
   assert.equal(draft.enabled, false);
-  assert.equal(draft.points, null);
+  assert.equal(draft.poses, null);
   assert.equal(draft.source, "detected");
   assert.equal(draft.strength, 1);
   assert.equal(draft.startPercent, 0);
@@ -61,16 +61,16 @@ test("normalizePoseDraft: fills in defaults for missing fields via spread", () =
   assert.equal(normalized.strength, 1);
   assert.equal(normalized.startPercent, 0);
   assert.equal(normalized.endPercent, 1);
-  assert.equal(normalized.points, null);
+  assert.equal(normalized.poses, null);
   assert.equal(normalized.modelStatus, "idle");
 });
 
-test("normalizePoseDraft: preserves provided points and settings", () => {
+test("normalizePoseDraft: preserves provided poses and settings", () => {
   const points = makePoints();
   const draft: PoseDraft = {
     ...defaultPoseDraft("asset-3"),
     enabled: true,
-    points,
+    poses: [points],
     source: "edited",
     strength: 0.7,
     startPercent: 0.1,
@@ -78,7 +78,7 @@ test("normalizePoseDraft: preserves provided points and settings", () => {
   };
   const normalized = normalizePoseDraft(draft);
   assert.equal(normalized.enabled, true);
-  assert.equal(normalized.points, points);
+  assert.deepEqual(normalized.poses, [points]);
   assert.equal(normalized.source, "edited");
   assert.equal(normalized.strength, 0.7);
   assert.equal(normalized.startPercent, 0.1);
@@ -144,20 +144,23 @@ test("mediapipeToOpenPose: missing landmarks fall back to invisible origin", () 
   }
 });
 
-test("hasActivePoseData: requires enabled and full 18 points", () => {
+test("hasActivePoseData: requires enabled and every pose having full 18 points", () => {
   const base = defaultPoseDraft("asset-4");
   assert.equal(hasActivePoseData(null), false);
   assert.equal(hasActivePoseData(base), false);
   assert.equal(hasActivePoseData({ ...base, enabled: true }), false);
-  assert.equal(hasActivePoseData({ ...base, enabled: true, points: makePoints().slice(0, 5) }), false);
-  assert.equal(hasActivePoseData({ ...base, enabled: true, points: makePoints() }), true);
-  assert.equal(hasActivePoseData({ ...base, enabled: false, points: makePoints() }), false);
+  assert.equal(hasActivePoseData({ ...base, enabled: true, poses: [] }), false);
+  assert.equal(hasActivePoseData({ ...base, enabled: true, poses: [makePoints().slice(0, 5)] }), false);
+  assert.equal(hasActivePoseData({ ...base, enabled: true, poses: [makePoints()] }), true);
+  assert.equal(hasActivePoseData({ ...base, enabled: true, poses: [makePoints(), makePoints().slice(0, 5)] }), false);
+  assert.equal(hasActivePoseData({ ...base, enabled: true, poses: [makePoints(), makePoints()] }), true);
+  assert.equal(hasActivePoseData({ ...base, enabled: false, poses: [makePoints()] }), false);
 });
 
 test("poseDraftHasAttachment: mirrors hasActivePoseData", () => {
   const base = defaultPoseDraft("asset-5");
   assert.equal(poseDraftHasAttachment(base), false);
-  assert.equal(poseDraftHasAttachment({ ...base, enabled: true, points: makePoints() }), true);
+  assert.equal(poseDraftHasAttachment({ ...base, enabled: true, poses: [makePoints()] }), true);
 });
 
 // --- 回転拘束（骨長固定）helpers ---
@@ -255,4 +258,31 @@ test("normalizePoseDraft: fills missing modelId with default and keeps explicit 
   assert.equal(normalizePoseDraft(legacy as PoseDraft).modelId, defaultPoseModel().id);
   const heavy = { ...defaultPoseDraft("a"), modelId: "pose-landmarker-heavy" };
   assert.equal(normalizePoseDraft(heavy).modelId, "pose-landmarker-heavy");
+});
+
+// --- 複数人対応 ---
+
+import { mediapipePosesToOpenPose } from "./poseDraft.ts";
+import { MAX_POSE_COUNT } from "./poseTypes.ts";
+
+test("mediapipePosesToOpenPose: maps each person and caps at MAX_POSE_COUNT", () => {
+  const many = Array.from({ length: MAX_POSE_COUNT + 2 }, () => makeLandmarks());
+  const poses = mediapipePosesToOpenPose(many, 100, 100);
+  assert.equal(poses.length, MAX_POSE_COUNT);
+  assert.ok(poses.every((pose) => pose.length === OPENPOSE_JOINT_COUNT));
+});
+
+test("mediapipePosesToOpenPose: filters empty landmark lists and returns [] for no people", () => {
+  assert.deepEqual(mediapipePosesToOpenPose([], 100, 100), []);
+  const poses = mediapipePosesToOpenPose([[], makeLandmarks()], 100, 100);
+  assert.equal(poses.length, 1);
+});
+
+test("normalizePoseDraft: migrates legacy single-person points to poses", () => {
+  const legacyPoints = makePoints();
+  const legacy = { ...defaultPoseDraft("a"), points: legacyPoints } as unknown as PoseDraft;
+  delete (legacy as unknown as { poses?: unknown }).poses;
+  const normalized = normalizePoseDraft(legacy);
+  assert.deepEqual(normalized.poses, [legacyPoints]);
+  assert.equal("points" in normalized, false);
 });

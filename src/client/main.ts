@@ -106,7 +106,7 @@ import type { PoseDraft } from "./poseTypes";
 import {
   defaultPoseDraft,
   hasActivePoseData,
-  mediapipeToOpenPose,
+  mediapipePosesToOpenPose,
   normalizePoseDraft,
   poseBoneConstraintForJoint,
   projectPointToBoneCircle
@@ -157,6 +157,8 @@ let activeImagePan: ActiveImagePan | null = null;
 interface ActivePoseJointDrag {
   pointerId: number;
   assetId: string;
+  /** `PoseDraft.poses` 内の何人目か */
+  poseIndex: number;
   jointIndex: number;
   start: { x: number; y: number };
   current: { x: number; y: number };
@@ -3817,7 +3819,7 @@ async function resetPoseDetection() {
     return;
   }
   const current = ensurePoseDraft(assetId);
-  setPoseDraft({ ...current, points: null, source: "detected", enabled: false });
+  setPoseDraft({ ...current, poses: null, source: "detected", enabled: false });
   render();
   await requestPoseDetect();
 }
@@ -3873,14 +3875,14 @@ async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
     }
     const width = current.imageWidth ?? 0;
     const height = current.imageHeight ?? 0;
-    const landmarks = message.landmarks[0] ?? null;
-    if (!landmarks || landmarks.length === 0 || width <= 0 || height <= 0) {
+    const poses = width > 0 && height > 0 ? mediapipePosesToOpenPose(message.landmarks, width, height) : [];
+    if (poses.length === 0) {
       setPoseDraft({
         ...current,
         modelStatus: "ready",
         modelStatusText: "人物ポーズを検出できませんでした",
         modelError: "",
-        points: null
+        poses: null
       });
       render();
       return;
@@ -3888,9 +3890,9 @@ async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
     setPoseDraft({
       ...current,
       modelStatus: "ready",
-      modelStatusText: "検出完了",
+      modelStatusText: poses.length > 1 ? `検出完了（${poses.length}人）` : "検出完了",
       modelError: "",
-      points: mediapipeToOpenPose(landmarks, width, height),
+      poses,
       source: "detected",
       enabled: true
     });
@@ -3973,7 +3975,7 @@ function updatePoseDraftFromControl(control: HTMLInputElement | HTMLTextAreaElem
  * `render()` を呼ばずに SVG 属性（joint circle の cx/cy + 接続する bone line の該当端点）を
  * 直接書き換える（`updateMaskBrushCursor` と同じ「操作中は再描画しない」パターン）。
  * pointerup で移動量が閾値以下なら「クリック」とみなし visible をトグルし、
- * 閾値を超えていれば座標を `PoseDraft.points` へコミットする。どちらも `source: "edited"` にして render()。
+ * 閾値を超えていれば座標を `PoseDraft.poses[poseIndex]` へコミットする。どちらも `source: "edited"` にして render()。
  */
 function beginPoseJointDrag(event: PointerEvent, joint: SVGCircleElement) {
   const assetId = state.activeAssetId;
@@ -3981,20 +3983,23 @@ function beginPoseJointDrag(event: PointerEvent, joint: SVGCircleElement) {
   if (!assetId || !svg) {
     return;
   }
+  const poseIndex = Number(joint.dataset.poseIndex ?? "-1");
   const jointIndex = Number(joint.dataset.jointIndex ?? "-1");
   const draft = poseDraftForAsset(assetId);
-  if (!draft || !draft.points || jointIndex < 0 || jointIndex >= draft.points.length) {
+  const points = draft?.poses?.[poseIndex];
+  if (!draft || !points || jointIndex < 0 || jointIndex >= points.length) {
     return;
   }
   const point = pointerToSvgViewBoxPoint(svg, event);
   activePoseJointDrag = {
     pointerId: event.pointerId,
     assetId,
+    poseIndex,
     jointIndex,
     start: point,
     current: point,
     moved: false,
-    constraint: poseBoneConstraintForJoint(draft.points, jointIndex)
+    constraint: poseBoneConstraintForJoint(points, jointIndex)
   };
   try {
     joint.setPointerCapture(event.pointerId);
@@ -4026,12 +4031,14 @@ function continuePoseJointDrag(event: PointerEvent, svg: SVGSVGElement) {
       : point;
   const clamped = clampPointToPoseBounds(constrained, svg);
   activePoseJointDrag.current = clamped;
-  const jointEl = svg.querySelector<SVGCircleElement>(`.pose-joint[data-joint-index="${activePoseJointDrag.jointIndex}"]`);
+  const jointEl = svg.querySelector<SVGCircleElement>(
+    `.pose-joint[data-pose-index="${activePoseJointDrag.poseIndex}"][data-joint-index="${activePoseJointDrag.jointIndex}"]`
+  );
   if (jointEl) {
     jointEl.setAttribute("cx", formatCssNumber(clamped.x));
     jointEl.setAttribute("cy", formatCssNumber(clamped.y));
   }
-  const bones = svg.querySelectorAll<SVGLineElement>(".pose-bone");
+  const bones = svg.querySelectorAll<SVGLineElement>(`.pose-bone[data-pose-index="${activePoseJointDrag.poseIndex}"]`);
   bones.forEach((bone) => {
     const from = Number(bone.dataset.boneFrom ?? "-1");
     const to = Number(bone.dataset.boneTo ?? "-1");
@@ -4062,7 +4069,9 @@ function finishPoseJointDrag() {
   if (!drag) {
     return;
   }
-  const jointEl = document.querySelector<SVGCircleElement>(`.pose-joint[data-joint-index="${drag.jointIndex}"]`);
+  const jointEl = document.querySelector<SVGCircleElement>(
+    `.pose-joint[data-pose-index="${drag.poseIndex}"][data-joint-index="${drag.jointIndex}"]`
+  );
   jointEl?.classList.remove("dragging");
   try {
     jointEl?.releasePointerCapture(drag.pointerId);
@@ -4070,15 +4079,16 @@ function finishPoseJointDrag() {
     // Capture may already be released.
   }
   const draft = poseDraftForAsset(drag.assetId);
-  if (!draft || !draft.points) {
+  const points = draft?.poses?.[drag.poseIndex];
+  if (!draft || !points) {
     return;
   }
-  const currentPoint = draft.points[drag.jointIndex];
+  const currentPoint = points[drag.jointIndex];
   if (!currentPoint) {
     return;
   }
   const svg = document.querySelector<SVGSVGElement>(".pose-overlay");
-  const nextPoints = draft.points.slice();
+  const nextPoints = points.slice();
   if (!drag.moved) {
     // クリック（ドラッグなし）: visible トグル
     nextPoints[drag.jointIndex] = { ...currentPoint, visible: !currentPoint.visible };
@@ -4086,7 +4096,8 @@ function finishPoseJointDrag() {
     const clamped = svg ? clampPointToPoseBounds(drag.current, svg) : drag.current;
     nextPoints[drag.jointIndex] = { ...currentPoint, x: clamped.x, y: clamped.y };
   }
-  setPoseDraft({ ...draft, points: nextPoints, source: "edited" });
+  const nextPoses = draft.poses!.map((pose, index) => (index === drag.poseIndex ? nextPoints : pose));
+  setPoseDraft({ ...draft, poses: nextPoses, source: "edited" });
   render();
 }
 
@@ -4134,7 +4145,7 @@ function controlnetRequestForParent(
   if (!workflowHasControlNetApply(template.workflowJson)) {
     return null;
   }
-  const poseImageDataUrl = renderPoseSkeletonDataUrl(draft.points, draft.imageWidth, draft.imageHeight);
+  const poseImageDataUrl = renderPoseSkeletonDataUrl(draft.poses, draft.imageWidth, draft.imageHeight);
   if (!poseImageDataUrl.startsWith("data:image/png;base64,")) {
     return null;
   }
