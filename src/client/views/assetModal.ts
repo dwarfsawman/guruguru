@@ -21,7 +21,7 @@ import {
 import { formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "../websam/models";
 import type { WebSamModelStatus } from "../websam/types";
 import type { InpaintDraft } from "../maskTypes";
-import { defaultInpaintDraft, hasActiveMaskData, maskedContentOptions } from "../maskDraft";
+import { defaultInpaintDraft, hasActiveMaskData, hasMaskData, maskedContentOptions } from "../maskDraft";
 import { normalizePromptBox } from "../maskCanvas";
 import type { PaintDraft } from "../paintTypes";
 import { renderPaintToggleButton, renderPaintToolPanel } from "./paintPanel";
@@ -421,7 +421,9 @@ export function renderSmartMaskSidebar(
   assetId: string | null = null
 ) {
   const poseActive = maskPanelTab === "pose";
-  const maskAttachable = hasActiveMaskData(draft);
+  // 添付チェックは「マスクデータがある or 既に添付ON」で操作可能にする。
+  // hasActiveMaskData は enabled を含むため gate に使うと OFF から ON にできない循環になる（それを避ける）。
+  const maskAttachable = hasMaskData(draft) || draft.enabled;
   const poseDetected = !!poseDraft?.poses && poseDraft.poses.length > 0;
   const poseAttached = poseDraft?.enabled === true;
   return `
@@ -434,7 +436,7 @@ export function renderSmartMaskSidebar(
             <button class="mask-tab ${poseActive ? "" : "active"}" type="button" data-action="set-mask-panel-tab" data-tab="mask">マスク</button>
           </div>
           <div class="smart-tab-item ${poseActive ? "active" : ""}">
-            <input type="checkbox" class="tab-attach-check" data-pose-field="enabled" ${poseAttached ? "checked" : ""} ${poseDetected ? "" : "disabled"} title="ポーズを次回生成に添付" aria-label="ポーズを次回生成に添付" />
+            <input type="checkbox" class="tab-attach-check" data-pose-field="enabled" ${poseAttached ? "checked" : ""} ${poseDetected || poseAttached ? "" : "disabled"} title="ポーズを次回生成に添付" aria-label="ポーズを次回生成に添付" />
             <button class="mask-tab ${poseActive ? "active" : ""}" type="button" data-action="set-mask-panel-tab" data-tab="pose">ポーズ</button>
           </div>
         </div>
