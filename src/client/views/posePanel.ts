@@ -6,7 +6,7 @@
 import type { Asset } from "../../shared/apiTypes";
 import { escapeHtml, formatCssNumber, formatNumber } from "../format";
 import { iconLoopArrows, iconPlay, iconReset } from "../icons";
-import { defaultPoseModel, formatModelBytes } from "../pose/models";
+import { POSE_MODELS, defaultPoseModel, formatModelBytes, poseModelById } from "../pose/models";
 import type { PoseModelStatus } from "../pose/types";
 import { defaultPoseDraft } from "../poseDraft";
 import type { PoseDraft } from "../poseTypes";
@@ -33,7 +33,7 @@ export function poseStatusLabel(status: PoseModelStatus) {
 
 export function renderPosePanelSection(poseDraft: PoseDraft | null, assetId: string | null = null) {
   const draft = poseDraft ?? defaultPoseDraft(assetId ?? "");
-  const model = defaultPoseModel();
+  const model = poseModelById(draft.modelId) ?? defaultPoseModel();
   const statusClass = draft.modelStatus === "ready"
     ? "active"
     : draft.modelStatus === "error" || draft.modelStatus === "missing-url"
@@ -45,7 +45,12 @@ export function renderPosePanelSection(poseDraft: PoseDraft | null, assetId: str
     <div class="pose-panel websam-panel">
       <div class="websam-model-card">
         <div>
-          <strong>${escapeHtml(model.label)}</strong>
+          <select class="workflow-select" data-pose-field="modelId" ${busy ? "disabled" : ""} aria-label="ポーズ検出モデル">
+            ${POSE_MODELS.map(
+              (item) =>
+                `<option value="${escapeHtml(item.id)}" ${item.id === model.id ? "selected" : ""}>${escapeHtml(item.label)}</option>`
+            ).join("")}
+          </select>
           <small>${escapeHtml(`${model.description} / ${formatModelBytes(model.totalSize)}`)}</small>
         </div>
         <span class="mask-status ${statusClass}">${escapeHtml(poseStatusLabel(draft.modelStatus))}</span>

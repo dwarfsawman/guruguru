@@ -9,11 +9,25 @@ export const POSE_MODELS: PoseModelDefinition[] = [
     description: "MediaPipe official pose landmarker, float16, ~9MB",
     modelFile: "pose_landmarker_full.task",
     totalSize: 9_398_198
+  },
+  {
+    id: "pose-landmarker-heavy",
+    label: "MediaPipe Pose Landmarker (Heavy)",
+    description: "MediaPipe official pose landmarker, float16, ~29MB, 高精度",
+    modelFile: "pose_landmarker_heavy.task",
+    totalSize: 30_664_242
   }
 ];
 
 export function defaultPoseModel(): PoseModelDefinition {
   return POSE_MODELS[0]!;
+}
+
+export function poseModelById(id: string | null | undefined): PoseModelDefinition | null {
+  if (!id) {
+    return null;
+  }
+  return POSE_MODELS.find((model) => model.id === id) ?? null;
 }
 
 export function buildPoseModelUrls(baseUrl: string, model: PoseModelDefinition): PoseModelUrls | null {

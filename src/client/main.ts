@@ -100,7 +100,7 @@ import {
   snapshotPaintLayer
 } from "./paintCanvas";
 import { renderPaintToolPanel } from "./views/paintPanel";
-import { buildPoseModelUrls, defaultPoseModel } from "./pose/models";
+import { buildPoseModelUrls, defaultPoseModel, poseModelById } from "./pose/models";
 import type { PoseWorkerProgress, PoseWorkerRequest, PoseWorkerResponse } from "./pose/types";
 import type { PoseDraft } from "./poseTypes";
 import {
@@ -3737,7 +3737,7 @@ async function loadActivePoseModel() {
     return;
   }
   const draft = ensurePoseDraft(assetId);
-  const model = defaultPoseModel();
+  const model = poseModelById(draft.modelId) ?? defaultPoseModel();
   const urls = buildPoseModelUrls(DEFAULT_POSE_MODEL_BASE_URL, model);
   if (!urls) {
     setPoseDraft({
@@ -3948,9 +3948,21 @@ function updatePoseDraftFromControl(control: HTMLInputElement | HTMLTextAreaElem
     next.startPercent = clampNumber(Number(control.value), 0, 1, 0);
   } else if (field === "endPercent") {
     next.endPercent = clampNumber(Number(control.value), 0, 1, 1);
+  } else if (field === "modelId") {
+    const model = poseModelById(control.value);
+    if (!model || model.id === current.modelId) {
+      return;
+    }
+    // モデル切替: worker セッションは次回ロード時に張り替わるため、状態を未取得へ戻すだけでよい。
+    // 検出済みの points はそのまま保持する（再検出は任意）。
+    next.modelId = model.id;
+    next.modelStatus = "idle";
+    next.modelDownloadProgress = 0;
+    next.modelStatusText = "未取得";
+    next.modelError = "";
   }
   setPoseDraft(next);
-  if (field === "enabled") {
+  if (field === "enabled" || field === "modelId") {
     render();
   }
 }
