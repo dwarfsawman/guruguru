@@ -407,8 +407,8 @@ export function renderMaskPromptSidebar(
         ${generationParams ? renderMaskGenerationParamsSection(generationParams) : ""}
       </div>
       <div class="mask-panel-actions">
-        <button class="button-primary" type="button" data-action="apply-mask-editor">${iconCheck()}${canApplyCandidate ? "候補を適用" : "適用"}</button>
-        <button class="button-secondary" type="button" data-action="websam-clear-manual">${iconEraser()}マスクをクリア</button>
+        <button class="button-primary" type="button" data-action="apply-mask-editor" title="${canApplyCandidate ? "候補を適用" : "適用"}">${iconCheck()}<span class="mask-action-label">${canApplyCandidate ? "候補を適用" : "適用"}</span></button>
+        <button class="button-secondary" type="button" data-action="websam-clear-manual" title="マスクをクリア">${iconEraser()}<span class="mask-action-label">マスクをクリア</span></button>
       </div>
     </aside>
   `;
