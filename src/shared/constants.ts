@@ -10,3 +10,6 @@ export const DEFAULT_POSE_MODEL_BASE_URL = "/api/pose-models";
 
 export const GITHUB_POSE_RELEASE_API_URL =
   "https://api.github.com/repos/chainsaw-clara-beau/guruguru/releases/tags/pose-models-v1";
+
+export const GITHUB_POSE_CIGPOSE_RELEASE_API_URL =
+  "https://api.github.com/repos/chainsaw-clara-beau/guruguru/releases/tags/pose-cigpose-v1";

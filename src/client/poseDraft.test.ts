@@ -233,12 +233,38 @@ test("projectPointToBoneCircle: pointer at anchor falls back to +x direction", (
 
 // --- ポーズ検出モデル選択 ---
 
-import { POSE_MODELS, defaultPoseModel, poseModelById } from "./pose/models.ts";
+import { POSE_MODELS, buildPoseModelUrls, defaultPoseModel, isCigposeModel, poseModelById } from "./pose/models.ts";
 
-test("POSE_MODELS: contains full and heavy, default is full", () => {
+test("POSE_MODELS: contains mediapipe (full/heavy) and cigpose (l/x), default is full", () => {
   const ids = POSE_MODELS.map((model) => model.id);
-  assert.deepEqual(ids, ["pose-landmarker-full", "pose-landmarker-heavy"]);
+  assert.deepEqual(ids, ["pose-landmarker-full", "pose-landmarker-heavy", "cigpose-l", "cigpose-x"]);
   assert.equal(defaultPoseModel().id, "pose-landmarker-full");
+});
+
+test("cigpose models: carry detector + top-down config and are flagged as cigpose", () => {
+  const l = poseModelById("cigpose-l")!;
+  const x = poseModelById("cigpose-x")!;
+  for (const model of [l, x]) {
+    assert.equal(model.kind, "cigpose");
+    assert.equal(isCigposeModel(model), true);
+    assert.equal(model.detectorFile, "yolox_nano.onnx");
+    assert.equal(model.inputWidth, 288);
+    assert.equal(model.inputHeight, 384);
+    assert.equal(model.splitRatio, 2.0);
+    assert.equal(model.totalSize, (model.detectorSize ?? 0) + (model.poseSize ?? 0));
+  }
+  assert.equal(l.keypointLayout, "body17");
+  assert.equal(x.keypointLayout, "wholebody133");
+  assert.equal(isCigposeModel(defaultPoseModel()), false);
+});
+
+test("buildPoseModelUrls: adds detectorUrl only for cigpose models", () => {
+  const cig = buildPoseModelUrls("/api/pose-models", poseModelById("cigpose-l")!);
+  assert.equal(cig?.modelUrl, "/api/pose-models/cigpose-l_coco_384x288.onnx");
+  assert.equal(cig?.detectorUrl, "/api/pose-models/yolox_nano.onnx");
+  const mp = buildPoseModelUrls("/api/pose-models", poseModelById("pose-landmarker-full")!);
+  assert.equal(mp?.modelUrl, "/api/pose-models/pose_landmarker_full.task");
+  assert.equal(mp?.detectorUrl, undefined);
 });
 
 test("poseModelById: resolves known ids and returns null otherwise", () => {
