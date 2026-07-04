@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
-import type { ComfySettings } from "../shared/types";
+import type { ComfySettings, LlmSettings } from "../shared/types";
 import { isPathInsideOrEqual } from "./paths";
 
 const isTestDataMode = process.env.GURUGURU_TEST_DB === "1" || process.env.NODE_ENV === "test";
@@ -34,6 +34,14 @@ export const defaultComfySettings: ComfySettings = {
   imageFetchMode: "view",
   storageDir: dataRoot,
   webSamModelBaseUrl: DEFAULT_WEB_SAM_MODEL_BASE_URL
+};
+
+export const defaultLlmSettings: LlmSettings = {
+  baseUrl: "",
+  model: "",
+  systemPrompt:
+    "あなたはComfyUIのプロンプト作成を支援するアシスタントです。画像生成に適した、具体的で効果的なプロンプトを提案してください。",
+  temperature: 0.4
 };
 
 export function initializeDb() {
@@ -208,6 +216,10 @@ export function initializeDb() {
     if (JSON.stringify(existing) !== JSON.stringify(merged)) {
       setSetting("comfy", merged);
     }
+  }
+
+  if (!getSetting<Partial<LlmSettings>>("llm")) {
+    setSetting("llm", defaultLlmSettings);
   }
 }
 
