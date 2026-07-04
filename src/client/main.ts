@@ -982,6 +982,18 @@ function bindEvents() {
       activePoseJointDrag = null;
       return;
     }
+    if (activePoseSelectionDrag && event.pointerId === activePoseSelectionDrag.pointerId) {
+      // キャンセル: 移動/回転を確定せず破棄。SVG は次の render() で正しい位置に戻る。
+      activePoseSelectionDrag = null;
+      render();
+      return;
+    }
+    if (activePoseMarquee && event.pointerId === activePoseMarquee.pointerId) {
+      // キャンセル: ラバーバンドの rect を除去して選択は変更しない。
+      activePoseMarquee = null;
+      document.querySelector(".pose-marquee")?.remove();
+      return;
+    }
     if (activePaintStroke && event.pointerId === activePaintStroke.pointerId) {
       const paintCanvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
       if (paintCanvas) {
