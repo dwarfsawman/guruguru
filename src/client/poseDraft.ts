@@ -9,6 +9,7 @@
  *
  * 本 module は `main.ts` を import しない（circular import なし）。
  */
+import { defaultPoseModel } from "./pose/models";
 import type { PoseWorkerLandmark } from "./pose/types";
 import type { PoseDraft, PosePoint } from "./poseTypes";
 import { OPENPOSE_JOINT_COUNT } from "./poseTypes";
@@ -52,6 +53,7 @@ export function defaultPoseDraft(assetId: string): PoseDraft {
     strength: 1,
     startPercent: 0,
     endPercent: 1,
+    modelId: defaultPoseModel().id,
     modelStatus: "idle",
     modelDownloadProgress: 0,
     modelStatusText: "未取得",
