@@ -11,6 +11,8 @@ export interface PosePoint {
   y: number;
   /** 画像 natural px 座標。normalized ではない。 */
   visible: boolean;
+  /** 検出時の生の信頼度（0..1）。keypointThreshold スライダーで visible を再計算するために保持。省略時は visible から補完。 */
+  score?: number;
 }
 
 /** OpenPose(COCO 18) の関節順序。`points[index]` の意味を固定する。 */
@@ -117,6 +119,8 @@ export interface PoseDraft {
   strength: number;
   startPercent: number;
   endPercent: number;
+  /** キーポイント可視化の信頼度しきい値（0..1, 既定 0.5）。score >= しきい値 の関節のみ visible。 */
+  keypointThreshold: number;
   /** 使用する検出モデルの id（`POSE_MODELS` の要素）。未知の id は defaultPoseModel へフォールバック。 */
   modelId: string;
   modelStatus: PoseModelStatus;
