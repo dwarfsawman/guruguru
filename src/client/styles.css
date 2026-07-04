@@ -2615,6 +2615,11 @@ input[type="range"]::-webkit-slider-thumb {
   border-right: 1px solid var(--line);
 }
 
+/* パネル幅に応じてアクションボタンをアイコンのみに切り替えるためのコンテナ。 */
+.mask-prompt-panel {
+  container: maskpanel / inline-size;
+}
+
 .smart-mask-panel {
   border-left: 1px solid var(--line);
 }
@@ -2696,6 +2701,27 @@ input[type="range"]::-webkit-slider-thumb {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
   gap: 10px;
   margin-top: 6px;
+}
+
+/* ラベルは折り返さない。狭いときはコンテナクエリでアイコンのみにする。 */
+.mask-action-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* パネルを狭くたたんだら、ボタンは2行折り返しにせずアイコンのみにする。 */
+@container maskpanel (max-width: 300px) {
+  .mask-panel-actions .mask-action-label {
+    display: none;
+  }
+
+  .mask-panel-actions .button-primary,
+  .mask-panel-actions .button-secondary {
+    padding-left: 0;
+    padding-right: 0;
+    gap: 0;
+  }
 }
 
 .preview-close {
@@ -2867,13 +2893,19 @@ input[type="range"]::-webkit-slider-thumb {
 
 .mask-options-grid {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+}
+
+/* ブラシサイズ直下へ移動したマスク設定（Masked content / Inpaint area / padding / feather）の縦間隔。 */
+.mask-content-controls {
+  display: grid;
+  gap: 12px;
 }
 
 .mask-generation-params-section {
   display: grid;
-  gap: 10px;
-  padding-top: 10px;
+  gap: 12px;
+  padding-top: 13px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
