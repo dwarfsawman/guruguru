@@ -114,6 +114,8 @@ export interface PoseDraft {
   strength: number;
   startPercent: number;
   endPercent: number;
+  /** 使用する検出モデルの id（`POSE_MODELS` の要素）。未知の id は defaultPoseModel へフォールバック。 */
+  modelId: string;
   modelStatus: PoseModelStatus;
   modelDownloadProgress: number;
   modelStatusText: string;

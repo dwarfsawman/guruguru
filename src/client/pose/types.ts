@@ -10,7 +10,7 @@ export type PoseModelStatus =
   | "error";
 
 export interface PoseModelDefinition {
-  id: "pose-landmarker-full";
+  id: "pose-landmarker-full" | "pose-landmarker-heavy";
   label: string;
   description: string;
   modelFile: string;

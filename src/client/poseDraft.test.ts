@@ -227,3 +227,32 @@ test("projectPointToBoneCircle: pointer at anchor falls back to +x direction", (
   const constraint = { anchor: { x: 10, y: 20 }, radius: 5 };
   assert.deepEqual(projectPointToBoneCircle(constraint, 10, 20), { x: 15, y: 20 });
 });
+
+// --- ポーズ検出モデル選択 ---
+
+import { POSE_MODELS, defaultPoseModel, poseModelById } from "./pose/models.ts";
+
+test("POSE_MODELS: contains full and heavy, default is full", () => {
+  const ids = POSE_MODELS.map((model) => model.id);
+  assert.deepEqual(ids, ["pose-landmarker-full", "pose-landmarker-heavy"]);
+  assert.equal(defaultPoseModel().id, "pose-landmarker-full");
+});
+
+test("poseModelById: resolves known ids and returns null otherwise", () => {
+  assert.equal(poseModelById("pose-landmarker-heavy")?.modelFile, "pose_landmarker_heavy.task");
+  assert.equal(poseModelById("pose-landmarker-full")?.modelFile, "pose_landmarker_full.task");
+  assert.equal(poseModelById("nope"), null);
+  assert.equal(poseModelById(null), null);
+});
+
+test("defaultPoseDraft: modelId defaults to the default model", () => {
+  assert.equal(defaultPoseDraft("a").modelId, defaultPoseModel().id);
+});
+
+test("normalizePoseDraft: fills missing modelId with default and keeps explicit modelId", () => {
+  const legacy = { ...defaultPoseDraft("a") } as Partial<PoseDraft>;
+  delete legacy.modelId;
+  assert.equal(normalizePoseDraft(legacy as PoseDraft).modelId, defaultPoseModel().id);
+  const heavy = { ...defaultPoseDraft("a"), modelId: "pose-landmarker-heavy" };
+  assert.equal(normalizePoseDraft(heavy).modelId, "pose-landmarker-heavy");
+});

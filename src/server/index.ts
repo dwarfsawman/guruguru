@@ -28,7 +28,8 @@ let isShuttingDown = false;
 const releaseAssetRegistry = new Map<string, string>([
   ["slimsam-77-encoder.onnx", GITHUB_WEB_SAM_RELEASE_API_URL],
   ["slimsam-77-decoder.onnx", GITHUB_WEB_SAM_RELEASE_API_URL],
-  ["pose_landmarker_full.task", GITHUB_POSE_RELEASE_API_URL]
+  ["pose_landmarker_full.task", GITHUB_POSE_RELEASE_API_URL],
+  ["pose_landmarker_heavy.task", GITHUB_POSE_RELEASE_API_URL]
 ]);
 
 initializeDb();
