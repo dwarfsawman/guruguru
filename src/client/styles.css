@@ -2903,10 +2903,16 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .mask-generation-params-section {
-  display: grid;
-  gap: 12px;
+  /* <details> の内容は ::details-content ラッパに入るため親の grid gap が子に届かない。
+     子（summary 以外）へ直接マージンを付けて縦間隔を確保する。 */
   padding-top: 13px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mask-generation-params-section .range-control,
+.mask-generation-params-section .resolution-row,
+.mask-generation-params-section > label {
+  margin-top: 13px;
 }
 
 .mask-generation-params-section summary {
