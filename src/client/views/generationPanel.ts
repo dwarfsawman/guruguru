@@ -18,6 +18,7 @@ import {
   iconReset,
   iconSettings,
   iconShuffle,
+  iconSparkle,
   iconSwap,
   iconTrash
 } from "../icons";
@@ -92,7 +93,9 @@ export function renderGenerationPanel(
   activeRound: Round | null,
   previous: Asset | null,
   draft: GenerationDraftLike | null,
-  activeInpaint: InpaintDraft | null
+  activeInpaint: InpaintDraft | null,
+  llmConfigured = false,
+  llmImproving = false
 ) {
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
@@ -163,7 +166,12 @@ export function renderGenerationPanel(
 
       <section class="sidebar-section">
         <p class="section-kicker">プロンプト</p>
-        <textarea class="input-field prompt-input" name="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
+        <div class="prompt-input-wrap">
+          <textarea class="input-field prompt-input" name="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
+          ${llmConfigured
+            ? `<button class="prompt-improve-button" type="button" data-action="improve-prompt" ${llmImproving ? "disabled" : ""} title="LLMでプロンプトを改善" aria-label="LLMでプロンプトを改善">${iconSparkle()}</button>`
+            : ""}
+        </div>
       </section>
 
       <details class="sidebar-section collapsible" open>
