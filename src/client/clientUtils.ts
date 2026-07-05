@@ -5,6 +5,10 @@ export function clampNumber(value: number, min: number, max: number, fallback: n
   return Math.min(max, Math.max(min, value));
 }
 
+export function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 export function imageToRawData(image: HTMLImageElement) {
   const canvas = document.createElement("canvas");
   canvas.width = image.naturalWidth;
