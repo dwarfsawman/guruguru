@@ -294,10 +294,13 @@
 }
 
 /*
- * ツリーのエッジ（親→子リンク）に重なる hover ターゲット。
+ * ツリーのエッジ（親→子リンク）に重なる hover/focus/クリックターゲット。
  * 子ノードの受け側リンク（.iteration-dot::before）と同じ領域を覆う。
  * transform は使わない（子孫 position:fixed のポップアウトの containing block を
  * 作らないため。overflow:auto のトラッカー内でもクリップされない）。
+ * UX改善#7: hover 専用だとタッチ・キーボードで開けないため <button> にし、
+ * :focus でも表示できるようにする(下記 .iteration-edge-popout 側のコメント参照)。
+ * 見た目のない overlay ボタンなので UA のデフォルト装飾はリセットする。
  */
 
 .iteration-edge {
@@ -307,7 +310,14 @@
   z-index: 2;
   width: var(--iteration-link-short);
   height: calc(var(--iteration-dot-size) + 10px);
+  border: none;
+  margin: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
   cursor: help;
+  appearance: none;
   /* ポップアウトの CSS anchor。anchor-scope で名前を自サブツリーに閉じ、
      複数エッジ間で名前が衝突しないようにする。 */
   anchor-name: --iteration-edge;
@@ -352,7 +362,14 @@
   transition: opacity 0.12s ease;
 }
 
-.iteration-edge:hover > .iteration-edge-popout {
+/*
+ * :focus-visible ではなく :focus を使う: <button> はクリック（タッチ含む）でも
+ * ネイティブに focus が乗るため、これだけで hover 不可なタッチ・キーボード双方の
+ * 表示要件を満たせる（クリック起因の focus は大抵のブラウザで outline リングが
+ * 抑制される一方 :focus 自体は張られるため、余計なリング無しでポップアウトだけ出る）。
+ */
+.iteration-edge:hover > .iteration-edge-popout,
+.iteration-edge:focus > .iteration-edge-popout {
   opacity: 1;
   visibility: visible;
 }
