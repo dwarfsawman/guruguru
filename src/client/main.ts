@@ -114,7 +114,27 @@ import {
   type RenderOptions
 } from "./appState";
 import { actionHandlerFor, bindRegisteredEvents } from "./actionRegistry";
-import { draftStorageKey, persistProjectDraft, restoreProjectDraft } from "./draftStore";
+import {
+  draftStorageKey,
+  ensureInpaintDraft,
+  inpaintDraftForAsset,
+  persistProjectDraft,
+  restoreProjectDraft,
+  setInpaintDraft
+} from "./draftStore";
+import { ensureMaskLayerSet, getOrCreateMaskLayerSet, maskLayerCache } from "./maskLayerStore";
+import {
+  addWebSamPointPrompt,
+  applySelectedSamCandidate,
+  beginWebSamBoxPrompt,
+  clearActiveWebSamBoxPrompt,
+  destroyWebSamWorkerSession,
+  handleWebSamPointerCancel,
+  handleWebSamPointerMove,
+  handleWebSamPointerUp,
+  requestWebSamDecode,
+  updateSmartMaskDraftFromControl
+} from "./webSamController";
 import { clampNumber, imageToRawData } from "./clientUtils";
 import {
   clearSelectedPoseEdges,
@@ -135,7 +155,6 @@ const app = document.querySelector<HTMLDivElement>("#app")!;
 let pendingAssetCardSelect: { assetId: string; timer: number } | null = null;
 let pendingIterationDotSelect: { timer: number } | null = null;
 let activeMaskStroke: ActiveMaskStroke | null = null;
-let activeBoxPrompt: ActiveBoxPrompt | null = null;
 let activeImagePan: ActiveImagePan | null = null;
 
 interface ActiveWorkflowDiagramPan {
@@ -148,17 +167,11 @@ interface ActiveWorkflowDiagramPan {
 let activeWorkflowDiagramPan: ActiveWorkflowDiagramPan | null = null;
 let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
 let maskPanelResize: { pointerId: number; side: "left" | "right"; startX: number; startWidth: number; pendingWidth: number } | null = null;
-const maskLayerCache = new Map<string, MaskLayerSet>();
 const paintLayerCache = new Map<string, HTMLCanvasElement>();
 const paintUndoStacks = new Map<string, HTMLCanvasElement[]>();
 let activePaintStroke: { pointerId: number; x: number; y: number; pendingSegments: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }> } | null = null;
 let paintStrokeRafHandle: number | null = null;
 let paintAltEyedropperActive = false;
-let webSamWorker: Worker | null = null;
-let webSamRequestId = 0;
-let latestWebSamLoadRequestId = 0;
-let latestWebSamEncodeRequestId = 0;
-let latestWebSamDecodeRequestId = 0;
 
 const pendingAutoCollectRoundIds = new Set<string>();
 const autoCollectIntervalMs = 3_000;
@@ -598,16 +611,7 @@ function bindEvents() {
       }
       return;
     }
-    if (activeBoxPrompt) {
-      if (event.pointerId !== activeBoxPrompt.pointerId) {
-        return;
-      }
-      const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-      if (!canvas) {
-        return;
-      }
-      event.preventDefault();
-      continueWebSamBoxPrompt(event, canvas);
+    if (handleWebSamPointerMove(event)) {
       return;
     }
     if (handlePoseEditorPointerMove(event)) {
@@ -655,12 +659,7 @@ function bindEvents() {
       finishMaskToolbarDrag();
       return;
     }
-    if (activeBoxPrompt && event.pointerId === activeBoxPrompt.pointerId) {
-      const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-      if (canvas) {
-        event.preventDefault();
-        finishWebSamBoxPrompt(canvas);
-      }
+    if (handleWebSamPointerUp(event)) {
       return;
     }
     if (handlePoseEditorPointerUp(event)) {
@@ -701,8 +700,7 @@ function bindEvents() {
       maskToolbarDrag = null;
       return;
     }
-    if (activeBoxPrompt && event.pointerId === activeBoxPrompt.pointerId) {
-      activeBoxPrompt = null;
+    if (handleWebSamPointerCancel(event)) {
       return;
     }
     if (handlePoseEditorPointerCancel(event)) {
@@ -819,7 +817,7 @@ function closeAssetDetail() {
   flushPendingMaskWheelZoom();
   cancelPendingPaintStrokeFlush();
   activeMaskStroke = null;
-  activeBoxPrompt = null;
+  clearActiveWebSamBoxPrompt();
   activePaintStroke = null;
   activeImagePan = null;
   void destroyWebSamWorkerSession();
@@ -995,11 +993,6 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       }
     } else if (action === "apply-mask-editor") {
       await applyMaskEditor();
-    } else if (action === "set-smart-mask-provider") {
-      const provider = target.dataset.provider ?? "";
-      if (isSmartMaskProvider(provider)) {
-        setSmartMaskProvider(provider);
-      }
     } else if (action === "minimize-mask-toolbar") {
       state.maskToolbarMinimized = true;
       render();
@@ -1016,20 +1009,6 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       removeSmallMaskIslands();
     } else if (action === "set-mask-panel-tab") {
       setMaskPanelTab(target.dataset.tab === "pose" ? "pose" : "mask");
-    } else if (action === "websam-load-model" || action === "websam-retry") {
-      await loadActiveWebSamModel();
-    } else if (action === "websam-decode") {
-      await requestWebSamDecode();
-    } else if (action === "websam-candidate") {
-      selectSamCandidate(Number(target.dataset.index ?? 0));
-    } else if (action === "websam-apply-candidate") {
-      await applySelectedSamCandidate();
-    } else if (action === "websam-clear-prompts") {
-      clearWebSamPrompts();
-    } else if (action === "websam-clear-result") {
-      clearWebSamResult();
-    } else if (action === "websam-clear-manual") {
-      clearManualMaskLayers();
     } else if (action === "clear-inpaint") {
       clearInpaintDraft();
     } else if (action === "asset-selected") {
@@ -2162,33 +2141,6 @@ function hideMaskBrushCursor() {
   cursor.classList.remove("visible", "pen", "eraser", "brush-prompt");
 }
 
-async function ensureMaskLayerSet(draft: InpaintDraft, width: number, height: number): Promise<MaskLayerSet> {
-  let layers = maskLayerCache.get(draft.parentAssetId);
-  if (layers && layers.width === width && layers.height === height) {
-    return layers;
-  }
-
-  layers = createMaskLayerSet(draft.parentAssetId, width, height);
-  maskLayerCache.set(draft.parentAssetId, layers);
-  await syncMaskLayerSetFromDraft(layers, draft);
-  return layers;
-}
-
-async function syncMaskLayerSetFromDraft(layers: MaskLayerSet, draft: InpaintDraft) {
-  clearCanvas(layers.samMask);
-  clearCanvas(layers.previewSamMask);
-  clearCanvas(layers.manualInclude);
-  clearCanvas(layers.manualErase);
-  clearCanvas(layers.brushPrompt);
-  await Promise.all([
-    drawDataUrlIntoCanvas(layers.samMask, draft.samMaskDataUrl),
-    drawDataUrlIntoCanvas(layers.previewSamMask, draft.previewSamMaskDataUrl),
-    drawDataUrlIntoCanvas(layers.manualInclude, draft.manualIncludeMaskDataUrl || draft.maskDataUrl),
-    drawDataUrlIntoCanvas(layers.manualErase, draft.manualEraseMaskDataUrl),
-    drawDataUrlIntoCanvas(layers.brushPrompt, draft.brushPromptMaskDataUrl)
-  ]);
-}
-
 function commitMaskLayers(assetId: string) {
   const draft = inpaintDraftForAsset(assetId);
   const layers = draft ? maskLayerCache.get(assetId) : null;
@@ -2208,88 +2160,6 @@ function commitMaskLayers(assetId: string) {
   if (featherCanvas && featherCanvas.dataset.assetId === assetId) {
     renderMaskFeatherPreview(featherCanvas, layers, inpaintDraftForAsset(assetId) ?? draft);
   }
-}
-
-function getOrCreateMaskLayerSet(assetId: string, width: number, height: number): MaskLayerSet {
-  let layers = maskLayerCache.get(assetId);
-  if (layers && layers.width === width && layers.height === height) {
-    return layers;
-  }
-  layers = createMaskLayerSet(assetId, width, height);
-  maskLayerCache.set(assetId, layers);
-  return layers;
-}
-
-function addWebSamPointPrompt(event: PointerEvent, canvas: HTMLCanvasElement) {
-  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
-  if (!assetId) {
-    return;
-  }
-  const draft = ensureInpaintDraft(assetId);
-  const point = pointerToMaskCanvasPoint(canvas, event);
-  const label: 0 | 1 = event.button === 2 || event.altKey || event.shiftKey ? 0 : 1;
-  setInpaintDraft({
-    ...draft,
-    foregroundPoints: [...draft.foregroundPoints, { x: point.x, y: point.y, label, source: "point" }],
-    webSamError: "",
-    samCandidates: [],
-    previewSamMaskDataUrl: ""
-  });
-  render();
-  void requestWebSamDecode();
-}
-
-function beginWebSamBoxPrompt(event: PointerEvent, canvas: HTMLCanvasElement) {
-  const point = pointerToMaskCanvasPoint(canvas, event);
-  activeBoxPrompt = {
-    pointerId: event.pointerId,
-    start: point,
-    current: point
-  };
-  canvas.setPointerCapture(event.pointerId);
-}
-
-function continueWebSamBoxPrompt(event: PointerEvent, canvas: HTMLCanvasElement) {
-  if (!activeBoxPrompt) {
-    return;
-  }
-  activeBoxPrompt.current = pointerToMaskCanvasPoint(canvas, event);
-}
-
-function finishWebSamBoxPrompt(canvas: HTMLCanvasElement) {
-  if (!activeBoxPrompt) {
-    return;
-  }
-  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
-  if (!assetId) {
-    activeBoxPrompt = null;
-    return;
-  }
-  try {
-    canvas.releasePointerCapture(activeBoxPrompt.pointerId);
-  } catch {
-    // Capture may already be released.
-  }
-  const box = normalizePromptBox({
-    x1: activeBoxPrompt.start.x,
-    y1: activeBoxPrompt.start.y,
-    x2: activeBoxPrompt.current.x,
-    y2: activeBoxPrompt.current.y
-  });
-  activeBoxPrompt = null;
-  if (!box) {
-    return;
-  }
-  const draft = ensureInpaintDraft(assetId);
-  setInpaintDraft({
-    ...draft,
-    boxPrompt: box,
-    webSamError: "",
-    samCandidates: [],
-    previewSamMaskDataUrl: ""
-  });
-  render();
-  void requestWebSamDecode();
 }
 
 const BRUSH_PROMPT_POINT_SPACING = 48;
@@ -2874,55 +2744,6 @@ function draftNumber(draft: GenerationDraft | null, field: GenerationDraftField)
   return Number.isFinite(number) ? number : undefined;
 }
 
-function inpaintDraftForAsset(assetId: string | null | undefined) {
-  const stored = assetId ? state.inpaintDrafts[assetId] : null;
-  if (stored) {
-    const normalized = normalizeInpaintDraft(stored);
-    state.inpaintDrafts[normalized.parentAssetId] = normalized;
-    return normalized;
-  }
-  const draft = state.generationDraft?.inpaint;
-  if (!assetId || !draft || draft.parentAssetId !== assetId) {
-    return null;
-  }
-  const normalized = normalizeInpaintDraft(draft);
-  state.inpaintDrafts[assetId] = normalized;
-  return normalized;
-}
-
-function setInpaintDraft(draft: InpaintDraft | null) {
-  const previousAssetId =
-    state.generationDraft?.inpaint?.parentAssetId ??
-    state.generationDraft?.parentAssetId ??
-    state.activeAssetId;
-  const normalized = draft ? normalizeInpaintDraft(draft) : null;
-  if (normalized) {
-    state.inpaintDrafts[normalized.parentAssetId] = normalized;
-  } else if (previousAssetId) {
-    delete state.inpaintDrafts[previousAssetId];
-  }
-  state.generationDraft = {
-    ...(state.generationDraft ?? {}),
-    inpaint: normalized
-  };
-  if (state.currentProjectId) {
-    persistProjectDraft(state.currentProjectId);
-  }
-}
-
-
-function ensureInpaintDraft(assetId: string) {
-  const draft = normalizeInpaintDraft(inpaintDraftForAsset(assetId) ?? defaultInpaintDraft(assetId));
-  state.inpaintDrafts[assetId] = draft;
-  state.generationDraft = {
-    ...(state.generationDraft ?? {}),
-    parentAssetId: assetId,
-    generationMode: "img2img",
-    inpaint: draft
-  };
-  return draft;
-}
-
 function setPositivePromptDraft(value: string) {
   setGenerationDraftValue("prompt", value);
   const form = document.querySelector<HTMLFormElement>("#generation-form");
@@ -2992,528 +2813,6 @@ function refreshMaskFeatherPreview(assetId: string, draft: InpaintDraft) {
     return;
   }
   renderMaskFeatherPreview(featherCanvas, layers, draft);
-}
-
-function updateSmartMaskDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
-  const field = control.dataset.smartMaskField;
-  const assetId = state.generationDraft?.inpaint?.parentAssetId ?? state.activeAssetId;
-  if (!field || !assetId) {
-    return;
-  }
-  if (field === "provider" && isSmartMaskProvider(control.value)) {
-    setSmartMaskProvider(control.value);
-    return;
-  }
-  const current = ensureInpaintDraft(assetId);
-  const next: InpaintDraft = { ...current };
-  if (field === "promptMode" && isWebSamPromptMode(control.value)) {
-    next.webSamPromptMode = control.value;
-    next.eraser = false;
-  } else if (field === "threshold") {
-    next.threshold = clampNumber(Number(control.value), -10, 10, 0);
-  } else if (field === "smoothing") {
-    next.smoothing = clampNumber(Number(control.value), 0, 4, 0);
-  } else if (field === "maskOpacity") {
-    next.maskOpacity = clampNumber(Number(control.value), 0, 1, 0.58);
-  }
-  setInpaintDraft(next);
-
-  if (field === "threshold" || field === "smoothing") {
-    void requestWebSamReprocess();
-    return;
-  }
-  if (field === "maskOpacity") {
-    const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-    if (canvas) {
-      canvas.style.opacity = String(next.maskOpacity);
-    }
-  }
-  render();
-}
-
-function setSmartMaskProvider(provider: WebSamProviderId) {
-  const assetId = state.generationDraft?.inpaint?.parentAssetId ?? state.activeAssetId;
-  if (!assetId) {
-    return;
-  }
-  const current = ensureInpaintDraft(assetId);
-  const next: InpaintDraft = {
-    ...current,
-    selectedSmartMaskProvider: provider,
-    eraser: false
-  };
-  if (provider === "manual") {
-    next.webSamStatusText = "Manual";
-  } else {
-    next.webSamError = "";
-    next.webSamModelStatus = state.settings?.webSamModelBaseUrl?.trim() ? "not-cached" : "missing-url";
-    next.webSamStatusText = state.settings?.webSamModelBaseUrl?.trim() ? "未取得" : "モデルURL未設定";
-  }
-  setInpaintDraft(next);
-  render();
-  if (provider !== "manual") {
-    void loadActiveWebSamModel();
-  }
-}
-
-function isSmartMaskProvider(value: string): value is WebSamProviderId {
-  return SMART_MASK_PROVIDERS.some((provider) => provider.id === value);
-}
-
-function isWebSamPromptMode(value: string): value is WebSamPromptMode {
-  return value === "point" || value === "box" || value === "brush";
-}
-
-function ensureWebSamWorker() {
-  if (webSamWorker) {
-    return webSamWorker;
-  }
-  webSamWorker = new Worker("/websam-worker.js", { type: "module" });
-  webSamWorker.addEventListener("message", (event: MessageEvent<WebSamWorkerResponse>) => {
-    void handleWebSamWorkerResponse(event.data);
-  });
-  webSamWorker.addEventListener("error", (event) => {
-    updateActiveWebSamDraft({
-      webSamModelStatus: "error",
-      webSamError: event.message || "WebSAM Worker initialization failed.",
-      webSamStatusText: "Error"
-    });
-  });
-  return webSamWorker;
-}
-
-function postWebSamMessage(message: WebSamWorkerRequest) {
-  ensureWebSamWorker().postMessage(message);
-}
-
-function nextWebSamRequestId() {
-  webSamRequestId += 1;
-  return webSamRequestId;
-}
-
-function updateActiveWebSamDraft(patch: Partial<InpaintDraft>) {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!draft) {
-    return;
-  }
-  setInpaintDraft({ ...draft, ...patch });
-  render();
-}
-
-async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!assetId || !draft) {
-    return;
-  }
-
-  if (message.type === "progress") {
-    if (message.requestId < latestWebSamLoadRequestId && message.progress.status !== "encoding" && message.progress.status !== "decoding") {
-      return;
-    }
-    setInpaintDraft({
-      ...draft,
-      webSamModelStatus: message.progress.status,
-      webSamDownloadProgress: message.progress.totalBytes > 0 ? message.progress.bytesDownloaded / message.progress.totalBytes : 0,
-      webSamStatusText: webSamProgressText(message.progress),
-      webSamError: ""
-    });
-    render();
-    return;
-  }
-
-  if (message.type === "model-ready") {
-    if (message.requestId !== latestWebSamLoadRequestId) {
-      return;
-    }
-    setInpaintDraft({
-      ...draft,
-      webSamModelStatus: "initializing",
-      webSamDownloadProgress: 1,
-      webSamStatusText: message.fallback ? "WebGPU不可のためWASMで初期化" : `${message.backend.toUpperCase()} 初期化済み`,
-      webSamError: ""
-    });
-    render();
-    await encodeActiveImageForWebSam();
-    return;
-  }
-
-  if (message.type === "encoded") {
-    if (message.requestId !== latestWebSamEncodeRequestId) {
-      return;
-    }
-    const current = inpaintDraftForAsset(assetId);
-    if (!current) {
-      return;
-    }
-    setInpaintDraft({
-      ...current,
-      webSamModelStatus: "ready",
-      webSamStatusText: "Ready",
-      imageWidth: message.width,
-      imageHeight: message.height,
-      webSamError: ""
-    });
-    render();
-    if (hasWebSamPrompt(current)) {
-      await requestWebSamDecode();
-    }
-    return;
-  }
-
-  if (message.type === "decoded") {
-    if (message.requestId !== latestWebSamDecodeRequestId) {
-      return;
-    }
-    const candidates = await Promise.all(message.candidates.map(candidateFromWorker));
-    const selectedIndex = candidates.some((candidate) => candidate.index === message.selectedIndex)
-      ? message.selectedIndex
-      : candidates[0]?.index ?? 0;
-    const selected = candidates.find((candidate) => candidate.index === selectedIndex) ?? candidates[0] ?? null;
-    const current = inpaintDraftForAsset(assetId);
-    if (!current) {
-      return;
-    }
-    if (selected) {
-      await drawCandidatePreview(assetId, selected.dataUrl);
-    }
-    setInpaintDraft({
-      ...current,
-      webSamModelStatus: "ready",
-      webSamStatusText: "Ready",
-      webSamError: "",
-      samCandidates: candidates,
-      selectedSamCandidateIndex: selectedIndex,
-      previewSamMaskDataUrl: selected?.dataUrl ?? ""
-    });
-    render();
-    return;
-  }
-
-  if (message.type === "error") {
-    if (message.requestId < Math.max(latestWebSamLoadRequestId, latestWebSamEncodeRequestId, latestWebSamDecodeRequestId)) {
-      return;
-    }
-    setInpaintDraft({
-      ...draft,
-      webSamModelStatus: "error",
-      webSamError: message.message,
-      webSamStatusText: "Error"
-    });
-    render();
-  }
-}
-
-function webSamProgressText(progress: { status: WebSamModelStatus; bytesDownloaded: number; totalBytes: number; cached: boolean; detail?: string }) {
-  if (progress.status === "cached") {
-    return "キャッシュ済み";
-  }
-  if (progress.status === "downloading") {
-    return `ダウンロード中 ${formatModelBytes(progress.bytesDownloaded)} / ${formatModelBytes(progress.totalBytes)}`;
-  }
-  if (progress.status === "initializing") {
-    return "初期化中";
-  }
-  if (progress.status === "encoding") {
-    return progress.detail === "encoder" ? "画像encode中" : "画像準備中";
-  }
-  if (progress.status === "decoding") {
-    return "マスク候補生成中";
-  }
-  if (progress.status === "not-cached") {
-    return "未取得";
-  }
-  return progress.status;
-}
-
-async function loadActiveWebSamModel() {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? ensureInpaintDraft(assetId) : null;
-  const model = draft ? modelForProvider(draft.selectedSmartMaskProvider) : null;
-  if (!assetId || !draft || !model) {
-    return;
-  }
-  const urls = buildWebSamModelUrls(state.settings?.webSamModelBaseUrl ?? DEFAULT_WEB_SAM_MODEL_BASE_URL, model);
-  if (!urls) {
-    setInpaintDraft({
-      ...draft,
-      webSamModelStatus: "missing-url",
-      webSamError: "webSamModelBaseUrl が未設定です。",
-      webSamStatusText: "モデルURL未設定"
-    });
-    render();
-    return;
-  }
-  const requestId = nextWebSamRequestId();
-  latestWebSamLoadRequestId = requestId;
-  setInpaintDraft({
-    ...draft,
-    webSamModelStatus: "downloading",
-    webSamDownloadProgress: 0,
-    webSamError: "",
-    webSamStatusText: "モデル確認中"
-  });
-  render();
-  postWebSamMessage({ type: "load-model", requestId, model, urls });
-}
-
-async function encodeActiveImageForWebSam() {
-  const image = document.querySelector<HTMLImageElement>("#previewImage");
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!image || !assetId || !draft) {
-    return;
-  }
-  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
-    await new Promise<void>((resolve, reject) => {
-      image.addEventListener("load", () => resolve(), { once: true });
-      image.addEventListener("error", () => reject(new Error("画像を読み込めませんでした。")), { once: true });
-    });
-  }
-  const raw = imageToRawData(image);
-  const requestId = nextWebSamRequestId();
-  latestWebSamEncodeRequestId = requestId;
-  setInpaintDraft({
-    ...draft,
-    webSamModelStatus: "encoding",
-    webSamStatusText: "画像encode中",
-    webSamError: ""
-  });
-  render();
-  postWebSamMessage({ type: "encode-image", requestId, imageData: raw });
-}
-
-
-async function requestWebSamDecode() {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!assetId || !draft || draft.selectedSmartMaskProvider === "manual") {
-    return;
-  }
-  if (!hasWebSamPrompt(draft)) {
-    setInpaintDraft({
-      ...draft,
-      webSamError: "Point、Box、Brush prompt のいずれかを指定してください。",
-      webSamStatusText: "プロンプト未指定"
-    });
-    render();
-    return;
-  }
-  if (draft.webSamModelStatus !== "ready") {
-    if (draft.webSamModelStatus === "idle" || draft.webSamModelStatus === "not-cached" || draft.webSamModelStatus === "missing-url" || draft.webSamModelStatus === "error") {
-      await loadActiveWebSamModel();
-    }
-    return;
-  }
-  const width = draft.imageWidth ?? document.querySelector<HTMLCanvasElement>("#maskCanvas")?.width ?? 0;
-  const height = draft.imageHeight ?? document.querySelector<HTMLCanvasElement>("#maskCanvas")?.height ?? 0;
-  if (width <= 0 || height <= 0) {
-    return;
-  }
-  const requestId = nextWebSamRequestId();
-  latestWebSamDecodeRequestId = requestId;
-  setInpaintDraft({
-    ...draft,
-    webSamModelStatus: "decoding",
-    webSamStatusText: "マスク候補生成中",
-    webSamError: ""
-  });
-  render();
-  postWebSamMessage({
-    type: "decode",
-    requestId,
-    prompt: {
-      points: draft.foregroundPoints,
-      box: draft.boxPrompt
-    },
-    outputWidth: width,
-    outputHeight: height,
-    threshold: draft.threshold,
-    smoothing: draft.smoothing
-  });
-}
-
-async function requestWebSamReprocess() {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!assetId || !draft || draft.selectedSmartMaskProvider === "manual" || draft.samCandidates.length === 0) {
-    return;
-  }
-  const width = draft.imageWidth ?? document.querySelector<HTMLCanvasElement>("#maskCanvas")?.width ?? 0;
-  const height = draft.imageHeight ?? document.querySelector<HTMLCanvasElement>("#maskCanvas")?.height ?? 0;
-  if (width <= 0 || height <= 0) {
-    return;
-  }
-  const requestId = nextWebSamRequestId();
-  latestWebSamDecodeRequestId = requestId;
-  postWebSamMessage({
-    type: "reprocess",
-    requestId,
-    outputWidth: width,
-    outputHeight: height,
-    threshold: draft.threshold,
-    smoothing: draft.smoothing
-  });
-}
-
-function hasWebSamPrompt(draft: InpaintDraft) {
-  return draft.foregroundPoints.length > 0 || !!normalizePromptBox(draft.boxPrompt);
-}
-
-function candidateFromWorker(candidate: WebSamWorkerCandidate): Promise<SamMaskCandidate> {
-  return imageDataToDataUrl(candidate.mask).then((dataUrl) => ({
-    index: candidate.index,
-    score: candidate.score,
-    dataUrl
-  }));
-}
-
-function imageDataToDataUrl(imageData: ImageData) {
-  const canvas = document.createElement("canvas");
-  canvas.width = imageData.width;
-  canvas.height = imageData.height;
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return Promise.resolve("");
-  }
-  context.putImageData(imageData, 0, 0);
-  return Promise.resolve(canvas.toDataURL("image/png"));
-}
-
-async function drawCandidatePreview(assetId: string, dataUrl: string) {
-  const draft = inpaintDraftForAsset(assetId);
-  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-  if (!draft || !canvas) {
-    return;
-  }
-  const layers = await ensureMaskLayerSet(draft, canvas.width, canvas.height);
-  clearCanvas(layers.previewSamMask);
-  await drawDataUrlIntoCanvas(layers.previewSamMask, dataUrl);
-  renderFinalMaskToCanvas(canvas, layers, { ...draft, previewSamMaskDataUrl: dataUrl }, true);
-}
-
-function selectSamCandidate(index: number) {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  const candidate = draft?.samCandidates.find((item) => item.index === index) ?? null;
-  if (!assetId || !draft || !candidate) {
-    return;
-  }
-  setInpaintDraft({
-    ...draft,
-    selectedSamCandidateIndex: candidate.index,
-    previewSamMaskDataUrl: candidate.dataUrl
-  });
-  void drawCandidatePreview(assetId, candidate.dataUrl);
-  render();
-}
-
-async function applySelectedSamCandidate() {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  const candidate = draft?.samCandidates.find((item) => item.index === draft.selectedSamCandidateIndex) ?? null;
-  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-  if (!assetId || !draft || !candidate || !canvas) {
-    return;
-  }
-  const layers = await ensureMaskLayerSet(draft, canvas.width, canvas.height);
-  clearCanvas(layers.samMask);
-  clearCanvas(layers.previewSamMask);
-  await drawDataUrlIntoCanvas(layers.samMask, candidate.dataUrl);
-  setInpaintDraft({
-    ...draft,
-    samMaskDataUrl: candidate.dataUrl,
-    previewSamMaskDataUrl: "",
-    maskDataUrl: composeFinalMaskDataUrl(layers, false),
-    webSamStatusText: "SAM結果を適用"
-  });
-  renderFinalMaskToCanvas(canvas, layers, { ...draft, previewSamMaskDataUrl: "" }, false);
-  render();
-}
-
-function clearWebSamPrompts() {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  const layers = assetId ? maskLayerCache.get(assetId) : null;
-  if (!assetId || !draft) {
-    return;
-  }
-  if (layers) {
-    clearCanvas(layers.brushPrompt);
-  }
-  setInpaintDraft({
-    ...draft,
-    foregroundPoints: [],
-    boxPrompt: null,
-    brushPromptMaskDataUrl: "",
-    samCandidates: [],
-    selectedSamCandidateIndex: 0,
-    previewSamMaskDataUrl: "",
-    webSamError: ""
-  });
-  render();
-}
-
-function clearWebSamResult() {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  const layers = assetId ? maskLayerCache.get(assetId) : null;
-  if (!assetId || !draft) {
-    return;
-  }
-  if (layers) {
-    clearCanvas(layers.samMask);
-    clearCanvas(layers.previewSamMask);
-    setInpaintDraft({
-      ...draft,
-      samMaskDataUrl: "",
-      previewSamMaskDataUrl: "",
-      samCandidates: [],
-      selectedSamCandidateIndex: 0,
-      maskDataUrl: composeFinalMaskDataUrl(layers, false)
-    });
-  } else {
-    setInpaintDraft({ ...draft, samMaskDataUrl: "", previewSamMaskDataUrl: "", samCandidates: [], selectedSamCandidateIndex: 0, maskDataUrl: "" });
-  }
-  render();
-}
-
-/** SAM マスクを含む全マスク層をクリアする（旧: 手動修正のみクリア）。ボタン表示は「マスクをクリア」。 */
-function clearManualMaskLayers() {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  const layers = assetId ? maskLayerCache.get(assetId) : null;
-  if (!assetId || !draft) {
-    return;
-  }
-  if (layers) {
-    clearCanvas(layers.manualInclude);
-    clearCanvas(layers.manualErase);
-    clearCanvas(layers.samMask);
-    clearCanvas(layers.previewSamMask);
-    setInpaintDraft({
-      ...draft,
-      manualIncludeMaskDataUrl: "",
-      manualEraseMaskDataUrl: "",
-      samMaskDataUrl: "",
-      previewSamMaskDataUrl: "",
-      samCandidates: [],
-      selectedSamCandidateIndex: 0,
-      maskDataUrl: composeFinalMaskDataUrl(layers, false)
-    });
-  } else {
-    setInpaintDraft({
-      ...draft,
-      manualIncludeMaskDataUrl: "",
-      manualEraseMaskDataUrl: "",
-      samMaskDataUrl: "",
-      previewSamMaskDataUrl: "",
-      samCandidates: [],
-      selectedSamCandidateIndex: 0
-    });
-  }
-  render();
 }
 
 const MASK_WHEEL_ZOOM_IDLE_MS = 150;
@@ -3595,14 +2894,6 @@ function handlePaintWheelZoom(event: WheelEvent) {
     });
     render();
   }, PAINT_WHEEL_ZOOM_IDLE_MS);
-}
-
-async function destroyWebSamWorkerSession() {
-  if (!webSamWorker) {
-    return;
-  }
-  const requestId = nextWebSamRequestId();
-  postWebSamMessage({ type: "destroy", requestId });
 }
 
 function setMaskPanelTab(tab: MaskPanelTab) {
@@ -3866,7 +3157,7 @@ function clearActiveMaskCanvas() {
 function clearInpaintDraft() {
   cancelPendingMaskStrokeFlush();
   activeMaskStroke = null;
-  activeBoxPrompt = null;
+  clearActiveWebSamBoxPrompt();
   if (state.activeAssetId) {
     maskLayerCache.delete(state.activeAssetId);
   }
