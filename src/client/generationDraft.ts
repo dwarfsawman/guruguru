@@ -5,7 +5,6 @@ import {
 } from "../shared/generationMode";
 import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions } from "../shared/types";
 import type { Asset, ProjectDetail } from "../shared/apiTypes";
-import { formatSliderValue } from "./format";
 import {
   generationDraftFields,
   requestRender,
@@ -20,6 +19,7 @@ import { hasActivePoseData } from "./poseDraft";
 import { renderPoseSkeletonDataUrl } from "./poseSkeleton";
 import { poseDraftForAsset } from "./poseEditorController";
 import { defaultPrompt } from "./views/generationPanel";
+import { setFormValue } from "./formUtils";
 
 export function captureGenerationDraft() {
   const form = document.querySelector<HTMLFormElement>("#generation-form");
@@ -254,20 +254,6 @@ export function applyAssetDimensionsToDraft(asset: Asset) {
   }
   if (typeof asset.height === "number" && Number.isFinite(asset.height)) {
     setGenerationDraftValue("height", String(asset.height));
-  }
-}
-
-function setFormValue(form: HTMLFormElement, name: string, value: string) {
-  const control = form.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
-  if (control) {
-    control.value = value;
-    const valueTargetId = (control as HTMLElement).dataset.valueTarget;
-    if (valueTargetId && control instanceof HTMLInputElement) {
-      const valueTarget = document.getElementById(valueTargetId);
-      if (valueTarget) {
-        valueTarget.textContent = formatSliderValue(control);
-      }
-    }
   }
 }
 
