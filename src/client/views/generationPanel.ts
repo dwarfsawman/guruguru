@@ -12,6 +12,7 @@ import type { Asset, ProjectDetail, Round } from "../../shared/apiTypes";
 import { escapeAttr, escapeHtml, formatNumber } from "../format";
 import {
   iconChevron,
+  iconClose,
   iconDownload,
   iconMinimize,
   iconPlus,
@@ -166,10 +167,13 @@ export function renderGenerationPanel(
 
       <section class="sidebar-section">
         <p class="section-kicker">プロンプト</p>
+        ${llmConfigured && llmImproving ? `<p class="prompt-thinking">thinking…</p>` : ""}
         <div class="prompt-input-wrap">
           <textarea class="input-field prompt-input" name="prompt" placeholder="プロンプトを入力...">${escapeHtml(promptValue)}</textarea>
           ${llmConfigured
-            ? `<button class="prompt-improve-button" type="button" data-action="improve-prompt" ${llmImproving ? "disabled" : ""} title="LLMでプロンプトを改善" aria-label="LLMでプロンプトを改善">${iconSparkle()}</button>`
+            ? llmImproving
+              ? `<button class="prompt-improve-button is-cancel" type="button" data-action="cancel-improve-prompt" title="改善をキャンセル" aria-label="改善をキャンセル">${iconClose()}</button>`
+              : `<button class="prompt-improve-button" type="button" data-action="improve-prompt" title="LLMでプロンプトを改善" aria-label="LLMでプロンプトを改善">${iconSparkle()}</button>`
             : ""}
         </div>
       </section>

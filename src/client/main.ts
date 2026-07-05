@@ -1205,6 +1205,8 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       await connectLlm();
     } else if (action === "improve-prompt") {
       await improvePrompt();
+    } else if (action === "cancel-improve-prompt") {
+      cancelImprovePrompt();
     } else if (action === "open-template-import") {
       openWorkflowImportModal();
     } else if (action === "close-template-import") {
@@ -1594,21 +1596,37 @@ async function refreshLlmStatus() {
   render();
 }
 
+let improveController: AbortController | null = null;
+
+function cancelImprovePrompt() {
+  improveController?.abort();
+}
+
 async function improvePrompt() {
   if (state.llmImproving) {
     return;
   }
   const promptValue = state.generationDraft?.prompt ?? "";
   const negativePromptValue = state.generationDraft?.negativePrompt ?? "";
+  const controller = new AbortController();
+  improveController = controller;
   state.llmImproving = true;
   render();
   try {
     const result = await api<{ prompt: string }>("/api/llm/improve-prompt", {
       method: "POST",
-      body: JSON.stringify({ prompt: promptValue, negativePrompt: negativePromptValue })
+      body: JSON.stringify({ prompt: promptValue, negativePrompt: negativePromptValue }),
+      signal: controller.signal
     });
     setPositivePromptDraft(result.prompt);
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "AbortError")) {
+      throw error;
+    }
   } finally {
+    if (improveController === controller) {
+      improveController = null;
+    }
     state.llmImproving = false;
     render();
   }
