@@ -129,7 +129,7 @@ import {
   uploadSourceAsset
 } from "./projectController";
 import { closeAssetDetail } from "./assetDetailController";
-import { handleAssetActionShortcuts } from "./shortcuts";
+import { closeShortcutsHelp, handleAssetActionShortcuts, renderShortcutsHelpModal, toggleShortcutsHelp } from "./shortcuts";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
@@ -147,6 +147,10 @@ function bindEvents() {
     if (target.classList.contains("preview-modal")) {
       captureGenerationDraft();
       closeAssetDetail();
+      return;
+    }
+    if (target.classList.contains("shortcuts-help-modal")) {
+      closeShortcutsHelp();
       return;
     }
     if (target.classList.contains("workflow-modal")) {
@@ -335,6 +339,16 @@ function bindEvents() {
   }, { passive: false });
 
   window.addEventListener("keydown", (event) => {
+    if (state.showShortcutsHelp && event.key === "Escape") {
+      closeShortcutsHelp();
+      return;
+    }
+    if (event.key === "?" && !isTextEntryTarget(event.target)) {
+      event.preventDefault();
+      toggleShortcutsHelp();
+      return;
+    }
+
     if (!state.detail) {
       if (event.key === "Escape" && state.sidebarOpen) {
         state.sidebarOpen = false;
@@ -555,7 +569,8 @@ function render(_options: RenderOptions = {}) {
     ),
     renderAssetModalView(),
     renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft),
-    renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId)
+    renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId),
+    renderShortcutsHelpModal(state.showShortcutsHelp)
   ];
   const changed = !lastRegionHtml || regions.some((html, i) => html !== lastRegionHtml![i]);
   if (changed) {
@@ -566,6 +581,7 @@ function render(_options: RenderOptions = {}) {
     ${regions[3]}
     ${regions[4]}
     ${regions[5]}
+    ${regions[6]}
   `);
     lastRegionHtml = regions;
   }
@@ -656,6 +672,7 @@ function renderHeader() {
         </button>
       </div>
       <div class="header-right">
+        <button class="icon-button shortcuts-help-button" data-action="toggle-shortcuts-help" type="button" aria-label="キーボードショートカット一覧" title="キーボードショートカット一覧 (?)">?</button>
         <button class="connection" type="button" data-action="check-comfy-connection" title="クリックして接続状態を再確認" ${state.comfyConnection === "checking" ? "disabled" : ""}>
           <span class="status-dot ${connection.className}"></span>
           <span title="${escapeAttr(state.comfyStatusText)}">${escapeHtml(connection.label)}</span>

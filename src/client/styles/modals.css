@@ -61,6 +61,58 @@
   height: min(920px, calc(100vh - 48px));
 }
 
+.shortcuts-help-dialog {
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(720px, calc(100vh - 48px));
+}
+
+.shortcuts-help-groups {
+  display: grid;
+  gap: 18px;
+  overflow: auto;
+}
+
+.shortcuts-help-group h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.shortcuts-help-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.shortcuts-help-row {
+  display: grid;
+  grid-template-columns: minmax(160px, auto) 1fr;
+  align-items: center;
+  gap: 12px;
+
+  dt {
+    margin: 0;
+  }
+
+  dd {
+    margin: 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  kbd {
+    display: inline-block;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    background: var(--panel-soft);
+    padding: 2px 7px;
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+}
+
 .workflow-import-modal-form {
   display: grid;
   grid-template-columns: minmax(320px, 0.9fr) minmax(380px, 1.1fr);
