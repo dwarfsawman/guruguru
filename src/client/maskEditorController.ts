@@ -522,6 +522,23 @@ export function handleMaskPointerDown(event: PointerEvent, canvas: HTMLCanvasEle
   beginMaskStroke(event, canvas, draft.eraser ? "manual-erase" : "manual-include");
 }
 
+/**
+ * main.ts の pointerdown ハンドラから同じ優先順位で呼ばれる。maskCanvas 上の直接ストローク
+ * 開始判定(maskEditMode かつ pose タブでない場合のみ)をまとめ、`handleMaskPointerDown` を呼ぶ。
+ */
+export function handleMaskStrokeStartPointerDown(event: PointerEvent): boolean {
+  const target = event.target as HTMLElement;
+  if (target.id !== "maskCanvas") {
+    return false;
+  }
+  if (!state.maskEditMode || state.maskPanelTab === "pose") {
+    return false;
+  }
+  event.preventDefault();
+  handleMaskPointerDown(event, target as HTMLCanvasElement);
+  return true;
+}
+
 let maskStrokeRafHandle: number | null = null;
 
 function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement, kind: MaskStrokeKind) {

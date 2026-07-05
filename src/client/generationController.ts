@@ -31,6 +31,7 @@ import {
   resolveTemplateForGeneration,
   setGenerationDraftValue
 } from "./generationDraft";
+import { openAssetDetail } from "./assetDetailController";
 import { commitActiveMaskCanvas } from "./maskEditorController";
 import {
   activePaintCanvasAndAsset,
@@ -386,6 +387,106 @@ export function selectRound(roundId: string) {
   state.maskPanelTab = "mask";
   clearActiveImagePan();
   requestRender();
+}
+
+let pendingAssetCardSelect: { assetId: string; timer: number } | null = null;
+let pendingIterationDotSelect: { timer: number } | null = null;
+
+function scheduleAssetCardSelect(assetId: string) {
+  clearPendingAssetCardSelect();
+  pendingAssetCardSelect = {
+    assetId,
+    timer: window.setTimeout(() => {
+      pendingAssetCardSelect = null;
+      void toggleSelect(assetId);
+    }, 220)
+  };
+}
+
+function clearPendingAssetCardSelect() {
+  if (!pendingAssetCardSelect) {
+    return;
+  }
+  window.clearTimeout(pendingAssetCardSelect.timer);
+  pendingAssetCardSelect = null;
+}
+
+function scheduleIterationDotSelect(roundId: string) {
+  clearPendingIterationDotSelect();
+  pendingIterationDotSelect = {
+    timer: window.setTimeout(() => {
+      pendingIterationDotSelect = null;
+      captureGenerationDraft();
+      selectRound(roundId);
+    }, 220)
+  };
+}
+
+function clearPendingIterationDotSelect() {
+  if (!pendingIterationDotSelect) {
+    return;
+  }
+  window.clearTimeout(pendingIterationDotSelect.timer);
+  pendingIterationDotSelect = null;
+}
+
+/** main.ts の click ハンドラから同じ優先順位で呼ばれる。`.asset-card-main` のシングル/ダブルクリック判定のみ扱う。 */
+export function handleAssetCardClick(event: MouseEvent): boolean {
+  const target = event.target as HTMLElement;
+  const assetCardMain = target.closest<HTMLElement>(".asset-card-main");
+  if (!assetCardMain?.dataset.id) {
+    return false;
+  }
+  if (event.detail >= 2) {
+    event.preventDefault();
+    clearPendingAssetCardSelect();
+    return true;
+  }
+  captureGenerationDraft();
+  scheduleAssetCardSelect(assetCardMain.dataset.id);
+  return true;
+}
+
+export function handleAssetCardDblClick(event: MouseEvent): boolean {
+  const target = event.target as HTMLElement;
+  const assetCardMain = target.closest<HTMLElement>(".asset-card-main");
+  if (!assetCardMain?.dataset.id) {
+    return false;
+  }
+  event.preventDefault();
+  clearPendingAssetCardSelect();
+  captureGenerationDraft();
+  openAssetDetail(assetCardMain.dataset.id);
+  return true;
+}
+
+export function handleIterationDotClick(event: MouseEvent): boolean {
+  const target = event.target as HTMLElement;
+  const iterationDot = target.closest<HTMLElement>(".iteration-dot");
+  if (!iterationDot?.dataset.id) {
+    return false;
+  }
+  if (event.detail >= 2) {
+    event.preventDefault();
+    clearPendingIterationDotSelect();
+    previewRoundDeletion(iterationDot.dataset.id);
+    return true;
+  }
+  event.preventDefault();
+  scheduleIterationDotSelect(iterationDot.dataset.id);
+  return true;
+}
+
+export function handleIterationDotDblClick(event: MouseEvent): boolean {
+  const target = event.target as HTMLElement;
+  const dot = target.closest<HTMLElement>(".iteration-dot");
+  if (!dot?.dataset.id) {
+    return false;
+  }
+  event.preventDefault();
+  clearPendingIterationDotSelect();
+  previewRoundDeletion(dot.dataset.id);
+  return true;
 }
 
 export function randomSeed() {
