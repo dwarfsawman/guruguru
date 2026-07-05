@@ -46,6 +46,12 @@ import { setFormValue } from "./formUtils";
 
 const pendingAutoCollectRoundIds = new Set<string>();
 const autoCollectIntervalMs = 3_000;
+/**
+ * ゴミ箱へ削除済み(未復元)の roundId。削除後も生きている pollCollectRound のループが
+ * 削除済み Round へ collect を投げて 404 のエラートーストを出さないための目印。
+ * 復元(undo)で取り除き、プロジェクトを離れる時にクリアする。
+ */
+const recentlyDeletedRoundIds = new Set<string>();
 
 export async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
   if (!state.currentProjectId) {
@@ -175,6 +181,7 @@ export function resetRoundDeletionHistory() {
   const rootIds = roundDeletionUndoStack.map((record) => record.rootId);
   roundDeletionUndoStack = [];
   roundDeletionRedoStack = [];
+  recentlyDeletedRoundIds.clear();
   if (rootIds.length) {
     void api("/api/rounds/trash/discard", {
       method: "POST",
@@ -201,6 +208,8 @@ export async function deleteRoundTree(roundId: string) {
   const deletedRoundIds = new Set(result.roundIds);
   for (const deletedRoundId of deletedRoundIds) {
     pendingAutoCollectRoundIds.delete(deletedRoundId);
+    recentlyDeletedRoundIds.add(deletedRoundId);
+    delete state.roundProgress[deletedRoundId];
   }
   roundDeletionUndoStack.push({ rootId: roundId, roundIds: result.roundIds });
   roundDeletionRedoStack = [];
@@ -224,6 +233,9 @@ export async function undoRoundDeletion() {
     body: JSON.stringify({ rootId: record.rootId })
   });
   roundDeletionRedoStack.push(record);
+  for (const restoredRoundId of result.roundIds) {
+    recentlyDeletedRoundIds.delete(restoredRoundId);
+  }
   await refreshProject(record.rootId, null);
   pushToast(`${result.restoredCount}件のイテレーションを復元しました。`, "info", { label: "やり直す (Ctrl+Y)", action: "redo-round-delete" });
   requestRender();
@@ -248,6 +260,11 @@ export async function pollCollectRound(roundId: string, projectId: string | null
     while (true) {
       await delay(autoCollectIntervalMs);
       if (state.currentProjectId !== projectId) {
+        return;
+      }
+      if (recentlyDeletedRoundIds.has(roundId)) {
+        // Round がゴミ箱へ削除された(collect すると 404 になる)。
+        // 復元(undo)時は refreshProject → resumeAutoCollectForActiveRounds が poll を再開する。
         return;
       }
 
@@ -286,7 +303,8 @@ export async function pollCollectRound(roundId: string, projectId: string | null
       }
     }
   } catch (error) {
-    if (state.currentProjectId === projectId) {
+    // 削除と collect が同時進行した場合の 404 は正常系(削除で poll が止まるだけ)なので通知しない。
+    if (state.currentProjectId === projectId && !recentlyDeletedRoundIds.has(roundId)) {
       pushToast(error instanceof Error ? error.message : String(error), "error");
       requestRender();
     }

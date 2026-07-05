@@ -111,7 +111,8 @@ export function renderRoundTreeNode(
   const isDeleteTarget = deleteTargetIds.has(round.id);
   const hasIncomingEdge = parentHue != null;
   const nodeStyle = `--branch-hue: ${hue}${hasIncomingEdge ? `; --parent-hue: ${parentHue}` : ""}`;
-  const progress = roundProgress[round.id];
+  // 進捗サフィックスは実際に生成中の Round のみ(stale なエントリが残っていても表示しない)。
+  const progress = running ? roundProgress[round.id] : undefined;
   return `
     <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="${nodeStyle}">
       ${hasIncomingEdge ? `
