@@ -202,6 +202,8 @@ export function initializeDb() {
   ensureColumn("generation_rounds", "branch_color_index", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("generation_rounds", "branch_reason", "TEXT");
   ensureColumn("generation_rounds", "branch_key", "TEXT");
+  // Round のソフト削除(UX改善#3)。復元可能にするため行とアセットファイルは残す。
+  ensureColumn("generation_rounds", "deleted_at", "TEXT");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {

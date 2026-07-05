@@ -109,7 +109,9 @@ import {
   handleIterationDotClick,
   handleIterationDotDblClick,
   isRoundActive,
-  selectAllActiveRound
+  redoRoundDeletion,
+  selectAllActiveRound,
+  undoRoundDeletion
 } from "./generationController";
 import {
   captureWorkflowImportDraftFromElement,
@@ -365,6 +367,18 @@ function bindEvents() {
     }
 
     if (!state.activeAssetId) {
+      // アセットモーダルが開いていない時だけ Round 削除の undo/redo を受け付ける
+      // (モーダル内の Ctrl+Z はペイント編集の undo が使う)。
+      if (event.ctrlKey || event.metaKey) {
+        const key = event.key.toLowerCase();
+        if (key === "z" && !event.shiftKey) {
+          event.preventDefault();
+          void undoRoundDeletion();
+        } else if (key === "y" || (key === "z" && event.shiftKey)) {
+          event.preventDefault();
+          void redoRoundDeletion();
+        }
+      }
       return;
     }
 
@@ -529,7 +543,7 @@ function render(_options: RenderOptions = {}) {
   }
   const regions = [
     renderHeader(),
-    state.message ? `<div class="message"><pre class="message-text">${escapeHtml(state.message)}</pre><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button></div>` : "",
+    state.message ? `<div class="message"><pre class="message-text">${escapeHtml(state.message)}</pre>${state.messageAction ? `<button class="button-secondary compact message-action" type="button" data-action="${escapeAttr(state.messageAction.action)}"${state.messageAction.id ? ` data-id="${escapeAttr(state.messageAction.id)}"` : ""}>${escapeHtml(state.messageAction.label)}</button>` : ""}<button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button></div>` : "",
     state.detail ? renderProjectDetailView(state.detail) : renderHome(
       state.projects,
       state.settings,

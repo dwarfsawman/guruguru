@@ -26,6 +26,11 @@
   overflow-wrap: break-word;
 }
 
+.message-action {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .message-close {
   flex: 0 0 auto;
   display: grid;

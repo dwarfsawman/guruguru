@@ -13,6 +13,7 @@ import {
   collectRound,
   createGenerationRound,
   deleteRoundTree,
+  restoreRounds,
   ensureRoundMonitor,
   interruptRound
 } from "./rounds";
@@ -219,6 +220,11 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const roundInterruptMatch = path.match(/^\/api\/rounds\/([^/]+)\/interrupt$/);
   if (method === "POST" && roundInterruptMatch) {
     sendJson(res, 200, await interruptRound(roundInterruptMatch[1]!));
+    return;
+  }
+
+  if (method === "POST" && path === "/api/rounds/restore") {
+    sendJson(res, 200, restoreRounds(await readJson(req)));
     return;
   }
 

@@ -14,7 +14,7 @@ import {
 import { readImageSize, storeControlImage, storeImage, storeMaskImage } from "./storage";
 import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
 import { HttpError } from "./http";
-import { isJsonObject, numberOr, stringOrNull, stringOr } from "./validate";
+import { isJsonObject, numberOr, objectBody, stringOrNull, stringOr } from "./validate";
 import { isUnifiedSwitchWorkflow, patchWorkflow, resolveSeed } from "./workflow";
 import { decorateAsset } from "./assets";
 import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
@@ -995,8 +995,16 @@ function stopRoundMonitor(roundId: string) {
   }
 }
 
+/**
+ * Round サブツリーのソフト削除。行・アセット・画像ファイルは残したまま `deleted_at` を
+ * 立てるだけなので、`restoreRounds` でいつでも復元できる(UX改善#3)。
+ * 既に削除済みの子孫(過去の別の削除)は対象に含めない。
+ */
 export function deleteRoundTree(roundId: string) {
-  const round = getRow<Record<string, unknown>>("SELECT * FROM generation_rounds WHERE id = ?", [roundId]);
+  const round = getRow<Record<string, unknown>>(
+    "SELECT * FROM generation_rounds WHERE id = ? AND deleted_at IS NULL",
+    [roundId]
+  );
   if (!round) {
     throw new HttpError(404, "Round was not found");
   }
@@ -1008,6 +1016,7 @@ export function deleteRoundTree(roundId: string) {
        SELECT child.id, round_tree.depth + 1
        FROM generation_rounds child
        JOIN round_tree ON child.parent_round_id = round_tree.id
+       WHERE child.deleted_at IS NULL
      )
      SELECT id, depth FROM round_tree ORDER BY depth DESC`,
     [roundId]
@@ -1017,7 +1026,7 @@ export function deleteRoundTree(roundId: string) {
   try {
     for (const row of rows) {
       stopRoundMonitor(row.id);
-      runSql("DELETE FROM generation_rounds WHERE id = ?", [row.id]);
+      runSql("UPDATE generation_rounds SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?", [row.id]);
     }
     runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [round.project_id]);
     runSql("COMMIT");
@@ -1030,6 +1039,45 @@ export function deleteRoundTree(roundId: string) {
     deleted: true,
     roundIds: rows.map((row) => row.id),
     deletedCount: rows.length
+  };
+}
+
+/**
+ * ソフト削除済み Round の復元。クライアントは削除時に受け取った `roundIds` を
+ * そのまま渡す(サブツリーを再計算しないので、過去の別の削除分を巻き込まない)。
+ */
+export function restoreRounds(body: unknown) {
+  const input = objectBody(body);
+  const roundIds = Array.isArray(input.roundIds) ? input.roundIds.filter((id): id is string => typeof id === "string" && id.trim() !== "") : [];
+  if (!roundIds.length) {
+    throw new HttpError(400, "roundIds is required");
+  }
+
+  const placeholders = roundIds.map(() => "?").join(", ");
+  const rows = getRows<{ id: string; project_id: string }>(
+    `SELECT id, project_id FROM generation_rounds WHERE id IN (${placeholders}) AND deleted_at IS NOT NULL`,
+    roundIds
+  );
+  if (!rows.length) {
+    throw new HttpError(404, "No deleted rounds were found for the given roundIds");
+  }
+
+  runSql("BEGIN");
+  try {
+    for (const row of rows) {
+      runSql("UPDATE generation_rounds SET deleted_at = NULL WHERE id = ?", [row.id]);
+    }
+    runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [rows[0]!.project_id]);
+    runSql("COMMIT");
+  } catch (error) {
+    runSql("ROLLBACK");
+    throw error;
+  }
+
+  return {
+    restored: true,
+    roundIds: rows.map((row) => row.id),
+    restoredCount: rows.length
   };
 }
 

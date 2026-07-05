@@ -17,7 +17,7 @@ import { clampNumber } from "./clientUtils";
 import { formatCssNumber } from "./format";
 import { formValue, readForm, setFormValue } from "./formUtils";
 import { applyAssetDimensionsToDraft, generationDraftFromForm } from "./generationDraft";
-import { refreshProject, resumeAutoCollectForActiveRounds } from "./generationController";
+import { refreshProject, resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
 import { refreshComfyStatus, refreshLlmStatus } from "./settingsController";
 
 export async function loadHome() {
@@ -31,6 +31,7 @@ export async function loadHome() {
   state.paintEditMode = false;
   state.maskPanelTab = "mask";
   state.deletePreviewRoundId = null;
+  resetRoundDeletionHistory();
   state.iterationScrollReset = true;
   state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
@@ -55,6 +56,7 @@ async function openProject(projectId: string) {
   state.paintEditMode = false;
   state.maskPanelTab = "mask";
   state.deletePreviewRoundId = null;
+  resetRoundDeletionHistory();
   state.iterationScrollReset = true;
   state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
