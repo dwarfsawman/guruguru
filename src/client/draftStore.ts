@@ -45,6 +45,23 @@ export function restoreProjectDraft(projectId: string): { generationDraft: Gener
   }
 }
 
+/** Project を離れる際(ホームへ戻る等)の draft リセット。永続化済みの draft には触れない。 */
+export function resetProjectDrafts() {
+  state.generationDraft = null;
+  state.inpaintDrafts = {};
+  state.paintDrafts = {};
+  state.poseDrafts = {};
+}
+
+/** Project を開く際、永続化済みの draft があれば復元し、なければリセットする。 */
+export function restoreOrResetProjectDrafts(projectId: string) {
+  const restored = restoreProjectDraft(projectId);
+  state.generationDraft = restored?.generationDraft ?? null;
+  state.inpaintDrafts = restored?.inpaintDrafts ?? {};
+  state.paintDrafts = {};
+  state.poseDrafts = restored?.poseDrafts ?? {};
+}
+
 export function inpaintDraftForAsset(assetId: string | null | undefined) {
   const stored = assetId ? state.inpaintDrafts[assetId] : null;
   if (stored) {
