@@ -695,6 +695,10 @@ h3 {
   width: var(--iteration-link-short);
   height: calc(var(--iteration-dot-size) + 10px);
   cursor: help;
+  /* ポップアウトの CSS anchor。anchor-scope で名前を自サブツリーに閉じ、
+     複数エッジ間で名前が衝突しないようにする。 */
+  anchor-name: --iteration-edge;
+  anchor-scope: --iteration-edge;
 }
 
 /* 単一の子は1本のエッジが全域(link-long)に伸びるため、hover 領域も全域に広げる。 */
@@ -703,10 +707,21 @@ h3 {
   width: var(--iteration-link-long);
 }
 
+/*
+ * エッジ hover のポップアウト。CSS anchor positioning で配置する
+ * （旧実装は main.ts の positionIterationEdgePopout で JS 計算していた）。
+ * position: fixed のままにするのは、overflow:auto のトラッカーにクリップされないため。
+ * 既定はエッジの下・中央寄せ、下に収まらなければ flip-block で上へ反転し、
+ * anchor-center の自動シフトで viewport 端にクランプされる。
+ */
 .iteration-edge-popout {
   position: fixed;
-  left: 0;
-  top: 0;
+  position-anchor: --iteration-edge;
+  position-area: block-end span-all;
+  justify-self: anchor-center;
+  margin-block: 8px;
+  margin-inline: 8px;
+  position-try-fallbacks: flip-block;
   z-index: 60;
   width: max-content;
   max-width: 320px;

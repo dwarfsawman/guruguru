@@ -310,15 +310,6 @@ function bindEvents() {
     }
   });
 
-  // イテレーションツリーのエッジ hover ポップアウトを、
-  // トラッカーの overflow でクリップされないよう viewport 基準（position: fixed）で配置する。
-  app.addEventListener("mouseover", (event) => {
-    const edge = (event.target as HTMLElement | null)?.closest<HTMLElement>(".iteration-edge");
-    if (edge) {
-      positionIterationEdgePopout(edge);
-    }
-  });
-
   app.addEventListener("wheel", (event) => {
     if (handleWorkflowDiagramWheel(event)) {
       return;
@@ -580,28 +571,6 @@ function render(options: RenderOptions = {}) {
   syncAssetModalMaskCanvas();
   syncAssetModalPaintCanvas();
   void renderWorkflowDiagramCanvases();
-}
-
-function positionIterationEdgePopout(edge: HTMLElement) {
-  const popout = edge.querySelector<HTMLElement>(".iteration-edge-popout");
-  if (!popout) {
-    return;
-  }
-  const margin = 8;
-  const edgeRect = edge.getBoundingClientRect();
-  // visibility:hidden 要素でもレイアウトは行われるため offsetWidth/Height は有効。
-  const width = popout.offsetWidth;
-  const height = popout.offsetHeight;
-  let left = edgeRect.left + edgeRect.width / 2 - width / 2;
-  left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - width - margin));
-  // 既定はエッジの下、下側に収まらなければ上に反転する。
-  let top = edgeRect.bottom + margin;
-  if (top + height + margin > window.innerHeight) {
-    top = edgeRect.top - height - margin;
-  }
-  top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin));
-  popout.style.left = `${Math.round(left)}px`;
-  popout.style.top = `${Math.round(top)}px`;
 }
 
 function captureIterationScrollPosition() {
