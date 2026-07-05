@@ -32,6 +32,7 @@ export async function loadHome() {
   state.maskPanelTab = "mask";
   state.deletePreviewRoundId = null;
   resetRoundDeletionHistory();
+  state.roundProgress = {};
   state.iterationScrollReset = true;
   state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
@@ -57,6 +58,7 @@ async function openProject(projectId: string) {
   state.maskPanelTab = "mask";
   state.deletePreviewRoundId = null;
   resetRoundDeletionHistory();
+  state.roundProgress = {};
   state.iterationScrollReset = true;
   state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;

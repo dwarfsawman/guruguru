@@ -56,7 +56,8 @@ export function renderProjectDetail(
   roundProgress: RoundProgressMap = {}
 ) {
   const mode = activeRound?.generationMode ?? "txt2img";
-  const activeProgress = activeRound ? roundProgress[activeRound.id] : undefined;
+  // 進捗サフィックスは実際に生成中の Round のみ(stale なエントリが残っていても表示しない)。
+  const activeProgress = activeRound?.status === "running" ? roundProgress[activeRound.id] : undefined;
   const progressSuffix = activeProgress
     ? ` (${Math.round((activeProgress.value / activeProgress.max) * 100)}%, step ${activeProgress.value}/${activeProgress.max})`
     : "";
