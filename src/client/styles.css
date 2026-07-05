@@ -396,6 +396,7 @@ h3 {
   --iteration-edge-color: rgba(174, 187, 207, 0.4);
   --iteration-link-short: clamp(32px, 3vw, 64px);
   --iteration-link-long: calc(var(--iteration-link-short) * 2);
+  position: relative;
   display: flex;
   width: max-content;
   min-width: 100%;
@@ -405,6 +406,26 @@ h3 {
   justify-content: center;
   gap: var(--iteration-row-gap);
   padding: 12px 40px 12px 24px;
+}
+
+/* 親→子リンクを描く SVG オーバーレイ。ドットより背面、クリックは透過。 */
+.iteration-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/*
+ * SVG での描画に成功したら CSS 擬似要素のコネクタ（フォールバック）を隠す。
+ * JS 無効時は擬似要素の直角コネクタがそのまま残る。
+ */
+.iteration-forest.edges-ready .iteration-child > .iteration-node > .iteration-dot::before,
+.iteration-forest.edges-ready .iteration-node.has-children > .iteration-dot::after,
+.iteration-forest.edges-ready .iteration-children.has-siblings > .iteration-child::after {
+  display: none;
 }
 
 /*
@@ -482,7 +503,7 @@ h3 {
   bottom: 0;
   left: calc(var(--iteration-link-short) * -1);
   width: var(--iteration-edge-size);
-  background: rgba(174, 187, 207, 0.32);
+  background: hsla(var(--branch-hue), 30%, 50%, 0.45);
   content: "";
 }
 
@@ -494,23 +515,42 @@ h3 {
   bottom: calc(50% - (var(--iteration-row-gap) / 4));
 }
 
-.iteration-child > .iteration-node > .iteration-dot::before,
-.iteration-node.has-children > .iteration-dot::after {
+/*
+ * 親→子リンクは1本のエッジとして描画し、左端(親色)→右端(子色)の
+ * linear-gradient で色が滑らかに変わる。--parent-hue は親ノードから受け取る。
+ */
+.iteration-child > .iteration-node > .iteration-dot::before {
   position: absolute;
   top: calc((var(--iteration-dot-size) - var(--iteration-edge-size)) / 2);
+  right: 100%;
   height: var(--iteration-edge-size);
-  background: hsla(var(--branch-hue), 30%, 50%, 0.55);
+  background: linear-gradient(
+    to right,
+    hsla(var(--parent-hue, var(--branch-hue)), 30%, 50%, 0.55),
+    hsla(var(--branch-hue), 30%, 50%, 0.55)
+  );
   content: "";
 }
 
-.iteration-child > .iteration-node > .iteration-dot::before {
-  right: 100%;
+/* 単一の子: 親ドット右端〜子ドット左端の全域を1本で結ぶ。 */
+.iteration-children.single-child > .iteration-child > .iteration-node > .iteration-dot::before {
+  width: var(--iteration-link-long);
+}
+
+/* 分岐(複数の子): 縦バス〜子ドットの区間のみを結ぶ。 */
+.iteration-children.has-siblings > .iteration-child > .iteration-node > .iteration-dot::before {
   width: var(--iteration-link-short);
 }
 
-.iteration-node.has-children > .iteration-dot::after {
+/* 分岐時のみ、親ドット右端〜縦バスの幹線(親色)を描く。 */
+.iteration-node.has-children:has(> .iteration-children.has-siblings) > .iteration-dot::after {
+  position: absolute;
+  top: calc((var(--iteration-dot-size) - var(--iteration-edge-size)) / 2);
   left: 100%;
   width: var(--iteration-link-short);
+  height: var(--iteration-edge-size);
+  background: hsla(var(--branch-hue), 30%, 50%, 0.55);
+  content: "";
 }
 
 .iteration-dot {
@@ -608,6 +648,11 @@ h3 {
   cursor: help;
 }
 
+/* 単一の子は1本のエッジが全域(link-long)に伸びるため、hover 領域も全域に広げる。 */
+.iteration-children.single-child > .iteration-child > .iteration-node > .iteration-edge {
+  width: var(--iteration-link-long);
+}
+
 .iteration-edge-popout {
   position: fixed;
   left: 0;
@@ -632,13 +677,6 @@ h3 {
 .iteration-edge:hover > .iteration-edge-popout {
   opacity: 1;
   visibility: visible;
-}
-
-.iteration-edge-title {
-  margin-bottom: 6px;
-  color: #fff;
-  font-weight: 700;
-  font-size: 11px;
 }
 
 .iteration-edge-prompt {

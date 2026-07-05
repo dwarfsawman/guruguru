@@ -137,7 +137,6 @@ test("iterationEdgePopoutHtml: includes prompt char count, resolution, denoise, 
       }
     })
   );
-  assert.match(html, /Round 3 生成プロパティ/);
   assert.match(html, /22文字/); // "a serene mountain lake".length === 22
   assert.match(html, /a serene mountain lake/);
   assert.match(html, /1024×768/);

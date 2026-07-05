@@ -46,6 +46,7 @@ export function renderIterationTracker(rounds: Round[], activeRoundId: string | 
   return `
     <div class="iteration-tracker" aria-label="イテレーション">
       <div class="iteration-forest">
+        <svg class="iteration-edges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg>
         ${forest.roots.map((round) => renderRoundTreeNode(round, forest.children, deleteTargetIds, activeRoundId, deletePreviewRoundId)).join("")}
       </div>
     </div>
@@ -99,14 +100,15 @@ export function renderRoundTreeNode(
   const isDeleteRoot = deletePreviewRoundId === round.id;
   const isDeleteTarget = deleteTargetIds.has(round.id);
   const hasIncomingEdge = parentHue != null;
+  const nodeStyle = `--branch-hue: ${hue}${hasIncomingEdge ? `; --parent-hue: ${parentHue}` : ""}`;
   return `
-    <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="--branch-hue: ${hue}">
+    <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="${nodeStyle}">
       ${hasIncomingEdge ? `
         <span class="iteration-edge" data-edge-round="${round.id}" aria-label="Round ${round.roundIndex} 生成プロパティ">
           <span class="iteration-edge-popout" role="tooltip">${iterationEdgePopoutHtml(round)}</span>
         </span>
       ` : ""}
-      <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" type="button" title="${escapeAttr(iterationTitle(round))}">
+      <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" data-round-id="${escapeAttr(round.id)}" data-parent-id="${hasIncomingEdge ? escapeAttr(round.parentRoundId ?? "") : ""}" data-hue="${hue}" type="button" title="${escapeAttr(iterationTitle(round))}">
         <span>${round.roundIndex}</span>
       </button>
       ${isDeleteTarget ? `
@@ -159,7 +161,6 @@ export function iterationEdgePopoutHtml(round: Round): string {
     ["モード", generationModeLabel(req.generationMode)]
   ];
   return `
-    <div class="iteration-edge-title">Round ${round.roundIndex} 生成プロパティ</div>
     <div class="iteration-edge-prompt">
       <div class="iteration-edge-prompt-head">プロンプト <span class="iteration-edge-count">${synopsis.charCount}文字</span></div>
       <div class="iteration-edge-prompt-body">${promptBody}</div>

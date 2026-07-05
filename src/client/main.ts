@@ -43,6 +43,7 @@ import {
 } from "./workflowUi";
 import { renderHome, type ConnectionState, type ConnectionSummary } from "./views/homeView";
 import { renderIterationTracker } from "./views/iterationTree";
+import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
 import { defaultPrompt, defaultNegativePrompt, renderGenerationPanel } from "./views/generationPanel";
 import { renderAssetModal, type MaskGenerationParams, type MaskPanelTab } from "./views/assetModal";
@@ -2266,6 +2267,7 @@ function render(options: RenderOptions = {}) {
       restoreIterationScrollPosition();
     });
   }
+  refreshIterationEdges();
   syncAssetModalMaskCanvas();
   syncAssetModalPaintCanvas();
   void renderWorkflowDiagramCanvases();
@@ -2311,6 +2313,40 @@ function restoreIterationScrollPosition() {
   }
   tracker.scrollLeft = state.iterationScroll.left;
   tracker.scrollTop = state.iterationScroll.top;
+}
+
+let iterationEdgeObserver: ResizeObserver | null = null;
+
+/**
+ * イテレーションツリーのエッジ（SVG オーバーレイ）を、現在描画されている
+ * `.iteration-forest` に合わせて引き直す。レイアウト確定後に測定したいので rAF 経由。
+ * ノードのリフロー（container query での行/列切替やウィンドウリサイズ）に追従するよう
+ * ResizeObserver でも再描画する。
+ */
+function refreshIterationEdges() {
+  requestAnimationFrame(() => {
+    const forest = document.querySelector<HTMLElement>(".iteration-forest");
+    if (!forest) {
+      iterationEdgeObserver?.disconnect();
+      return;
+    }
+    drawIterationEdges(forest);
+    if (!iterationEdgeObserver) {
+      iterationEdgeObserver = new ResizeObserver(() => {
+        const current = document.querySelector<HTMLElement>(".iteration-forest");
+        if (current) {
+          drawIterationEdges(current);
+        }
+      });
+    }
+    // render() ごとに forest 要素は作り直されるため、観測対象を貼り直す。
+    iterationEdgeObserver.disconnect();
+    iterationEdgeObserver.observe(forest);
+    const tracker = forest.closest(".iteration-tracker");
+    if (tracker) {
+      iterationEdgeObserver.observe(tracker);
+    }
+  });
 }
 
 function syncAssetModalMaskCanvas() {
