@@ -47,9 +47,20 @@ export function requestRender(options?: RenderOptions) {
   renderCallback(options);
 }
 
+export type MessageAction = {
+  label: string;
+  action: string;
+  id?: string;
+};
+
 const messageAutoClearMs = 15_000;
 let messageValue = "";
 let messageClearTimer: number | null = null;
+/**
+ * トーストに添えるアクションボタン(例: Round 削除の「元に戻す」)。
+ * `state.message` を設定するとリセットされるので、必要なら message の後に設定する。
+ */
+let messageActionValue: MessageAction | null = null;
 
 function scheduleMessageClear(value: string) {
   if (messageClearTimer) {
@@ -63,6 +74,7 @@ function scheduleMessageClear(value: string) {
   messageClearTimer = window.setTimeout(() => {
     if (messageValue === value) {
       messageValue = "";
+      messageActionValue = null;
       requestRender();
     }
   }, messageAutoClearMs);
@@ -107,6 +119,7 @@ export interface AppState {
   llmImproving: boolean;
   busy: boolean;
   message: string;
+  messageAction: MessageAction | null;
   generationDraft: GenerationDraft | null;
   inpaintDrafts: Record<string, InpaintDraft>;
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
@@ -151,7 +164,14 @@ export const state: AppState = {
   },
   set message(value: string) {
     messageValue = value;
+    messageActionValue = null;
     scheduleMessageClear(value);
+  },
+  get messageAction() {
+    return messageActionValue;
+  },
+  set messageAction(value: MessageAction | null) {
+    messageActionValue = value;
   },
   generationDraft: null,
   inpaintDrafts: {},

@@ -163,6 +163,20 @@ export async function interruptRound(roundId: string) {
   requestRender();
 }
 
+type RoundDeletionRecord = { rootId: string; roundIds: string[] };
+let roundDeletionUndoStack: RoundDeletionRecord[] = [];
+let roundDeletionRedoStack: RoundDeletionRecord[] = [];
+
+/** プロジェクトを離れたら削除履歴を破棄する(復元自体はソフト削除なのでいつでも可能)。 */
+export function resetRoundDeletionHistory() {
+  roundDeletionUndoStack = [];
+  roundDeletionRedoStack = [];
+}
+
+/**
+ * Round サブツリーの削除。サーバー側はソフト削除なので confirm なしで即実行し、
+ * トーストの「元に戻す」または Ctrl+Z(やり直しは Ctrl+Y / Ctrl+Shift+Z)で復元できる。
+ */
 export async function deleteRoundTree(roundId: string) {
   if (!state.currentProjectId) {
     return;
@@ -175,13 +189,42 @@ export async function deleteRoundTree(roundId: string) {
   for (const deletedRoundId of deletedRoundIds) {
     pendingAutoCollectRoundIds.delete(deletedRoundId);
   }
+  roundDeletionUndoStack.push({ rootId: roundId, roundIds: result.roundIds });
+  roundDeletionRedoStack = [];
 
   const keepRoundId = state.activeRoundId && !deletedRoundIds.has(state.activeRoundId) ? state.activeRoundId : null;
   state.activeAssetId = null;
   state.deletePreviewRoundId = null;
   await refreshProject(keepRoundId, null);
   state.message = `${result.deletedCount}件のイテレーションを削除しました。`;
+  state.messageAction = { label: "元に戻す (Ctrl+Z)", action: "undo-round-delete" };
   requestRender();
+}
+
+/** 直近の Round 削除を取り消す(ソフト削除の復元)。 */
+export async function undoRoundDeletion() {
+  const record = roundDeletionUndoStack.pop();
+  if (!record || !state.currentProjectId) {
+    return;
+  }
+  const result = await api<{ restored: boolean; roundIds: string[]; restoredCount: number }>("/api/rounds/restore", {
+    method: "POST",
+    body: JSON.stringify({ roundIds: record.roundIds })
+  });
+  roundDeletionRedoStack.push(record);
+  await refreshProject(record.rootId, null);
+  state.message = `${result.restoredCount}件のイテレーションを復元しました。`;
+  state.messageAction = { label: "やり直す (Ctrl+Y)", action: "redo-round-delete" };
+  requestRender();
+}
+
+/** 取り消した Round 削除をやり直す(再度ソフト削除)。 */
+export async function redoRoundDeletion() {
+  const record = roundDeletionRedoStack.pop();
+  if (!record || !state.currentProjectId) {
+    return;
+  }
+  await deleteRoundTree(record.rootId);
 }
 
 export async function pollCollectRound(roundId: string, projectId: string | null) {
@@ -619,6 +662,8 @@ registerActions({
   "collect-round": (id) => collectRound(id),
   "interrupt-round": (id) => interruptRound(id),
   "delete-round": (id) => deleteRoundTree(id),
+  "undo-round-delete": () => undoRoundDeletion(),
+  "redo-round-delete": () => redoRoundDeletion(),
   "cancel-delete-round": () => {
     state.deletePreviewRoundId = null;
     requestRender();
