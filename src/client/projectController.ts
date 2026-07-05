@@ -10,7 +10,7 @@ import {
   workflowExportFilename
 } from "./workflowImport";
 import { renderWorkflowDiagramCanvases, renderWorkflowImportPreview } from "./workflowUi";
-import { requestRender, state } from "./appState";
+import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { draftStorageKey, resetProjectDrafts, restoreOrResetProjectDrafts } from "./draftStore";
 import { clampNumber } from "./clientUtils";
@@ -130,7 +130,7 @@ export async function loadWorkflowFile(input: HTMLInputElement) {
   const text = await file.text();
   const parsed = parseWorkflowFileContent(text);
   if (!parsed.ok) {
-    state.message = parsed.error;
+    pushToast(parsed.error, "error");
     requestRender();
     return;
   }
@@ -323,17 +323,23 @@ async function deleteProject(projectId: string) {
   }
 
   if (state.currentProjectId === projectId) {
-    state.message = result.storageError
-      ? `Projectを削除しました。保存ディレクトリの削除に失敗しました: ${result.storageError}`
-      : "Projectを削除しました。";
+    pushToast(
+      result.storageError
+        ? `Projectを削除しました。保存ディレクトリの削除に失敗しました: ${result.storageError}`
+        : "Projectを削除しました。",
+      result.storageError ? "error" : "info"
+    );
     await loadHome();
     return;
   }
 
   state.projects = state.projects.filter((item) => item.id !== projectId);
-  state.message = result.storageError
-    ? `Projectを削除しました。保存ディレクトリの削除に失敗しました: ${result.storageError}`
-    : "Projectを削除しました。";
+  pushToast(
+    result.storageError
+      ? `Projectを削除しました。保存ディレクトリの削除に失敗しました: ${result.storageError}`
+      : "Projectを削除しました。",
+    result.storageError ? "error" : "info"
+  );
   requestRender();
 }
 
