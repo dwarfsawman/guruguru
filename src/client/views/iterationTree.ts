@@ -9,11 +9,14 @@
  * のため、循環を避けてこのモジュール内に複製している。
  */
 import type { Round } from "../../shared/apiTypes";
-import { escapeAttr } from "../format";
+import { escapeAttr, escapeHtml, formatNumber } from "../format";
 import { iconClose } from "../icons";
 
 const ROOT_HUE_STEP = 57;
 const CHILD_HUE_STEP_MAX = 40;
+
+/** エッジ hover ポップアウトに表示するプロンプト synopsis の最大文字数。 */
+const PROMPT_SYNOPSIS_MAX = 140;
 
 function normalizeHue(h: number) {
   return ((h % 360) + 360) % 360;
@@ -95,8 +98,14 @@ export function renderRoundTreeNode(
   const hue = parentHue == null ? rootHue(round) : childHue(parentHue, round.request?.denoise ?? 1);
   const isDeleteRoot = deletePreviewRoundId === round.id;
   const isDeleteTarget = deleteTargetIds.has(round.id);
+  const hasIncomingEdge = parentHue != null;
   return `
     <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="--branch-hue: ${hue}">
+      ${hasIncomingEdge ? `
+        <span class="iteration-edge" data-edge-round="${round.id}" aria-label="Round ${round.roundIndex} 生成プロパティ">
+          <span class="iteration-edge-popout" role="tooltip">${iterationEdgePopoutHtml(round)}</span>
+        </span>
+      ` : ""}
       <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" type="button" title="${escapeAttr(iterationTitle(round))}">
         <span>${round.roundIndex}</span>
       </button>
@@ -115,6 +124,51 @@ export function renderRoundTreeNode(
         </div>
       ` : ""}
     </div>
+  `;
+}
+
+/**
+ * プロンプト文字列を hover ポップアウト用の synopsis に整形する。
+ * 文字数（正規化後の可視文字数）と、`PROMPT_SYNOPSIS_MAX` で切り詰めた本文を返す。
+ */
+export function promptSynopsis(prompt: string) {
+  const normalized = (prompt ?? "").replace(/\s+/g, " ").trim();
+  const charCount = normalized.length;
+  const text = charCount > PROMPT_SYNOPSIS_MAX ? `${normalized.slice(0, PROMPT_SYNOPSIS_MAX)}…` : normalized;
+  return { charCount, text };
+}
+
+/**
+ * イテレーションツリーのエッジ（親→子のリンク）に対応する生成プロパティを
+ * ポップアウト内部の HTML として組み立てる。黒背景・白文字は CSS 側で付与する。
+ * プロンプト（文字量つき synopsis）、解像度、デノイズ値、ステップ数などを含む。
+ */
+export function iterationEdgePopoutHtml(round: Round): string {
+  const req = round.request;
+  const synopsis = promptSynopsis(req?.prompt ?? "");
+  const promptBody = synopsis.text
+    ? escapeHtml(synopsis.text)
+    : `<span class="iteration-edge-empty">(プロンプトなし)</span>`;
+  const rows: Array<[string, string]> = [
+    ["解像度", `${req.width}×${req.height}`],
+    ["デノイズ", formatNumber(req.denoise)],
+    ["ステップ数", String(req.steps)],
+    ["CFG", formatNumber(req.cfg)],
+    ["サンプラー", req.sampler || "-"],
+    ["スケジューラ", req.scheduler || "-"],
+    ["モード", generationModeLabel(req.generationMode)]
+  ];
+  return `
+    <div class="iteration-edge-title">Round ${round.roundIndex} 生成プロパティ</div>
+    <div class="iteration-edge-prompt">
+      <div class="iteration-edge-prompt-head">プロンプト <span class="iteration-edge-count">${synopsis.charCount}文字</span></div>
+      <div class="iteration-edge-prompt-body">${promptBody}</div>
+    </div>
+    <dl class="iteration-edge-grid">
+      ${rows
+        .map(([label, value]) => `<div class="iteration-edge-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+        .join("")}
+    </dl>
   `;
 }
 

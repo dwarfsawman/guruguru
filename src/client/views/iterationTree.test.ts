@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { childHue, rootHue } from "./iterationTree.ts";
+import { childHue, iterationEdgePopoutHtml, promptSynopsis, rootHue } from "./iterationTree.ts";
 import type { Round } from "../../shared/apiTypes.ts";
 
 function round(overrides: Partial<Round> = {}): Round {
@@ -93,4 +93,69 @@ test("childHue: a deep chain of low-denoise generations does not wrap a full 360
   // 14 degrees per generation * 10 generations = 140 degrees, well under 360.
   assert.equal(hue, 140);
   assert.ok(hue < 360);
+});
+
+test("promptSynopsis: reports the normalized character count", () => {
+  assert.deepEqual(promptSynopsis("a cat"), { charCount: 5, text: "a cat" });
+});
+
+test("promptSynopsis: collapses whitespace/newlines before counting", () => {
+  assert.deepEqual(promptSynopsis("  a   cat\n\nsitting  "), { charCount: 13, text: "a cat sitting" });
+});
+
+test("promptSynopsis: truncates to 140 chars with an ellipsis and still counts the full length", () => {
+  const long = "x".repeat(200);
+  const result = promptSynopsis(long);
+  assert.equal(result.charCount, 200);
+  assert.equal(result.text.length, 141); // 140 chars + ellipsis
+  assert.ok(result.text.endsWith("…"));
+});
+
+test("promptSynopsis: empty prompt yields zero count and empty text", () => {
+  assert.deepEqual(promptSynopsis(""), { charCount: 0, text: "" });
+});
+
+test("iterationEdgePopoutHtml: includes prompt char count, resolution, denoise, and steps", () => {
+  const html = iterationEdgePopoutHtml(
+    round({
+      roundIndex: 3,
+      request: {
+        templateId: "t",
+        prompt: "a serene mountain lake",
+        negativePrompt: "",
+        seed: 1,
+        seedMode: "fixed",
+        batchSize: 1,
+        steps: 28,
+        cfg: 6.5,
+        sampler: "euler",
+        scheduler: "karras",
+        denoise: 0.55,
+        width: 1024,
+        height: 768,
+        generationMode: "img2img"
+      }
+    })
+  );
+  assert.match(html, /Round 3 生成プロパティ/);
+  assert.match(html, /22文字/); // "a serene mountain lake".length === 22
+  assert.match(html, /a serene mountain lake/);
+  assert.match(html, /1024×768/);
+  assert.match(html, /0\.55/);
+  assert.match(html, /28/);
+  assert.match(html, /euler/);
+});
+
+test("iterationEdgePopoutHtml: escapes HTML in the prompt", () => {
+  const html = iterationEdgePopoutHtml(
+    round({ request: { ...round().request, prompt: "<script>alert(1)</script>" } })
+  );
+  assert.ok(!html.includes("<script>"));
+  assert.match(html, /&lt;script&gt;/);
+});
+
+test("iterationEdgePopoutHtml: shows a placeholder when the prompt is empty", () => {
+  const html = iterationEdgePopoutHtml(round({ request: { ...round().request, prompt: "" } }));
+  assert.match(html, /プロンプトなし/);
+  assert.match(html, /0文字/);
 });
