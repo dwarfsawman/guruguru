@@ -1,0 +1,227 @@
+/*
+ * ブラウザ基準: Chrome 150 を前提とする（GURUGURU は Chrome/Chromium 前提のローカルアプリ）。
+ * `:has()`・`mask` 合成・CSS anchor positioning などの新しい CSS 機能を
+ * フォールバックなしで使ってよい。後方互換のための prefix / 代替実装は不要。
+ * （リポジトリ規約として `操作メモ.md` にも記載）
+ */
+
+/* フォントは自己ホスト（オフラインでも見た目が変わらないように）。latin サブセットのみで、日本語はフォールバックフォント任せ（従来の Google Fonts 配信時と同じ挙動） */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-sans-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-400-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-500-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/fonts/ibm-plex-mono-600-latin.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+  --bg: #000;
+  --panel: #0a0a0c;
+  --panel-strong: #141417;
+  --panel-soft: #1c1c20;
+  --input: #050506;
+  --line: color-mix(in srgb, var(--ink) 9%, transparent);
+  --line-strong: color-mix(in srgb, var(--ink) 17%, transparent);
+  --ink: #f4f4f5;
+  --muted: #8b8b93;
+  --faint: #57575e;
+  --accent: #e2ad81;
+  --accent-strong: #efceb5;
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 42%, transparent);
+  --accent-fill: color-mix(in srgb, var(--accent) 34%, transparent);
+  --on-accent: #08120f;
+  --good: #4ade80;
+  --warn: #fbbf24;
+  --danger: #f87171;
+  --danger-soft: color-mix(in srgb, var(--danger) 10%, transparent);
+  --shadow: 0 24px 70px rgba(0, 0, 0, 0.72);
+  --font: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+::selection {
+  background: var(--accent-line);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1.45;
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #141417;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: #3a3a42;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4a4a52;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+button svg,
+.brand-mark svg,
+.select-badge svg,
+.star-badge svg,
+.zoom-btn svg,
+.mask-tool-button svg,
+.tag svg,
+.iteration-delete-mark svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  outline: none;
+  background: var(--input);
+  color: var(--ink);
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+input:not([type="range"]):not([type="checkbox"]),
+select {
+  height: 28px;
+  padding: 0 8px;
+}
+
+select,
+input[type="number"],
+input[name="seed"],
+textarea.prompt-input,
+textarea.mask-prompt-input {
+  font-family: var(--mono);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: none;
+}
+
+textarea {
+  min-height: 64px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+select option {
+  background: var(--panel-strong);
+  color: var(--ink);
+}
+
+label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+h2 {
+  font-size: 13.5px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+h3 {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+

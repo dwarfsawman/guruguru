@@ -1,0 +1,166 @@
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: minmax(220px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.header-right {
+  grid-column: 3;
+  justify-self: end;
+}
+
+.header-left,
+.header-right,
+.toolbar-actions,
+.button-row,
+.bottom-actions,
+.bottom-left,
+.seed-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+
+  > span:not(.brand-mark) {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  strong {
+    display: block;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+  }
+
+  small {
+    display: block;
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+}
+
+.brand-mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  overflow: hidden;
+  place-items: center;
+  border-radius: 2px;
+  background: var(--accent);
+  color: var(--on-accent);
+
+  svg {
+    width: 15px;
+    height: 15px;
+    stroke-width: 1.6;
+  }
+
+  img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+    transform: scale(1.55);
+  }
+}
+
+.header-title {
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+
+  &:hover {
+    background: var(--panel-soft);
+    color: var(--ink);
+  }
+}
+
+.menu-button {
+  display: none;
+}
+
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  min-height: 26px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  padding: 0 11px;
+  border-radius: 2px;
+  font-family: inherit;
+
+  &:hover:not(:disabled) {
+    background: var(--panel-soft);
+    color: var(--ink);
+  }
+
+  &:disabled {
+    cursor: default;
+  }
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+
+  &.connected {
+    background: var(--good);
+  }
+
+  &.disconnected {
+    background: var(--danger);
+  }
+
+  &.checking,
+  &.generating {
+    animation: pulse 1.4s infinite;
+    background: var(--warn);
+  }
+
+  &.unknown {
+    background: var(--faint);
+  }
+}
+

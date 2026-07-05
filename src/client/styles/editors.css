@@ -1,0 +1,531 @@
+.mask-editor-layout {
+  display: grid;
+  grid-template-columns: clamp(220px, var(--mask-left-panel, 302px), 460px) auto minmax(420px, 1fr) auto clamp(220px, var(--mask-right-panel, 302px), 460px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.paint-editor-layout {
+  grid-template-columns: minmax(300px, 390px) minmax(420px, 1fr);
+}
+
+.mask-editor-layout.sidebar-collapsed {
+  grid-template-columns: 56px auto minmax(420px, 1fr) auto clamp(220px, var(--mask-right-panel, 300px), 460px);
+}
+
+.paint-editor-layout.sidebar-collapsed {
+  grid-template-columns: 56px minmax(420px, 1fr);
+}
+
+.mask-prompt-panel.collapsed,
+.paint-tool-panel.collapsed {
+  overflow: hidden;
+  padding: 12px 8px;
+}
+
+.mask-prompt-panel.collapsed > *:not(.mask-panel-header):not(.mask-toolbar-row),
+.paint-tool-panel.collapsed > *:not(.mask-panel-header):not(.mask-toolbar-row) {
+  display: none;
+}
+
+.mask-prompt-panel.collapsed .mask-panel-header h2,
+.mask-prompt-panel.collapsed .mask-panel-header .mask-status,
+.paint-tool-panel.collapsed .mask-panel-header h2 {
+  display: none;
+}
+
+.mask-prompt-panel.collapsed .mask-toolbar-row,
+.paint-tool-panel.collapsed .mask-toolbar-row {
+  flex-direction: column;
+}
+
+.mask-prompt-panel .mask-panel-header .sidebar-collapse-toggle,
+.paint-tool-panel .mask-panel-header .sidebar-collapse-toggle {
+  position: static;
+}
+
+.preview-center {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+  /* footer 等の min-content 幅で中央カラムが押し広げられ、preview-media の
+     スクロールバーが右サイドパネルの下まで食み出すのを防ぐ */
+  grid-template-columns: minmax(0, 1fr);
+  overflow: hidden;
+  gap: 10px;
+  background: #050506;
+  padding: 16px 16px 10px;
+
+  > .preview-media,
+  > .preview-footer {
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
+.preview-content.mask-mode .preview-footer {
+  flex-wrap: wrap;
+}
+
+.preview-media {
+  position: relative;
+  display: block;
+  max-width: 90vw;
+  max-height: 88vh;
+  min-height: 0;
+  overflow: auto;
+  cursor: grab;
+
+  &.panning {
+    cursor: grabbing;
+  }
+}
+
+.mask-preview-media {
+  display: grid;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  min-height: 0;
+  place-items: center;
+  overflow: auto;
+}
+
+.mask-zoom-stage {
+  position: relative;
+  display: block;
+  width: fit-content;
+  transform: translate(var(--mask-pan-x, 0), var(--mask-pan-y, 0)) scale(var(--mask-zoom, 1));
+  transform-origin: center center;
+
+  > img {
+    display: block;
+    max-width: 90vw;
+    max-height: calc(88vh - 120px);
+    border-radius: 2px;
+    object-fit: contain;
+  }
+}
+
+.mask-editor-open .mask-zoom-stage > img {
+  max-width: 100%;
+  max-height: calc(100vh - 214px);
+}
+
+.preview-content {
+  &.mask-mode .mask-zoom-stage > img {
+    user-select: none;
+  }
+
+  &.mask-mode .preview-media {
+    cursor: default;
+  }
+
+  &.mask-mode .preview-media.panning {
+    cursor: grabbing;
+  }
+}
+
+.preview-mask-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--panel-strong);
+  color: var(--ink);
+  padding: 0 11px;
+  font-size: 12px;
+  font-weight: 500;
+  user-select: none;
+  white-space: nowrap;
+  -webkit-user-drag: none;
+
+  &.active {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  svg {
+    width: 12px;
+    height: 12px;
+  }
+}
+
+.mask-mode-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  max-width: min(400px, calc(100vw - 220px));
+  min-height: 26px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--muted);
+  padding: 0;
+  overflow: hidden;
+  pointer-events: none;
+
+  span {
+    display: inline-flex;
+    align-items: center;
+    align-self: stretch;
+    gap: 6px;
+    min-width: 0;
+    padding: 0 10px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  small {
+    display: inline-flex;
+    align-items: center;
+    align-self: stretch;
+    border-left: 1px solid var(--line);
+    padding: 0 10px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 400;
+    white-space: nowrap;
+  }
+
+  svg {
+    width: 12px;
+    height: 12px;
+  }
+}
+
+.mask-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  cursor: crosshair;
+  opacity: 0.58;
+  touch-action: none;
+}
+
+.mask-feather-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  pointer-events: none;
+  touch-action: none;
+}
+
+.websam-prompt-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.websam-point {
+  fill: color-mix(in srgb, var(--good) 95%, transparent);
+  stroke: color-mix(in srgb, var(--ink) 92%, transparent);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+
+  &.background {
+    fill: color-mix(in srgb, var(--danger) 95%, transparent);
+  }
+
+  &.brush {
+    fill: rgba(96, 165, 250, 0.9);
+  }
+}
+
+.websam-box {
+  fill: color-mix(in srgb, var(--good) 8%, transparent);
+  stroke: color-mix(in srgb, var(--good) 95%, transparent);
+  stroke-dasharray: 8 6;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.brush-cursor {
+  fill: color-mix(in srgb, var(--ink) 16%, transparent);
+  stroke: color-mix(in srgb, var(--ink) 85%, transparent);
+  stroke-width: 2;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+  opacity: 0;
+  transition: opacity 0.08s linear;
+  pointer-events: none;
+
+  &.visible {
+    opacity: 1;
+  }
+
+  &.pen {
+    fill: color-mix(in srgb, var(--good) 18%, transparent);
+    stroke: color-mix(in srgb, var(--good) 92%, transparent);
+  }
+
+  &.eraser {
+    fill: color-mix(in srgb, var(--danger) 18%, transparent);
+    stroke: color-mix(in srgb, var(--danger) 92%, transparent);
+  }
+
+  &.brush-prompt {
+    fill: rgba(96, 165, 250, 0.18);
+    stroke: rgba(96, 165, 250, 0.92);
+  }
+}
+
+.mask-canvas.mask-locked {
+  pointer-events: none;
+  cursor: default;
+}
+
+/* ポーズタブ中は中央プレビューのマスク操作を無効化する（フェーズ3: 表示のみ） */
+
+.pose-tab-active .mask-canvas {
+  pointer-events: none;
+  cursor: default;
+}
+
+.pose-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.pose-bone {
+  stroke-linecap: round;
+  opacity: 0.9;
+  pointer-events: none;
+
+  &.selected {
+    opacity: 1;
+  }
+}
+
+/* エッジ選択用の透明な当たり判定線。選択中は黄色の半透明ハローを表示する。 */
+
+.pose-bone-hit {
+  stroke: transparent;
+  stroke-linecap: round;
+  pointer-events: stroke;
+  cursor: pointer;
+  touch-action: none;
+
+  &.selected {
+    stroke: rgba(255, 214, 10, 0.32);
+  }
+}
+
+/* overlay 背景。空き領域のドラッグで矩形マルチ選択を開始するための当たり判定。 */
+
+.pose-overlay-bg {
+  fill: transparent;
+  pointer-events: fill;
+  cursor: crosshair;
+}
+
+/* 矩形マルチ選択（ラバーバンド）。 */
+
+.pose-marquee {
+  fill: rgba(255, 214, 10, 0.12);
+  stroke: rgba(255, 214, 10, 0.9);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+/* 選択エッジ削除ボタン（選択ボーン中点の重心に1つ表示）。 */
+
+.pose-edge-delete {
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.pose-edge-delete-bg {
+  fill: rgba(20, 20, 24, 0.86);
+  stroke: rgba(255, 214, 10, 0.95);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.pose-edge-delete:hover .pose-edge-delete-bg {
+  fill: rgba(220, 38, 38, 0.92);
+}
+
+.pose-edge-delete-x {
+  stroke: #fff;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.pose-joint {
+  stroke: color-mix(in srgb, var(--ink) 85%, transparent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: all;
+  cursor: grab;
+  touch-action: none;
+
+  &.hidden-joint {
+    opacity: 0.3;
+  }
+
+  &.dragging {
+    cursor: grabbing;
+    stroke: rgba(255, 255, 0, 0.95);
+    stroke-width: 3;
+  }
+}
+
+.pose-edit-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--ink) 62%, transparent);
+}
+
+/* 右サイドバー: マスク/ポーズ タブ＋添付チェックボックス */
+
+.smart-tab-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+
+  &.active {
+    background: rgba(255, 214, 10, 0.1);
+  }
+
+  .tab-attach-check {
+    flex: none;
+    width: 15px;
+    height: 15px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+
+  .mask-tab {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+.smart-panel-tabs {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.mask-panel-header .smart-panel-tabs .mask-tab {
+  min-height: 30px;
+  padding: 4px 10px;
+}
+
+.pose-attach-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--ink) 82%, transparent);
+
+  input[type="checkbox"] {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--accent);
+  }
+}
+
+.mask-editor-panel {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  align-content: start;
+  gap: 11px;
+  overflow: auto;
+  padding: 13px;
+  background: var(--panel);
+}
+
+.mask-prompt-panel,
+.paint-tool-panel {
+  border-right: 1px solid var(--line);
+}
+
+/* パネル幅に応じてアクションボタンをアイコンのみに切り替えるためのコンテナ。 */
+
+.mask-prompt-panel {
+  container: maskpanel / inline-size;
+}
+
+.smart-mask-panel {
+  border-left: 1px solid var(--line);
+}
+
+.mask-panel-resizer {
+  position: relative;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+
+  &::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 2px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--ink) 8%, transparent);
+    transition: background 0.15s ease;
+  }
+
+  &:hover::after,
+  &.resizing::after {
+    background: var(--accent-line);
+  }
+}
+
+.mask-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 9px;
+
+  h2 {
+    font-size: 12.5px;
+  }
+}
+
+.mask-panel-tabs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 4px;
+}
+

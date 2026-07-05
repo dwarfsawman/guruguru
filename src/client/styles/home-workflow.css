@@ -1,0 +1,517 @@
+.message {
+  position: fixed;
+  right: 20px;
+  top: 64px;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100vw - 40px));
+  max-height: 36vh;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--warn) 28%, transparent);
+  border-radius: 3px;
+  background: rgba(37, 31, 12, 0.94);
+  color: #fde68a;
+  padding: 12px 14px;
+  box-shadow: var(--shadow);
+}
+
+.message-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.message-close {
+  flex: 0 0 auto;
+  display: grid;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(253, 230, 138, 0.18);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: #fde68a;
+
+  &:hover {
+    background: color-mix(in srgb, var(--ink) 12%, transparent);
+  }
+
+  svg {
+    width: 14px;
+    height: 14px;
+    stroke-width: 2.4;
+  }
+}
+
+.home-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 376px;
+  gap: 0;
+  align-items: start;
+
+  > .panel {
+    margin: 16px;
+  }
+}
+
+.home-side {
+  display: grid;
+  gap: 13px;
+  align-content: start;
+  min-height: calc(100vh - 44px);
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: 16px;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel);
+  padding: 14px;
+}
+
+.panel-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -14px -14px 14px;
+  border-bottom: 1px solid var(--line);
+  padding: 11px 14px 10px;
+
+  .panel-count {
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
+
+  .panel-count b {
+    color: var(--muted);
+    font-weight: 600;
+  }
+}
+
+.section-kicker {
+  margin-bottom: 5px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.form-stack,
+.sidebar-form {
+  display: grid;
+  gap: 9px;
+}
+
+#project-form {
+  grid-template-columns: 1fr 1fr;
+  gap: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  padding: 12px 14px 14px;
+}
+
+#project-form .form-span,
+#project-form .form-submit-row {
+  grid-column: 1 / -1;
+}
+
+#project-form .form-submit-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.project-list {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.project-card {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr) auto;
+  gap: 13px;
+  align-items: stretch;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-strong);
+
+  &:hover {
+    border-color: var(--line-strong);
+    background: var(--panel-soft);
+  }
+}
+
+.project-thumb {
+  width: 132px;
+  height: 98px;
+  min-height: 98px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--panel-strong);
+  color: var(--faint);
+  padding: 0;
+}
+
+.project-thumb img,
+.selected-thumbs img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.project-thumb span {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  font-size: 12px;
+}
+
+.project-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+
+  h2 {
+    margin: 1px 0 4px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  p {
+    color: var(--muted);
+    font-size: 11.5px;
+    line-height: 1.45;
+    margin-bottom: auto;
+  }
+}
+
+.meta-line {
+  margin-top: 9px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1;
+
+  b {
+    color: var(--muted);
+    font-weight: 600;
+  }
+}
+
+.project-copy p.desc-empty {
+  color: var(--faint);
+  font-style: italic;
+}
+
+.project-actions {
+  display: grid;
+  gap: 6px;
+  align-content: center;
+}
+
+.template-list {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.template-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding-top: 9px;
+}
+
+.template-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+
+  strong {
+    overflow: hidden;
+    color: var(--ink);
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 400;
+  }
+
+  small {
+    overflow-wrap: anywhere;
+    color: var(--faint);
+    line-height: 1.35;
+  }
+}
+
+.template-row-actions {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.template-action-button {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+
+  svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+  }
+}
+
+/* 横長の図形アイコン: viewBox(18x8.2)に合わせ、線の見た目太さを他アイコン(約1.33px)と揃える */
+
+.template-action-button svg.icon-diagram {
+  width: 20px;
+  height: 9px;
+  stroke-width: 1.2;
+}
+
+.template-export-trigger {
+  display: grid;
+  place-items: center;
+  line-height: 0;
+}
+
+/*
+ * テンプレート行の export ドロップダウン。popover="auto" + anchor positioning。
+ * light-dismiss（外側クリック / Esc）はブラウザネイティブ、メニュー項目クリック後の
+ * クローズは popovertargetaction="hide" で宣言的に行う
+ * （旧実装は <details> + main.ts の closeOpenActionDropdowns による手動 light-dismiss）。
+ */
+.template-export-dropdown {
+  anchor-scope: --template-export-trigger;
+
+  .template-export-trigger {
+    anchor-name: --template-export-trigger;
+  }
+}
+
+.template-export-menu {
+  position: fixed;
+  position-anchor: --template-export-trigger;
+  /* 旧 right: 0 / top: calc(100% + 8px) 相当: トリガーの下・右端揃え。収まらなければ上へ反転 */
+  position-area: block-end span-inline-start;
+  position-try-fallbacks: flip-block;
+  inset: auto;
+  margin: 8px 0 0;
+  min-width: 190px;
+  gap: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  padding: 8px;
+
+  &:popover-open {
+    display: grid;
+  }
+}
+
+.template-export-menu .button-secondary {
+  justify-content: flex-start;
+}
+
+.workflow-toolbar {
+  display: grid;
+  gap: 10px;
+}
+
+/*
+ * サイドバーの「Workflow操作」ドロップダウン。popover="auto" + anchor positioning
+ * （旧実装は <details> のインライン展開 + main.ts の closeOpenActionDropdowns）。
+ * メニューはトリガーと同幅でトリガーの下に重ねて表示する。
+ */
+.workflow-dropdown {
+  display: grid;
+  gap: 12px;
+  anchor-scope: --workflow-dropdown-trigger;
+
+  .workflow-dropdown-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 28px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 8px 10px;
+    anchor-name: --workflow-dropdown-trigger;
+  }
+}
+
+.workflow-export-menu {
+  position: fixed;
+  position-anchor: --workflow-dropdown-trigger;
+  position-area: block-end span-all;
+  position-try-fallbacks: flip-block;
+  inset: auto;
+  margin: 4px 0 0;
+  width: anchor-size(width);
+  gap: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  padding: 8px;
+
+  &:popover-open {
+    display: grid;
+  }
+}
+
+.workflow-dropdown .workflow-dropdown-trigger span,
+.workflow-export-menu .button-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workflow-dropdown {
+  .workflow-dropdown-trigger svg {
+    width: 15px;
+    height: 15px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+  }
+
+  &:has(:popover-open) .workflow-dropdown-trigger {
+    border-color: var(--line-strong);
+    background: var(--panel-strong);
+    color: var(--ink);
+  }
+
+  &:has(:popover-open) .workflow-dropdown-trigger > svg {
+    transform: rotate(180deg);
+  }
+}
+
+.workflow-import-form {
+  margin-top: 0;
+}
+
+.workflow-import-collapsed {
+  padding: 0;
+}
+
+.workflow-import-trigger {
+  width: 100%;
+  justify-content: center;
+}
+
+.compact-dropdown {
+  gap: 8px;
+}
+
+.studio-shell {
+  display: flex;
+  min-height: calc(100vh - 44px);
+}
+
+.studio-sidebar {
+  position: relative;
+  width: 324px;
+  min-width: 324px;
+  height: calc(100vh - 44px);
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  padding: 12px 13px;
+}
+
+.sidebar-collapse-toggle {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--panel-strong);
+  color: var(--faint);
+
+  &:hover {
+    background: var(--panel-soft);
+    color: var(--ink);
+  }
+
+  svg {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.6;
+  }
+}
+
+.studio-sidebar {
+  &.collapsed {
+    width: 56px;
+    min-width: 56px;
+    overflow: hidden;
+    padding: 12px 8px;
+  }
+
+  &.collapsed .sidebar-collapse-toggle {
+    position: static;
+    transform: rotate(180deg);
+    margin: 0 auto 12px;
+  }
+
+  &.collapsed .studio-sidebar-content {
+    display: none;
+  }
+}
+
