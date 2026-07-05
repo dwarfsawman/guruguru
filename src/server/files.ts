@@ -52,6 +52,9 @@ export function contentTypeFor(path: string) {
   if (ext === ".css") {
     return "text/css; charset=utf-8";
   }
+  if (ext === ".woff2") {
+    return "font/woff2";
+  }
   if (ext === ".wasm") {
     return "application/wasm";
   }
