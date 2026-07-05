@@ -53,31 +53,86 @@ export type MessageAction = {
   id?: string;
 };
 
-const messageAutoClearMs = 15_000;
-let messageValue = "";
-let messageClearTimer: number | null = null;
-/**
- * トーストに添えるアクションボタン(例: Round 削除の「元に戻す」)。
- * `state.message` を設定するとリセットされるので、必要なら message の後に設定する。
- */
-let messageActionValue: MessageAction | null = null;
+export type ToastType = "info" | "error";
 
-function scheduleMessageClear(value: string) {
-  if (messageClearTimer) {
-    window.clearTimeout(messageClearTimer);
-    messageClearTimer = null;
+export type Toast = {
+  id: string;
+  text: string;
+  type: ToastType;
+  action?: MessageAction;
+};
+
+const TOAST_AUTO_CLEAR_MS = 15_000;
+const MAX_TOASTS = 5;
+let toastIdCounter = 0;
+let toastsValue: Toast[] = [];
+const toastTimers = new Map<string, number>();
+
+function clearToastTimer(id: string) {
+  const timer = toastTimers.get(id);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    toastTimers.delete(id);
   }
-  if (!value) {
+}
+
+function scheduleToastAutoClear(id: string) {
+  clearToastTimer(id);
+  const timer = window.setTimeout(() => {
+    toastTimers.delete(id);
+    dismissToast(id);
+  }, TOAST_AUTO_CLEAR_MS);
+  toastTimers.set(id, timer);
+}
+
+/**
+ * 「見つからない場合の通知」を優先して間引く(action 付きトーストは undo/redo の
+ * 対象なので残す)。全件 action 付きの場合のみ先頭(最古)を間引く。
+ */
+function evictExcessToasts() {
+  if (toastsValue.length <= MAX_TOASTS) {
     return;
   }
+  const evictIndex = toastsValue.findIndex((toast) => !toast.action);
+  const [removed] = toastsValue.splice(evictIndex >= 0 ? evictIndex : 0, 1);
+  clearToastTimer(removed.id);
+}
 
-  messageClearTimer = window.setTimeout(() => {
-    if (messageValue === value) {
-      messageValue = "";
-      messageActionValue = null;
-      requestRender();
+/**
+ * トーストを追加する。`type: "info"` は従来どおり 15 秒後に自動で消える。
+ * `type: "error"` は自動で消えず、手動 dismiss(`dismissToast`)のみで消える。
+ * 同一 text + type のトーストが既にあれば新規追加せず、そのタイマーだけ延長する
+ * (auto-collect のポーリングエラー等が連投されてもスタックが埋まらないように)。
+ */
+export function pushToast(text: string, type: ToastType = "info", action?: MessageAction): string {
+  const existing = toastsValue.find((toast) => toast.text === text && toast.type === type);
+  if (existing) {
+    existing.action = action;
+    if (existing.type === "info") {
+      scheduleToastAutoClear(existing.id);
     }
-  }, messageAutoClearMs);
+    requestRender();
+    return existing.id;
+  }
+
+  const id = `toast-${++toastIdCounter}`;
+  toastsValue = [...toastsValue, { id, text, type, action }];
+  if (type === "info") {
+    scheduleToastAutoClear(id);
+  }
+  evictExcessToasts();
+  requestRender();
+  return id;
+}
+
+export function dismissToast(id: string) {
+  clearToastTimer(id);
+  const next = toastsValue.filter((toast) => toast.id !== id);
+  if (next.length === toastsValue.length) {
+    return;
+  }
+  toastsValue = next;
+  requestRender();
 }
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "guruguru:sidebarCollapsed";
@@ -118,8 +173,9 @@ export interface AppState {
   llmStatusText: string;
   llmImproving: boolean;
   busy: boolean;
+  /** @deprecated `info` トーストを追加する後方互換のシュガー。エラーや action 付きは `pushToast` を使う。 */
   message: string;
-  messageAction: MessageAction | null;
+  toasts: Toast[];
   generationDraft: GenerationDraft | null;
   inpaintDrafts: Record<string, InpaintDraft>;
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
@@ -159,19 +215,16 @@ export const state: AppState = {
   llmStatusText: "未確認",
   llmImproving: false,
   busy: false,
-  get message() {
-    return messageValue;
-  },
   set message(value: string) {
-    messageValue = value;
-    messageActionValue = null;
-    scheduleMessageClear(value);
+    if (value) {
+      pushToast(value, "info");
+    }
   },
-  get messageAction() {
-    return messageActionValue;
+  get message() {
+    return "";
   },
-  set messageAction(value: MessageAction | null) {
-    messageActionValue = value;
+  get toasts() {
+    return toastsValue;
   },
   generationDraft: null,
   inpaintDrafts: {},

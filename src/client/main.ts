@@ -22,6 +22,8 @@ import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryVi
 import { renderGenerationPanel } from "./views/generationPanel";
 import { renderAssetModal, type MaskGenerationParams } from "./views/assetModal";
 import {
+  dismissToast,
+  pushToast,
   setRenderCallback,
   state,
   toggleSidebarCollapsed,
@@ -184,7 +186,7 @@ function bindEvents() {
     if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.sourceUpload) {
       void uploadSourceAsset(target).catch((error) => {
         state.busy = false;
-        state.message = error instanceof Error ? error.message : String(error);
+        pushToast(error instanceof Error ? error.message : String(error), "error");
         render();
       });
       return;
@@ -503,8 +505,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       toggleSidebarCollapsed();
       render();
     } else if (action === "dismiss-message") {
-      state.message = "";
-      render();
+      dismissToast(id);
     } else if (action === "toggle-mask-grid-tag") {
       state.showMaskGridTag = !state.showMaskGridTag;
       render();
@@ -514,7 +515,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
         try {
           await navigator.clipboard.writeText(seedText);
         } catch {
-          state.message = "クリップボードへのコピーに失敗しました。";
+          pushToast("クリップボードへのコピーに失敗しました。", "error");
           render();
           return;
         }
@@ -529,7 +530,7 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     }
   } catch (error) {
     state.busy = false;
-    state.message = error instanceof Error ? error.message : String(error);
+    pushToast(error instanceof Error ? error.message : String(error), "error");
     render();
   }
 }
@@ -543,7 +544,7 @@ function render(_options: RenderOptions = {}) {
   }
   const regions = [
     renderHeader(),
-    state.message ? `<div class="message"><pre class="message-text">${escapeHtml(state.message)}</pre>${state.messageAction ? `<button class="button-secondary compact message-action" type="button" data-action="${escapeAttr(state.messageAction.action)}"${state.messageAction.id ? ` data-id="${escapeAttr(state.messageAction.id)}"` : ""}>${escapeHtml(state.messageAction.label)}</button>` : ""}<button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button></div>` : "",
+    renderToastStack(),
     state.detail ? renderProjectDetailView(state.detail) : renderHome(
       state.projects,
       state.settings,
@@ -624,6 +625,20 @@ function refreshIterationEdges() {
       iterationEdgeObserver.observe(tracker);
     }
   });
+}
+
+function renderToastStack() {
+  if (state.toasts.length === 0) {
+    return "";
+  }
+  const items = state.toasts.map((toast) => `
+    <div class="message message-${toast.type}" data-key="${escapeAttr(toast.id)}">
+      <pre class="message-text">${escapeHtml(toast.text)}</pre>
+      ${toast.action ? `<button class="button-secondary compact message-action" type="button" data-action="${escapeAttr(toast.action.action)}"${toast.action.id ? ` data-id="${escapeAttr(toast.action.id)}"` : ""}>${escapeHtml(toast.action.label)}</button>` : ""}
+      <button class="message-close" type="button" data-action="dismiss-message" data-id="${escapeAttr(toast.id)}" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button>
+    </div>
+  `).join("");
+  return `<div class="message-stack" data-key="message-stack">${items}</div>`;
 }
 
 function renderHeader() {

@@ -8,7 +8,7 @@ import type { GenerationMode, GenerationRequest } from "../shared/types";
 import type { Asset, CollectRoundResponse, ProjectDetail, Round } from "../shared/apiTypes";
 import { api } from "./api";
 import { type Json } from "./json";
-import { requestRender, state } from "./appState";
+import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { findAsset } from "./assetLookup";
 import { delay } from "./clientUtils";
@@ -209,8 +209,7 @@ export async function deleteRoundTree(roundId: string) {
   state.activeAssetId = null;
   state.deletePreviewRoundId = null;
   await refreshProject(keepRoundId, null);
-  state.message = `${result.deletedCount}件のイテレーションを削除しました。`;
-  state.messageAction = { label: "元に戻す (Ctrl+Z)", action: "undo-round-delete" };
+  pushToast(`${result.deletedCount}件のイテレーションを削除しました。`, "info", { label: "元に戻す (Ctrl+Z)", action: "undo-round-delete" });
   requestRender();
 }
 
@@ -226,8 +225,7 @@ export async function undoRoundDeletion() {
   });
   roundDeletionRedoStack.push(record);
   await refreshProject(record.rootId, null);
-  state.message = `${result.restoredCount}件のイテレーションを復元しました。`;
-  state.messageAction = { label: "やり直す (Ctrl+Y)", action: "redo-round-delete" };
+  pushToast(`${result.restoredCount}件のイテレーションを復元しました。`, "info", { label: "やり直す (Ctrl+Y)", action: "redo-round-delete" });
   requestRender();
 }
 
@@ -285,7 +283,7 @@ export async function pollCollectRound(roundId: string, projectId: string | null
     }
   } catch (error) {
     if (state.currentProjectId === projectId) {
-      state.message = error instanceof Error ? error.message : String(error);
+      pushToast(error instanceof Error ? error.message : String(error), "error");
       requestRender();
     }
   } finally {

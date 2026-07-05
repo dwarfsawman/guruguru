@@ -2,7 +2,7 @@ import type { ComfySettings, LlmSettings } from "../shared/types";
 import type { ComfyStatus, LlmStatus } from "../shared/apiTypes";
 import { api } from "./api";
 import { type Json } from "./json";
-import { requestRender, state } from "./appState";
+import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { readForm } from "./formUtils";
 import { setPositivePromptDraft } from "./generationDraft";
@@ -41,7 +41,7 @@ async function testComfy() {
   const result = await api<Json>("/api/comfy/test", { method: "POST", body: "{}" });
   state.comfyConnection = isComfyTestSuccessful(result) ? "connected" : "disconnected";
   state.comfyStatusText = state.comfyConnection === "connected" ? "ComfyUI 接続済み" : "ComfyUI 未接続";
-  state.message = JSON.stringify(result, null, 2);
+  pushToast(JSON.stringify(result, null, 2), state.comfyConnection === "connected" ? "info" : "error");
   requestRender();
 }
 
@@ -54,13 +54,13 @@ export async function refreshComfyStatus(showMessage = false) {
     state.comfyConnection = status.ok ? "connected" : "disconnected";
     state.comfyStatusText = status.ok ? "ComfyUI 接続済み" : `ComfyUI 未接続: ${status.error ?? status.baseUrl}`;
     if (showMessage) {
-      state.message = state.comfyStatusText;
+      pushToast(state.comfyStatusText, status.ok ? "info" : "error");
     }
   } catch (error) {
     state.comfyConnection = "disconnected";
     state.comfyStatusText = error instanceof Error ? error.message : String(error);
     if (showMessage) {
-      state.message = state.comfyStatusText;
+      pushToast(state.comfyStatusText, "error");
     }
   }
   requestRender();
@@ -99,7 +99,7 @@ async function testLlm() {
   const result = await api<Json>("/api/llm/test", { method: "POST", body: "{}" });
   state.llmConnection = result.ok === true ? "connected" : "disconnected";
   state.llmStatusText = state.llmConnection === "connected" ? "OpenAI互換 接続済み" : `OpenAI互換 未接続: ${result.error ?? ""}`;
-  state.message = JSON.stringify(result, null, 2);
+  pushToast(JSON.stringify(result, null, 2), state.llmConnection === "connected" ? "info" : "error");
   requestRender();
 }
 
