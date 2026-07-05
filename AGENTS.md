@@ -11,6 +11,12 @@
 - Treat the user's production ComfyUI instance (default port 8188) as production user data. Do not read endpoints that expose generation content — `/history` (workflows, prompts, seeds), `/view` (images) — and do not browse its input/output directories. Connectivity-level endpoints (`/queue`, `/system_stats`, `/object_info`) are acceptable. To diagnose errors, ask the user to share the error message from the UI, or reproduce on an isolated test ComfyUI instance (separate port and working directories). Ask before state-changing calls to the production instance (e.g. `/free`, `/interrupt`).
 - For UI layout validation, explicitly check a wide browser viewport such as `1680x920` or `1600x900`, especially for sidebars, modals, and workflow/template panels. Confirm the viewport dimensions before judging the result, and reset any temporary viewport override after verification.
 
+## Client Architecture
+
+- Client app state lives in `src/client/appState.ts`. Modules must `import { state } from "./appState"` and request re-renders via `requestRender()`; never import `main.ts`.
+- New stateful feature code goes into a dedicated controller module (`src/client/*Controller.ts` etc.), registering its `data-action` handlers with `registerActions({...})` and its DOM event wiring with `registerEventBinder(...)` from `src/client/actionRegistry.ts`.
+- Do not add new functions to `src/client/main.ts`. It is the composition root (boot, `render`, and legacy code pending migration under the second refactoring plan, phases B-I).
+
 ## Documentation and Git
 
 - Keep repository operation notes, usage steps, and recurring cautions in `操作メモ.md`.
