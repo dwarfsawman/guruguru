@@ -32,24 +32,20 @@ import { inpaintDraftForAsset, persistProjectDraft } from "./draftStore";
 import { assetDimension, findAsset } from "./assetLookup";
 import {
   cancelPendingMaskStrokeFlush,
-  clearActiveImagePan,
-  closeMaskEditorSession,
   handleMaskEditorPointerCancel,
   handleMaskEditorPointerDown,
   handleMaskEditorPointerMove,
   handleMaskEditorPointerUp,
-  handleMaskPointerDown,
   handleMaskStrokePointerCancel,
   handleMaskStrokePointerMove,
   handleMaskStrokePointerUp,
+  handleMaskStrokeStartPointerDown,
   handleMaskWheelZoom,
   invalidateMaskBrushCursorCache,
   syncAssetModalMaskCanvas,
   updateInpaintDraftFromControl
 } from "./maskEditorController";
 import {
-  clearActiveWebSamBoxPrompt,
-  destroyWebSamWorkerSession,
   handleWebSamPointerCancel,
   handleWebSamPointerMove,
   handleWebSamPointerUp,
@@ -57,8 +53,6 @@ import {
 } from "./webSamController";
 import { delay } from "./clientUtils";
 import {
-  clearSelectedPoseEdges,
-  closePoseEditorSession,
   getSelectedPoseEdges,
   handlePoseEditorKeydown,
   handlePoseEditorPointerCancel,
@@ -70,7 +64,6 @@ import {
 } from "./poseEditorController";
 import { defaultPaintDraft } from "./paintDraft";
 import {
-  closePaintEditorSession,
   handlePaintEditorBlur,
   handlePaintEditorKeydown,
   handlePaintEditorKeyup,
@@ -110,13 +103,12 @@ import {
   updateDenoiseControlForMode
 } from "./generationDraft";
 import {
+  handleAssetCardClick,
+  handleAssetCardDblClick,
+  handleIterationDotClick,
+  handleIterationDotDblClick,
   isRoundActive,
-  previewRoundDeletion,
-  selectAllActiveRound,
-  selectRound,
-  setAssetStatus,
-  toggleFavorite,
-  toggleSelect
+  selectAllActiveRound
 } from "./generationController";
 import {
   captureWorkflowImportDraftFromElement,
@@ -131,10 +123,10 @@ import {
   refreshWorkflowImportPreview,
   uploadSourceAsset
 } from "./projectController";
+import { closeAssetDetail } from "./assetDetailController";
+import { handleAssetActionShortcuts } from "./shortcuts";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
-let pendingAssetCardSelect: { assetId: string; timer: number } | null = null;
-let pendingIterationDotSelect: { timer: number } | null = null;
 
 setRenderCallback(render);
 void boot();
@@ -157,28 +149,10 @@ function bindEvents() {
       return;
     }
 
-    const iterationDot = target.closest<HTMLElement>(".iteration-dot");
-    if (iterationDot?.dataset.id && event.detail >= 2) {
-      event.preventDefault();
-      clearPendingIterationDotSelect();
-      previewRoundDeletion(iterationDot.dataset.id);
+    if (handleIterationDotClick(event)) {
       return;
     }
-    if (iterationDot?.dataset.id) {
-      event.preventDefault();
-      scheduleIterationDotSelect(iterationDot.dataset.id);
-      return;
-    }
-
-    const assetCardMain = target.closest<HTMLElement>(".asset-card-main");
-    if (assetCardMain?.dataset.id) {
-      if (event.detail >= 2) {
-        event.preventDefault();
-        clearPendingAssetCardSelect();
-        return;
-      }
-      captureGenerationDraft();
-      scheduleAssetCardSelect(assetCardMain.dataset.id);
+    if (handleAssetCardClick(event)) {
       return;
     }
 
@@ -196,23 +170,10 @@ function bindEvents() {
   });
 
   app.addEventListener("dblclick", (event) => {
-    const target = event.target as HTMLElement;
-    const assetCardMain = target.closest<HTMLElement>(".asset-card-main");
-    if (assetCardMain?.dataset.id) {
-      event.preventDefault();
-      clearPendingAssetCardSelect();
-      captureGenerationDraft();
-      openAssetDetail(assetCardMain.dataset.id);
+    if (handleAssetCardDblClick(event)) {
       return;
     }
-
-    const dot = target.closest<HTMLElement>(".iteration-dot");
-    if (!dot?.dataset.id) {
-      return;
-    }
-    event.preventDefault();
-    clearPendingIterationDotSelect();
-    previewRoundDeletion(dot.dataset.id);
+    handleIterationDotDblClick(event);
   });
 
   app.addEventListener("change", (event) => {
@@ -423,22 +384,7 @@ function bindEvents() {
       return;
     }
 
-    if (event.key === "r" || event.key === "R") {
-      void setAssetStatus(state.activeAssetId, "rejected");
-    }
-    if (event.key === "f" || event.key === "F") {
-      void toggleFavorite(state.activeAssetId);
-    }
-    if (event.key === " ") {
-      event.preventDefault();
-      void toggleSelect(state.activeAssetId);
-    }
-    if (event.key === "Enter") {
-      const asset = findAsset(state.activeAssetId);
-      if (asset) {
-        fillGenerationFormFromAsset(asset, "img2img");
-      }
-    }
+    handleAssetActionShortcuts(event);
   });
 
   window.addEventListener("keyup", (event) => {
@@ -467,14 +413,7 @@ function bindEvents() {
     if (handlePaintEditorPointerDown(event, target)) {
       return;
     }
-    if (target.id !== "maskCanvas") {
-      return;
-    }
-    if (!state.maskEditMode || state.maskPanelTab === "pose") {
-      return;
-    }
-    event.preventDefault();
-    handleMaskPointerDown(event, target as HTMLCanvasElement);
+    handleMaskStrokeStartPointerDown(event);
   });
 
   app.addEventListener("pointermove", (event) => {
@@ -537,44 +476,6 @@ function bindEvents() {
   bindRegisteredEvents(app);
 }
 
-function scheduleAssetCardSelect(assetId: string) {
-  clearPendingAssetCardSelect();
-  pendingAssetCardSelect = {
-    assetId,
-    timer: window.setTimeout(() => {
-      pendingAssetCardSelect = null;
-      void toggleSelect(assetId);
-    }, 220)
-  };
-}
-
-function clearPendingAssetCardSelect() {
-  if (!pendingAssetCardSelect) {
-    return;
-  }
-  window.clearTimeout(pendingAssetCardSelect.timer);
-  pendingAssetCardSelect = null;
-}
-
-function scheduleIterationDotSelect(roundId: string) {
-  clearPendingIterationDotSelect();
-  pendingIterationDotSelect = {
-    timer: window.setTimeout(() => {
-      pendingIterationDotSelect = null;
-      captureGenerationDraft();
-      selectRound(roundId);
-    }, 220)
-  };
-}
-
-function clearPendingIterationDotSelect() {
-  if (!pendingIterationDotSelect) {
-    return;
-  }
-  window.clearTimeout(pendingIterationDotSelect.timer);
-  pendingIterationDotSelect = null;
-}
-
 function isTextEntryTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
@@ -583,35 +484,6 @@ function isTextEntryTarget(target: EventTarget | null) {
     return true;
   }
   return target.isContentEditable || !!target.closest("[contenteditable=''], [contenteditable='true']");
-}
-
-function openAssetDetail(assetId: string) {
-  state.activeAssetId = assetId;
-  // 編集モード（マスク/ポーズ）は常に閉じた状態で開く。マスク/ポーズの「添付」状態は
-  // それぞれの enabled で独立管理し、編集モードの開閉とは切り離す。
-  state.maskEditMode = false;
-  state.paintEditMode = false;
-  state.maskPanelTab = "mask";
-  state.maskToolbarMinimized = false;
-  state.maskToolbarPos = null;
-  clearSelectedPoseEdges();
-  clearActiveImagePan();
-  render();
-}
-
-function closeAssetDetail() {
-  closeMaskEditorSession();
-  closePaintEditorSession();
-  clearActiveWebSamBoxPrompt();
-  void destroyWebSamWorkerSession();
-  closePoseEditorSession();
-  state.activeAssetId = null;
-  state.maskEditMode = false;
-  state.paintEditMode = false;
-  state.maskPanelTab = "mask";
-  state.maskToolbarMinimized = false;
-  state.maskToolbarPos = null;
-  render();
 }
 
 function closeOpenActionDropdowns(exceptTarget?: EventTarget | null) {
@@ -639,10 +511,6 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     } else if (action === "dismiss-message") {
       state.message = "";
       render();
-    } else if (action === "asset-detail") {
-      openAssetDetail(id);
-    } else if (action === "close-detail") {
-      closeAssetDetail();
     } else if (action === "toggle-mask-grid-tag") {
       state.showMaskGridTag = !state.showMaskGridTag;
       render();
