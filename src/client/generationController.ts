@@ -167,15 +167,28 @@ type RoundDeletionRecord = { rootId: string; roundIds: string[] };
 let roundDeletionUndoStack: RoundDeletionRecord[] = [];
 let roundDeletionRedoStack: RoundDeletionRecord[] = [];
 
-/** プロジェクトを離れたら削除履歴を破棄する(復元自体はソフト削除なのでいつでも可能)。 */
+/**
+ * プロジェクトを離れる時に呼ぶ。undo 履歴を破棄し、サーバーのゴミ箱スナップショットも
+ * discard して削除を確定する(undo はプロジェクトを開いている間だけ有効)。
+ */
 export function resetRoundDeletionHistory() {
+  const rootIds = roundDeletionUndoStack.map((record) => record.rootId);
   roundDeletionUndoStack = [];
   roundDeletionRedoStack = [];
+  if (rootIds.length) {
+    void api("/api/rounds/trash/discard", {
+      method: "POST",
+      body: JSON.stringify({ rootIds })
+    }).catch(() => {
+      // 破棄はベストエフォート。残骸はサーバー再起動時の全パージで消える。
+    });
+  }
 }
 
 /**
- * Round サブツリーの削除。サーバー側はソフト削除なので confirm なしで即実行し、
- * トーストの「元に戻す」または Ctrl+Z(やり直しは Ctrl+Y / Ctrl+Shift+Z)で復元できる。
+ * Round サブツリーの削除。ゴミ箱スナップショットへ退避してから完全削除するので
+ * confirm なしで即実行し、トーストの「元に戻す」または Ctrl+Z(やり直しは
+ * Ctrl+Y / Ctrl+Shift+Z)で復元できる。プロジェクトを離れると削除が確定する。
  */
 export async function deleteRoundTree(roundId: string) {
   if (!state.currentProjectId) {
@@ -201,7 +214,7 @@ export async function deleteRoundTree(roundId: string) {
   requestRender();
 }
 
-/** 直近の Round 削除を取り消す(ソフト削除の復元)。 */
+/** 直近の Round 削除を取り消す(ゴミ箱スナップショットからの復元)。 */
 export async function undoRoundDeletion() {
   const record = roundDeletionUndoStack.pop();
   if (!record || !state.currentProjectId) {
@@ -209,7 +222,7 @@ export async function undoRoundDeletion() {
   }
   const result = await api<{ restored: boolean; roundIds: string[]; restoredCount: number }>("/api/rounds/restore", {
     method: "POST",
-    body: JSON.stringify({ roundIds: record.roundIds })
+    body: JSON.stringify({ rootId: record.rootId })
   });
   roundDeletionRedoStack.push(record);
   await refreshProject(record.rootId, null);
@@ -218,7 +231,7 @@ export async function undoRoundDeletion() {
   requestRender();
 }
 
-/** 取り消した Round 削除をやり直す(再度ソフト削除)。 */
+/** 取り消した Round 削除をやり直す(再度削除し、スナップショットも作り直される)。 */
 export async function redoRoundDeletion() {
   const record = roundDeletionRedoStack.pop();
   if (!record || !state.currentProjectId) {

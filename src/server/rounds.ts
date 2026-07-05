@@ -18,6 +18,12 @@ import { isJsonObject, numberOr, objectBody, stringOrNull, stringOr } from "./va
 import { isUnifiedSwitchWorkflow, patchWorkflow, resolveSeed } from "./workflow";
 import { decorateAsset } from "./assets";
 import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
+import {
+  readRoundTrashSnapshot,
+  removeRoundTrashSnapshot,
+  writeRoundTrashSnapshot,
+  type SqlRow
+} from "./roundTrash";
 import { decodeControlImageDataUrl, decodeMaskDataUrl } from "./uploadDataUrl";
 import {
   relationForGenerationMode,
@@ -996,19 +1002,17 @@ function stopRoundMonitor(roundId: string) {
 }
 
 /**
- * Round サブツリーのソフト削除。行・アセット・画像ファイルは残したまま `deleted_at` を
- * 立てるだけなので、`restoreRounds` でいつでも復元できる(UX改善#3)。
- * 既に削除済みの子孫(過去の別の削除)は対象に含めない。
+ * Round サブツリーの削除(UX改善#3)。関連行をゴミ箱スナップショット
+ * (`<dataRoot>/trash/rounds/<rootId>.json`)へ書き出してから DB からは完全削除する。
+ * 画像ファイルは disk に残るため、`restoreRounds` でスナップショットから復元できる。
  */
 export function deleteRoundTree(roundId: string) {
-  const round = getRow<Record<string, unknown>>(
-    "SELECT * FROM generation_rounds WHERE id = ? AND deleted_at IS NULL",
-    [roundId]
-  );
+  const round = getRow<Record<string, unknown>>("SELECT * FROM generation_rounds WHERE id = ?", [roundId]);
   if (!round) {
     throw new HttpError(404, "Round was not found");
   }
 
+  // depth ASC(親が先)で保存し、復元時にこの順で INSERT する(parent_round_id FK のため)。
   const rows = getRows<{ id: string; depth: number }>(
     `WITH RECURSIVE round_tree(id, depth) AS (
        SELECT id, 0 FROM generation_rounds WHERE id = ?
@@ -1016,68 +1020,130 @@ export function deleteRoundTree(roundId: string) {
        SELECT child.id, round_tree.depth + 1
        FROM generation_rounds child
        JOIN round_tree ON child.parent_round_id = round_tree.id
-       WHERE child.deleted_at IS NULL
      )
-     SELECT id, depth FROM round_tree ORDER BY depth DESC`,
+     SELECT id, depth FROM round_tree ORDER BY depth ASC`,
     [roundId]
   );
+  const roundIds = rows.map((row) => row.id);
+  const placeholders = roundIds.map(() => "?").join(", ");
+
+  const roundRows = roundIds.map(
+    (id) => getRow<SqlRow>("SELECT * FROM generation_rounds WHERE id = ?", [id])!
+  );
+  const jobRows = getRows<SqlRow>(`SELECT * FROM generation_jobs WHERE round_id IN (${placeholders})`, roundIds);
+  const assetRows = getRows<SqlRow>(`SELECT * FROM assets WHERE round_id IN (${placeholders})`, roundIds);
+  const assetIds = assetRows.map((row) => String(row.id));
+  const assetPlaceholders = assetIds.map(() => "?").join(", ");
+  const assetParentRows = assetIds.length
+    ? getRows<SqlRow>(
+        `SELECT * FROM asset_parents WHERE parent_asset_id IN (${assetPlaceholders}) OR child_asset_id IN (${assetPlaceholders})`,
+        [...assetIds, ...assetIds]
+      )
+    : [];
+  const selectionEventRows = getRows<SqlRow>(
+    `SELECT * FROM selection_events WHERE round_id IN (${placeholders})`,
+    roundIds
+  );
+
+  writeRoundTrashSnapshot({
+    version: 1,
+    rootId: roundId,
+    deletedAt: new Date().toISOString(),
+    rounds: roundRows,
+    jobs: jobRows,
+    assets: assetRows,
+    assetParents: assetParentRows,
+    selectionEvents: selectionEventRows
+  });
 
   runSql("BEGIN");
   try {
-    for (const row of rows) {
+    // 子孫から順に削除(parent_round_id FK)。jobs / assets / selection_events /
+    // asset_parents は ON DELETE CASCADE で連動する。
+    for (const row of [...rows].reverse()) {
       stopRoundMonitor(row.id);
-      runSql("UPDATE generation_rounds SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?", [row.id]);
+      runSql("DELETE FROM generation_rounds WHERE id = ?", [row.id]);
     }
     runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [round.project_id]);
     runSql("COMMIT");
   } catch (error) {
     runSql("ROLLBACK");
+    removeRoundTrashSnapshot(roundId);
     throw error;
   }
 
   return {
     deleted: true,
-    roundIds: rows.map((row) => row.id),
+    roundIds,
     deletedCount: rows.length
   };
 }
 
+function insertSqlRow(tableName: string, row: SqlRow) {
+  const columns = Object.keys(row);
+  runSql(
+    `INSERT INTO ${tableName} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    columns.map((column) => row[column] as string | number | null)
+  );
+}
+
 /**
- * ソフト削除済み Round の復元。クライアントは削除時に受け取った `roundIds` を
- * そのまま渡す(サブツリーを再計算しないので、過去の別の削除分を巻き込まない)。
+ * ゴミ箱スナップショットからの復元。クライアントは削除時のルート Round id を渡す。
+ * スナップショットは復元成功後に削除される(= 復元は 1 回きり。再削除すれば再作成される)。
  */
 export function restoreRounds(body: unknown) {
   const input = objectBody(body);
-  const roundIds = Array.isArray(input.roundIds) ? input.roundIds.filter((id): id is string => typeof id === "string" && id.trim() !== "") : [];
-  if (!roundIds.length) {
-    throw new HttpError(400, "roundIds is required");
+  const rootId = typeof input.rootId === "string" ? input.rootId.trim() : "";
+  if (!rootId) {
+    throw new HttpError(400, "rootId is required");
   }
-
-  const placeholders = roundIds.map(() => "?").join(", ");
-  const rows = getRows<{ id: string; project_id: string }>(
-    `SELECT id, project_id FROM generation_rounds WHERE id IN (${placeholders}) AND deleted_at IS NOT NULL`,
-    roundIds
-  );
-  if (!rows.length) {
-    throw new HttpError(404, "No deleted rounds were found for the given roundIds");
+  const snapshot = readRoundTrashSnapshot(rootId);
+  if (!snapshot) {
+    throw new HttpError(404, "復元データが見つかりません(ゴミ箱の保持期限切れの可能性があります)");
+  }
+  const projectId = snapshot.rounds[0]?.project_id;
+  if (typeof projectId !== "string" || !getRow("SELECT id FROM projects WHERE id = ?", [projectId])) {
+    throw new HttpError(409, "復元先の Project が存在しません");
   }
 
   runSql("BEGIN");
   try {
-    for (const row of rows) {
-      runSql("UPDATE generation_rounds SET deleted_at = NULL WHERE id = ?", [row.id]);
+    for (const row of snapshot.rounds) {
+      // ルートの親 Round が(別の削除で)存在しなくなっていたら root として復元する。
+      const parentId = row.parent_round_id;
+      const parentExists =
+        typeof parentId === "string" && !!getRow("SELECT id FROM generation_rounds WHERE id = ?", [parentId]);
+      insertSqlRow("generation_rounds", { ...row, parent_round_id: parentExists ? parentId : null });
     }
-    runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [rows[0]!.project_id]);
+    for (const row of snapshot.jobs) {
+      insertSqlRow("generation_jobs", row);
+    }
+    for (const row of snapshot.assets) {
+      insertSqlRow("assets", row);
+    }
+    for (const row of snapshot.assetParents) {
+      // サブツリー外の端点(親アセット等)が別の削除で消えていたら、その関連だけ諦める。
+      const parentOk = getRow("SELECT id FROM assets WHERE id = ?", [row.parent_asset_id as string]);
+      const childOk = getRow("SELECT id FROM assets WHERE id = ?", [row.child_asset_id as string]);
+      if (parentOk && childOk && !getRow("SELECT id FROM asset_parents WHERE id = ?", [row.id as string])) {
+        insertSqlRow("asset_parents", row);
+      }
+    }
+    for (const row of snapshot.selectionEvents) {
+      insertSqlRow("selection_events", row);
+    }
+    runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [projectId]);
     runSql("COMMIT");
   } catch (error) {
     runSql("ROLLBACK");
     throw error;
   }
+  removeRoundTrashSnapshot(rootId);
 
   return {
     restored: true,
-    roundIds: rows.map((row) => row.id),
-    restoredCount: rows.length
+    roundIds: snapshot.rounds.map((row) => String(row.id)),
+    restoredCount: snapshot.rounds.length
   };
 }
 
