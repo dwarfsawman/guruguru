@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
+import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
 import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection } from "./llm";
 import { serveStatic } from "./files";
@@ -61,6 +62,10 @@ server.listen(port, () => {
   console.log(`GURUGURU listening on http://127.0.0.1:${port}`);
   console.log(`Data directory: ${dataRoot}`);
   console.log(`Database path: ${dbPath}`);
+  const purgedTrash = purgeAllRoundTrash();
+  if (purgedTrash > 0) {
+    console.log(`Purged ${purgedTrash} leftover round trash snapshot(s).`);
+  }
   if (process.stdin.isTTY) {
     console.log("Press q or Ctrl+C to stop GURUGURU.");
   }
@@ -225,6 +230,25 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "POST" && path === "/api/rounds/restore") {
     sendJson(res, 200, restoreRounds(await readJson(req)));
+    return;
+  }
+
+  // プロジェクトを離れる時に呼ばれ、そのセッションの削除を確定(復元不能に)する。
+  if (method === "POST" && path === "/api/rounds/trash/discard") {
+    const body = await readJson(req);
+    const rootIds = Array.isArray((body as Record<string, unknown>)?.rootIds)
+      ? ((body as Record<string, unknown>).rootIds as unknown[]).filter((id): id is string => typeof id === "string")
+      : [];
+    let discarded = 0;
+    for (const rootId of rootIds) {
+      try {
+        discardRoundTrashSnapshot(rootId);
+        discarded += 1;
+      } catch {
+        // 不正な id は無視する(パストラバーサル対策の検証エラー)。
+      }
+    }
+    sendJson(res, 200, { discarded });
     return;
   }
 

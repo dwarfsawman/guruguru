@@ -14,9 +14,9 @@ export function listProjects(): ProjectSummary[] {
   const rows = getRows<Record<string, unknown>>(
     `SELECT
        p.*,
-       (SELECT COUNT(*) FROM generation_rounds r WHERE r.project_id = p.id AND r.deleted_at IS NULL) AS round_count,
-       (SELECT COUNT(*) FROM assets a JOIN generation_rounds ar ON ar.id = a.round_id WHERE a.project_id = p.id AND ar.deleted_at IS NULL) AS asset_count,
-       (SELECT a.id FROM assets a JOIN generation_rounds ar ON ar.id = a.round_id WHERE a.project_id = p.id AND ar.deleted_at IS NULL AND a.status IN ('selected', 'favorite') ORDER BY a.created_at DESC LIMIT 1) AS representative_asset_id
+       (SELECT COUNT(*) FROM generation_rounds r WHERE r.project_id = p.id) AS round_count,
+       (SELECT COUNT(*) FROM assets a WHERE a.project_id = p.id) AS asset_count,
+       (SELECT a.id FROM assets a WHERE a.project_id = p.id AND a.status IN ('selected', 'favorite') ORDER BY a.created_at DESC LIMIT 1) AS representative_asset_id
      FROM projects p
      ORDER BY p.updated_at DESC`
   );
@@ -94,20 +94,14 @@ export function getProjectDetail(projectId: string, options: ProjectDetailOption
         (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id AND a.status = 'selected') AS selected_count,
         (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id AND a.status = 'rejected') AS rejected_count
        FROM generation_rounds r
-       WHERE r.project_id = ? AND r.deleted_at IS NULL
+       WHERE r.project_id = ?
        ORDER BY r.round_index DESC`,
       [projectId]
     )
   ) as unknown as Round[];
 
   const assets = toApiRows(
-    getRows(
-      `SELECT a.* FROM assets a
-       JOIN generation_rounds r ON r.id = a.round_id
-       WHERE a.project_id = ? AND r.deleted_at IS NULL
-       ORDER BY a.round_id ASC, a.batch_index ASC`,
-      [projectId]
-    )
+    getRows("SELECT * FROM assets WHERE project_id = ? ORDER BY round_id ASC, batch_index ASC", [projectId])
   ).map(decorateAsset);
 
   const parents = toApiRows(
