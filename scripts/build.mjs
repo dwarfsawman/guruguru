@@ -73,8 +73,21 @@ async function main() {
   await copyFile(join(root, "src", "client", "index.html"), join(root, "dist", "public", "index.html"));
   await copyFile(join(root, "src", "client", "styles.css"), join(root, "dist", "public", "styles.css"));
   await copyFile(join(root, "src", "client", "spiral.svg"), join(root, "dist", "public", "spiral.svg"));
+  await copyFonts();
   await copyOrtRuntimeAssets();
   await copyMediapipeWasmAssets();
+}
+
+async function copyFonts() {
+  const sourceDir = join(root, "src", "client", "fonts");
+  await mkdir(join(root, "dist", "public", "fonts"), { recursive: true });
+  const entries = await readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".woff2")) {
+      continue;
+    }
+    await copyFile(join(sourceDir, entry.name), join(root, "dist", "public", "fonts", entry.name));
+  }
 }
 
 async function copyOrtRuntimeAssets() {
