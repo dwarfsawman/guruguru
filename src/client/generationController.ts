@@ -389,61 +389,24 @@ export function selectRound(roundId: string) {
   requestRender();
 }
 
-let pendingAssetCardSelect: { assetId: string; timer: number } | null = null;
-let pendingIterationDotSelect: { timer: number } | null = null;
-
-function scheduleAssetCardSelect(assetId: string) {
-  clearPendingAssetCardSelect();
-  pendingAssetCardSelect = {
-    assetId,
-    timer: window.setTimeout(() => {
-      pendingAssetCardSelect = null;
-      void toggleSelect(assetId);
-    }, 220)
-  };
-}
-
-function clearPendingAssetCardSelect() {
-  if (!pendingAssetCardSelect) {
-    return;
-  }
-  window.clearTimeout(pendingAssetCardSelect.timer);
-  pendingAssetCardSelect = null;
-}
-
-function scheduleIterationDotSelect(roundId: string) {
-  clearPendingIterationDotSelect();
-  pendingIterationDotSelect = {
-    timer: window.setTimeout(() => {
-      pendingIterationDotSelect = null;
-      captureGenerationDraft();
-      selectRound(roundId);
-    }, 220)
-  };
-}
-
-function clearPendingIterationDotSelect() {
-  if (!pendingIterationDotSelect) {
-    return;
-  }
-  window.clearTimeout(pendingIterationDotSelect.timer);
-  pendingIterationDotSelect = null;
-}
-
-/** main.ts の click ハンドラから同じ優先順位で呼ばれる。`.asset-card-main` のシングル/ダブルクリック判定のみ扱う。 */
+/**
+ * main.ts の click ハンドラから同じ優先順位で呼ばれる。`.asset-card-main` のクリックは
+ * 即時に選択トグルする(dblclick と区別するための 220ms 遅延タイマーは廃止)。
+ * ダブルクリック時は 1 打目でトグルが走ったあと dblclick で詳細が開く。
+ * 2 打目(event.detail >= 2)はトグルの二重発火を避けるため消費だけする。
+ */
 export function handleAssetCardClick(event: MouseEvent): boolean {
   const target = event.target as HTMLElement;
   const assetCardMain = target.closest<HTMLElement>(".asset-card-main");
   if (!assetCardMain?.dataset.id) {
     return false;
   }
+  event.preventDefault();
   if (event.detail >= 2) {
-    event.preventDefault();
-    clearPendingAssetCardSelect();
     return true;
   }
   captureGenerationDraft();
-  scheduleAssetCardSelect(assetCardMain.dataset.id);
+  void toggleSelect(assetCardMain.dataset.id);
   return true;
 }
 
@@ -454,26 +417,27 @@ export function handleAssetCardDblClick(event: MouseEvent): boolean {
     return false;
   }
   event.preventDefault();
-  clearPendingAssetCardSelect();
   captureGenerationDraft();
   openAssetDetail(assetCardMain.dataset.id);
   return true;
 }
 
+/**
+ * iteration dot のクリックは即時に Round を選択する(遅延タイマー廃止)。
+ * ダブルクリック時は 1 打目で選択が走ったあと dblclick で削除プレビューに入る。
+ */
 export function handleIterationDotClick(event: MouseEvent): boolean {
   const target = event.target as HTMLElement;
   const iterationDot = target.closest<HTMLElement>(".iteration-dot");
   if (!iterationDot?.dataset.id) {
     return false;
   }
+  event.preventDefault();
   if (event.detail >= 2) {
-    event.preventDefault();
-    clearPendingIterationDotSelect();
-    previewRoundDeletion(iterationDot.dataset.id);
     return true;
   }
-  event.preventDefault();
-  scheduleIterationDotSelect(iterationDot.dataset.id);
+  captureGenerationDraft();
+  selectRound(iterationDot.dataset.id);
   return true;
 }
 
@@ -484,7 +448,6 @@ export function handleIterationDotDblClick(event: MouseEvent): boolean {
     return false;
   }
   event.preventDefault();
-  clearPendingIterationDotSelect();
   previewRoundDeletion(dot.dataset.id);
   return true;
 }
