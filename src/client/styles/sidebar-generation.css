@@ -76,6 +76,17 @@
 
 .sidebar-section {
   gap: 9px;
+
+  /* .connection-block と同じ理由(::details-content は開閉に関わらず常に
+     存在するため grid gap が閉時の空きスペースになる)で gap を打ち消し、
+     開時の ::details-content の margin-top に付け替える。 */
+  &.collapsible {
+    gap: 0;
+
+    &[open]::details-content {
+      margin-top: 9px;
+    }
+  }
 }
 
 .sidebar-section + .sidebar-section,
@@ -171,6 +182,12 @@ details + details {
 
 .collapsible {
   border: 0;
+  /* UX改善(保留項目): 開閉を height:0 ⇔ auto でアニメーションする。
+     interpolate-size を details 側で有効化し、::details-content(非 summary 内容を
+     包む生成ボックス)の block-size を 0/auto 間でトランジションさせる。
+     content-visibility は discrete プロパティなので allow-discrete で他の
+     トランジションと歩調を合わせ、閉時は clip して中身を隠す。 */
+  interpolate-size: allow-keywords;
 
   summary {
     display: flex;
@@ -199,6 +216,17 @@ details + details {
   &[open] summary svg {
     transform: rotate(180deg);
   }
+
+  &::details-content {
+    block-size: 0;
+    margin-top: 0;
+    overflow-y: clip;
+    transition: content-visibility 0.2s allow-discrete, block-size 0.2s ease, margin-top 0.2s ease;
+  }
+
+  &[open]::details-content {
+    block-size: auto;
+  }
 }
 
 .connection-block {
@@ -208,6 +236,18 @@ details + details {
   border-radius: 3px;
   padding: 11px 12px;
   background: var(--panel-strong);
+
+  /* ::details-content は開閉に関わらず常に存在するため、summary との間の
+     grid gap がそのまま閉時の空きスペースになってしまう。gap を打ち消し、
+     同じ 10px を開時の ::details-content の margin-top として付け直す
+     (.collapsible 側の transition でアニメーションする)。 */
+  &.collapsible {
+    gap: 0;
+
+    &[open]::details-content {
+      margin-top: 10px;
+    }
+  }
 
   + .connection-block {
     margin-top: 10px;
