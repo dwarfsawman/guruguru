@@ -8,11 +8,6 @@ import type { InpaintDraft } from "./maskTypes";
 import type { PaintDraft } from "./paintTypes";
 import type { PoseDraft } from "./poseTypes";
 
-export interface ScrollPosition {
-  left: number;
-  top: number;
-}
-
 export const generationDraftFields = [
   "templateId",
   "img2imgTemplateId",
@@ -36,9 +31,7 @@ export type GenerationDraft = Partial<Record<GenerationDraftField, string>> & {
   inpaint?: InpaintDraft | null;
 };
 
-export type RenderOptions = {
-  preserveIterationScroll?: boolean;
-};
+export type RenderOptions = Record<never, never>;
 
 /**
  * 再描画コールバック。main.ts(composition root)が boot 時に `render` を登録し、
@@ -116,7 +109,8 @@ export interface AppState {
   message: string;
   generationDraft: GenerationDraft | null;
   inpaintDrafts: Record<string, InpaintDraft>;
-  iterationScroll: ScrollPosition | null;
+  /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
+  iterationScrollReset: boolean;
   maskEditMode: boolean;
   maskToolbarMinimized: boolean;
   maskToolbarPos: { left: number; top: number } | null;
@@ -161,7 +155,7 @@ export const state: AppState = {
   },
   generationDraft: null,
   inpaintDrafts: {},
-  iterationScroll: null,
+  iterationScrollReset: false,
   maskEditMode: false,
   maskToolbarMinimized: false,
   maskToolbarPos: null,

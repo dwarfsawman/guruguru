@@ -147,7 +147,7 @@ export function renderAssetTile(
   const masked = assetHasMaskIndicator(asset, getInpaintDraft);
   const posed = poseDraftHasAttachment(getPoseDraft(asset.id));
   return `
-    <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""} ${masked ? "masked" : ""} ${posed ? "posed" : ""}">
+    <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""} ${masked ? "masked" : ""} ${posed ? "posed" : ""}" data-key="${asset.id}">
       <button class="asset-card-main" data-id="${asset.id}" type="button" aria-label="Asset #${asset.batchIndex + 1}">
         <img class="gen-image" src="${asset.thumbnailMediumUrl || asset.thumbnailUrl}" alt="" loading="lazy" />
       </button>
