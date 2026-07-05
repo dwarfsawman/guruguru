@@ -194,6 +194,8 @@ export interface AppState {
   paintDrafts: Record<string, PaintDraft>;
   maskPanelTab: MaskPanelTab;
   poseDrafts: Record<string, PoseDraft>;
+  /** UX改善#5: ComfyUI の現在のサンプラー step。生成中の roundId のみキーを持つ。 */
+  roundProgress: Record<string, { value: number; max: number }>;
 }
 
 export const state: AppState = {
@@ -242,5 +244,6 @@ export const state: AppState = {
   paintEditMode: false,
   paintDrafts: {},
   maskPanelTab: "mask",
-  poseDrafts: {}
+  poseDrafts: {},
+  roundProgress: {}
 };

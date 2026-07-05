@@ -30,7 +30,7 @@ import {
   iconTrash,
   iconZoom
 } from "../icons";
-import { renderIterationTracker } from "./iterationTree";
+import { renderIterationTracker, type RoundProgressMap } from "./iterationTree";
 
 function generationModeLabel(mode: string) {
   return mode === "manual_upload" ? "source" : mode;
@@ -52,9 +52,14 @@ export function renderProjectDetail(
   getPoseDraft: (assetId: string) => PoseDraft | null,
   showMaskGridTag: boolean,
   copiedSeedAssetId: string | null,
-  sidebarCollapsed = false
+  sidebarCollapsed = false,
+  roundProgress: RoundProgressMap = {}
 ) {
   const mode = activeRound?.generationMode ?? "txt2img";
+  const activeProgress = activeRound ? roundProgress[activeRound.id] : undefined;
+  const progressSuffix = activeProgress
+    ? ` (${Math.round((activeProgress.value / activeProgress.max) * 100)}%, step ${activeProgress.value}/${activeProgress.max})`
+    : "";
 
   return `
     <div class="studio-shell">
@@ -67,7 +72,7 @@ export function renderProjectDetail(
         <div class="round-toolbar">
           <div>
             <h1>イテレーション ${activeRound ? `#${activeRound.roundIndex}` : ""}<span class="tag">${iconDot()}${escapeHtml(generationModeLabel(mode))}</span></h1>
-            <p>${activeRound ? `<b>${activeRound.assetCount ?? 0}</b>枚生成 · <b>${selectedAssets.length}</b>枚選択中 · ${escapeHtml(activeRound.status)}` : "新規Roundを生成してください。"}</p>
+            <p>${activeRound ? `<b>${activeRound.assetCount ?? 0}</b>枚生成 · <b>${selectedAssets.length}</b>枚選択中 · ${escapeHtml(activeRound.status)}${escapeHtml(progressSuffix)}` : "新規Roundを生成してください。"}</p>
           </div>
           <div class="toolbar-actions">
             <div class="segment-group">
@@ -90,7 +95,7 @@ export function renderProjectDetail(
             ${assets.length ? assets.map((asset) => renderAssetTile(asset, getInpaintDraft, getPoseDraft, showMaskGridTag, copiedSeedAssetId)).join("") : renderEmptyGallery(activeRound)}
           </div>
         </div>
-        ${renderIterationTracker(detail.rounds, activeRoundId, deletePreviewRoundId)}
+        ${renderIterationTracker(detail.rounds, activeRoundId, deletePreviewRoundId, roundProgress)}
         ${renderBottomActionBar(selectedAssets, activeRound, busy)}
       </main>
     </div>

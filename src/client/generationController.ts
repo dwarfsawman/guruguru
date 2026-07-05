@@ -257,6 +257,8 @@ export async function pollCollectRound(roundId: string, projectId: string | null
         body: "{}"
       });
 
+      const progressChanged = applyRoundProgress(roundId, result.progress ?? null);
+
       const count = result.assets?.length ?? 0;
       const status = result.round?.status;
       const responseAssetCount = responseRoundAssetCount(result.round);
@@ -275,6 +277,8 @@ export async function pollCollectRound(roundId: string, projectId: string | null
         await refreshProject(roundId, state.activeAssetId);
         requestRender();
         return;
+      } else if (progressChanged) {
+        requestRender();
       }
 
       if (status && !isRoundActiveStatus(status)) {
@@ -289,6 +293,20 @@ export async function pollCollectRound(roundId: string, projectId: string | null
   } finally {
     pendingAutoCollectRoundIds.delete(roundId);
   }
+}
+
+/**
+ * UX改善#5: collect レスポンスの `progress` を `state.roundProgress` へ反映する。
+ * 戻り値は値が実際に変わったか(変わっていなければ poll tick 側で無駄な requestRender をしない)。
+ */
+function applyRoundProgress(roundId: string, next: { value: number; max: number } | null) {
+  const previous = state.roundProgress[roundId] ?? null;
+  if (next) {
+    state.roundProgress[roundId] = next;
+  } else {
+    delete state.roundProgress[roundId];
+  }
+  return previous?.value !== next?.value || previous?.max !== next?.max;
 }
 
 export function knownRoundAssetCount(roundId: string) {
