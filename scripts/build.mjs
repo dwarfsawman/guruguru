@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -71,11 +71,31 @@ async function main() {
   ]);
 
   await copyFile(join(root, "src", "client", "index.html"), join(root, "dist", "public", "index.html"));
-  await copyFile(join(root, "src", "client", "styles.css"), join(root, "dist", "public", "styles.css"));
+  await bundleCss();
   await copyFile(join(root, "src", "client", "spiral.svg"), join(root, "dist", "public", "spiral.svg"));
   await copyFonts();
   await copyOrtRuntimeAssets();
   await copyMediapipeWasmAssets();
+}
+
+/**
+ * src/client/styles/index.css の @import 行の順に各ファイルを素朴に連結して
+ * dist/public/styles.css を出力する。esbuild の CSS バンドルを使わないのは、
+ * パース→再出力による書き換え（等価だが差分の出る整形変更）を避け、
+ * ソースとの対応を 1:1 に保つため。カスケード順は index.css の記載順そのもの。
+ */
+async function bundleCss() {
+  const stylesDir = join(root, "src", "client", "styles");
+  const index = await readFile(join(stylesDir, "index.css"), "utf8");
+  const imports = [...index.matchAll(/^@import\s+"\.\/([^"]+)";\s*$/gm)].map((m) => m[1]);
+  if (imports.length === 0) {
+    throw new Error("styles/index.css has no @import entries");
+  }
+  const chunks = [];
+  for (const name of imports) {
+    chunks.push(await readFile(join(stylesDir, name), "utf8"));
+  }
+  await writeFile(join(root, "dist", "public", "styles.css"), chunks.join(""));
 }
 
 async function copyFonts() {
