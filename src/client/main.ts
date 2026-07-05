@@ -5,7 +5,6 @@ import {
   requiresFullDenoise,
   requiresParentAsset
 } from "../shared/generationMode";
-import { DEFAULT_POSE_MODEL_BASE_URL, DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { ComfySettings, ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, LlmSettings } from "../shared/types";
 import type {
   Asset,
@@ -23,7 +22,6 @@ import {
   iconDiagram,
   iconMenu
 } from "./icons";
-import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
 import { escapeAttr, escapeHtml, formatCssNumber, formatNumber, formatSliderValue } from "./format";
 import { type Json } from "./json";
 import { api } from "./api";
@@ -46,49 +44,12 @@ import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
 import { defaultPrompt, defaultNegativePrompt, renderGenerationPanel } from "./views/generationPanel";
-import { renderAssetModal, type MaskGenerationParams, type MaskPanelTab } from "./views/assetModal";
-import type {
-  WebSamModelStatus,
-  WebSamPromptMode,
-  WebSamProviderId,
-  WebSamWorkerCandidate,
-  WebSamWorkerRequest,
-  WebSamWorkerResponse
-} from "./websam/types";
-import type {
-  ActiveBoxPrompt,
-  ActiveImagePan,
-  ActiveMaskStroke,
-  InpaintDraft,
-  MaskBrushCursorKind,
-  MaskLayerSet,
-  MaskStrokeKind,
-  SamMaskCandidate
-} from "./maskTypes";
+import { renderAssetModal, type MaskGenerationParams } from "./views/assetModal";
 import {
-  defaultInpaintDraft,
-  hasMaskData,
-  isMaskedContent,
-  normalizeInpaintDraft
-} from "./maskDraft";
-import {
-  canvasHasMaskPixels,
   clearCanvas,
-  composeFinalMaskDataUrl,
-  createMaskLayerSet,
   dirtyRectForSegments,
-  distanceToSegmentSq,
-  drawDataUrlIntoCanvas,
-  invertMaskLayers,
-  maskLayerForStroke,
-  normalizePromptBox,
   paintStroke,
-  pointerToMaskCanvasPoint,
-  pointerToSvgViewBoxPoint,
-  removeMaskIslandsFromLayers,
-  renderFinalMaskToCanvas,
-  renderMaskFeatherPreview,
-  sampleBrushPromptPoints
+  pointerToMaskCanvasPoint
 } from "./maskCanvas";
 import type { PaintDraft, PaintToolKind } from "./paintTypes";
 import { PAINT_BASE_PALETTE, PAINT_UNDO_STACK_LIMIT } from "./paintTypes";
@@ -116,30 +77,42 @@ import {
 import { actionHandlerFor, bindRegisteredEvents } from "./actionRegistry";
 import {
   draftStorageKey,
-  ensureInpaintDraft,
   inpaintDraftForAsset,
   persistProjectDraft,
-  restoreProjectDraft,
-  setInpaintDraft
+  restoreProjectDraft
 } from "./draftStore";
-import { ensureMaskLayerSet, getOrCreateMaskLayerSet, maskLayerCache } from "./maskLayerStore";
+import { assetDimension, findAsset } from "./assetLookup";
 import {
-  addWebSamPointPrompt,
-  applySelectedSamCandidate,
-  beginWebSamBoxPrompt,
+  cancelPendingMaskStrokeFlush,
+  clearActiveImagePan,
+  closeMaskEditorSession,
+  commitActiveMaskCanvas,
+  effectiveMaskDataUrl,
+  handleMaskEditorPointerCancel,
+  handleMaskEditorPointerDown,
+  handleMaskEditorPointerMove,
+  handleMaskEditorPointerUp,
+  handleMaskPointerDown,
+  handleMaskStrokePointerCancel,
+  handleMaskStrokePointerMove,
+  handleMaskStrokePointerUp,
+  handleMaskWheelZoom,
+  invalidateMaskBrushCursorCache,
+  syncAssetModalMaskCanvas,
+  updateInpaintDraftFromControl
+} from "./maskEditorController";
+import {
   clearActiveWebSamBoxPrompt,
   destroyWebSamWorkerSession,
   handleWebSamPointerCancel,
   handleWebSamPointerMove,
   handleWebSamPointerUp,
-  requestWebSamDecode,
   updateSmartMaskDraftFromControl
 } from "./webSamController";
-import { clampNumber, imageToRawData } from "./clientUtils";
+import { clampNumber } from "./clientUtils";
 import {
   clearSelectedPoseEdges,
   closePoseEditorSession,
-  ensurePoseDraft,
   getSelectedPoseEdges,
   handlePoseEditorKeydown,
   handlePoseEditorPointerCancel,
@@ -147,15 +120,12 @@ import {
   handlePoseEditorPointerMove,
   handlePoseEditorPointerUp,
   poseDraftForAsset,
-  probeActivePoseModelCache,
   updatePoseDraftFromControl
 } from "./poseEditorController";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let pendingAssetCardSelect: { assetId: string; timer: number } | null = null;
 let pendingIterationDotSelect: { timer: number } | null = null;
-let activeMaskStroke: ActiveMaskStroke | null = null;
-let activeImagePan: ActiveImagePan | null = null;
 
 interface ActiveWorkflowDiagramPan {
   pointerId: number;
@@ -165,8 +135,6 @@ interface ActiveWorkflowDiagramPan {
 }
 
 let activeWorkflowDiagramPan: ActiveWorkflowDiagramPan | null = null;
-let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
-let maskPanelResize: { pointerId: number; side: "left" | "right"; startX: number; startWidth: number; pendingWidth: number } | null = null;
 const paintLayerCache = new Map<string, HTMLCanvasElement>();
 const paintUndoStacks = new Map<string, HTMLCanvasElement[]>();
 let activePaintStroke: { pointerId: number; x: number; y: number; pendingSegments: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }> } | null = null;
@@ -507,44 +475,7 @@ function bindEvents() {
     if (handlePoseEditorPointerDown(event)) {
       return;
     }
-    const handle = target.closest<HTMLElement>("[data-mask-toolbar-handle]");
-    if (handle) {
-      if (target.closest("button")) {
-        return;
-      }
-      const toolbar = handle.closest<HTMLElement>(".mask-toolbar");
-      if (toolbar) {
-        if (toolbar.classList.contains("minimized")) {
-          return;
-        }
-        event.preventDefault();
-        beginMaskToolbarDrag(event, toolbar);
-      }
-      return;
-    }
-    const panelResizer = target.closest<HTMLElement>("[data-mask-panel-resizer]");
-    if (panelResizer) {
-      const side = panelResizer.dataset.maskPanelResizer === "right" ? "right" : "left";
-      event.preventDefault();
-      panelResizer.classList.add("resizing");
-      maskPanelResize = {
-        pointerId: event.pointerId,
-        side,
-        startX: event.clientX,
-        startWidth: state.maskPanelWidths[side],
-        pendingWidth: state.maskPanelWidths[side]
-      };
-      return;
-    }
-    const previewMedia = target.closest<HTMLElement>(".preview-media");
-    const activeAssetId = state.activeAssetId;
-    const shouldPanImage =
-      !!previewMedia &&
-      !!activeAssetId &&
-      (event.button === 1 || (!state.maskEditMode && !state.paintEditMode && event.button === 0));
-    if (shouldPanImage) {
-      event.preventDefault();
-      beginImagePan(event, previewMedia, activeAssetId);
+    if (handleMaskEditorPointerDown(event)) {
       return;
     }
     // Workflow diagram pan (left or middle button)
@@ -576,12 +507,7 @@ function bindEvents() {
   });
 
   app.addEventListener("pointermove", (event) => {
-    if (activeImagePan) {
-      if (event.pointerId !== activeImagePan.pointerId) {
-        return;
-      }
-      event.preventDefault();
-      continueImagePan(event);
+    if (handleMaskEditorPointerMove(event)) {
       return;
     }
     if (activeWorkflowDiagramPan) {
@@ -590,25 +516,6 @@ function bindEvents() {
       }
       event.preventDefault();
       continueWorkflowDiagramPan(event);
-      return;
-    }
-    if (maskPanelResize) {
-      if (event.pointerId !== maskPanelResize.pointerId) {
-        return;
-      }
-      event.preventDefault();
-      continueMaskPanelResize(event);
-      return;
-    }
-    if (maskToolbarDrag) {
-      if (event.pointerId !== maskToolbarDrag.pointerId) {
-        return;
-      }
-      const toolbar = document.querySelector<HTMLElement>(".mask-toolbar");
-      if (toolbar) {
-        event.preventDefault();
-        moveMaskToolbarDrag(event, toolbar);
-      }
       return;
     }
     if (handleWebSamPointerMove(event)) {
@@ -629,34 +536,16 @@ function bindEvents() {
       continuePaintStroke(event, paintCanvas);
       return;
     }
-    if (!activeMaskStroke) {
-      return;
-    }
-    const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-    if (!canvas || event.pointerId !== activeMaskStroke.pointerId) {
-      return;
-    }
-    event.preventDefault();
-    continueMaskStroke(event, canvas);
+    handleMaskStrokePointerMove(event);
   });
 
   app.addEventListener("pointerup", (event) => {
-    if (activeImagePan && event.pointerId === activeImagePan.pointerId) {
-      event.preventDefault();
-      finishImagePan();
+    if (handleMaskEditorPointerUp(event)) {
       return;
     }
     if (activeWorkflowDiagramPan && event.pointerId === activeWorkflowDiagramPan.pointerId) {
       event.preventDefault();
       finishWorkflowDiagramPan();
-      return;
-    }
-    if (maskPanelResize && event.pointerId === maskPanelResize.pointerId) {
-      finishMaskPanelResize();
-      return;
-    }
-    if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
-      finishMaskToolbarDrag();
       return;
     }
     if (handleWebSamPointerUp(event)) {
@@ -673,31 +562,15 @@ function bindEvents() {
       }
       return;
     }
-    if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
-      return;
-    }
-    const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-    if (canvas) {
-      event.preventDefault();
-      finishMaskStroke(canvas);
-    }
+    handleMaskStrokePointerUp(event);
   });
 
   app.addEventListener("pointercancel", (event) => {
-    if (activeImagePan && event.pointerId === activeImagePan.pointerId) {
-      activeImagePan = null;
+    if (handleMaskEditorPointerCancel(event)) {
       return;
     }
     if (activeWorkflowDiagramPan && event.pointerId === activeWorkflowDiagramPan.pointerId) {
       activeWorkflowDiagramPan = null;
-      return;
-    }
-    if (maskPanelResize && event.pointerId === maskPanelResize.pointerId) {
-      finishMaskPanelResize();
-      return;
-    }
-    if (maskToolbarDrag && event.pointerId === maskToolbarDrag.pointerId) {
-      maskToolbarDrag = null;
       return;
     }
     if (handleWebSamPointerCancel(event)) {
@@ -713,13 +586,7 @@ function bindEvents() {
       }
       return;
     }
-    if (!activeMaskStroke || event.pointerId !== activeMaskStroke.pointerId) {
-      return;
-    }
-    const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-    if (canvas) {
-      finishMaskStroke(canvas);
-    }
+    handleMaskStrokePointerCancel(event);
   });
 
   bindRegisteredEvents(app);
@@ -786,7 +653,7 @@ function selectRound(roundId: string) {
   state.maskEditMode = false;
   state.paintEditMode = false;
   state.maskPanelTab = "mask";
-  activeImagePan = null;
+  clearActiveImagePan();
   render();
 }
 
@@ -807,19 +674,15 @@ function openAssetDetail(assetId: string) {
   state.maskToolbarMinimized = false;
   state.maskToolbarPos = null;
   clearSelectedPoseEdges();
-  activeImagePan = null;
+  clearActiveImagePan();
   render();
 }
 
 function closeAssetDetail() {
-  commitActiveMaskCanvas();
-  cancelPendingMaskStrokeFlush();
-  flushPendingMaskWheelZoom();
+  closeMaskEditorSession();
   cancelPendingPaintStrokeFlush();
-  activeMaskStroke = null;
   clearActiveWebSamBoxPrompt();
   activePaintStroke = null;
-  activeImagePan = null;
   void destroyWebSamWorkerSession();
   closePoseEditorSession();
   state.activeAssetId = null;
@@ -828,7 +691,6 @@ function closeAssetDetail() {
   state.maskPanelTab = "mask";
   state.maskToolbarMinimized = false;
   state.maskToolbarPos = null;
-  maskToolbarDrag = null;
   render();
 }
 
@@ -956,8 +818,6 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       openAssetDetail(id);
     } else if (action === "close-detail") {
       closeAssetDetail();
-    } else if (action === "toggle-mask-editor") {
-      toggleMaskEditor();
     } else if (action === "toggle-paint-editor") {
       togglePaintEditor();
     } else if (action === "paint-tool") {
@@ -991,26 +851,6 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
           render();
         }
       }
-    } else if (action === "apply-mask-editor") {
-      await applyMaskEditor();
-    } else if (action === "minimize-mask-toolbar") {
-      state.maskToolbarMinimized = true;
-      render();
-    } else if (action === "restore-mask-toolbar") {
-      state.maskToolbarMinimized = false;
-      render();
-    } else if (action === "mask-tool") {
-      setMaskTool(target.dataset.tool === "eraser");
-    } else if (action === "clear-mask") {
-      clearActiveMaskCanvas();
-    } else if (action === "invert-mask") {
-      await invertActiveMask();
-    } else if (action === "remove-mask-islands") {
-      removeSmallMaskIslands();
-    } else if (action === "set-mask-panel-tab") {
-      setMaskPanelTab(target.dataset.tab === "pose" ? "pose" : "mask");
-    } else if (action === "clear-inpaint") {
-      clearInpaintDraft();
     } else if (action === "asset-selected") {
       await setAssetStatus(id, "selected");
     } else if (action === "asset-rejected") {
@@ -2018,299 +1858,6 @@ function refreshIterationEdges() {
   });
 }
 
-function syncAssetModalMaskCanvas() {
-  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-  const image = document.querySelector<HTMLImageElement>("#previewImage");
-  if (!canvas || !image) {
-    return;
-  }
-
-  const sync = () => {
-    const asset = findAsset(canvas.dataset.assetId ?? "");
-    const width = image.naturalWidth || assetDimension(asset, "width") || Math.max(1, Math.round(image.clientWidth));
-    const height = image.naturalHeight || assetDimension(asset, "height") || Math.max(1, Math.round(image.clientHeight));
-    if (!width || !height) {
-      return;
-    }
-
-    canvas.width = width;
-    canvas.height = height;
-    const featherCanvas = document.querySelector<HTMLCanvasElement>("#maskFeatherPreview");
-    if (featherCanvas) {
-      featherCanvas.width = width;
-      featherCanvas.height = height;
-    }
-    const draft = inpaintDraftForAsset(canvas.dataset.assetId);
-    if (!draft) {
-      const context = canvas.getContext("2d");
-      context?.clearRect(0, 0, width, height);
-      featherCanvas?.getContext("2d")?.clearRect(0, 0, width, height);
-      return;
-    }
-    if (draft.imageWidth !== width || draft.imageHeight !== height) {
-      setInpaintDraft({ ...draft, imageWidth: width, imageHeight: height });
-    }
-    canvas.style.opacity = String(clampNumber(draft.maskOpacity, 0, 1, 0.58));
-    void ensureMaskLayerSet(draft, width, height).then((layers) => {
-      if (!canvas.isConnected || canvas.dataset.assetId !== draft.parentAssetId) {
-        return;
-      }
-      renderFinalMaskToCanvas(canvas, layers, draft, true);
-      if (featherCanvas) {
-        renderMaskFeatherPreview(featherCanvas, layers, draft);
-      }
-    });
-  };
-
-  if (image.complete && image.naturalWidth > 0) {
-    sync();
-  } else {
-    image.addEventListener("load", sync, { once: true });
-  }
-
-  canvas.addEventListener("pointermove", updateMaskBrushCursor);
-  canvas.addEventListener("pointerdown", updateMaskBrushCursor);
-  canvas.addEventListener("pointerenter", updateMaskBrushCursor);
-  canvas.addEventListener("pointerleave", hideMaskBrushCursor);
-  canvas.addEventListener("pointercancel", hideMaskBrushCursor);
-}
-
-function resolveMaskBrushCursorKind(draft: InpaintDraft): MaskBrushCursorKind | null {
-  if (draft.selectedSmartMaskProvider !== "manual") {
-    return draft.webSamPromptMode === "brush" ? "brush-prompt" : null;
-  }
-  return draft.eraser ? "eraser" : "pen";
-}
-
-// Cached `.brush-cursor` element reference, avoiding a `document.querySelector` on every
-// pointermove. `undefined` means "not resolved for the current render cycle yet"; `null` means
-// "resolved, and the element does not currently exist". Invalidated by `invalidateMaskBrushCursorCache`,
-// which `render()` calls after rebuilding `app.innerHTML` (the old element is detached each render).
-let cachedMaskBrushCursor: SVGCircleElement | null | undefined;
-
-function invalidateMaskBrushCursorCache() {
-  cachedMaskBrushCursor = undefined;
-}
-
-function getMaskBrushCursorElement(): SVGCircleElement | null {
-  if (cachedMaskBrushCursor === undefined || cachedMaskBrushCursor === null || !cachedMaskBrushCursor.isConnected) {
-    cachedMaskBrushCursor = document.querySelector<SVGCircleElement>(".brush-cursor");
-  }
-  return cachedMaskBrushCursor;
-}
-
-function updateMaskBrushCursor(event: PointerEvent) {
-  const canvas = event.currentTarget as HTMLCanvasElement | null;
-  if (!canvas || !state.maskEditMode || state.maskPanelTab === "pose") {
-    return;
-  }
-  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!draft) {
-    hideMaskBrushCursor();
-    return;
-  }
-  const kind = resolveMaskBrushCursorKind(draft);
-  const cursor = getMaskBrushCursorElement();
-  if (!cursor || !kind) {
-    hideMaskBrushCursor();
-    return;
-  }
-  const point = pointerToMaskCanvasPoint(canvas, event);
-  const withinBounds =
-    point.x >= 0 && point.x <= canvas.width && point.y >= 0 && point.y <= canvas.height;
-  if (!withinBounds) {
-    hideMaskBrushCursor();
-    return;
-  }
-  cursor.setAttribute("cx", formatCssNumber(point.x));
-  cursor.setAttribute("cy", formatCssNumber(point.y));
-  cursor.setAttribute("r", formatCssNumber(draft.brushSize / 2));
-  cursor.classList.remove("pen", "eraser", "brush-prompt");
-  cursor.classList.add(kind);
-  cursor.classList.add("visible");
-}
-
-function hideMaskBrushCursor() {
-  const cursor = getMaskBrushCursorElement();
-  if (!cursor) {
-    return;
-  }
-  cursor.removeAttribute("r");
-  cursor.setAttribute("r", "0");
-  cursor.classList.remove("visible", "pen", "eraser", "brush-prompt");
-}
-
-function commitMaskLayers(assetId: string) {
-  const draft = inpaintDraftForAsset(assetId);
-  const layers = draft ? maskLayerCache.get(assetId) : null;
-  if (!draft || !layers) {
-    return;
-  }
-  setInpaintDraft({
-    ...draft,
-    samMaskDataUrl: canvasHasMaskPixels(layers.samMask) ? layers.samMask.toDataURL("image/png") : "",
-    previewSamMaskDataUrl: draft.previewSamMaskDataUrl,
-    manualIncludeMaskDataUrl: canvasHasMaskPixels(layers.manualInclude) ? layers.manualInclude.toDataURL("image/png") : "",
-    manualEraseMaskDataUrl: canvasHasMaskPixels(layers.manualErase) ? layers.manualErase.toDataURL("image/png") : "",
-    brushPromptMaskDataUrl: canvasHasMaskPixels(layers.brushPrompt) ? layers.brushPrompt.toDataURL("image/png") : "",
-    maskDataUrl: composeFinalMaskDataUrl(layers, false)
-  });
-  const featherCanvas = document.querySelector<HTMLCanvasElement>("#maskFeatherPreview");
-  if (featherCanvas && featherCanvas.dataset.assetId === assetId) {
-    renderMaskFeatherPreview(featherCanvas, layers, inpaintDraftForAsset(assetId) ?? draft);
-  }
-}
-
-const BRUSH_PROMPT_POINT_SPACING = 48;
-const BRUSH_PROMPT_MAX_POINTS = 48;
-
-function finishBrushPromptStroke(canvas: HTMLCanvasElement) {
-  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
-  const draft = assetId ? ensureInpaintDraft(assetId) : null;
-  const layers = assetId ? maskLayerCache.get(assetId) : null;
-  if (!assetId || !draft || !layers) {
-    return;
-  }
-  const manualPoints = draft.foregroundPoints.filter((point) => point.source !== "brush");
-  const sampledPoints = sampleBrushPromptPoints(layers.brushPrompt, BRUSH_PROMPT_POINT_SPACING, BRUSH_PROMPT_MAX_POINTS);
-  // TODO: also pass the brushPromptMask bounding box as a SAM box prompt when decoder quality needs the extra constraint.
-  setInpaintDraft({
-    ...draft,
-    foregroundPoints: [...manualPoints, ...sampledPoints],
-    brushPromptMaskDataUrl: canvasHasMaskPixels(layers.brushPrompt) ? layers.brushPrompt.toDataURL("image/png") : "",
-    samCandidates: [],
-    previewSamMaskDataUrl: "",
-    maskDataUrl: composeFinalMaskDataUrl(layers, false)
-  });
-  render();
-  void requestWebSamDecode();
-}
-
-function removeBrushPromptPointsNearSegment(assetId: string, from: { x: number; y: number }, to: { x: number; y: number }, radius: number) {
-  const draft = inpaintDraftForAsset(assetId);
-  if (!draft || draft.foregroundPoints.length === 0) {
-    return;
-  }
-  const radiusSq = radius * radius;
-  const filtered = draft.foregroundPoints.filter((point) => {
-    if (point.source !== "brush") {
-      return true;
-    }
-    return distanceToSegmentSq(point, from, to) > radiusSq;
-  });
-  if (filtered.length !== draft.foregroundPoints.length) {
-    setInpaintDraft({
-      ...draft,
-      foregroundPoints: filtered,
-      samCandidates: [],
-      previewSamMaskDataUrl: ""
-    });
-  }
-}
-
-const MASK_PANEL_MIN_WIDTH = 220;
-const MASK_PANEL_MAX_WIDTH = 460;
-
-/**
- * ドラッグ中は CSS 変数（`--mask-left-panel` / `--mask-right-panel`）だけを直接更新し、
- * pointerup 時に state へ確定する（wheel zoom / pan と同じ「操作中は render() しない」パターン）。
- */
-function continueMaskPanelResize(event: PointerEvent) {
-  if (!maskPanelResize) {
-    return;
-  }
-  const delta = event.clientX - maskPanelResize.startX;
-  const raw = maskPanelResize.side === "left"
-    ? maskPanelResize.startWidth + delta
-    : maskPanelResize.startWidth - delta;
-  const width = clampNumber(raw, MASK_PANEL_MIN_WIDTH, MASK_PANEL_MAX_WIDTH, maskPanelResize.startWidth);
-  maskPanelResize.pendingWidth = width;
-  const layout = document.querySelector<HTMLElement>(".mask-editor-layout");
-  layout?.style.setProperty(maskPanelResize.side === "left" ? "--mask-left-panel" : "--mask-right-panel", `${width}px`);
-}
-
-function finishMaskPanelResize() {
-  if (!maskPanelResize) {
-    return;
-  }
-  state.maskPanelWidths = {
-    ...state.maskPanelWidths,
-    [maskPanelResize.side]: maskPanelResize.pendingWidth
-  };
-  maskPanelResize = null;
-  document.querySelector<HTMLElement>(".mask-panel-resizer.resizing")?.classList.remove("resizing");
-}
-
-function beginMaskToolbarDrag(event: PointerEvent, toolbar: HTMLElement) {
-  const rect = toolbar.getBoundingClientRect();
-  maskToolbarDrag = {
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    originLeft: rect.left,
-    originTop: rect.top
-  };
-  try {
-    toolbar.setPointerCapture(event.pointerId);
-  } catch {
-    // Pointer capture may fail if the element is not focusable; drag still works via app-level listeners.
-  }
-  toolbar.style.position = "fixed";
-  toolbar.style.left = `${rect.left}px`;
-  toolbar.style.top = `${rect.top}px`;
-  toolbar.style.right = "auto";
-}
-
-function moveMaskToolbarDrag(event: PointerEvent, toolbar: HTMLElement) {
-  if (!maskToolbarDrag) {
-    return;
-  }
-  const dx = event.clientX - maskToolbarDrag.startX;
-  const dy = event.clientY - maskToolbarDrag.startY;
-  let left = maskToolbarDrag.originLeft + dx;
-  let top = maskToolbarDrag.originTop + dy;
-  const maxLeft = Math.max(0, window.innerWidth - toolbar.offsetWidth);
-  const maxTop = Math.max(0, window.innerHeight - toolbar.offsetHeight);
-  left = Math.max(0, Math.min(maxLeft, left));
-  top = Math.max(0, Math.min(maxTop, top));
-  toolbar.style.left = `${left}px`;
-  toolbar.style.top = `${top}px`;
-}
-
-function finishMaskToolbarDrag() {
-  const toolbar = document.querySelector<HTMLElement>(".mask-toolbar");
-  if (toolbar) {
-    if (maskToolbarDrag) {
-      try {
-        toolbar.releasePointerCapture(maskToolbarDrag.pointerId);
-      } catch {
-        // Capture may already be released.
-      }
-    }
-    const left = parseFloat(toolbar.style.left) || 0;
-    const top = parseFloat(toolbar.style.top) || 0;
-    state.maskToolbarPos = { left, top };
-  }
-  maskToolbarDrag = null;
-}
-
-function beginImagePan(event: PointerEvent, element: HTMLElement, assetId: string) {
-  const draft = ensureInpaintDraft(assetId);
-  activeImagePan = {
-    pointerId: event.pointerId,
-    assetId,
-    startClient: { x: event.clientX, y: event.clientY },
-    originOffset: draft.panOffset
-  };
-  element.classList.add("panning");
-  try {
-    element.setPointerCapture(event.pointerId);
-  } catch {
-    // Pointer capture may fail if the pointer started on a child; document-level listeners still finish the pan.
-  }
-}
-
 function beginWorkflowDiagramPan(event: PointerEvent, canvas: HTMLElement) {
   const panX = parseFloat(canvas.dataset.wfPanX ?? "0");
   const panY = parseFloat(canvas.dataset.wfPanY ?? "0");
@@ -2378,237 +1925,6 @@ function applyWorkflowDiagramTransform(canvas: HTMLElement, zoom?: number, panX?
   canvas.style.setProperty("--wf-zoom", String(z));
   canvas.style.setProperty("--wf-pan-x", `${formatCssNumber(px)}px`);
   canvas.style.setProperty("--wf-pan-y", `${formatCssNumber(py)}px`);
-}
-
-function continueImagePan(event: PointerEvent) {
-  if (!activeImagePan) {
-    return;
-  }
-  const nextOffset = {
-    x: activeImagePan.originOffset.x + event.clientX - activeImagePan.startClient.x,
-    y: activeImagePan.originOffset.y + event.clientY - activeImagePan.startClient.y
-  };
-  const media = document.querySelector<HTMLElement>(".preview-media");
-  if (media) {
-    media.style.setProperty("--mask-pan-x", `${formatCssNumber(nextOffset.x)}px`);
-    media.style.setProperty("--mask-pan-y", `${formatCssNumber(nextOffset.y)}px`);
-  }
-}
-
-function finishImagePan() {
-  if (!activeImagePan) {
-    return;
-  }
-  const media = document.querySelector<HTMLElement>(".preview-media");
-  const draft = inpaintDraftForAsset(activeImagePan.assetId);
-  const left = media ? parseFloat(media.style.getPropertyValue("--mask-pan-x")) : activeImagePan.originOffset.x;
-  const top = media ? parseFloat(media.style.getPropertyValue("--mask-pan-y")) : activeImagePan.originOffset.y;
-  if (media) {
-    media.classList.remove("panning");
-    try {
-      media.releasePointerCapture(activeImagePan.pointerId);
-    } catch {
-      // Capture may already be released.
-    }
-  }
-  if (draft) {
-    setInpaintDraft({
-      ...draft,
-      panOffset: {
-        x: Number.isFinite(left) ? left : activeImagePan.originOffset.x,
-        y: Number.isFinite(top) ? top : activeImagePan.originOffset.y
-      }
-    });
-  }
-  activeImagePan = null;
-  render();
-}
-
-function handleMaskPointerDown(event: PointerEvent, canvas: HTMLCanvasElement) {
-  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
-  if (!assetId) {
-    return;
-  }
-  const draft = ensureInpaintDraft(assetId);
-  if (draft.selectedSmartMaskProvider !== "manual" && !draft.eraser) {
-    if (draft.webSamPromptMode === "point") {
-      addWebSamPointPrompt(event, canvas);
-      return;
-    }
-    if (draft.webSamPromptMode === "box") {
-      beginWebSamBoxPrompt(event, canvas);
-      return;
-    }
-    beginMaskStroke(event, canvas, "brush-prompt");
-    return;
-  }
-  beginMaskStroke(event, canvas, draft.eraser ? "manual-erase" : "manual-include");
-}
-
-let maskStrokeRafHandle: number | null = null;
-
-function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement, kind: MaskStrokeKind) {
-  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
-  if (!assetId) {
-    return;
-  }
-  ensureInpaintDraft(assetId);
-  canvas.setPointerCapture(event.pointerId);
-  const point = pointerToMaskCanvasPoint(canvas, event);
-  activeMaskStroke = {
-    pointerId: event.pointerId,
-    x: point.x,
-    y: point.y,
-    kind,
-    pendingSegments: []
-  };
-  // The initial dab paints immediately (no pointermove/coalesced events exist yet for pointerdown),
-  // so a single click without any drag still shows a mark right away.
-  paintMaskSegments(canvas, [{ from: point, to: point }], kind);
-}
-
-function continueMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
-  if (!activeMaskStroke) {
-    return;
-  }
-  const coalesced = typeof event.getCoalescedEvents === "function" ? event.getCoalescedEvents() : [];
-  const pointerEvents = coalesced.length > 0 ? coalesced : [event];
-  let cursor = { x: activeMaskStroke.x, y: activeMaskStroke.y };
-  for (const pointerEvent of pointerEvents) {
-    const point = pointerToMaskCanvasPoint(canvas, pointerEvent);
-    activeMaskStroke.pendingSegments.push({ from: cursor, to: point });
-    cursor = point;
-  }
-  activeMaskStroke.x = cursor.x;
-  activeMaskStroke.y = cursor.y;
-  scheduleMaskStrokeFlush(canvas);
-}
-
-function scheduleMaskStrokeFlush(canvas: HTMLCanvasElement) {
-  if (maskStrokeRafHandle !== null) {
-    return;
-  }
-  maskStrokeRafHandle = requestAnimationFrame(() => {
-    maskStrokeRafHandle = null;
-    flushMaskStrokeQueue(canvas);
-  });
-}
-
-function cancelPendingMaskStrokeFlush() {
-  if (maskStrokeRafHandle !== null) {
-    cancelAnimationFrame(maskStrokeRafHandle);
-    maskStrokeRafHandle = null;
-  }
-}
-
-/**
- * Persists any pending wheel-zoom scale immediately (without waiting for the idle timer) and
- * clears the timer. Used when the mask editor closes mid-zoom so the last scale the user saw
- * is not silently lost, matching the pre-batching behavior where every tick persisted.
- */
-function flushPendingMaskWheelZoom() {
-  if (maskWheelZoomIdleTimer !== null) {
-    window.clearTimeout(maskWheelZoomIdleTimer);
-    maskWheelZoomIdleTimer = null;
-  }
-  const pendingScale = maskWheelZoomPendingScale;
-  maskWheelZoomPendingScale = null;
-  if (pendingScale === null) {
-    return;
-  }
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!draft) {
-    return;
-  }
-  setInpaintDraft({
-    ...draft,
-    zoomScale: pendingScale
-  });
-}
-
-/** Paints and drains any queued pending segments for the active stroke, then re-composites once. */
-function flushMaskStrokeQueue(canvas: HTMLCanvasElement) {
-  if (!activeMaskStroke || activeMaskStroke.pendingSegments.length === 0) {
-    return;
-  }
-  const segments = activeMaskStroke.pendingSegments;
-  activeMaskStroke.pendingSegments = [];
-  paintMaskSegments(canvas, segments, activeMaskStroke.kind);
-}
-
-function finishMaskStroke(canvas: HTMLCanvasElement) {
-  cancelPendingMaskStrokeFlush();
-  // Flush any segments queued for the next rAF so the final commit sees the full stroke.
-  flushMaskStrokeQueue(canvas);
-  if (activeMaskStroke) {
-    try {
-      canvas.releasePointerCapture(activeMaskStroke.pointerId);
-    } catch {
-      // Pointer capture may already be released by the browser.
-    }
-  }
-  const finishedKind = activeMaskStroke?.kind ?? "manual-include";
-  activeMaskStroke = null;
-  if (finishedKind === "brush-prompt") {
-    finishBrushPromptStroke(canvas);
-  } else {
-    commitActiveMaskCanvas();
-  }
-}
-
-const MASK_DIRTY_RECT_MARGIN = 2;
-
-/**
- * Paints a batch of line segments (1 rAF frame's worth, or a single pointerdown dab) into the
- * appropriate layer canvas(es), then re-composites the visible mask canvas exactly once for the
- * whole batch, limited to the dirty rect covering all segments (plus brush radius + margin).
- * Per-segment side effects (brush-prompt point removal near erase strokes) still run once per
- * segment so their distance-based logic is unaffected by batching.
- */
-function paintMaskSegments(canvas: HTMLCanvasElement, segments: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }>, kind: MaskStrokeKind) {
-  if (segments.length === 0) {
-    return;
-  }
-  const assetId = canvas.dataset.assetId ?? state.activeAssetId;
-  const draft = inpaintDraftForAsset(assetId) ?? (assetId ? ensureInpaintDraft(assetId) : null);
-  if (!draft || !assetId) {
-    return;
-  }
-  const layers = getOrCreateMaskLayerSet(assetId, canvas.width, canvas.height);
-  const brushSize = draft.brushSize;
-
-  for (const segment of segments) {
-    if (kind === "manual-include") {
-      // Add to the include layer, and lift any prior erase strokes in the same area so
-      // a previously erased region can be re-masked by drawing over it with the pen.
-      paintStroke(layers.manualInclude, segment.from, segment.to, brushSize, "source-over");
-      paintStroke(layers.manualErase, segment.from, segment.to, brushSize, "destination-out");
-    } else if (kind === "manual-erase") {
-      paintStroke(layers.manualErase, segment.from, segment.to, brushSize, "source-over");
-      removeBrushPromptPointsNearSegment(assetId, segment.from, segment.to, brushSize / 2);
-    } else {
-      paintStroke(maskLayerForStroke(layers, kind), segment.from, segment.to, brushSize, "source-over");
-    }
-  }
-  const dirtyRect = dirtyRectForSegments(segments, brushSize, MASK_DIRTY_RECT_MARGIN) ?? undefined;
-  renderFinalMaskToCanvas(canvas, layers, draft, true, dirtyRect);
-}
-
-function commitActiveMaskCanvas() {
-  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-  if (canvas) {
-    commitMaskCanvas(canvas);
-  }
-}
-
-function commitMaskCanvas(canvas: HTMLCanvasElement) {
-  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
-  if (!canvas || !assetId) {
-    return;
-  }
-
-  commitMaskLayers(assetId);
 }
 
 function renderHeader() {
@@ -2768,96 +2084,6 @@ function syncPreviewPromptControl(value: string) {
   }
 }
 
-function updateInpaintDraftFromControl(control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement) {
-  const field = control.dataset.inpaintField;
-  if (!field) {
-    return;
-  }
-
-  const assetId = state.generationDraft?.inpaint?.parentAssetId ?? state.activeAssetId;
-  if (!assetId) {
-    return;
-  }
-
-  const current = ensureInpaintDraft(assetId);
-  const next: InpaintDraft = { ...current };
-  if (field === "enabled" && control instanceof HTMLInputElement) {
-    // タブのチェックボックス: マスクを次回生成に添付するか（編集モードとは独立）
-    next.enabled = control.checked;
-    setInpaintDraft(next);
-    render();
-    return;
-  }
-  if (field === "maskedContent" && isMaskedContent(control.value)) {
-    next.maskedContent = control.value;
-  } else if (field === "inpaintArea") {
-    next.inpaintArea = "only_masked";
-  } else if (field === "onlyMaskedPadding") {
-    next.onlyMaskedPadding = clampNumber(Number(control.value), 0, 512, 32);
-  } else if (field === "featherRadius") {
-    next.featherRadius = clampNumber(Number(control.value), 0, 30, 0);
-  } else if (field === "brushSize") {
-    next.brushSize = clampNumber(Number(control.value), 1, 256, 48);
-  }
-  setInpaintDraft(next);
-  if (field === "featherRadius") {
-    refreshMaskFeatherPreview(assetId, next);
-  }
-}
-
-/** feather スライダー操作中に、全体 render() なしで境界プレビューだけを更新する軽量パス。 */
-function refreshMaskFeatherPreview(assetId: string, draft: InpaintDraft) {
-  const featherCanvas = document.querySelector<HTMLCanvasElement>("#maskFeatherPreview");
-  const layers = maskLayerCache.get(assetId);
-  if (!featherCanvas || !layers || featherCanvas.dataset.assetId !== assetId) {
-    return;
-  }
-  renderMaskFeatherPreview(featherCanvas, layers, draft);
-}
-
-const MASK_WHEEL_ZOOM_IDLE_MS = 150;
-let maskWheelZoomIdleTimer: number | null = null;
-let maskWheelZoomPendingScale: number | null = null;
-
-/**
- * Wheel zoom ticks update `--mask-zoom` directly on `.preview-media` (same element/mechanism
- * `continueImagePan` uses for `--mask-pan-x`/`--mask-pan-y`), skipping the full `render()` per tick.
- * Once wheel input goes idle (~150ms), the final scale is persisted to the draft and `render()`
- * runs once, mirroring `finishImagePan`'s persist-on-release pattern.
- */
-function handleMaskWheelZoom(event: WheelEvent) {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  if (!assetId) {
-    return;
-  }
-  const draft = ensureInpaintDraft(assetId);
-  const currentScale = maskWheelZoomPendingScale ?? draft.zoomScale;
-  const direction = event.deltaY < 0 ? 1 : -1;
-  const nextScale = clampNumber(currentScale + direction * 0.12, 0.25, 4, 1);
-  maskWheelZoomPendingScale = nextScale;
-
-  const media = document.querySelector<HTMLElement>(".preview-media");
-  media?.style.setProperty("--mask-zoom", formatCssNumber(nextScale));
-
-  if (maskWheelZoomIdleTimer !== null) {
-    window.clearTimeout(maskWheelZoomIdleTimer);
-  }
-  maskWheelZoomIdleTimer = window.setTimeout(() => {
-    maskWheelZoomIdleTimer = null;
-    const pendingScale = maskWheelZoomPendingScale;
-    maskWheelZoomPendingScale = null;
-    if (pendingScale === null) {
-      return;
-    }
-    const latestDraft = inpaintDraftForAsset(assetId) ?? draft;
-    setInpaintDraft({
-      ...latestDraft,
-      zoomScale: pendingScale
-    });
-    render();
-  }, MASK_WHEEL_ZOOM_IDLE_MS);
-}
-
 const PAINT_WHEEL_ZOOM_IDLE_MS = 150;
 let paintWheelZoomIdleTimer: number | null = null;
 let paintWheelZoomPendingScale: number | null = null;
@@ -2894,24 +2120,6 @@ function handlePaintWheelZoom(event: WheelEvent) {
     });
     render();
   }, PAINT_WHEEL_ZOOM_IDLE_MS);
-}
-
-function setMaskPanelTab(tab: MaskPanelTab) {
-  if (state.maskPanelTab === tab) {
-    return;
-  }
-  clearSelectedPoseEdges();
-  if (tab === "pose") {
-    // マスクタブを離れる前に描画途中のストロークを確定しておく
-    commitActiveMaskCanvas();
-    if (state.activeAssetId) {
-      ensurePoseDraft(state.activeAssetId);
-      // キャッシュ済みモデルなら自動でロード（再試行ボタン不要）。未取得は自動DLしない。
-      probeActivePoseModelCache();
-    }
-  }
-  state.maskPanelTab = tab;
-  render();
 }
 
 function inpaintRequestForParent(parentAssetId: string | null, generationMode: string): InpaintOptions | null {
@@ -2971,41 +2179,6 @@ function workflowHasControlNetApply(workflowJson: unknown): boolean {
   });
 }
 
-/**
- * 生成リクエストへ渡す最終マスクを解決する。
- * 未適用の SAM 候補 preview が表示されている場合は、キャンバス表示と同じ意味論
- * （preview SAM OR manualInclude、AND NOT manualErase）で合成し直す。
- * これにより「SAM候補を適用せず手動マスクと併用して生成すると手動領域だけが
- * inpaintされる」不整合を防ぐ。layer cache が無い場合は commit 済みの
- * `maskDataUrl` にフォールバックする（その場合 preview も画面に出ていない）。
- */
-function effectiveMaskDataUrl(draft: InpaintDraft): string {
-  if (draft.previewSamMaskDataUrl) {
-    const layers = maskLayerCache.get(draft.parentAssetId);
-    if (layers) {
-      return composeFinalMaskDataUrl(layers, true);
-    }
-  }
-  return draft.maskDataUrl;
-}
-
-function toggleMaskEditor() {
-  // 編集モードの開閉のみを扱い、添付状態（InpaintDraft.enabled）は変更しない。
-  // 添付のON/OFFはタブのチェックボックス／「適用」で独立して制御する。
-  if (state.maskEditMode) {
-    commitActiveMaskCanvas();
-    state.maskEditMode = false;
-    state.maskToolbarMinimized = false;
-  } else if (state.activeAssetId) {
-    ensureInpaintDraft(state.activeAssetId);
-    state.maskEditMode = true;
-    state.maskToolbarMinimized = false;
-    state.paintEditMode = false;
-  }
-  state.maskToolbarPos = null;
-  render();
-}
-
 function togglePaintEditor() {
   if (state.paintEditMode) {
     commitActivePaintCanvas();
@@ -3015,153 +2188,6 @@ function togglePaintEditor() {
     state.paintEditMode = true;
     state.maskEditMode = false;
   }
-  render();
-}
-
-async function applyMaskEditor() {
-  commitActiveMaskCanvas();
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!assetId || !draft) {
-    return;
-  }
-  if (draft.samCandidates.length > 0 && draft.previewSamMaskDataUrl) {
-    await applySelectedSamCandidate();
-    return;
-  }
-  setInpaintDraft({
-    ...draft,
-    enabled: true
-  });
-  state.message = hasMaskData(draft) ? "マスクを適用しました。" : "マスクがありません。";
-  render();
-}
-
-function setMaskTool(eraser: boolean) {
-  if (!state.activeAssetId) {
-    return;
-  }
-  const draft = ensureInpaintDraft(state.activeAssetId);
-  const next: InpaintDraft = {
-    ...draft,
-    eraser
-  };
-  if (!eraser && draft.selectedSmartMaskProvider !== "manual") {
-    next.selectedSmartMaskProvider = "manual";
-    next.webSamStatusText = "Manual";
-  }
-  setInpaintDraft({
-    ...next
-  });
-  render();
-}
-
-/**
- * 表示中の最終マスク（未適用の SAM 候補 preview を含む）を反転し、
- * 反転結果を単一の手動 include 層として commit する。
- */
-async function invertActiveMask() {
-  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
-  if (!canvas || !assetId || canvas.width <= 0 || canvas.height <= 0) {
-    return;
-  }
-  const draft = ensureInpaintDraft(assetId);
-  const layers = await ensureMaskLayerSet(draft, canvas.width, canvas.height);
-  invertMaskLayers(layers, !!draft.previewSamMaskDataUrl);
-  const nextDraft: InpaintDraft = {
-    ...draft,
-    samMaskDataUrl: "",
-    previewSamMaskDataUrl: "",
-    samCandidates: [],
-    selectedSamCandidateIndex: 0,
-    manualIncludeMaskDataUrl: canvasHasMaskPixels(layers.manualInclude) ? layers.manualInclude.toDataURL("image/png") : "",
-    manualEraseMaskDataUrl: "",
-    maskDataUrl: composeFinalMaskDataUrl(layers, false)
-  };
-  setInpaintDraft(nextDraft);
-  renderFinalMaskToCanvas(canvas, layers, nextDraft, false);
-  state.message = "マスク領域を反転しました。";
-  render();
-}
-
-/**
- * 微小な島マスク除去のしきい値（面積 px^2）。画像解像度に比例させ、短辺の 0.4% を半径とする
- * 円の面積を目安にする（例: 短辺1024pxなら半径約4px、短辺4000pxなら半径16px）。
- */
-function maskIslandMinAreaPx(width: number, height: number) {
-  const radius = Math.max(3, Math.round(Math.min(width, height) * 0.004));
-  return Math.round(Math.PI * radius * radius);
-}
-
-function removeSmallMaskIslands() {
-  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
-  if (!canvas || !assetId || canvas.width <= 0 || canvas.height <= 0) {
-    return;
-  }
-  const draft = inpaintDraftForAsset(assetId);
-  const layers = maskLayerCache.get(assetId);
-  if (!draft || !layers) {
-    return;
-  }
-  const minAreaPx = maskIslandMinAreaPx(canvas.width, canvas.height);
-  const changed = removeMaskIslandsFromLayers(layers, !!draft.previewSamMaskDataUrl, minAreaPx);
-  if (!changed) {
-    state.message = "微小なマスク領域は見つかりませんでした。";
-    render();
-    return;
-  }
-  const nextDraft: InpaintDraft = {
-    ...draft,
-    samMaskDataUrl: "",
-    previewSamMaskDataUrl: "",
-    samCandidates: [],
-    selectedSamCandidateIndex: 0,
-    manualIncludeMaskDataUrl: canvasHasMaskPixels(layers.manualInclude) ? layers.manualInclude.toDataURL("image/png") : "",
-    manualEraseMaskDataUrl: "",
-    maskDataUrl: composeFinalMaskDataUrl(layers, false)
-  };
-  setInpaintDraft(nextDraft);
-  renderFinalMaskToCanvas(canvas, layers, nextDraft, false);
-  state.message = "微小なマスク領域を除去しました。";
-  render();
-}
-
-function clearActiveMaskCanvas() {
-  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
-  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
-  if (!assetId) {
-    return;
-  }
-  maskLayerCache.delete(assetId);
-  const draft = ensureInpaintDraft(assetId);
-  setInpaintDraft({
-    ...draft,
-    maskDataUrl: "",
-    samMaskDataUrl: "",
-    previewSamMaskDataUrl: "",
-    manualIncludeMaskDataUrl: "",
-    manualEraseMaskDataUrl: "",
-    brushPromptMaskDataUrl: "",
-    foregroundPoints: [],
-    boxPrompt: null,
-    samCandidates: [],
-    selectedSamCandidateIndex: 0,
-    webSamError: "",
-    webSamStatusText: draft.selectedSmartMaskProvider === "manual" ? draft.webSamStatusText : "Ready"
-  });
-  render();
-}
-
-function clearInpaintDraft() {
-  cancelPendingMaskStrokeFlush();
-  activeMaskStroke = null;
-  clearActiveWebSamBoxPrompt();
-  if (state.activeAssetId) {
-    maskLayerCache.delete(state.activeAssetId);
-  }
-  setInpaintDraft(null);
   render();
 }
 
@@ -3548,11 +2574,6 @@ async function savePaintResultAsSourceAsset() {
 }
 
 
-function assetDimension(asset: Asset | null, key: "width" | "height") {
-  const value = asset?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function resetGenerationParamsToTemplateDefaults() {
   const form = document.querySelector<HTMLFormElement>("#generation-form");
   if (!form) {
@@ -3729,13 +2750,6 @@ function getActiveRoundAssets() {
     return [];
   }
   return state.detail.assets.filter((asset) => asset.roundId === activeRound.id);
-}
-
-function findAsset(assetId: string | null) {
-  if (!assetId || !state.detail) {
-    return null;
-  }
-  return state.detail.assets.find((asset) => asset.id === assetId) ?? null;
 }
 
 function getPreferredParentAsset() {
