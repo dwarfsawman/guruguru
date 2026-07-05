@@ -115,9 +115,9 @@ export function renderRoundTreeNode(
   return `
     <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="${nodeStyle}">
       ${hasIncomingEdge ? `
-        <span class="iteration-edge" data-edge-round="${round.id}" aria-label="Round ${round.roundIndex} 生成プロパティ">
+        <button type="button" class="iteration-edge" data-edge-round="${round.id}" aria-label="Round ${round.roundIndex} 生成プロパティ">
           <span class="iteration-edge-popout" role="tooltip">${iterationEdgePopoutHtml(round)}</span>
-        </span>
+        </button>
       ` : ""}
       <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" data-round-id="${escapeAttr(round.id)}" data-parent-id="${hasIncomingEdge ? escapeAttr(round.parentRoundId ?? "") : ""}" data-hue="${hue}" type="button" title="${escapeAttr(iterationTitle(round, progress))}">
         <span>${round.roundIndex}</span>
