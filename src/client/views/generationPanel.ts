@@ -149,15 +149,15 @@ export function renderGenerationPanel(
         <label>img2img WorkflowTemplate
           <select id="generation-img2img-template-select" class="workflow-select" name="img2imgTemplateId">${img2imgTemplateOptions}</select>
         </label>
-        <details class="workflow-dropdown compact-dropdown">
-          <summary><span>${iconPlus()}Workflow操作</span>${iconChevron()}</summary>
-          <div class="workflow-export-menu">
-            <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-source="generation-template-select">${iconDownload()}raw workflow export</button>
-            <button class="button-secondary compact" type="button" data-action="export-template" data-template-source="generation-template-select">${iconDownload()}template export</button>
-            <button class="button-danger compact" type="button" data-action="delete-template" data-template-source="generation-template-select" ${detail.templates.length ? "" : "disabled"}>${iconTrash()}workflow削除</button>
-            <button class="button-secondary compact" type="button" data-action="home">${iconSettings()}Workflow管理を開く</button>
+        <div class="workflow-dropdown compact-dropdown">
+          <button class="workflow-dropdown-trigger" type="button" popovertarget="workflow-actions-menu"><span>${iconPlus()}Workflow操作</span>${iconChevron()}</button>
+          <div class="workflow-export-menu" id="workflow-actions-menu" popover>
+            <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-source="generation-template-select" popovertarget="workflow-actions-menu" popovertargetaction="hide">${iconDownload()}raw workflow export</button>
+            <button class="button-secondary compact" type="button" data-action="export-template" data-template-source="generation-template-select" popovertarget="workflow-actions-menu" popovertargetaction="hide">${iconDownload()}template export</button>
+            <button class="button-danger compact" type="button" data-action="delete-template" data-template-source="generation-template-select" popovertarget="workflow-actions-menu" popovertargetaction="hide" ${detail.templates.length ? "" : "disabled"}>${iconTrash()}workflow削除</button>
+            <button class="button-secondary compact" type="button" data-action="home" popovertarget="workflow-actions-menu" popovertargetaction="hide">${iconSettings()}Workflow管理を開く</button>
           </div>
-        </details>
+        </div>
       </section>
 
       <section class="sidebar-section">

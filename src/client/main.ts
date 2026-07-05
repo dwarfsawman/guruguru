@@ -388,7 +388,6 @@ function bindEvents() {
 
   app.addEventListener("pointerdown", (event) => {
     const target = event.target as HTMLElement;
-    closeOpenActionDropdowns(target);
     if (handlePoseEditorPointerDown(event)) {
       return;
     }
@@ -477,18 +476,7 @@ function isTextEntryTarget(target: EventTarget | null) {
   return target.isContentEditable || !!target.closest("[contenteditable=''], [contenteditable='true']");
 }
 
-function closeOpenActionDropdowns(exceptTarget?: EventTarget | null) {
-  const exceptNode = exceptTarget instanceof Node ? exceptTarget : null;
-  document.querySelectorAll<HTMLDetailsElement>(".template-export-dropdown[open], .workflow-dropdown[open]").forEach((dropdown) => {
-    if (exceptNode && dropdown.contains(exceptNode)) {
-      return;
-    }
-    dropdown.open = false;
-  });
-}
-
 async function handleAction(action: string, id: string, target: HTMLElement) {
-  const closesActionDropdowns = target.closest(".template-export-dropdown, .workflow-dropdown") !== null;
   try {
     const registered = actionHandlerFor(action);
     if (registered) {
@@ -528,10 +516,6 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     state.busy = false;
     state.message = error instanceof Error ? error.message : String(error);
     render();
-  } finally {
-    if (closesActionDropdowns) {
-      closeOpenActionDropdowns();
-    }
   }
 }
 

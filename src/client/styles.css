@@ -1117,25 +1117,28 @@ h3 {
   line-height: 0;
 }
 
+/*
+ * テンプレート行の export ドロップダウン。popover="auto" + anchor positioning。
+ * light-dismiss（外側クリック / Esc）はブラウザネイティブ、メニュー項目クリック後の
+ * クローズは popovertargetaction="hide" で宣言的に行う
+ * （旧実装は <details> + main.ts の closeOpenActionDropdowns による手動 light-dismiss）。
+ */
 .template-export-dropdown {
-  position: relative;
+  anchor-scope: --template-export-trigger;
 
-  summary {
-    list-style: none;
-    cursor: pointer;
-  }
-
-  summary::-webkit-details-marker {
-    display: none;
+  .template-export-trigger {
+    anchor-name: --template-export-trigger;
   }
 }
 
 .template-export-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  z-index: 20;
-  display: grid;
+  position: fixed;
+  position-anchor: --template-export-trigger;
+  /* 旧 right: 0 / top: calc(100% + 8px) 相当: トリガーの下・右端揃え。収まらなければ上へ反転 */
+  position-area: block-end span-inline-start;
+  position-try-fallbacks: flip-block;
+  inset: auto;
+  margin: 8px 0 0;
   min-width: 190px;
   gap: 8px;
   border: 1px solid var(--line-strong);
@@ -1143,27 +1146,32 @@ h3 {
   background: var(--panel-strong);
   box-shadow: var(--shadow);
   padding: 8px;
-}
 
-.template-export-dropdown:not([open]) .template-export-menu {
-  display: none;
+  &:popover-open {
+    display: grid;
+  }
 }
 
 .template-export-menu .button-secondary {
   justify-content: flex-start;
 }
 
-.workflow-toolbar,
-.workflow-export-menu {
+.workflow-toolbar {
   display: grid;
   gap: 10px;
 }
 
+/*
+ * サイドバーの「Workflow操作」ドロップダウン。popover="auto" + anchor positioning
+ * （旧実装は <details> のインライン展開 + main.ts の closeOpenActionDropdowns）。
+ * メニューはトリガーと同幅でトリガーの下に重ねて表示する。
+ */
 .workflow-dropdown {
   display: grid;
   gap: 12px;
+  anchor-scope: --workflow-dropdown-trigger;
 
-  summary {
+  .workflow-dropdown-trigger {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1175,16 +1183,32 @@ h3 {
     cursor: pointer;
     font-size: 11px;
     font-weight: 500;
-    list-style: none;
     padding: 8px 10px;
-  }
-
-  summary::-webkit-details-marker {
-    display: none;
+    anchor-name: --workflow-dropdown-trigger;
   }
 }
 
-.workflow-dropdown summary span,
+.workflow-export-menu {
+  position: fixed;
+  position-anchor: --workflow-dropdown-trigger;
+  position-area: block-end span-all;
+  position-try-fallbacks: flip-block;
+  inset: auto;
+  margin: 4px 0 0;
+  width: anchor-size(width);
+  gap: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  padding: 8px;
+
+  &:popover-open {
+    display: grid;
+  }
+}
+
+.workflow-dropdown .workflow-dropdown-trigger span,
 .workflow-export-menu .button-secondary {
   display: inline-flex;
   align-items: center;
@@ -1192,7 +1216,7 @@ h3 {
 }
 
 .workflow-dropdown {
-  summary svg {
+  .workflow-dropdown-trigger svg {
     width: 15px;
     height: 15px;
     fill: none;
@@ -1202,13 +1226,13 @@ h3 {
     stroke-width: 2;
   }
 
-  &[open] summary {
+  &:has(:popover-open) .workflow-dropdown-trigger {
     border-color: var(--line-strong);
     background: var(--panel-strong);
     color: var(--ink);
   }
 
-  &[open] summary > svg {
+  &:has(:popover-open) .workflow-dropdown-trigger > svg {
     transform: rotate(180deg);
   }
 }

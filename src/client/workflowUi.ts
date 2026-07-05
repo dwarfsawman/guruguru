@@ -106,13 +106,13 @@ export function renderTemplatePanel(templates: WorkflowTemplate[]) {
             </div>
             <div class="template-row-actions">
               <button class="button-secondary compact template-action-button" type="button" data-action="open-template-diagram" data-template-id="${escapeAttr(template.id)}" aria-label="diagram" title="diagram">${iconDiagram()}</button>
-              <details class="template-export-dropdown">
-              <summary class="button-secondary compact template-action-button template-export-trigger" style="display:grid;place-items:center;line-height:0;" aria-label="export" title="export">${iconDownload()}</summary>
-                <div class="template-export-menu">
-                  <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${escapeAttr(template.id)}">${iconDownload()}raw export</button>
-                  <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${escapeAttr(template.id)}">${iconDownload()}template export</button>
+              <span class="template-export-dropdown">
+                <button class="button-secondary compact template-action-button template-export-trigger" type="button" popovertarget="template-export-menu-${escapeAttr(template.id)}" style="display:grid;place-items:center;line-height:0;" aria-label="export" title="export">${iconDownload()}</button>
+                <div class="template-export-menu" id="template-export-menu-${escapeAttr(template.id)}" popover>
+                  <button class="button-secondary compact" type="button" data-action="export-workflow" data-template-id="${escapeAttr(template.id)}" popovertarget="template-export-menu-${escapeAttr(template.id)}" popovertargetaction="hide">${iconDownload()}raw export</button>
+                  <button class="button-secondary compact" type="button" data-action="export-template" data-template-id="${escapeAttr(template.id)}" popovertarget="template-export-menu-${escapeAttr(template.id)}" popovertargetaction="hide">${iconDownload()}template export</button>
                 </div>
-              </details>
+              </span>
               <button class="button-danger compact template-action-button" type="button" data-action="delete-template" data-template-id="${escapeAttr(template.id)}" aria-label="削除" title="削除">${iconTrash()}</button>
             </div>
           </article>
