@@ -1,15 +1,11 @@
 import {
   defaultDenoiseForMode,
-  normalizeDenoiseForMode,
-  relationForGenerationMode,
-  requiresFullDenoise,
-  requiresParentAsset
+  normalizeDenoiseForMode
 } from "../shared/generationMode";
-import type { ComfySettings, ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, LlmSettings } from "../shared/types";
+import type { ComfySettings, LlmSettings } from "../shared/types";
 import type {
   Asset,
   AssetParent,
-  CollectRoundResponse,
   ComfyStatus,
   LlmStatus,
   ProjectDetail,
@@ -32,7 +28,6 @@ import {
   parseWorkflowFileContent,
   workflowExportFilename
 } from "./workflowImport";
-import { defaultModeForTemplate, templateGenerationDefaults } from "./workflowDefaults";
 import {
   renderWorkflowDiagramCanvases,
   renderWorkflowDiagramModal,
@@ -43,16 +38,12 @@ import { renderHome, type ConnectionState, type ConnectionSummary } from "./view
 import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
-import { defaultPrompt, defaultNegativePrompt, renderGenerationPanel } from "./views/generationPanel";
+import { renderGenerationPanel } from "./views/generationPanel";
 import { renderAssetModal, type MaskGenerationParams } from "./views/assetModal";
-import { hasActivePoseData } from "./poseDraft";
-import { renderPoseSkeletonDataUrl } from "./poseSkeleton";
 import {
-  generationDraftFields,
   setRenderCallback,
   state,
   toggleSidebarCollapsed,
-  type GenerationDraft,
   type GenerationDraftField,
   type RenderOptions
 } from "./appState";
@@ -68,8 +59,6 @@ import {
   cancelPendingMaskStrokeFlush,
   clearActiveImagePan,
   closeMaskEditorSession,
-  commitActiveMaskCanvas,
-  effectiveMaskDataUrl,
   handleMaskEditorPointerCancel,
   handleMaskEditorPointerDown,
   handleMaskEditorPointerMove,
@@ -91,7 +80,7 @@ import {
   handleWebSamPointerUp,
   updateSmartMaskDraftFromControl
 } from "./webSamController";
-import { clampNumber } from "./clientUtils";
+import { clampNumber, delay } from "./clientUtils";
 import {
   clearSelectedPoseEdges,
   closePoseEditorSession,
@@ -105,12 +94,8 @@ import {
   updatePoseDraftFromControl
 } from "./poseEditorController";
 import { defaultPaintDraft } from "./paintDraft";
-import { composePaintResultCanvas } from "./paintCanvas";
 import {
-  activePaintCanvasAndAsset,
   closePaintEditorSession,
-  commitActivePaintCanvas,
-  getOrCreatePaintLayer,
   handlePaintEditorBlur,
   handlePaintEditorKeydown,
   handlePaintEditorKeyup,
@@ -120,12 +105,48 @@ import {
   handlePaintEditorPointerUp,
   handlePaintWheelZoom,
   paintDraftForAsset,
-  paintLayerCache,
-  paintUndoStacks,
   setPaintBrushSize,
   setPaintColor,
   syncAssetModalPaintCanvas
 } from "./paintEditorController";
+import { formValue, readForm, setFormValue } from "./formUtils";
+import {
+  applyAssetDimensionsToDraft,
+  assetPassesFilter,
+  captureGenerationDraft,
+  currentBatchSizeValue,
+  currentCfgValue,
+  currentDenoiseValue,
+  currentHeightValue,
+  currentPositivePromptValue,
+  currentSamplerValue,
+  currentSchedulerValue,
+  currentSeedModeValue,
+  currentSeedValue,
+  currentStepsValue,
+  currentWidthValue,
+  fillGenerationFormFromAsset,
+  generationDraftFromForm,
+  getActiveRound,
+  getActiveRoundAssets,
+  getPreferredParentAsset,
+  setGenerationDraftValue,
+  setGenerationSliderDraft,
+  setPositivePromptDraft,
+  syncPreviewPromptControl,
+  updateDenoiseControlForMode
+} from "./generationDraft";
+import {
+  isRoundActive,
+  previewRoundDeletion,
+  refreshProject,
+  resumeAutoCollectForActiveRounds,
+  selectAllActiveRound,
+  selectRound,
+  setAssetStatus,
+  toggleFavorite,
+  toggleSelect
+} from "./generationController";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let pendingAssetCardSelect: { assetId: string; timer: number } | null = null;
@@ -140,8 +161,6 @@ interface ActiveWorkflowDiagramPan {
 
 let activeWorkflowDiagramPan: ActiveWorkflowDiagramPan | null = null;
 
-const pendingAutoCollectRoundIds = new Set<string>();
-const autoCollectIntervalMs = 3_000;
 setRenderCallback(render);
 void boot();
 
@@ -607,30 +626,6 @@ function isTextEntryTarget(target: EventTarget | null) {
   return target.isContentEditable || !!target.closest("[contenteditable=''], [contenteditable='true']");
 }
 
-function previewRoundDeletion(roundId: string) {
-  state.deletePreviewRoundId = roundId;
-  render();
-}
-
-function selectRound(roundId: string) {
-  preserveGenerationDenoise();
-  state.activeRoundId = roundId;
-  state.activeAssetId = null;
-  state.deletePreviewRoundId = null;
-  state.maskEditMode = false;
-  state.paintEditMode = false;
-  state.maskPanelTab = "mask";
-  clearActiveImagePan();
-  render();
-}
-
-function preserveGenerationDenoise() {
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  const denoiseControl = form?.elements.namedItem("denoise") as HTMLInputElement | null;
-  const denoiseValue = denoiseControl?.value ?? state.generationDraft?.denoise;
-  state.generationDraft = denoiseValue ? { denoise: denoiseValue } : null;
-}
-
 function openAssetDetail(assetId: string) {
   state.activeAssetId = assetId;
   // 編集モード（マスク/ポーズ）は常に閉じた状態で開く。マスク/ポーズの「添付」状態は
@@ -759,33 +754,10 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       await openProject(id);
     } else if (action === "delete-project") {
       await deleteProject(id);
-    } else if (action === "select-round") {
-      selectRound(id);
-    } else if (action === "collect-round") {
-      await collectRound(id);
-    } else if (action === "interrupt-round") {
-      await interruptRound(id);
-    } else if (action === "delete-round") {
-      await deleteRoundTree(id);
-    } else if (action === "cancel-delete-round") {
-      state.deletePreviewRoundId = null;
-      render();
-    } else if (action === "generate-round") {
-      await generateRound(null, "txt2img");
-    } else if (action === "img2img-next") {
-      await generateFromSelected("img2img");
-    } else if (action === "generate-from-preview") {
-      commitActiveMaskCanvas();
-      const asset = findAsset(id);
-      if (asset) {
-        await generateRound(asset, target.dataset.mode ?? "img2img");
-      }
     } else if (action === "asset-detail") {
       openAssetDetail(id);
     } else if (action === "close-detail") {
       closeAssetDetail();
-    } else if (action === "paint-save") {
-      await savePaintResultAsSourceAsset();
     } else if (action === "toggle-mask-grid-tag") {
       state.showMaskGridTag = !state.showMaskGridTag;
       render();
@@ -806,39 +778,6 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
           state.copiedSeedAssetId = null;
           render();
         }
-      }
-    } else if (action === "asset-selected") {
-      await setAssetStatus(id, "selected");
-    } else if (action === "asset-rejected") {
-      await setAssetStatus(id, "rejected");
-    } else if (action === "asset-unmarked") {
-      await setAssetStatus(id, "generated");
-    } else if (action === "toggle-select") {
-      await toggleSelect(id);
-    } else if (action === "toggle-favorite") {
-      await toggleFavorite(id);
-    } else if (action === "select-all") {
-      await selectAllActiveRound();
-    } else if (action === "clear-selection") {
-      await clearSelectionActiveRound();
-    } else if (action === "invert-selection") {
-      await invertSelectionActiveRound();
-    } else if (action === "export-selected") {
-      exportSelected();
-    } else if (action === "reset-session") {
-      await resetActiveRoundMarks();
-    } else if (action === "reset-generation-params") {
-      resetGenerationParamsToTemplateDefaults();
-    } else if (action === "random-seed") {
-      randomSeed();
-    } else if (action === "swap-resolution") {
-      swapResolution();
-    } else if (action === "scale-resolution") {
-      scaleResolution(target.dataset.scaleDirection === "down" ? -1 : 1);
-    } else if (action === "use-parent") {
-      const asset = findAsset(id);
-      if (asset) {
-        fillGenerationFormFromAsset(asset, target.dataset.mode ?? "img2img");
       }
     }
   } catch (error) {
@@ -899,55 +838,6 @@ async function openProject(projectId: string) {
   state.activeWorkflowDiagramTemplateId = null;
   render();
   resumeAutoCollectForActiveRounds();
-}
-
-async function refreshProject(keepRoundId = state.activeRoundId, keepAssetId = state.activeAssetId) {
-  if (!state.currentProjectId) {
-    return;
-  }
-  state.detail = await api<ProjectDetail>(`/api/projects/${state.currentProjectId}`);
-  state.templates = state.detail.templates;
-  state.activeRoundId = state.detail.rounds.some((round) => round.id === keepRoundId)
-    ? keepRoundId
-    : state.detail.rounds[0]?.id ?? null;
-  state.activeAssetId = state.detail.assets.some((asset) => asset.id === keepAssetId) ? keepAssetId : null;
-  if (!state.activeAssetId) {
-    state.maskEditMode = false;
-    state.paintEditMode = false;
-  }
-  resumeAutoCollectForActiveRounds();
-}
-
-function resumeAutoCollectForActiveRounds() {
-  if (!state.currentProjectId || !state.detail) {
-    return;
-  }
-  for (const round of state.detail.rounds) {
-    if (isRoundActive(round)) {
-      void pollCollectRound(round.id, state.currentProjectId);
-    }
-  }
-}
-
-function isRoundActive(round: Round | null | undefined) {
-  return !!round && isRoundActiveStatus(round.status);
-}
-
-function isRoundActiveStatus(status: string) {
-  return status === "pending" || status === "running";
-}
-
-function terminalRoundMessage(status: string) {
-  if (status === "completed") {
-    return "生成が完了しました。";
-  }
-  if (status === "interrupted") {
-    return "生成は停止済みです。保存済みの画像はこのままブランチングに使えます。";
-  }
-  if (status === "failed") {
-    return "生成に失敗しました。保存済みの画像があればこのままブランチングに使えます。";
-  }
-  return `生成状態: ${status}`;
 }
 
 async function persistComfySettings() {
@@ -1361,345 +1251,6 @@ async function deleteWorkflowTemplate(target: HTMLElement) {
   render();
 }
 
-async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
-  if (!state.currentProjectId) {
-    return;
-  }
-
-  const form = readForm("generation-form");
-  const generationMode = overrideMode ?? form.generationMode ?? "txt2img";
-  const resolvedParentAsset = resolveParentAssetForGeneration(parentAsset, generationMode, form.parentAssetId);
-  const parentAssetId = resolvedParentAsset?.id ?? null;
-  const requestedTemplateId = generationMode === "img2img"
-    ? form.img2imgTemplateId || form.templateId
-    : form.templateId;
-  const template = resolveTemplateForGeneration(requestedTemplateId, generationMode);
-  const denoise = normalizeDenoiseForMode(
-    Number(form.denoise || defaultDenoiseForMode(generationMode)),
-    generationMode
-  );
-  const inpaint = inpaintRequestForParent(parentAssetId, generationMode);
-  const controlnet = controlnetRequestForParent(parentAssetId, generationMode, template);
-  const request: GenerationRequest = {
-    templateId: template.id,
-    prompt: form.prompt,
-    negativePrompt: form.negativePrompt,
-    seed: form.seed ? Number(form.seed) : null,
-    seedMode: form.seedMode as GenerationRequest["seedMode"],
-    batchSize: Number(form.batchSize || 16),
-    steps: Number(form.steps || 20),
-    cfg: Number(form.cfg || 6),
-    sampler: form.sampler || "euler",
-    scheduler: form.scheduler || "normal",
-    denoise,
-    width: Number(form.width || 1024),
-    height: Number(form.height || 1024),
-    generationMode: generationMode as GenerationMode,
-    parentAssetId,
-    relationType: resolvedParentAsset ? relationForGenerationMode(generationMode) : null
-  };
-  if (inpaint) {
-    request.inpaint = inpaint;
-  }
-  if (controlnet) {
-    request.controlnet = controlnet;
-  }
-  setGenerationDraftValue(generationMode === "img2img" ? "img2imgTemplateId" : "templateId", template.id);
-  setGenerationDraftValue("generationMode", generationMode);
-
-  state.busy = true;
-  render();
-  const response = await api<{ promptId: string; round: Round }>(`/api/projects/${state.currentProjectId}/rounds`, {
-    method: "POST",
-    body: JSON.stringify(request)
-  });
-  const roundId = response.round.id;
-  const previousInpaint = parentAssetId ? inpaintDraftForAsset(parentAssetId) : null;
-  state.generationDraft = generationDraftFromRequest(response.round.request);
-  if (previousInpaint && inpaint && previousInpaint.parentAssetId === parentAssetId) {
-    state.generationDraft.inpaint = previousInpaint;
-  }
-  state.message = `ComfyUIに送信しました。prompt_id: ${response.promptId}`;
-  state.busy = false;
-  await refreshProject(roundId, null);
-  render();
-  if (roundId) {
-    void pollCollectRound(roundId, state.currentProjectId);
-  }
-}
-
-async function generateFromSelected(mode: string) {
-  const asset = getPreferredParentAsset();
-  if (!asset) {
-    throw new Error("selected画像、または詳細表示中の画像がありません。");
-  }
-  prepareGenerationFormForParent(asset, mode);
-  await generateRound(asset, mode);
-}
-
-function resolveParentAssetForGeneration(parentAsset: Asset | null, generationMode: string, formParentAssetId: string | null | undefined) {
-  if (parentAsset) {
-    return parentAsset;
-  }
-  if (!requiresParentAsset(generationMode)) {
-    return null;
-  }
-  return findAsset(formParentAssetId ?? "");
-}
-
-async function collectRound(roundId: string) {
-  const result = await api<CollectRoundResponse>(`/api/rounds/${roundId}/collect`, {
-    method: "POST",
-    body: "{}"
-  });
-  const count = result.assets?.length ?? 0;
-  state.message = count > 0
-    ? `生成画像を取り込みました。${count}件`
-    : String(result.message ?? "まだ出力画像はありません。");
-  await refreshProject(roundId, state.activeAssetId);
-  render();
-}
-
-async function interruptRound(roundId: string) {
-  const result = await api<Json>(`/api/rounds/${roundId}/interrupt`, {
-    method: "POST",
-    body: "{}"
-  });
-  pendingAutoCollectRoundIds.delete(roundId);
-  if (result.deleteError || result.interruptError) {
-    state.message = `停止要求を完了できませんでした: ${String(result.deleteError ?? result.interruptError)}`;
-  } else {
-    state.message = result.interrupted
-    ? "生成を停止しました。保存済みの画像はこのままブランチングに使えます。"
-    : "未実行の生成を停止しました。保存済みの画像はこのままブランチングに使えます。";
-  }
-  await refreshProject(roundId, state.activeAssetId);
-  render();
-}
-
-async function deleteRoundTree(roundId: string) {
-  if (!state.currentProjectId) {
-    return;
-  }
-
-  const result = await api<{ deleted: boolean; roundIds: string[]; deletedCount: number }>(`/api/rounds/${roundId}`, {
-    method: "DELETE"
-  });
-  const deletedRoundIds = new Set(result.roundIds);
-  for (const deletedRoundId of deletedRoundIds) {
-    pendingAutoCollectRoundIds.delete(deletedRoundId);
-  }
-
-  const keepRoundId = state.activeRoundId && !deletedRoundIds.has(state.activeRoundId) ? state.activeRoundId : null;
-  state.activeAssetId = null;
-  state.deletePreviewRoundId = null;
-  await refreshProject(keepRoundId, null);
-  state.message = `${result.deletedCount}件のイテレーションを削除しました。`;
-  render();
-}
-
-async function pollCollectRound(roundId: string, projectId: string | null) {
-  if (!projectId || pendingAutoCollectRoundIds.has(roundId)) {
-    return;
-  }
-  pendingAutoCollectRoundIds.add(roundId);
-
-  try {
-    while (true) {
-      await delay(autoCollectIntervalMs);
-      if (state.currentProjectId !== projectId) {
-        return;
-      }
-
-      const knownAssetCount = knownRoundAssetCount(roundId);
-      const result = await api<CollectRoundResponse>(`/api/rounds/${roundId}/collect`, {
-        method: "POST",
-        body: "{}"
-      });
-
-      const count = result.assets?.length ?? 0;
-      const status = result.round?.status;
-      const responseAssetCount = responseRoundAssetCount(result.round);
-      const displayedAssetCountChanged = responseAssetCount !== null && responseAssetCount !== knownAssetCount;
-      if (count > 0 || displayedAssetCountChanged) {
-        const collectedCount = responseAssetCount !== null
-          ? Math.max(0, responseAssetCount - knownAssetCount)
-          : count;
-        state.message = collectedCount > 0
-          ? `生成画像を自動で取り込みました。${collectedCount}件`
-          : "生成画像を自動で更新しました。";
-        await refreshProject(roundId, state.activeAssetId);
-        render();
-      } else if (status && !isRoundActiveStatus(status)) {
-        state.message = terminalRoundMessage(status);
-        await refreshProject(roundId, state.activeAssetId);
-        render();
-        return;
-      }
-
-      if (status && !isRoundActiveStatus(status)) {
-        return;
-      }
-    }
-  } catch (error) {
-    if (state.currentProjectId === projectId) {
-      state.message = error instanceof Error ? error.message : String(error);
-      render();
-    }
-  } finally {
-    pendingAutoCollectRoundIds.delete(roundId);
-  }
-}
-
-function knownRoundAssetCount(roundId: string) {
-  const round = findRound(roundId);
-  if (typeof round?.assetCount === "number") {
-    return round.assetCount;
-  }
-  return state.detail?.assets.filter((asset) => asset.roundId === roundId).length ?? 0;
-}
-
-function responseRoundAssetCount(round: Round | null | undefined) {
-  return typeof round?.assetCount === "number" ? round.assetCount : null;
-}
-
-async function setAssetStatus(assetId: string, status: string, refresh = true) {
-  await api(`/api/assets/${assetId}/status`, {
-    method: "POST",
-    body: JSON.stringify({ status })
-  });
-  if (refresh) {
-    await refreshProject(state.activeRoundId, state.activeAssetId);
-    render();
-  }
-}
-
-async function toggleSelect(assetId: string) {
-  const asset = findAsset(assetId);
-  if (!asset) {
-    return;
-  }
-  await setAssetStatus(assetId, asset.status === "selected" ? "generated" : "selected");
-}
-
-async function toggleFavorite(assetId: string) {
-  const asset = findAsset(assetId);
-  if (!asset) {
-    return;
-  }
-  await setAssetStatus(assetId, asset.status === "favorite" ? "generated" : "favorite");
-}
-
-async function selectAllActiveRound() {
-  const assets = getActiveRoundAssets().filter((asset) => !["archived", "failed"].includes(asset.status));
-  for (const asset of assets) {
-    if (asset.status !== "selected") {
-      await setAssetStatus(asset.id, "selected", false);
-    }
-  }
-  await refreshProject(state.activeRoundId, state.activeAssetId);
-  render();
-}
-
-async function clearSelectionActiveRound() {
-  const assets = getActiveRoundAssets().filter((asset) => asset.status === "selected");
-  for (const asset of assets) {
-    await setAssetStatus(asset.id, "generated", false);
-  }
-  await refreshProject(state.activeRoundId, state.activeAssetId);
-  render();
-}
-
-async function invertSelectionActiveRound() {
-  const assets = getActiveRoundAssets().filter((asset) => !["archived", "failed", "rejected"].includes(asset.status));
-  for (const asset of assets) {
-    await setAssetStatus(asset.id, asset.status === "selected" ? "generated" : "selected", false);
-  }
-  await refreshProject(state.activeRoundId, state.activeAssetId);
-  render();
-}
-
-async function resetActiveRoundMarks() {
-  const assets = getActiveRoundAssets().filter((asset) => ["selected", "rejected", "favorite"].includes(asset.status));
-  for (const asset of assets) {
-    await setAssetStatus(asset.id, "generated", false);
-  }
-  state.message = "現在のイテレーションの選択状態をクリアしました。";
-  await refreshProject(state.activeRoundId, null);
-  render();
-}
-
-function exportSelected() {
-  const count = getActiveRoundAssets().filter((asset) => asset.status === "selected").length;
-  state.message = count > 0
-    ? `${count}枚の選択画像を保存対象にしました。保存先はComfyUI接続設定の保存先です。`
-    : "保存対象の選択画像がありません。";
-  render();
-}
-
-function randomSeed() {
-  const input = document.querySelector<HTMLInputElement>('input[name="seed"]');
-  const seedMode = document.querySelector<HTMLSelectElement>('select[name="seedMode"]');
-  if (input) {
-    input.value = String(Math.floor(Math.random() * 2147483647));
-  }
-  if (seedMode) {
-    seedMode.value = "fixed";
-  }
-  captureGenerationDraft();
-}
-
-function swapResolution() {
-  const width = document.querySelector<HTMLInputElement>('input[name="width"]');
-  const height = document.querySelector<HTMLInputElement>('input[name="height"]');
-  if (!width || !height) {
-    return;
-  }
-  const nextWidth = height.value;
-  height.value = width.value;
-  width.value = nextWidth;
-  captureGenerationDraft();
-}
-
-function scaleResolution(direction: -1 | 1) {
-  const widthInput = document.querySelector<HTMLInputElement>('input[name="width"]');
-  const heightInput = document.querySelector<HTMLInputElement>('input[name="height"]');
-  if (!widthInput || !heightInput) {
-    return;
-  }
-
-  const width = resolutionValue(widthInput, 1024);
-  const height = resolutionValue(heightInput, 1024);
-  if (width <= 0 || height <= 0) {
-    return;
-  }
-
-  const step = 64;
-  const latentStep = 8;
-  let nextWidth = width;
-  let nextHeight = height;
-  if (width <= height) {
-    nextWidth = Math.max(step, width + step * direction);
-    nextHeight = roundToStep((nextWidth * height) / width, latentStep);
-  } else {
-    nextHeight = Math.max(step, height + step * direction);
-    nextWidth = roundToStep((nextHeight * width) / height, latentStep);
-  }
-
-  widthInput.value = String(Math.max(latentStep, nextWidth));
-  heightInput.value = String(Math.max(latentStep, nextHeight));
-  captureGenerationDraft();
-}
-
-function resolutionValue(input: HTMLInputElement, fallback: number) {
-  const value = Number(input.value);
-  return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : fallback;
-}
-
-function roundToStep(value: number, step: number) {
-  return Math.max(step, Math.round(value / step) * step);
-}
-
 function render(options: RenderOptions = {}) {
   const preserveIterationScroll = options.preserveIterationScroll ?? true;
   if (preserveIterationScroll) {
@@ -1950,263 +1501,6 @@ function renderProjectDetailView(detail: ProjectDetail) {
   );
 }
 
-function captureGenerationDraft() {
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  if (!form) {
-    return;
-  }
-  state.generationDraft = generationDraftFromForm(form);
-  if (state.currentProjectId) {
-    persistProjectDraft(state.currentProjectId);
-  }
-}
-
-function generationDraftFromForm(form: HTMLFormElement): GenerationDraft {
-  const draft: GenerationDraft = {
-    inpaint: null
-  };
-  for (const field of generationDraftFields) {
-    const control = form.elements.namedItem(field) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
-    if (control) {
-      draft[field] = control.value;
-    }
-  }
-  draft.inpaint = inpaintDraftForAsset(draft.parentAssetId) ?? null;
-  return draft;
-}
-
-function generationDraftFromRequest(request: GenerationRequest): GenerationDraft {
-  return {
-    templateId: request.templateId,
-    img2imgTemplateId: request.generationMode === "img2img" ? request.templateId : "",
-    parentAssetId: request.parentAssetId ?? "",
-    prompt: request.prompt,
-    negativePrompt: request.negativePrompt,
-    seed: request.seed === null ? "" : String(request.seed),
-    seedMode: request.seedMode,
-    batchSize: String(request.batchSize),
-    steps: String(request.steps),
-    cfg: String(request.cfg),
-    sampler: request.sampler,
-    scheduler: request.scheduler,
-    denoise: String(request.denoise),
-    width: String(request.width),
-    height: String(request.height),
-    generationMode: request.generationMode,
-    inpaint: null
-  };
-}
-
-function setGenerationDraftValue(field: GenerationDraftField, value: string) {
-  state.generationDraft = {
-    ...(state.generationDraft ?? {}),
-    [field]: value
-  };
-  if (state.currentProjectId) {
-    persistProjectDraft(state.currentProjectId);
-  }
-}
-
-function draftNumber(draft: GenerationDraft | null, field: GenerationDraftField) {
-  const value = draft?.[field];
-  if (value === undefined || value.trim() === "") {
-    return undefined;
-  }
-  const number = Number(value);
-  return Number.isFinite(number) ? number : undefined;
-}
-
-function setPositivePromptDraft(value: string) {
-  setGenerationDraftValue("prompt", value);
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  if (form) {
-    setFormValue(form, "prompt", value);
-  }
-  syncPreviewPromptControl(value);
-}
-
-function setGenerationSliderDraft(field: GenerationDraftField, control: HTMLInputElement) {
-  setGenerationDraftValue(field, control.value);
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  if (form) {
-    setFormValue(form, field, control.value);
-  }
-}
-
-function syncPreviewPromptControl(value: string) {
-  const control = document.querySelector<HTMLTextAreaElement>("[data-generation-field='prompt']");
-  if (control && control.value !== value) {
-    control.value = value;
-  }
-}
-
-function inpaintRequestForParent(parentAssetId: string | null, generationMode: string): InpaintOptions | null {
-  if (generationMode !== "img2img" || !parentAssetId) {
-    return null;
-  }
-  const draft = inpaintDraftForAsset(parentAssetId);
-  if (!draft || draft.enabled !== true) {
-    return null;
-  }
-  const maskDataUrl = effectiveMaskDataUrl(draft);
-  if (!maskDataUrl.startsWith("data:image/png;base64,")) {
-    return null;
-  }
-  return {
-    maskDataUrl,
-    maskedContent: draft.maskedContent,
-    inpaintArea: draft.inpaintArea,
-    onlyMaskedPadding: draft.onlyMaskedPadding,
-    featherRadius: draft.featherRadius
-  };
-}
-
-function controlnetRequestForParent(
-  parentAssetId: string | null,
-  generationMode: string,
-  template: { workflowJson: unknown }
-): ControlNetOptions | null {
-  if (!parentAssetId) {
-    return null;
-  }
-  const draft = poseDraftForAsset(parentAssetId);
-  if (!hasActivePoseData(draft) || draft.imageWidth === null || draft.imageHeight === null) {
-    return null;
-  }
-  if (!workflowHasControlNetApply(template.workflowJson)) {
-    return null;
-  }
-  const poseImageDataUrl = renderPoseSkeletonDataUrl(draft.poses, draft.imageWidth, draft.imageHeight, draft.removedBones);
-  if (!poseImageDataUrl.startsWith("data:image/png;base64,")) {
-    return null;
-  }
-  return {
-    poseImageDataUrl,
-    strength: draft.strength,
-    startPercent: draft.startPercent,
-    endPercent: draft.endPercent
-  };
-}
-
-function workflowHasControlNetApply(workflowJson: unknown): boolean {
-  if (!workflowJson || typeof workflowJson !== "object") {
-    return false;
-  }
-  return Object.values(workflowJson as Record<string, unknown>).some((node) => {
-    return !!node && typeof node === "object" && (node as { class_type?: unknown }).class_type === "ControlNetApplyAdvanced";
-  });
-}
-
-/**
- * ペイント結果を新規ソースアセットとして保存する。paint-save アクションのハンドラ。
- *
- * NOTE: 本関数は `generationDraftFromForm` / `applyAssetDimensionsToDraft` /
- * `refreshProject`（round polling を含む generation lifecycle）に依存しており、
- * それらは第二次リファクタリング計画のフェーズ F（generationController.ts）・
- * フェーズ H（draft 永続化）でまだ main.ts から抽出されていない。そのため本関数のみ、
- * フェーズ E では paintEditorController.ts へ移動せず main.ts に残す（意図的な例外）。
- * フェーズ F/H で該当ヘルパーが抽出され次第、本関数もそちらへ移動する。
- */
-async function savePaintResultAsSourceAsset() {
-  const active = activePaintCanvasAndAsset();
-  const asset = state.activeAssetId ? findAsset(state.activeAssetId) : null;
-  const image = document.querySelector<HTMLImageElement>("#previewImage");
-  if (!active || !asset || !image || !state.currentProjectId) {
-    return;
-  }
-  commitActivePaintCanvas();
-  const { canvas, assetId } = active;
-  const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
-  const composed = composePaintResultCanvas(image, layer, canvas.width, canvas.height);
-  const dataUrl = composed.toDataURL("image/png");
-
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  const draft = form ? generationDraftFromForm(form) : null;
-  const templateId = draft?.img2imgTemplateId || draft?.templateId || asset.workflowTemplateId || "";
-  if (!templateId) {
-    state.message = "WorkflowTemplateを選択してから保存してください。";
-    render();
-    return;
-  }
-
-  const denoise = normalizeDenoiseForMode(
-    Number(draft?.denoise || defaultDenoiseForMode("img2img")),
-    "img2img"
-  );
-
-  state.busy = true;
-  state.message = "ペイント結果を新規アセットとして保存しています。";
-  render();
-
-  const response = await api<{ round: Round; asset: Asset }>(`/api/projects/${state.currentProjectId}/source-assets`, {
-    method: "POST",
-    body: JSON.stringify({
-      filename: `paint_${assetId}_${Date.now()}.png`,
-      mimeType: "image/png",
-      dataUrl,
-      templateId,
-      prompt: draft?.prompt ?? "",
-      negativePrompt: draft?.negativePrompt ?? "",
-      seed: draft?.seed ? Number(draft.seed) : null,
-      seedMode: draft?.seedMode ?? "random",
-      batchSize: Number(draft?.batchSize || 1),
-      steps: Number(draft?.steps || 20),
-      cfg: Number(draft?.cfg || 7),
-      sampler: draft?.sampler || "euler",
-      scheduler: draft?.scheduler || "normal",
-      denoise,
-      width: canvas.width,
-      height: canvas.height
-    })
-  });
-
-  state.busy = false;
-  state.generationDraft = {
-    ...(draft ?? {}),
-    templateId: draft?.templateId || templateId,
-    img2imgTemplateId: templateId,
-    denoise: String(denoise),
-    generationMode: "img2img"
-  };
-  applyAssetDimensionsToDraft(response.asset);
-  paintLayerCache.delete(assetId);
-  paintUndoStacks.delete(assetId);
-  delete state.paintDrafts[assetId];
-  state.paintEditMode = false;
-  state.message = "ペイント結果を新規アセットとして保存し、親画像に設定しました。";
-  await refreshProject(response.round.id, null);
-  render();
-}
-
-
-function resetGenerationParamsToTemplateDefaults() {
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  if (!form) {
-    return;
-  }
-
-  const templateId = (form.elements.namedItem("templateId") as HTMLSelectElement | null)?.value ?? "";
-  const template = state.templates.find((item) => item.id === templateId) ?? null;
-  const defaults = templateGenerationDefaults(template);
-  const mode = defaultModeForTemplate(template);
-
-  setFormValue(form, "batchSize", String(defaults.batchSize ?? 16));
-  setFormValue(form, "steps", String(defaults.steps ?? 20));
-  setFormValue(form, "cfg", String(defaults.cfg ?? 7));
-  setFormValue(form, "denoise", String(normalizeDenoiseForMode(defaults.denoise ?? defaultDenoiseForMode(mode), mode)));
-  setFormValue(form, "width", String(defaults.width ?? 512));
-  setFormValue(form, "height", String(defaults.height ?? 768));
-  setFormValue(form, "seed", String(defaults.seed ?? -1));
-  setFormValue(form, "seedMode", "random");
-  setFormValue(form, "sampler", defaults.sampler ?? "euler");
-  setFormValue(form, "scheduler", defaults.scheduler ?? "normal");
-  setFormValue(form, "generationMode", mode);
-
-  captureGenerationDraft();
-  state.message = "生成パラメータをWorkflow JSONの初期値に戻しました。";
-  render();
-}
-
 function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | null) {
   const activeRound = getActiveRound(detail);
   const draft = state.generationDraft;
@@ -2215,22 +1509,6 @@ function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | n
   const activeInpaint = previous?.id ? inpaintDraftForAsset(previous.id) : null;
   const llmConfigured = Boolean(state.llmSettings?.baseUrl.trim() && state.llmSettings?.model.trim());
   return renderGenerationPanel(detail, activeRound, previous, draft, activeInpaint, llmConfigured, state.llmImproving);
-}
-
-function updateDenoiseControlForMode(mode: string) {
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  const control = form?.elements.namedItem("denoise") as HTMLInputElement | null;
-  if (!form || !control) {
-    return;
-  }
-
-  const current = Number(control.value);
-  const value = requiresFullDenoise(mode)
-    ? 1
-    : !Number.isFinite(current) || current >= 1
-      ? defaultDenoiseForMode(mode)
-      : current;
-  setFormValue(form, "denoise", String(value));
 }
 
 function renderAssetModalView() {
@@ -2272,196 +1550,6 @@ function renderAssetModalView() {
   );
 }
 
-function currentPositivePromptValue(asset: Asset) {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return state.generationDraft?.prompt ?? activeRound?.request?.prompt ?? asset.prompt ?? defaultPrompt;
-}
-
-function currentBatchSizeValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return draftNumber(state.generationDraft, "batchSize") ?? activeRound?.request?.batchSize ?? 16;
-}
-
-function currentGenerationModeValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  const requestMode = activeRound?.request?.generationMode;
-  return (state.generationDraft?.generationMode ?? (requestMode === "manual_upload" ? "img2img" : requestMode) ?? "txt2img") as GenerationMode;
-}
-
-function currentStepsValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return draftNumber(state.generationDraft, "steps") ?? activeRound?.request?.steps ?? 20;
-}
-
-function currentCfgValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return draftNumber(state.generationDraft, "cfg") ?? activeRound?.request?.cfg ?? 7;
-}
-
-function currentDenoiseValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  const mode = currentGenerationModeValue();
-  const raw = draftNumber(state.generationDraft, "denoise") ?? activeRound?.request?.denoise ?? defaultDenoiseForMode(mode);
-  return normalizeDenoiseForMode(raw, mode);
-}
-
-function currentWidthValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return draftNumber(state.generationDraft, "width") ?? activeRound?.request?.width ?? 512;
-}
-
-function currentHeightValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return draftNumber(state.generationDraft, "height") ?? activeRound?.request?.height ?? 768;
-}
-
-function currentSeedValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return state.generationDraft?.seed ?? String(activeRound?.request?.seed ?? -1);
-}
-
-function currentSeedModeValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return state.generationDraft?.seedMode ?? activeRound?.request?.seedMode ?? "random";
-}
-
-function currentSamplerValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return state.generationDraft?.sampler ?? activeRound?.request?.sampler ?? "euler";
-}
-
-function currentSchedulerValue() {
-  const activeRound = state.detail ? getActiveRound(state.detail) : null;
-  return state.generationDraft?.scheduler ?? activeRound?.request?.scheduler ?? "normal";
-}
-
-function getActiveRound(detail: ProjectDetail) {
-  return detail.rounds.find((round) => round.id === state.activeRoundId) ?? detail.rounds[0] ?? null;
-}
-
-function findRound(roundId: string | null) {
-  if (!roundId || !state.detail) {
-    return null;
-  }
-  return state.detail.rounds.find((round) => round.id === roundId) ?? null;
-}
-
-function getActiveRoundAssets() {
-  if (!state.detail) {
-    return [];
-  }
-  const activeRound = getActiveRound(state.detail);
-  if (!activeRound) {
-    return [];
-  }
-  return state.detail.assets.filter((asset) => asset.roundId === activeRound.id);
-}
-
-function getPreferredParentAsset() {
-  const active = findAsset(state.activeAssetId);
-  if (active) {
-    return active;
-  }
-  return getActiveRoundAssets().find((asset) => asset.status === "selected") ?? null;
-}
-
-function assetPassesFilter(asset: Asset) {
-  if (state.filter === "all") {
-    return true;
-  }
-  if (state.filter === "unmarked") {
-    return asset.status === "generated";
-  }
-  return asset.status === state.filter;
-}
-
-function fillGenerationFormFromAsset(asset: Asset, mode: string) {
-  state.activeAssetId = asset.id;
-  render();
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  if (!form) {
-    return;
-  }
-  setFormValue(form, "parentAssetId", asset.id);
-  setFormValue(form, "generationMode", mode);
-  setFormValue(form, "prompt", asset.prompt);
-  setFormValue(form, "negativePrompt", asset.negativePrompt);
-  setFormValue(form, "seed", String(asset.seed ?? ""));
-  setFormValue(form, "seedMode", "random");
-  applyAssetDimensionsToForm(form, asset);
-  preserveDenoiseOnAssetFill(form, mode);
-  captureGenerationDraft();
-}
-
-function preserveDenoiseOnAssetFill(form: HTMLFormElement, mode: string) {
-  const denoise = form.elements.namedItem("denoise") as HTMLInputElement | null;
-  if (!denoise) {
-    return;
-  }
-  if (requiresFullDenoise(mode)) {
-    setFormValue(form, "denoise", "1");
-    return;
-  }
-  const current = Number(denoise.value);
-  if (!Number.isFinite(current) || current <= 0 || current >= 1) {
-    setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
-  }
-}
-
-function prepareGenerationFormForParent(asset: Asset, mode: string) {
-  const form = document.querySelector<HTMLFormElement>("#generation-form");
-  if (!form) {
-    return;
-  }
-
-  const previousMode = (form.elements.namedItem("generationMode") as HTMLSelectElement | null)?.value ?? "txt2img";
-  const previousParentAssetId = (form.elements.namedItem("parentAssetId") as HTMLInputElement | null)?.value ?? "";
-  const denoise = form.elements.namedItem("denoise") as HTMLInputElement | null;
-  setFormValue(form, "parentAssetId", asset.id);
-  setFormValue(form, "generationMode", mode);
-  if (previousParentAssetId !== asset.id) {
-    applyAssetDimensionsToForm(form, asset);
-  }
-
-  if (denoise && requiresFullDenoise(previousMode) && Number(denoise.value) >= 1 && !requiresFullDenoise(mode)) {
-    setFormValue(form, "denoise", String(defaultDenoiseForMode(mode)));
-  }
-
-  captureGenerationDraft();
-}
-
-function applyAssetDimensionsToForm(form: HTMLFormElement, asset: Asset) {
-  if (typeof asset.width === "number" && Number.isFinite(asset.width)) {
-    setFormValue(form, "width", String(asset.width));
-  }
-  if (typeof asset.height === "number" && Number.isFinite(asset.height)) {
-    setFormValue(form, "height", String(asset.height));
-  }
-}
-
-function applyAssetDimensionsToDraft(asset: Asset) {
-  if (typeof asset.width === "number" && Number.isFinite(asset.width)) {
-    setGenerationDraftValue("width", String(asset.width));
-  }
-  if (typeof asset.height === "number" && Number.isFinite(asset.height)) {
-    setGenerationDraftValue("height", String(asset.height));
-  }
-}
-
-function setFormValue(form: HTMLFormElement, name: string, value: string) {
-  const control = form.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
-  if (control) {
-    control.value = value;
-    const valueTargetId = (control as HTMLElement).dataset.valueTarget;
-    if (valueTargetId && control instanceof HTMLInputElement) {
-      const valueTarget = document.getElementById(valueTargetId);
-      if (valueTarget) {
-        valueTarget.textContent = formatSliderValue(control);
-      }
-    }
-  }
-}
-
 function captureWorkflowImportDraftFromElement(target: Element) {
   const form = target.closest<HTMLFormElement>("#template-form");
   if (form) {
@@ -2488,31 +1576,3 @@ function refreshWorkflowImportPreview() {
   void renderWorkflowDiagramCanvases();
 }
 
-function formValue(form: HTMLFormElement, name: string) {
-  const control = form.elements.namedItem(name) as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null;
-  return control?.value ?? "";
-}
-
-function resolveTemplateForGeneration(templateId: string, mode: string) {
-  const current = state.templates.find((template) => template.id === templateId) ?? null;
-  if (!current) {
-    throw new Error(`${mode}用WorkflowTemplateが選択されていません。`);
-  }
-  return current;
-}
-
-function readForm(formId: string): Record<string, string> {
-  const form = document.querySelector<HTMLFormElement>(`#${formId}`);
-  if (!form) {
-    throw new Error(`Form was not found: ${formId}`);
-  }
-  const values: Record<string, string> = {};
-  for (const [key, value] of new FormData(form).entries()) {
-    values[key] = String(value);
-  }
-  return values;
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
