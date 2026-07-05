@@ -31,7 +31,7 @@ export async function loadHome() {
   state.paintEditMode = false;
   state.maskPanelTab = "mask";
   state.deletePreviewRoundId = null;
-  state.iterationScroll = null;
+  state.iterationScrollReset = true;
   state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
@@ -55,7 +55,7 @@ async function openProject(projectId: string) {
   state.paintEditMode = false;
   state.maskPanelTab = "mask";
   state.deletePreviewRoundId = null;
-  state.iterationScroll = null;
+  state.iterationScrollReset = true;
   state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
   requestRender();

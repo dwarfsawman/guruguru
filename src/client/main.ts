@@ -9,6 +9,7 @@ import {
   iconMenu
 } from "./icons";
 import { escapeAttr, escapeHtml, formatNumber, formatSliderValue } from "./format";
+import { morph } from "./domMorph";
 import {
   renderWorkflowDiagramCanvases,
   renderWorkflowDiagramModal,
@@ -519,62 +520,62 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
   }
 }
 
-function render(options: RenderOptions = {}) {
-  const preserveIterationScroll = options.preserveIterationScroll ?? true;
-  if (preserveIterationScroll) {
-    captureIterationScrollPosition();
-  } else {
-    state.iterationScroll = null;
-  }
+// 領域ごとの前回 HTML。全領域が前回と一致する場合は DOM パッチ自体をスキップする。
+let lastRegionHtml: string[] | null = null;
+
+function render(_options: RenderOptions = {}) {
   if (state.currentProjectId) {
     persistProjectDraft(state.currentProjectId);
   }
-  app.innerHTML = `
-    ${renderHeader()}
-    ${state.message ? `<div class="message"><pre class="message-text">${escapeHtml(state.message)}</pre><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button></div>` : ""}
-    ${state.detail ? renderProjectDetailView(state.detail) : renderHome(
+  const regions = [
+    renderHeader(),
+    state.message ? `<div class="message"><pre class="message-text">${escapeHtml(state.message)}</pre><button class="message-close" type="button" data-action="dismiss-message" aria-label="メッセージを閉じる" title="閉じる">${iconClose()}</button></div>` : "",
+    state.detail ? renderProjectDetailView(state.detail) : renderHome(
       state.projects,
       state.settings,
       state.templates,
       state.llmSettings,
       { state: state.comfyConnection, text: state.comfyStatusText } satisfies ConnectionSummary,
       { state: state.llmConnection, text: state.llmStatusText } satisfies ConnectionSummary
-    )}
-    ${renderAssetModalView()}
-    ${renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft)}
-    ${renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId)}
-  `;
-  invalidateMaskBrushCursorCache();
-  restoreIterationScrollPosition();
-  if (preserveIterationScroll) {
-    requestAnimationFrame(() => {
-      restoreIterationScrollPosition();
-    });
+    ),
+    renderAssetModalView(),
+    renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft),
+    renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId)
+  ];
+  const changed = !lastRegionHtml || regions.some((html, i) => html !== lastRegionHtml![i]);
+  if (changed) {
+    morph(app, `
+    ${regions[0]}
+    ${regions[1]}
+    ${regions[2]}
+    ${regions[3]}
+    ${regions[4]}
+    ${regions[5]}
+  `);
+    lastRegionHtml = regions;
   }
+  invalidateMaskBrushCursorCache();
+  resetIterationScrollIfRequested();
   refreshIterationEdges();
   syncAssetModalMaskCanvas();
   syncAssetModalPaintCanvas();
   void renderWorkflowDiagramCanvases();
 }
 
-function captureIterationScrollPosition() {
-  const tracker = document.querySelector<HTMLElement>(".iteration-tracker");
-  if (!tracker) {
+/**
+ * morph 化により .iteration-tracker のスクロール位置は再レンダーをまたいで自然に保持される。
+ * プロジェクトを開き直した時など「先頭に戻したい」場面だけ明示フラグでリセットする。
+ */
+function resetIterationScrollIfRequested() {
+  if (!state.iterationScrollReset) {
     return;
   }
-  state.iterationScroll = {
-    left: tracker.scrollLeft,
-    top: tracker.scrollTop
-  };
-}
-
-function restoreIterationScrollPosition() {
+  state.iterationScrollReset = false;
   const tracker = document.querySelector<HTMLElement>(".iteration-tracker");
-  if (!tracker || !state.iterationScroll) {
-    return;
+  if (tracker) {
+    tracker.scrollLeft = 0;
+    tracker.scrollTop = 0;
   }
-  tracker.scrollLeft = state.iterationScroll.left;
-  tracker.scrollTop = state.iterationScroll.top;
 }
 
 let iterationEdgeObserver: ResizeObserver | null = null;
@@ -601,7 +602,7 @@ function refreshIterationEdges() {
         }
       });
     }
-    // render() ごとに forest 要素は作り直されるため、観測対象を貼り直す。
+    // morph の結果 forest 要素が入れ替わる場合があるため、観測対象を毎回貼り直す。
     iterationEdgeObserver.disconnect();
     iterationEdgeObserver.observe(forest);
     const tracker = forest.closest(".iteration-tracker");
