@@ -847,7 +847,7 @@ test("patchWorkflow: throws when img2img workflow has no sampler node with a lat
 function baseWorkflowWithControlNet(): Record<string, unknown> {
   const workflow = baseWorkflow() as Record<string, any>;
   // ControlNetApplyAdvanced(8) reads its control image from a LoadImage(9) node -- mirroring
-  // the reference workflow's 752/754 pair (Docs/Feature-PoseControlNet.md "参照ワークフローの構成").
+  // the reference workflow's 752/754 pair (Docs/Done/Feature-PoseControlNet.md "参照ワークフローの構成").
   workflow["8"] = {
     class_type: "ControlNetApplyAdvanced",
     inputs: { image: ["9", 0], strength: 1, start_percent: 0, end_percent: 1 },

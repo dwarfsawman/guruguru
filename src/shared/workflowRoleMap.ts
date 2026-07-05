@@ -69,7 +69,7 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
   // NOT have this role inferred at all, otherwise it would misinfer onto the first unrelated node
   // with a "pixels"/"image" input -- notably ControlNetApplyAdvanced.inputs.image -- and later
   // corrupt conditioning wiring when patchImg2ImgLatentPath/patchInpaintLatentPath treat that node
-  // as a VAEEncode node (Docs/Feature-PoseControlNet-Img2Img.md).
+  // as a VAEEncode node (Docs/Done/Feature-PoseControlNet-Img2Img.md).
   addInputPath(roleMap, "vae_encode_image_input", findInputInNodes(nodes.filter((node) => node.classType.includes("VAEEncode")), ["pixels", "image"]));
   const saveImage = findNode(nodes, ["SaveImage"]);
   if (saveImage) {

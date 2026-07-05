@@ -58,7 +58,7 @@ export function patchWorkflow(workflowJson: unknown, rawRoleMap: Record<string, 
     return patchUnifiedSwitchWorkflow(workflow, context, savePrefixForContext(context));
   }
   // Defends against DB-stored templates whose roleMap was inferred before the inferRoleMap fix
-  // (workflowRoleMap.ts) -- see Docs/Feature-PoseControlNet-Img2Img.md.
+  // (workflowRoleMap.ts) -- see Docs/Done/Feature-PoseControlNet-Img2Img.md.
   const roleMap = sanitizeRoleMap(workflow, rawRoleMap);
 
   setNodeInput(workflow, roleMap.positive_prompt_node, ["text", "prompt", "positive"], request.prompt);

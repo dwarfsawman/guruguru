@@ -11,7 +11,7 @@ import {
   stringRole
 } from "./workflowGraph";
 
-// Patches a template's ControlNetApplyAdvanced node (§5 of Docs/Feature-PoseControlNet.md).
+// Patches a template's ControlNetApplyAdvanced node (§5 of Docs/Done/Feature-PoseControlNet.md).
 // The apply node is located via roleMap.controlnet_apply_node, falling back to an exact
 // class search. The image supplying it is found by following its `inputs.image` connection
 // rather than by class search, because templates commonly contain more than one LoadImage

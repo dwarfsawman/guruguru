@@ -1,5 +1,5 @@
 /**
- * OpenPose スケルトン PNG 描画（`Docs/Feature-PoseControlNet.md` §3「スケルトン PNG 描画」）。
+ * OpenPose スケルトン PNG 描画（`Docs/Done/Feature-PoseControlNet.md` §3「スケルトン PNG 描画」）。
  * 座標計算・描画対象の決定は pure helper（`buildPoseSkeletonDrawOps`）に切り出し、
  * canvas 依存の `renderPoseSkeletonDataUrl` から利用する（fake canvas 不要でユニットテスト可能にするため）。
  *
@@ -32,7 +32,7 @@ export interface PoseSkeletonCircleOp {
 export type PoseSkeletonDrawOp = PoseSkeletonLineOp | PoseSkeletonCircleOp;
 
 /**
- * 線幅（= 関節円の半径と同径）。`Docs/Feature-PoseControlNet.md` §3 の式:
+ * 線幅（= 関節円の半径と同径）。`Docs/Done/Feature-PoseControlNet.md` §3 の式:
  * `max(4, round(min(w,h)/128))`
  */
 export function poseSkeletonLineWidth(width: number, height: number): number {

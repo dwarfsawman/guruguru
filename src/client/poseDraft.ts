@@ -1,6 +1,6 @@
 /**
  * ポーズ編集の下書き (PoseDraft) に関する純粋 helper。
- * `Docs/Feature-PoseControlNet.md` §3 の「MediaPipe 33 → OpenPose(COCO 18) マッピング」を実装する。
+ * `Docs/Done/Feature-PoseControlNet.md` §3 の「MediaPipe 33 → OpenPose(COCO 18) マッピング」を実装する。
  * DOM/state に依存しない pure helper のみを置く（`maskDraft.ts` と同型）。
  *
  * - `strength` 既定は `1.0`、`startPercent` 既定は `0`、`endPercent` 既定は `1`。

@@ -1,6 +1,6 @@
 /**
  * ポーズ編集（PoseDraft）周辺の型定義。
- * `Docs/Feature-PoseControlNet.md` §3 の PoseDraft 定義に対応。
+ * `Docs/Done/Feature-PoseControlNet.md` §3 の PoseDraft 定義に対応。
  * `PoseModelStatus` は `./pose/types` の `PoseModelStatus`（worker プロトコル）を再利用する。
  * 本 module は `main.ts` を import しない（circular import なし）。
  */
