@@ -65,6 +65,13 @@ const activeJobStatuses = new Set<GenerationJobStatus>(["pending", "queued", "ru
 const terminalRoundStatuses = new Set(["completed", "failed", "interrupted"]);
 const activeRoundMonitors = new Map<string, { socket: WebSocket; clientId: string }>();
 const roundCollectionLocks = new Map<string, Promise<CollectRoundResult>>();
+/** ComfyUI の `type: "progress"` メッセージ(現在のサンプラー step)を Round 単位で保持する(DB化しない)。 */
+const roundProgress = new Map<string, { value: number; max: number }>();
+
+/** UX改善#5: `pollCollectRound` の collect レスポンスに乗せる現在の生成進捗。 */
+export function getRoundProgress(roundId: string): { value: number; max: number } | null {
+  return roundProgress.get(roundId) ?? null;
+}
 
 function getRoundForApi(roundId: string): Round | null {
   return toApiRow(
@@ -454,6 +461,9 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
   if (!isTerminal && stats.active > 0) {
     ensureRoundMonitor(roundId);
   }
+  if (isTerminal) {
+    roundProgress.delete(roundId);
+  }
 
   if (createdAssets.length > 0) {
     runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [round.project_id]);
@@ -465,6 +475,7 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
       round: getRoundForApi(String(updatedRound.id)),
       assets: createdAssets,
       jobStats: stats,
+      progress: getRoundProgress(roundId),
       message: createdAssets.length > 0
         ? `${createdAssets.length} generated image(s) were collected.`
         : "No new generated images are available yet."
@@ -955,6 +966,8 @@ async function handleComfySocketMessage(roundId: string, rawData: unknown) {
   }
 
   if (type === "execution_start" || (type === "executing" && data.node !== null)) {
+    // ノード(またはプロンプト)が切り替わったタイミングなので、直前ノードの進捗を持ち越さない。
+    roundProgress.delete(roundId);
     runSql(
       "UPDATE generation_jobs SET status = 'running', started_at = COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id = ? AND status IN ('pending', 'queued')",
       [job.id]
@@ -963,12 +976,23 @@ async function handleComfySocketMessage(roundId: string, rawData: unknown) {
     return;
   }
 
+  if (type === "progress") {
+    const value = Number(data.value);
+    const max = Number(data.max);
+    if (Number.isFinite(value) && Number.isFinite(max) && max > 0) {
+      roundProgress.set(roundId, { value, max });
+    }
+    return;
+  }
+
   if (type === "executed" || type === "execution_success" || (type === "executing" && data.node === null)) {
+    roundProgress.delete(roundId);
     await collectRound(roundId);
     return;
   }
 
   if (type === "execution_interrupted") {
+    roundProgress.delete(roundId);
     runSql(
       "UPDATE generation_jobs SET status = 'interrupted', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status != 'completed'",
       [job.id]
@@ -979,6 +1003,7 @@ async function handleComfySocketMessage(roundId: string, rawData: unknown) {
   }
 
   if (type === "execution_error") {
+    roundProgress.delete(roundId);
     runSql(
       "UPDATE generation_jobs SET status = 'failed', last_error_json = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status != 'completed'",
       [JSON.stringify(data), job.id]
@@ -989,6 +1014,7 @@ async function handleComfySocketMessage(roundId: string, rawData: unknown) {
 }
 
 function stopRoundMonitor(roundId: string) {
+  roundProgress.delete(roundId);
   const monitor = activeRoundMonitors.get(roundId);
   if (!monitor) {
     return;

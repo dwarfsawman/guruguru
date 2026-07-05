@@ -126,4 +126,6 @@ export interface CollectRoundResponse {
   assets?: Asset[];
   message?: string;
   jobStats?: Json;
+  /** ComfyUI の現在のサンプラー step(UX改善#5)。生成中でない/未取得なら null。 */
+  progress?: { value: number; max: number } | null;
 }

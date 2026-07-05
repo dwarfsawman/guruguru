@@ -252,6 +252,12 @@
     animation: none;
     box-shadow: 0 0 0 3px var(--accent-line);
   }
+
+  /* UX改善#5: ComfyUI が実際にサンプリング中(queued/pendingで待機中ではない)を示す強調。 */
+  &.running {
+    border-color: var(--good);
+    animation: pulse 0.7s ease-in-out infinite;
+  }
 }
 
 .iteration-node.delete-preview-target > .iteration-dot {

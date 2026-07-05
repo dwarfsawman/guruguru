@@ -704,7 +704,8 @@ function renderProjectDetailView(detail: ProjectDetail) {
     (assetId: string) => poseDraftForAsset(assetId),
     state.showMaskGridTag,
     state.copiedSeedAssetId,
-    state.sidebarCollapsed
+    state.sidebarCollapsed,
+    state.roundProgress
   );
 }
 

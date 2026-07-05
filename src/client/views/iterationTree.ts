@@ -34,7 +34,15 @@ function generationModeLabel(mode: string) {
   return mode === "manual_upload" ? "source" : mode;
 }
 
-export function renderIterationTracker(rounds: Round[], activeRoundId: string | null, deletePreviewRoundId: string | null) {
+/** UX改善#5: ComfyUI の現在のサンプラー step。roundId をキーに持つ round のみ生成中。 */
+export type RoundProgressMap = Record<string, { value: number; max: number }>;
+
+export function renderIterationTracker(
+  rounds: Round[],
+  activeRoundId: string | null,
+  deletePreviewRoundId: string | null,
+  roundProgress: RoundProgressMap = {}
+) {
   const sortedRounds = sortRoundsAsc(rounds);
   if (!sortedRounds.length) {
     return `<div class="iteration-tracker empty-tracker"><span class="iteration-empty">No iterations</span></div>`;
@@ -47,7 +55,7 @@ export function renderIterationTracker(rounds: Round[], activeRoundId: string | 
     <div class="iteration-tracker" aria-label="イテレーション">
       <div class="iteration-forest">
         <svg class="iteration-edges" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg>
-        ${forest.roots.map((round) => renderRoundTreeNode(round, forest.children, deleteTargetIds, activeRoundId, deletePreviewRoundId)).join("")}
+        ${forest.roots.map((round) => renderRoundTreeNode(round, forest.children, deleteTargetIds, activeRoundId, deletePreviewRoundId, roundProgress)).join("")}
       </div>
     </div>
   `;
@@ -90,17 +98,20 @@ export function renderRoundTreeNode(
   deleteTargetIds: Set<string>,
   activeRoundId: string | null,
   deletePreviewRoundId: string | null,
+  roundProgress: RoundProgressMap = {},
   parentHue: number | null = null
 ): string {
   const childRounds = children.get(round.id) ?? [];
   const active = round.id === activeRoundId;
   const completed = round.status === "completed";
-  const dotClass = active ? "active" : completed ? "completed" : "pending";
+  const running = round.status === "running";
+  const dotClass = `${active ? "active" : completed ? "completed" : "pending"}${running ? " running" : ""}`;
   const hue = parentHue == null ? rootHue(round) : childHue(parentHue, round.request?.denoise ?? 1);
   const isDeleteRoot = deletePreviewRoundId === round.id;
   const isDeleteTarget = deleteTargetIds.has(round.id);
   const hasIncomingEdge = parentHue != null;
   const nodeStyle = `--branch-hue: ${hue}${hasIncomingEdge ? `; --parent-hue: ${parentHue}` : ""}`;
+  const progress = roundProgress[round.id];
   return `
     <div class="iteration-node ${childRounds.length ? "has-children" : ""} ${isDeleteRoot ? "delete-preview-root" : ""} ${isDeleteTarget ? "delete-preview-target" : ""}" style="${nodeStyle}">
       ${hasIncomingEdge ? `
@@ -108,7 +119,7 @@ export function renderRoundTreeNode(
           <span class="iteration-edge-popout" role="tooltip">${iterationEdgePopoutHtml(round)}</span>
         </span>
       ` : ""}
-      <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" data-round-id="${escapeAttr(round.id)}" data-parent-id="${hasIncomingEdge ? escapeAttr(round.parentRoundId ?? "") : ""}" data-hue="${hue}" type="button" title="${escapeAttr(iterationTitle(round))}">
+      <button class="iteration-dot ${dotClass}" data-action="select-round" data-id="${round.id}" data-round-id="${escapeAttr(round.id)}" data-parent-id="${hasIncomingEdge ? escapeAttr(round.parentRoundId ?? "") : ""}" data-hue="${hue}" type="button" title="${escapeAttr(iterationTitle(round, progress))}">
         <span>${round.roundIndex}</span>
       </button>
       ${isDeleteTarget ? `
@@ -120,7 +131,7 @@ export function renderRoundTreeNode(
         <div class="iteration-children ${childRounds.length > 1 ? "has-siblings" : "single-child"}">
           ${childRounds.map((child, index) => `
             <div class="iteration-child ${index === 0 ? "first" : ""} ${index === childRounds.length - 1 ? "last" : ""}">
-              ${renderRoundTreeNode(child, children, deleteTargetIds, activeRoundId, deletePreviewRoundId, hue)}
+              ${renderRoundTreeNode(child, children, deleteTargetIds, activeRoundId, deletePreviewRoundId, roundProgress, hue)}
             </div>
           `).join("")}
         </div>
@@ -181,7 +192,8 @@ export function childHue(parentHue: number, denoise: number) {
   return normalizeHue(parentHue + CHILD_HUE_STEP_MAX * clampDenoise(denoise));
 }
 
-export function iterationTitle(round: Round) {
+export function iterationTitle(round: Round, progress?: { value: number; max: number }) {
   const parent = round.parentRoundId ? ` / parent ${round.parentRoundId}` : " / root";
-  return `Round ${round.roundIndex} / ${generationModeLabel(round.generationMode)} / ${round.status}${parent}`;
+  const progressSuffix = progress ? ` (${Math.round((progress.value / progress.max) * 100)}%, step ${progress.value}/${progress.max})` : "";
+  return `Round ${round.roundIndex} / ${generationModeLabel(round.generationMode)} / ${round.status}${progressSuffix}${parent}`;
 }
