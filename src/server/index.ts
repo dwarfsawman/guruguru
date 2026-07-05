@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
-import { purgeAllRoundTrash, removeRoundTrashSnapshot } from "./roundTrash";
+import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
 import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection } from "./llm";
 import { serveStatic } from "./files";
@@ -242,7 +242,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     let discarded = 0;
     for (const rootId of rootIds) {
       try {
-        removeRoundTrashSnapshot(rootId);
+        discardRoundTrashSnapshot(rootId);
         discarded += 1;
       } catch {
         // 不正な id は無視する(パストラバーサル対策の検証エラー)。

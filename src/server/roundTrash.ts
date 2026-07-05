@@ -14,6 +14,7 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { dataRoot } from "./db";
+import { isPathInside } from "./paths";
 
 const trashDir = join(dataRoot, "trash", "rounds");
 
@@ -58,8 +59,42 @@ export function removeRoundTrashSnapshot(rootId: string) {
 }
 
 /**
- * ゴミ箱スナップショットを全削除する。サーバー起動時に一度呼ぶ
- * (前回セッションの undo 履歴はクライアント側に残っていないため、残骸でしかない)。
+ * スナップショットが参照するアセット画像/サムネイルファイルを削除する。
+ * discard(削除の確定)専用 — restore 後は呼ばないこと。
+ * 安全のため dataRoot 配下のパスのみ対象にする。
+ */
+function deleteSnapshotAssetFiles(snapshot: RoundTreeSnapshot) {
+  for (const asset of snapshot.assets) {
+    for (const field of ["image_path", "thumbnail_small_path", "thumbnail_medium_path"] as const) {
+      const filePath = asset[field];
+      if (typeof filePath !== "string" || !filePath.trim() || !isPathInside(filePath, dataRoot)) {
+        continue;
+      }
+      try {
+        rmSync(filePath, { force: true });
+      } catch {
+        // ファイル削除の失敗で破棄全体を止めない。
+      }
+    }
+  }
+}
+
+/**
+ * 削除の確定: スナップショットが参照する画像ファイルを削除してから
+ * スナップショット自体を破棄する(以後復元不能)。
+ */
+export function discardRoundTrashSnapshot(rootId: string) {
+  const snapshot = readRoundTrashSnapshot(rootId);
+  if (snapshot) {
+    deleteSnapshotAssetFiles(snapshot);
+  }
+  removeRoundTrashSnapshot(rootId);
+}
+
+/**
+ * ゴミ箱スナップショットを全破棄する(参照画像ファイルも削除)。サーバー起動時に一度呼ぶ。
+ * ブラウザやサーバーの強制終了で discard されずに残った分の後始末で、前回セッションの
+ * undo 履歴はクライアント側に残っていないため残骸でしかない。
  */
 export function purgeAllRoundTrash() {
   let entries: string[];
@@ -74,7 +109,7 @@ export function purgeAllRoundTrash() {
       continue;
     }
     try {
-      rmSync(join(trashDir, entry), { force: true });
+      discardRoundTrashSnapshot(entry.slice(0, -".json".length));
       purged += 1;
     } catch {
       // 個別ファイルの失敗はパージ全体を止めない。
