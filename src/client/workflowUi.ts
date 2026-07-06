@@ -290,19 +290,6 @@ export function renderWorkflowDiagramNotice(status: WorkflowDiagramStatus, messa
   `;
 }
 
-export function renderWorkflowTypeOptions(selectedType: string) {
-  const types = [
-    ["txt2img", "txt2img"],
-    ["img2img", "img2img"],
-    ["ipadapter", "IP-Adapter"],
-    ["controlnet", "ControlNet"],
-    ["hybrid", "Hybrid"]
-  ];
-  return types
-    .map(([value, label]) => `<option value="${value}" ${selectedType === value ? "selected" : ""}>${label}</option>`)
-    .join("");
-}
-
 export function renderTemplateOption(template: WorkflowTemplate, selectedTemplateId: string) {
   const selected = selectedTemplateId === template.id ? "selected" : "";
   return `<option value="${escapeAttr(template.id)}" ${selected}>${escapeHtml(template.name)} v${template.version} (${escapeHtml(template.type)})</option>`;
