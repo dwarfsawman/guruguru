@@ -454,9 +454,9 @@ export function renderSmartMaskSidebar(
 }
 
 /**
- * タブ横の「次回生成に添付」スイッチ(ノブ+on/off ラベルのトグル)。
+ * タブ横の「次回生成に添付」ランプ(小さな正方形のトグルボタン)。
  * - 未生成(データなし): 灰色・クリック不可
- * - 生成済み+添付ON: 緑「on」 / 生成済み+添付OFF: 赤「off」(クリックでトグル)
+ * - 生成済み+添付ON: 緑 / 生成済み+添付OFF: 赤(緑⇄赤はクリックでトグル)
  * 3状態は白黒化しても判別できるよう明度差をつける(CSS 側)。
  */
 export function renderAttachToggle(action: string, label: string, hasData: boolean, attached: boolean) {
@@ -466,5 +466,5 @@ export function renderAttachToggle(action: string, label: string, hasData: boole
     : attached
       ? `${label}を次回生成に添付中(クリックで外す)`
       : `${label}を次回生成に添付しない(クリックで添付)`;
-  return `<button type="button" class="tab-attach-switch ${stateClass}" data-action="${action}" ${hasData ? "" : "disabled"} role="switch" aria-checked="${hasData && attached}" title="${title}" aria-label="${label}を次回生成に添付"></button>`;
+  return `<button type="button" class="tab-attach-lamp ${stateClass}" data-action="${action}" ${hasData ? "" : "disabled"} role="switch" aria-checked="${hasData && attached}" title="${title}" aria-label="${label}を次回生成に添付"></button>`;
 }
