@@ -33,7 +33,9 @@ export function ensureProjectStorage(projectId: string) {
     masks: join(projectRoot, "masks"),
     control: join(projectRoot, "control"),
     workflows: join(projectRoot, "workflows"),
-    exports: join(projectRoot, "exports")
+    exports: join(projectRoot, "exports"),
+    pasteSources: join(projectRoot, "paste_sources"),
+    composites: join(projectRoot, "composites")
   };
 
   for (const path of Object.values(paths)) {
@@ -103,6 +105,44 @@ export async function storeControlImage(projectId: string, roundId: string, byte
     width: size?.width ?? null,
     height: size?.height ?? null
   };
+}
+
+export interface StoredPasteSource {
+  filePath: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface StoredComposite {
+  compositePath: string;
+  width: number | null;
+  height: number | null;
+}
+
+/** 貼り付けソース画像を `paste_sources/<sourceId><ext>` へ保存する。 */
+export async function storePasteSourceImage(projectId: string, sourceId: string, ext: string, bytes: Buffer): Promise<StoredPasteSource> {
+  const storage = ensureProjectStorage(projectId);
+  const baseName = `${sanitizeBaseName(sourceId)}${ext}`;
+  const filePath = resolve(join(storage.pasteSources, baseName));
+  if (!isPathInside(filePath, resolve(storage.projectRoot))) {
+    throw new Error("Paste source storage path is outside the project directory");
+  }
+  await writeFile(filePath, bytes);
+  const size = readImageSize(bytes);
+  return { filePath, width: size?.width ?? null, height: size?.height ?? null };
+}
+
+/** 生成時のクライアント合成画像(貼り付け込み img2img 入力)を `composites/<roundId>_composite.png` へ保存する。 */
+export async function storeCompositeImage(projectId: string, roundId: string, bytes: Buffer): Promise<StoredComposite> {
+  const storage = ensureProjectStorage(projectId);
+  const baseName = `${sanitizeBaseName(roundId)}_composite.png`;
+  const compositePath = resolve(join(storage.composites, baseName));
+  if (!isPathInside(compositePath, resolve(storage.projectRoot))) {
+    throw new Error("Composite storage path is outside the project directory");
+  }
+  await writeFile(compositePath, bytes);
+  const size = readImageSize(bytes);
+  return { compositePath, width: size?.width ?? null, height: size?.height ?? null };
 }
 
 export function safeFileStream(path: string) {

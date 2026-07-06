@@ -10,6 +10,7 @@ import { createTemplate, deleteTemplate, listTemplates } from "./templates";
 import { serveAssetFile, updateAssetStatus } from "./assets";
 import { createProject, deleteProject, getProjectDetail, listProjects } from "./projects";
 import { createSourceAsset } from "./sourceAssets";
+import { createPasteSource, getPasteAttachments, putPasteAttachments, servePasteSource } from "./pasteAttachments";
 import {
   collectRound,
   createGenerationRound,
@@ -212,6 +213,28 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const sourceAssetMatch = path.match(/^\/api\/projects\/([^/]+)\/source-assets$/);
   if (method === "POST" && sourceAssetMatch) {
     sendJson(res, 201, await createSourceAsset(sourceAssetMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const pasteSourceCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/paste-sources$/);
+  if (method === "POST" && pasteSourceCreateMatch) {
+    sendJson(res, 201, await createPasteSource(pasteSourceCreateMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const pasteSourceServeMatch = path.match(/^\/api\/projects\/([^/]+)\/paste-sources\/([^/]+)$/);
+  if (method === "GET" && pasteSourceServeMatch) {
+    servePasteSource(res, pasteSourceServeMatch[1]!, pasteSourceServeMatch[2]!);
+    return;
+  }
+
+  const pasteAttachmentsMatch = path.match(/^\/api\/assets\/([^/]+)\/paste-attachments$/);
+  if (method === "GET" && pasteAttachmentsMatch) {
+    sendJson(res, 200, getPasteAttachments(pasteAttachmentsMatch[1]!));
+    return;
+  }
+  if (method === "PUT" && pasteAttachmentsMatch) {
+    sendJson(res, 200, putPasteAttachments(pasteAttachmentsMatch[1]!, await readJson(req)));
     return;
   }
 
