@@ -164,7 +164,7 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 
 **明示の保存は不要**。img2img 系生成(img2img / inpaint / controlnet+img2img)の実行時:
 
-1. **クライアント**(`generateRound`, `generationController.ts:56`): 親アセットに添付オブジェクトがある、またはペイントレイヤーに内容がある場合、`composePaintResultCanvas` 拡張(第 5 引数 `pastedLayers`)で「元画像 → ペイントレイヤー → オブジェクト(z順)」を合成 → `request.pasteComposite = { imageDataUrl }` を生成リクエストに追加。**POST 前に 16MB プリフライト**(超過時は送信せず「合成結果が 16MB を超えています…」トースト)
+1. **クライアント**(`generateRound`, `generationController.ts:56`): 親アセットに添付オブジェクトがある、またはペイントレイヤーに内容がある場合、`composePaintResultCanvas` 拡張(第 5 引数 `pastedLayers`)で「元画像 → ペイントレイヤー → オブジェクト(z順)」を合成。**未保存のペイントストロークも含める(=見たままを送る。ユーザー確認済み 2026-07-06)**。ストロークは非永続のため、開き直し後も残したい場合は従来どおり `paint-save` を使う → `request.pasteComposite = { imageDataUrl }` を生成リクエストに追加。**POST 前に 16MB プリフライト**(超過時は送信せず「合成結果が 16MB を超えています…」トースト)
    - モーダルを開いていない状態からの生成(ギャラリーの img2img ボタン等)でも、添付が永続化されているため GET+fetch で合成可能(bitmap 未ロード時は合成前にロード)
 2. **サーバ**(`rounds.ts`): `preparePasteCompositeRequest`(`prepareInpaintRequest` `rounds.ts:245` と同型)を追加 — dataUrl を decode(`decodeImageDataUrl` 系の検証再利用)→ `storeCompositeImage(projectId, roundId, bytes)`(`storage.ts` に `composites/` を追加、`<roundId>_composite.png`)→ request_json には `compositePath` のみ記録(dataUrl は破棄 — マスクと同じ)
 3. **ComfyUI への入力差し替え**: `rounds.ts:146-148` の `uploaded = await uploadImageToComfy(...)` を「`request.pasteComposite?.compositePath` があればそれ、無ければ従来どおり `parentAsset.image_path`」に変更。**`parentAssetId` / `parent_round_id` は元画像のまま** → ツリーの親子・枝色・エッジは不変
@@ -224,13 +224,19 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 ## 未決事項(実装前にユーザー確認)
 
 1. フェーズ 0 のパン snap-back 修正を先行してよいか(既存挙動の変更)
-2. 生成時合成に**未保存のペイントストローク**も含めるか(推奨: 含める=見たまま。ただしストロークは非永続なので、開き直し後に再現したい場合は従来どおり `paint-save` を使う、という整理)
-3. 対応形式は png/jpeg/webp(既存アップロードと同一 whitelist)で良いか
-4. 添付ソースファイルの GC(参照ゼロの掃除)は初期スコープ外で良いか
-5. ツリー上に「添付あり」の目印(エッジ/ノードのバッジ)を出すか(フェーズ 7 任意)
+2. 対応形式は png/jpeg/webp(既存アップロードと同一 whitelist)で良いか
+3. 添付ソースファイルの GC(参照ゼロの掃除)は初期スコープ外で良いか
+4. ツリー上に「添付あり」の目印(エッジ/ノードのバッジ)を出すか(フェーズ 7 任意)
+
+## 確認済みの決定事項
+
+- 貼り付けは保存まで非破壊・ダブルクリックで再選択可能(→ B 案採用、2026-07-06)
+- 保存操作は不要。生成時に合成し、親ノードは変更せず「エッジに添付」する。配置はサーバ永続化し開き直しで復元(2026-07-06)
+- 生成時合成に未保存のペイントストロークも**含める**(見たままを送る)(2026-07-06)
 
 ## 変更履歴
 
 - 2026-07-06: 起票。3 案の独立設計と 2 レンズ審査を経た統合設計(A 骨格ベース)の初版。
 - 2026-07-06: ダブルクリック再選択の要望を受け B 案(非破壊オブジェクトレイヤー)ベースへ改訂。
 - 2026-07-06: **保存操作を廃止し「エッジに添付」モデルへ改訂**。添付オブジェクトをアセット単位でサーバ永続化(開き直しで復元)、生成時にクライアント合成を `pasteComposite` として送りサーバがファイル化して ComfyUI へ(maskDataUrl と同型)。親ノード・ツリーは不変。
+- 2026-07-06: ユーザー確認により「生成時合成に未保存のペイントストロークも含める」を決定事項へ移動。実装は着手待ち。
