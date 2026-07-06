@@ -541,88 +541,39 @@
   }
 
   /*
-   * 「次回生成に添付」スイッチ(ノブ+on/off ラベルのトグル)。
+   * 「次回生成に添付」ランプ(小さな正方形のトグルボタン)。
    * 3状態は白黒化しても判別できるよう明度差をつける:
    *   empty(未生成・クリック不可) = 中間明度の灰(輝度 ~45%)
    *   on(添付する)              = 明るい緑(輝度 ~75%)
    *   off(添付しない)            = 暗い赤(輝度 ~22%)
    */
-  .tab-attach-switch {
-    position: relative;
+  .tab-attach-lamp {
     flex: none;
-    width: 32px;
-    min-width: 32px;
-    height: 14px;
-    min-height: 14px;
+    width: 10px;
+    min-width: 10px;
+    height: 10px;
+    min-height: 10px;
     padding: 0;
     border: 1px solid transparent;
-    border-radius: 999px;
-    font-family: var(--mono);
-    font-size: 7.5px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    line-height: 1;
+    border-radius: 2px;
+    aspect-ratio: 1;
     cursor: pointer;
-
-    /* ノブ */
-    &::before {
-      content: "";
-      position: absolute;
-      top: 1px;
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      transition: left 0.15s ease;
-    }
-
-    /* on/off ラベル */
-    &::after {
-      position: absolute;
-      top: 50%;
-      transform: translateY(-50%);
-    }
 
     &.empty {
       border-color: #8a8b91;
       background: #6f7076;
       cursor: not-allowed;
-
-      &::before {
-        left: 10px;
-        background: #9a9ba1;
-      }
     }
 
     &.on {
       border-color: #a7f3c9;
       background: #52e08a;
-
-      &::before {
-        left: 19px;
-        background: #fff;
-      }
-
-      &::after {
-        content: "on";
-        left: 5px;
-        color: #073b1d;
-      }
+      box-shadow: 0 0 6px rgba(74, 222, 128, 0.55);
     }
 
     &.off {
       border-color: #b04444;
       background: #7f1d1d;
-
-      &::before {
-        left: 1px;
-        background: #d6d6dc;
-      }
-
-      &::after {
-        content: "off";
-        right: 4px;
-        color: #f0c8c8;
-      }
     }
   }
 
