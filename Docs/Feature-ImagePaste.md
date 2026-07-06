@@ -166,13 +166,26 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 
 1. **クライアント**(`generateRound`, `generationController.ts:56`): 親アセットに添付オブジェクトがある、またはペイントレイヤーに内容がある場合、`composePaintResultCanvas` 拡張(第 5 引数 `pastedLayers`)で「元画像 → ペイントレイヤー → オブジェクト(z順)」を合成。**未保存のペイントストロークも含める(=見たままを送る。ユーザー確認済み 2026-07-06)**。ストロークは非永続のため、開き直し後も残したい場合は従来どおり `paint-save` を使う → `request.pasteComposite = { imageDataUrl }` を生成リクエストに追加。**POST 前に 16MB プリフライト**(超過時は送信せず「合成結果が 16MB を超えています…」トースト)
    - モーダルを開いていない状態からの生成(ギャラリーの img2img ボタン等)でも、添付が永続化されているため GET+fetch で合成可能(bitmap 未ロード時は合成前にロード)
-2. **サーバ**(`rounds.ts`): `preparePasteCompositeRequest`(`prepareInpaintRequest` `rounds.ts:245` と同型)を追加 — dataUrl を decode(`decodeImageDataUrl` 系の検証再利用)→ `storeCompositeImage(projectId, roundId, bytes)`(`storage.ts` に `composites/` を追加、`<roundId>_composite.png`)→ request_json には `compositePath` のみ記録(dataUrl は破棄 — マスクと同じ)
+2. **サーバ**(`rounds.ts`): `preparePasteCompositeRequest`(`prepareInpaintRequest` `rounds.ts:245` と同型)を追加 — dataUrl を decode(`decodeImageDataUrl` 系の検証再利用)→ `storeCompositeImage(projectId, roundId, bytes)`(`storage.ts` に `composites/` を追加、`<roundId>_composite.png`)→ request_json には `compositePath` と **`objects`(生成時点の `PastedObject[]` スナップショット=sourceId+変形。エッジポップアウトの添付表示 (i) で使用)** を記録(dataUrl は破棄 — マスクと同じ)
 3. **ComfyUI への入力差し替え**: `rounds.ts:146-148` の `uploaded = await uploadImageToComfy(...)` を「`request.pasteComposite?.compositePath` があればそれ、無ければ従来どおり `parentAsset.image_path`」に変更。**`parentAssetId` / `parent_round_id` は元画像のまま** → ツリーの親子・枝色・エッジは不変
 4. **記録**: 合成 PNG がラウンドのストレージに残り、request_json の `compositePath` から辿れる(何を入力したかの再現性)。ラウンド削除時のファイル掃除はマスクと同じ扱いに揃える
 
 - txt2img には合成を付けない(親を使わないため)
 - スポイトはオブジェクト込みの合成から採色(WYSIWYG 化、意図的変更)
 - **既存 `paint-save`(新規アセットとして保存)は残す**(ペイント結果を独立アセットにしたい従来ワークフロー用)。その合成にもオブジェクトを含める(見たまま)。保存後も添付は元アセットに残る
+
+### (i) エッジポップアウトの添付表示(スクロールで展開)
+
+ツリーのエッジ hover で出る生成プロパティポップアウト(`.iteration-edge-popout`、`iterationTree.ts:120` / `iterationEdgePopoutHtml` `iterationTree.ts:160`)を拡張し、**そのエッジの生成に添付画像が使われていた場合、ポップアウト上でホイールスクロールすると展開され、下部に添付画像のサムネイルが並ぶ**(ユーザー要望 2026-07-06、スケッチ準拠)。
+
+- **データ源**: (f)-2 で request_json に記録する `pasteComposite.objects`(sourceId 群)。クライアントは round.request から読み、`GET /api/projects/:projectId/paste-sources/:sourceId` をサムネイル `<img loading="lazy">` として表示。**過去のラウンドが参照する sourceId が生きている必要がある** → ソース GC を初期スコープ外とする方針の追加根拠(未決事項 #3)
+- **折りたたみ時**: 添付があるエッジのみ、既存のプロパティグリッドの下にフッタ「添付 n件 ˅」(スケッチの V チェブロン)を表示。無いエッジは従来と完全に同一
+- **展開トリガ**: ポップアウト表示中の **wheel 下スクロールで展開、上スクロールで折りたたみ**。フォールバックとしてフッタのチェブロンをクリックでもトグル(タッチ・キーボード向け。エッジは既に `<button>` で focus 可能 — UX改善#7 の経緯を踏襲)
+- **展開時**: `max-width`/`max-height` を広げ、`.iteration-edge-attachments`(サムネイルのグリッド、スケッチの下部の四角群)を表示。サムネイルクリックは初期実装では何もしない(拡大表示はフェーズ 8 候補)
+- **実装メモ**:
+  - ポップアウトは現状 `pointer-events: none`(`iteration-tree.css:361`)。展開状態のみ `pointer-events: auto` にしてポップアウト上のスクロールを受ける。ポップアウトは `.iteration-edge` ボタンの DOM 子孫なので、ポップアウト上に pointer が乗っていても親ボタンの `:hover` は維持され、表示が消えない
+  - wheel リスナは `registerEventBinder` 経由で委譲登録(`.iteration-edge` / `.iteration-edge-popout` 上のみ preventDefault してツリーのスクロールと分離)。展開状態は classList 直接操作(render 不要)とし、mouseleave / blur で自動リセット
+  - ポップアウトは CSS anchor positioning + `position-try-fallbacks: flip-block`(`iteration-tree.css:340-347`)。展開でサイズが変わっても anchor 配置が追随することを確認する
 
 ### (g) 実装フェーズ分割
 
@@ -185,7 +198,8 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 - **フェーズ 4: 選択・変形ギズモ+永続化**: `views/pasteGizmo.ts`、pointer 分岐挿入、move/scale/rotate、**dblclick 再選択(任意ツールから)**、Delete/Esc/Shift/ナッジ、カーソル、%/角度読み出し、wheel フック、**debounce PUT**
 - **フェーズ 5: 履歴統合+オブジェクト操作 UI**: `paintUndoStacks` → `paintHistoryStacks` 置換(ストローク undo 挙動不変をテスト+手動確認)、オブジェクト操作 undo(削除の取り消し含む)、パネル操作行(削除/複製/前面/背面/焼き込み)、`shortcuts.ts`
 - **フェーズ 6: 生成合流**: クライアント合成+`pasteComposite` リクエストフィールド+16MB プリフライト、サーバ `preparePasteCompositeRequest`+`storeCompositeImage`+入力差し替え+テスト(`workflow.test.ts` 系)、モーダル非表示からの生成経路、スポイト統一、Ctrl+V・アプリ内サムネイル D&D、`操作メモ.md`・本書更新
-- **フェーズ 7(任意)**: ツリー/エッジへの添付ありバッジ表示、ソースファイル GC、複数選択、外部 URL のサーバプロキシ取り込み
+- **フェーズ 7: エッジポップアウトの添付表示**: request_json の `pasteComposite.objects` 記録(フェーズ 6 に含めても可)、`iterationEdgePopoutHtml` の添付フッタ+`.iteration-edge-attachments`、wheel 展開/折りたたみ+チェブロントグル、CSS(展開状態・`pointer-events` 切替)、`iterationTree.test.ts` 追記
+- **フェーズ 8(任意)**: サムネイルクリックで拡大、ツリーノードへの添付ありバッジ、ソースファイル GC(ラウンド参照の保護込み)、複数選択、外部 URL のサーバプロキシ取り込み
 
 ### 触るファイル一覧
 
@@ -193,7 +207,7 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 
 **新規(サーバ)**: `src/server/pasteAttachments.ts`(API ハンドラ+検証、+test)
 
-**変更(クライアント)**: `paintTypes.ts`・`paintDraft.ts`(+test) / `paintEditorController.ts`(履歴統合・sync・wheel フック) / `paintCanvas.ts`(合成第 5 引数、+test) / `views/assetModal.ts`(pasteCanvas+ギズモ) / `views/paintPanel.ts` / `main.ts`(分岐挿入・sync 各 1 行、新規関数なし) / `generationController.ts`(生成時合成・プリフライト) / `assetDetailController.ts`(open 時復元・close 時 flush) / `draftStore.ts`(切替時キャッシュ掃除。import 方向は実装時確認) / `maskEditorController.ts`(フェーズ 0 のみ) / `clientUtils.ts` / `api.ts`(必要なら) / `shortcuts.ts` / `styles/editors.css` 等
+**変更(クライアント)**: `paintTypes.ts`・`paintDraft.ts`(+test) / `paintEditorController.ts`(履歴統合・sync・wheel フック) / `paintCanvas.ts`(合成第 5 引数、+test) / `views/assetModal.ts`(pasteCanvas+ギズモ) / `views/paintPanel.ts` / `views/iterationTree.ts`(+test、添付フッタ+展開部) / `main.ts`(分岐挿入・sync 各 1 行、新規関数なし) / `generationController.ts`(生成時合成・プリフライト) / `assetDetailController.ts`(open 時復元・close 時 flush) / `draftStore.ts`(切替時キャッシュ掃除。import 方向は実装時確認) / `maskEditorController.ts`(フェーズ 0 のみ) / `clientUtils.ts` / `api.ts`(必要なら) / `shortcuts.ts` / `styles/editors.css`・`styles/iteration-tree.css` 等
 
 **変更(サーバ)**: `db.ts`(テーブル追加) / `storage.ts`(`paste_sources/`・`composites/`・store 関数) / `http.ts`(ルート追加) / `rounds.ts`(`preparePasteCompositeRequest`+入力差し替え) / `generationRequest.ts`(`pasteComposite` の正規化) / `uploadDataUrl.ts`(必要なら検証関数追加) / 各 test
 
@@ -226,7 +240,7 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 1. フェーズ 0 のパン snap-back 修正を先行してよいか(既存挙動の変更)
 2. 対応形式は png/jpeg/webp(既存アップロードと同一 whitelist)で良いか
 3. 添付ソースファイルの GC(参照ゼロの掃除)は初期スコープ外で良いか
-4. ツリー上に「添付あり」の目印(エッジ/ノードのバッジ)を出すか(フェーズ 7 任意)
+4. ツリー**ノード**側にも「添付あり」の目印を出すか(エッジポップアウトの添付表示は (i) で対応済み。フェーズ 8 任意)
 
 ## 確認済みの決定事項
 
@@ -240,3 +254,4 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 - 2026-07-06: ダブルクリック再選択の要望を受け B 案(非破壊オブジェクトレイヤー)ベースへ改訂。
 - 2026-07-06: **保存操作を廃止し「エッジに添付」モデルへ改訂**。添付オブジェクトをアセット単位でサーバ永続化(開き直しで復元)、生成時にクライアント合成を `pasteComposite` として送りサーバがファイル化して ComfyUI へ(maskDataUrl と同型)。親ノード・ツリーは不変。
 - 2026-07-06: ユーザー確認により「生成時合成に未保存のペイントストロークも含める」を決定事項へ移動。実装は着手待ち。
+- 2026-07-06: **エッジポップアウトの添付表示を追加**((i)・フェーズ 7)。ポップアウト上のホイールスクロールで展開し、そのエッジの生成に使った添付画像サムネイルを表示(ユーザーのスケッチ準拠)。request_json に `pasteComposite.objects` を記録する設計変更を伴う。
