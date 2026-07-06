@@ -7,17 +7,25 @@
  *   `GET /api/assets/:assetId/paste-attachments` / `PUT /api/assets/:assetId/paste-attachments`
  *
  * 貼り付けは元画像アセットを一切変更しない「エッジに添付」モデル
- * (Docs/Feature-ImagePaste.md)。ソースファイルの GC は初期スコープ外 —
- * 過去ラウンドの request_json(pasteComposite.objects)が sourceId を参照し続けるため、
- * 参照ゼロ判定なしに消してはならない。
+ * (Docs/Feature-ImagePaste.md)。
+ *
+ * ソースファイルの掃除(GC)はサーバ起動時のみ行う(`purgeOrphanPasteSources`、
+ * `purgeAllRoundTrash` と同じ起動時パージの流儀)。オブジェクト削除の瞬間に消さないのは
+ * (1) 削除は Ctrl+Z で取り消せる(統合 undo)、(2) 過去ラウンドの request_json
+ * (pasteComposite.objects)が sourceId を参照し続ける(エッジポップアウトの添付表示)ため。
+ * 起動時なら undo 履歴を持つクライアントは存在せず、「現在の添付 ∪ 全ラウンド履歴」の
+ * どこからも参照されないファイルだけを安全に消せる。
  */
 import type { ServerResponse } from "node:http";
-import { createId, getRow, runSql } from "./db";
+import { rmSync } from "node:fs";
+import { resolve } from "node:path";
+import { createId, dataRoot, getRow, getRows, runSql } from "./db";
 import { HttpError, sendJson } from "./http";
 import { objectBody } from "./validate";
 import { decodeImageDataUrl } from "./uploadDataUrl";
 import { storePasteSourceImage } from "./storage";
 import { streamFile } from "./files";
+import { isPathInside } from "./paths";
 import { pastedObjectsValidationError, sanitizePastedObjects, type PastedObject } from "../shared/pasteAttachments";
 
 /** MIME → 保存拡張子。`decodeImageDataUrl` が許容する 3 種のみ。 */
@@ -119,6 +127,74 @@ export function putPasteAttachments(assetId: string, body: unknown) {
   );
 
   return { objects };
+}
+
+/**
+ * JSON 値から参照されている sourceId 群を集める(pure、テスト対象)。
+ * - `asset_paste_attachments.objects_json`: `PastedObject[]`
+ * - `generation_rounds.request_json`: `GenerationRequest`(`pasteComposite.objects`)
+ * 破損 JSON や想定外の形は空として扱う(掃除をブロックしない)。
+ */
+export function collectPasteSourceIds(parsed: unknown): string[] {
+  const objects = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === "object" && parsed !== null
+      ? (parsed as { pasteComposite?: { objects?: unknown } }).pasteComposite?.objects
+      : null;
+  if (!Array.isArray(objects)) {
+    return [];
+  }
+  const sourceIds: string[] = [];
+  for (const entry of objects) {
+    const sourceId = typeof entry === "object" && entry !== null ? (entry as { sourceId?: unknown }).sourceId : null;
+    if (typeof sourceId === "string" && sourceId.trim() !== "") {
+      sourceIds.push(sourceId);
+    }
+  }
+  return sourceIds;
+}
+
+/**
+ * どこからも参照されていない貼り付けソースファイル+DB 行を削除する(サーバ起動時のみ)。
+ * 参照元 = 現在の添付(asset_paste_attachments)∪ 全ラウンドの request_json。
+ * ラウンド削除で request_json ごと参照が消えるため、次回起動時にその分も回収される。
+ */
+export function purgeOrphanPasteSources(): number {
+  const referenced = new Set<string>();
+  const collect = (jsonText: unknown) => {
+    try {
+      for (const sourceId of collectPasteSourceIds(JSON.parse(String(jsonText)))) {
+        referenced.add(sourceId);
+      }
+    } catch {
+      // JSON はすべてサーバが書いたものなので破損は実質発生しない。万一の破損行は無視する。
+    }
+  };
+  for (const row of getRows<{ objects_json: string }>("SELECT objects_json FROM asset_paste_attachments")) {
+    collect(row.objects_json);
+  }
+  for (const row of getRows<{ request_json: string }>("SELECT request_json FROM generation_rounds")) {
+    collect(row.request_json);
+  }
+
+  let purged = 0;
+  for (const row of getRows<{ id: string; file_path: string }>("SELECT id, file_path FROM paste_sources")) {
+    if (referenced.has(row.id)) {
+      continue;
+    }
+    const resolved = resolve(String(row.file_path));
+    if (isPathInside(resolved, dataRoot)) {
+      try {
+        rmSync(resolved, { force: true });
+      } catch {
+        // ファイル削除に失敗しても DB 行は消さず、次回起動時に再試行する。
+        continue;
+      }
+    }
+    runSql("DELETE FROM paste_sources WHERE id = ?", [row.id]);
+    purged += 1;
+  }
+  return purged;
 }
 
 function findMissingSourceId(objects: ReadonlyArray<PastedObject>, projectId: string): string | null {

@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 - **フェーズ 5: 履歴統合+オブジェクト操作 UI**: `paintUndoStacks` → `paintHistoryStacks` 置換(ストローク undo 挙動不変をテスト+手動確認)、オブジェクト操作 undo(削除の取り消し含む)、パネル操作行(削除/複製/前面/背面/焼き込み)、`shortcuts.ts`
 - **フェーズ 6: 生成合流**: クライアント合成+`pasteComposite` リクエストフィールド+16MB プリフライト、サーバ `preparePasteCompositeRequest`+`storeCompositeImage`+入力差し替え+テスト(`workflow.test.ts` 系)、モーダル非表示からの生成経路、スポイト統一、Ctrl+V・アプリ内サムネイル D&D、`操作メモ.md`・本書更新
 - **フェーズ 7: エッジポップアウトの添付表示**: request_json の `pasteComposite.objects` 記録(フェーズ 6 に含めても可)、`iterationEdgePopoutHtml` の添付フッタ+`.iteration-edge-attachments`、wheel 展開/折りたたみ+チェブロントグル、CSS(展開状態・`pointer-events` 切替)、`iterationTree.test.ts` 追記
-- **フェーズ 8(任意)**: サムネイルクリックで拡大、ツリーノードへの添付ありバッジ、ソースファイル GC(ラウンド参照の保護込み)、複数選択、外部 URL のサーバプロキシ取り込み
+- **フェーズ 8(任意)**: サムネイルクリックで拡大、ツリーノードへの添付ありバッジ、複数選択、外部 URL のサーバプロキシ取り込み。~~ソースファイル GC~~ → **実装済み**(2026-07-06 ユーザー提案): サーバ起動時に `purgeOrphanPasteSources` が「現在の添付 ∪ 全ラウンド request_json」のどこからも参照されないソースを削除。削除の瞬間ではなく起動時に行うのは、削除が Ctrl+Z で取り消せることと、起動時ならクライアントの undo 履歴が存在しないため
 
 ### 触るファイル一覧
 
@@ -269,3 +269,4 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 - 2026-07-06: ユーザー確認により「生成時合成に未保存のペイントストロークも含める」を決定事項へ移動。実装は着手待ち。
 - 2026-07-06: **エッジポップアウトの添付表示を追加**((i)・フェーズ 7)。ポップアウト上のホイールスクロールで展開し、そのエッジの生成に使った添付画像サムネイルを表示(ユーザーのスケッチ準拠)。request_json に `pasteComposite.objects` を記録する設計変更を伴う。
 - 2026-07-06: **フェーズ0〜7 実装完了**。実装記録と設計からの差分を冒頭に追記。ステータスを実装完了へ。
+- 2026-07-06: ユーザー提案により**ソースファイルの起動時 GC を追加実装**(`purgeOrphanPasteSources`)。孤立ソースの削除と参照中ソースの温存を実機で確認。
