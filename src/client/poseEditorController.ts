@@ -1,5 +1,5 @@
 import { DEFAULT_POSE_MODEL_BASE_URL } from "../shared/constants";
-import { requestRender, state } from "./appState";
+import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { persistProjectDraft } from "./draftStore";
 import { clampNumber, imageToRawData } from "./clientUtils";
@@ -473,6 +473,18 @@ export function updatePoseDraftFromControl(
   const current = ensurePoseDraft(assetId);
   const next: PoseDraft = { ...current };
   if (field === "enabled" && control instanceof HTMLInputElement) {
+    const hasPose = !!current.poses && current.poses.length > 0;
+    if (control.checked && !hasPose) {
+      // ポーズ未検出のまま添付だけ ON にはできない(送るポーズが無い)。
+      // チェック操作を検出のトリガーにする: 検出成功時に enabled=true が立ち、
+      // チェックが自動で入る(モデル未取得ならロードも走る)。
+      next.enabled = false;
+      setPoseDraft(next);
+      pushToast("ポーズ未検出のため検出を開始しました。検出が完了すると添付されます。");
+      requestRender();
+      void requestPoseDetect();
+      return;
+    }
     next.enabled = control.checked;
   } else if (field === "strength") {
     next.strength = clampNumber(Number(control.value), 0, 2, 1);
