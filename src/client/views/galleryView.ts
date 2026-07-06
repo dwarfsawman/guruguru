@@ -12,8 +12,8 @@
 import type { Asset, ProjectDetail, Round } from "../../shared/apiTypes";
 import type { InpaintDraft } from "../maskTypes";
 import type { PoseDraft } from "../poseTypes";
-import { hasActiveMaskData } from "../maskDraft";
-import { poseDraftHasAttachment } from "../poseDraft";
+import { hasMaskData } from "../maskDraft";
+import { hasPoseData } from "../poseDraft";
 import { escapeHtml } from "../format";
 import {
   iconCheck,
@@ -31,6 +31,7 @@ import {
   iconZoom
 } from "../icons";
 import { renderIterationTracker, type RoundProgressMap } from "./iterationTree";
+import { renderPoseGridOverlay } from "./posePanel";
 
 function generationModeLabel(mode: string) {
   return mode === "manual_upload" ? "source" : mode;
@@ -51,8 +52,7 @@ export function renderProjectDetail(
   getInpaintDraft: (assetId: string) => InpaintDraft | null,
   getPoseDraft: (assetId: string) => PoseDraft | null,
   getPasteObjectCount: (assetId: string) => number,
-  showMaskGridTag: boolean,
-  showPasteGridTag: boolean,
+  getPasteEnabled: (assetId: string) => boolean,
   copiedSeedAssetId: string | null,
   sidebarCollapsed = false,
   roundProgress: RoundProgressMap = {}
@@ -95,7 +95,7 @@ export function renderProjectDetail(
         </div>
         <div class="gallery-scroll">
           <div class="image-grid cols-${gridCols}">
-            ${assets.length ? assets.map((asset) => renderAssetTile(asset, getInpaintDraft, getPoseDraft, getPasteObjectCount, showMaskGridTag, showPasteGridTag, copiedSeedAssetId)).join("") : renderEmptyGallery(activeRound)}
+            ${assets.length ? assets.map((asset) => renderAssetTile(asset, getInpaintDraft, getPoseDraft, getPasteObjectCount, getPasteEnabled, copiedSeedAssetId)).join("") : renderEmptyGallery(activeRound)}
           </div>
         </div>
         ${renderIterationTracker(detail.rounds, activeRoundId, deletePreviewRoundId, roundProgress)}
@@ -147,21 +147,27 @@ export function renderAssetTile(
   getInpaintDraft: (assetId: string) => InpaintDraft | null,
   getPoseDraft: (assetId: string) => PoseDraft | null,
   getPasteObjectCount: (assetId: string) => number,
-  showMaskGridTag: boolean,
-  showPasteGridTag: boolean,
+  getPasteEnabled: (assetId: string) => boolean,
   copiedSeedAssetId: string | null
 ) {
   const selected = asset.status === "selected";
   const favorite = asset.status === "favorite";
   const rejected = asset.status === "rejected";
-  const masked = assetHasMaskIndicator(asset, getInpaintDraft);
-  const posed = poseDraftHasAttachment(getPoseDraft(asset.id));
+  const inpaintDraft = getInpaintDraft(asset.id);
+  const masked = hasMaskData(inpaintDraft);
+  const maskAttached = inpaintDraft?.enabled === true;
+  const poseDraft = getPoseDraft(asset.id);
+  const posed = hasPoseData(poseDraft);
+  const poseAttached = poseDraft?.enabled === true;
   const pasted = getPasteObjectCount(asset.id) > 0;
+  const pasteAttached = getPasteEnabled(asset.id);
   return `
     <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""} ${masked ? "masked" : ""} ${posed ? "posed" : ""}" data-key="${asset.id}">
       <button class="asset-card-main" data-id="${asset.id}" type="button" aria-label="Asset #${asset.batchIndex + 1}">
         <img class="gen-image" src="${asset.thumbnailMediumUrl || asset.thumbnailUrl}" alt="" loading="lazy" />
-        ${pasted && showPasteGridTag ? `<canvas class="paste-grid-canvas" data-asset-id="${asset.id}" aria-hidden="true"></canvas>` : ""}
+        ${masked && maskAttached ? `<img class="mask-grid-preview" src="${inpaintDraft!.maskDataUrl}" alt="" aria-hidden="true" />` : ""}
+        ${pasted && pasteAttached ? `<canvas class="paste-grid-canvas" data-asset-id="${asset.id}" aria-hidden="true"></canvas>` : ""}
+        ${posed && poseAttached ? renderPoseGridOverlay(poseDraft, asset) : ""}
       </button>
       <button class="select-badge" data-action="toggle-select" data-id="${asset.id}" type="button" aria-label="選択切替">
         ${iconCheck(selected)}
@@ -173,19 +179,15 @@ export function renderAssetTile(
         ${iconZoom()}
       </button>
       <span class="card-number">#${asset.batchIndex + 1}</span>
-      ${masked ? `<button class="mask-badge ${showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="マスクタグ表示切替">${iconMask()}MASK</button>` : ""}
-      ${posed ? `<button class="pose-badge ${showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="ポーズタグ表示切替">${iconPose()}POSE</button>` : ""}
-      ${pasted ? `<button class="paste-badge ${showPasteGridTag ? "active" : "inactive"}" type="button" data-action="toggle-paste-grid-tag" aria-label="貼り付けタグ表示切替" title="貼り付け画像のプレビュー合成をON/OFF">${iconImage()}PASTE</button>` : ""}
+      ${masked ? `<button class="mask-badge ${maskAttached ? "active" : "inactive"}" type="button" data-action="toggle-mask-attach" data-id="${asset.id}" aria-label="マスクの添付切替" title="${maskAttached ? "マスクを次回生成に添付中(クリックで外す)" : "マスクを次回生成に添付しない(クリックで添付)"}">${iconMask()}MASK</button>` : ""}
+      ${posed ? `<button class="pose-badge ${poseAttached ? "active" : "inactive"}" type="button" data-action="toggle-pose-attach" data-id="${asset.id}" aria-label="ポーズの添付切替" title="${poseAttached ? "ポーズを次回生成に添付中(クリックで外す)" : "ポーズを次回生成に添付しない(クリックで添付)"}">${iconPose()}POSE</button>` : ""}
+      ${pasted ? `<button class="paste-badge ${pasteAttached ? "active" : "inactive"}" type="button" data-action="toggle-paste-attach" data-id="${asset.id}" aria-label="貼り付けの添付切替" title="${pasteAttached ? "貼り付けを次回生成に添付中(クリックで外す)" : "貼り付けを次回生成に添付しない(クリックで添付)"}">${iconImage()}PASTE</button>` : ""}
       <div class="card-meta">
         <span class="seed-chip" data-action="copy-seed" data-id="${asset.id}" data-seed="${asset.seed ?? ""}" title="クリックでseedをコピー">${copiedSeedAssetId === asset.id ? "copied" : `seed ${asset.seed ?? "-"}`}</span>
         <span class="card-dims">${asset.width && asset.height ? `${asset.width}×${asset.height}` : ""}</span>
       </div>
     </article>
   `;
-}
-
-export function assetHasMaskIndicator(asset: Asset, getInpaintDraft: (assetId: string) => InpaintDraft | null) {
-  return hasActiveMaskData(getInpaintDraft(asset.id));
 }
 
 export function renderBottomActionBar(selectedAssets: Asset[], activeRound: Round | null, busy: boolean) {

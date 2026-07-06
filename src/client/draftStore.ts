@@ -122,6 +122,28 @@ export function inpaintDraftForAsset(assetId: string | null | undefined) {
   return normalized;
 }
 
+/**
+ * グリッドの MASK バッジから、モーダルを開いていない(=非 active)アセットの
+ * `enabled` だけを直接切り替える。`setInpaintDraft` と違い `state.generationDraft.inpaint`
+ * を無条件に上書きしない(対象アセットが現在の生成親でない限り、次回生成の参照先を壊さない)。
+ */
+export function setInpaintEnabledForAsset(assetId: string, enabled: boolean) {
+  const draft = inpaintDraftForAsset(assetId);
+  if (!draft) {
+    return;
+  }
+  const normalized = normalizeInpaintDraft({ ...draft, enabled });
+  state.inpaintDrafts[assetId] = normalized;
+  const isCurrentGenerationParent =
+    state.generationDraft?.inpaint?.parentAssetId === assetId || state.generationDraft?.parentAssetId === assetId;
+  if (isCurrentGenerationParent) {
+    state.generationDraft = { ...(state.generationDraft ?? {}), inpaint: normalized };
+  }
+  if (state.currentProjectId) {
+    persistProjectDraft(state.currentProjectId);
+  }
+}
+
 export function setInpaintDraft(draft: InpaintDraft | null) {
   const previousAssetId =
     state.generationDraft?.inpaint?.parentAssetId ??

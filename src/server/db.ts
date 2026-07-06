@@ -204,6 +204,7 @@ export function initializeDb() {
     CREATE TABLE IF NOT EXISTS asset_paste_attachments (
       asset_id TEXT PRIMARY KEY,
       objects_json TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
     );
@@ -221,6 +222,7 @@ export function initializeDb() {
   ensureColumn("generation_rounds", "branch_color_index", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("generation_rounds", "branch_reason", "TEXT");
   ensureColumn("generation_rounds", "branch_key", "TEXT");
+  ensureColumn("asset_paste_attachments", "enabled", "INTEGER NOT NULL DEFAULT 1");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {

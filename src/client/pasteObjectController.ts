@@ -27,6 +27,7 @@ import {
   undoPaintStroke
 } from "./paintEditorController";
 import { composePaintResultCanvas, type ComposedPasteLayer } from "./paintCanvas";
+import type { PaintDraft } from "./paintTypes";
 import { isTextEntryTarget } from "./clientUtils";
 import type { Asset } from "../shared/apiTypes";
 import { commitActiveMaskCanvas } from "./maskEditorController";
@@ -113,7 +114,7 @@ async function putPasteAttachments(assetId: string) {
   try {
     await api(`/api/assets/${assetId}/paste-attachments`, {
       method: "PUT",
-      body: JSON.stringify({ objects: draft.pasteObjects })
+      body: JSON.stringify({ objects: draft.pasteObjects, enabled: draft.pasteEnabled })
     });
   } catch (error) {
     pushToast(`貼り付けの保存に失敗しました: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -129,7 +130,7 @@ function ensureAttachmentsLoaded(assetId: string) {
   loadedAttachmentAssetIds.add(assetId);
   void (async () => {
     try {
-      const response = await api<{ objects: PastedObject[] }>(`/api/assets/${assetId}/paste-attachments`);
+      const response = await api<{ objects: PastedObject[]; enabled: boolean }>(`/api/assets/${assetId}/paste-attachments`);
       if (response.objects.length === 0) {
         return;
       }
@@ -138,7 +139,7 @@ function ensureAttachmentsLoaded(assetId: string) {
       if (draft.pasteObjects.length > 0) {
         return;
       }
-      setPaintDraft({ ...draft, pasteObjects: response.objects });
+      setPaintDraft({ ...draft, pasteObjects: response.objects, pasteEnabled: response.enabled });
       requestRender();
     } catch (error) {
       loadedAttachmentAssetIds.delete(assetId);
@@ -319,7 +320,51 @@ export function pasteObjectsForGridAsset(assetId: string): PastedObject[] {
   if (draft && (loadedAttachmentAssetIds.has(assetId) || draft.pasteObjects.length > 0)) {
     return draft.pasteObjects;
   }
-  return state.detail?.pasteAttachments?.[assetId] ?? [];
+  return state.detail?.pasteAttachments?.[assetId]?.objects ?? [];
+}
+
+/**
+ * グリッドの PASTE バッジの ON/OFF 状態。`pasteObjectsForGridAsset` と同じ優先順位
+ * (セッションで編集済みならクライアント draft、未ロードなら detail.pasteAttachments)。
+ */
+export function pasteEnabledForGridAsset(assetId: string): boolean {
+  const draft = paintDraftForAsset(assetId);
+  if (draft && (loadedAttachmentAssetIds.has(assetId) || draft.pasteObjects.length > 0)) {
+    return draft.pasteEnabled;
+  }
+  return state.detail?.pasteAttachments?.[assetId]?.enabled ?? true;
+}
+
+/**
+ * まだセッションで編集されていないアセットの draft を、detail.pasteAttachments の
+ * 永続値(objects + enabled)で materialize する。PASTE バッジはモーダルを開いていない
+ * グリッド上のアセットも直接トグルできる必要があるため、その書き込み先を用意する。
+ */
+function materializedPasteDraftForToggle(assetId: string): PaintDraft {
+  const existing = paintDraftForAsset(assetId);
+  if (existing && (loadedAttachmentAssetIds.has(assetId) || existing.pasteObjects.length > 0)) {
+    return existing;
+  }
+  const fallback = state.detail?.pasteAttachments?.[assetId];
+  const draft = ensurePaintDraft(assetId);
+  if (!fallback) {
+    return draft;
+  }
+  const materialized: PaintDraft = { ...draft, pasteObjects: fallback.objects, pasteEnabled: fallback.enabled };
+  setPaintDraft(materialized);
+  loadedAttachmentAssetIds.add(assetId);
+  return materialized;
+}
+
+/** グリッドの PASTE バッジ用の添付トグル。データ(位置・変形・ソース画像)自体は保持したまま enabled だけ切り替える。 */
+export function togglePasteEnabledForAsset(assetId: string) {
+  const draft = materializedPasteDraftForToggle(assetId);
+  if (draft.pasteObjects.length === 0) {
+    return;
+  }
+  setPaintDraft({ ...draft, pasteEnabled: !draft.pasteEnabled });
+  schedulePasteAttachmentsPut(assetId);
+  requestRender();
 }
 
 /**
@@ -1255,14 +1300,22 @@ export async function buildPasteCompositeForGeneration(
 ): Promise<{ imageDataUrl: string; objects: PastedObject[] } | null> {
   const assetId = asset.id;
   let objects: PastedObject[];
+  let enabled: boolean;
   const draft = paintDraftForAsset(assetId);
   if (draft && loadedAttachmentAssetIds.has(assetId)) {
     objects = draft.pasteObjects;
+    enabled = draft.pasteEnabled;
   } else if (draft && draft.pasteObjects.length > 0) {
     objects = draft.pasteObjects;
+    enabled = draft.pasteEnabled;
   } else {
-    const response = await api<{ objects: PastedObject[] }>(`/api/assets/${assetId}/paste-attachments`);
+    const response = await api<{ objects: PastedObject[]; enabled: boolean }>(`/api/assets/${assetId}/paste-attachments`);
     objects = response.objects;
+    enabled = response.enabled;
+  }
+  // pasteEnabled=false: データは保持したまま、合成にも生成にも含めない。
+  if (!enabled) {
+    objects = [];
   }
   const layer = paintLayerCache.get(assetId) ?? null;
   if (objects.length === 0 && !layer) {
@@ -1370,6 +1423,12 @@ registerActions({
   "paste-object-back": () => {
     if (state.activeAssetId) {
       reorderSelectedPastedObject(state.activeAssetId, -1);
+    }
+  },
+  "toggle-paste-attach": (id) => {
+    const assetId = id || state.activeAssetId;
+    if (assetId) {
+      togglePasteEnabledForAsset(assetId);
     }
   }
 });

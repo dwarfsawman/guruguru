@@ -189,9 +189,6 @@ export interface AppState {
   maskToolbarMinimized: boolean;
   maskToolbarPos: { left: number; top: number } | null;
   maskPanelWidths: { left: number; right: number };
-  showMaskGridTag: boolean;
-  /** グリッドの PASTE タグ(貼り付け画像のプレビュー合成)の表示 ON/OFF。 */
-  showPasteGridTag: boolean;
   copiedSeedAssetId: string | null;
   deletePreviewRoundId: string | null;
   workflowImportModalOpen: boolean;
@@ -245,8 +242,6 @@ export const state: AppState = {
   maskToolbarMinimized: false,
   maskToolbarPos: null,
   maskPanelWidths: { left: 300, right: 300 },
-  showMaskGridTag: true,
-  showPasteGridTag: true,
   copiedSeedAssetId: null,
   deletePreviewRoundId: null,
   workflowImportModalOpen: false,

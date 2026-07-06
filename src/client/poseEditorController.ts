@@ -1294,8 +1294,8 @@ export function handlePoseEditorPointerCancel(event: PointerEvent): boolean {
  * なお enabled=true でもポーズが空なら controlnet リクエストは組まれない
  * (`controlnetRequestForParent` が poses を要求する)ため、生成には影響しない。
  */
-function togglePoseAttach() {
-  const assetId = state.activeAssetId;
+/** モーダル側(引数なし)・グリッドの POSE バッジ(assetId 指定)のどちらからも呼べる。 */
+function togglePoseAttach(assetId: string | null = state.activeAssetId) {
   const draft = assetId ? poseDraftForAsset(assetId) : null;
   if (!draft || !draft.poses || draft.poses.length === 0) {
     return;
@@ -1308,5 +1308,5 @@ registerActions({
   "pose-load-model": () => loadActivePoseModel(),
   "pose-detect": () => requestPoseDetect(),
   "pose-reset": () => resetPoseDetection(),
-  "toggle-pose-attach": () => togglePoseAttach()
+  "toggle-pose-attach": (id) => togglePoseAttach(id || state.activeAssetId)
 });

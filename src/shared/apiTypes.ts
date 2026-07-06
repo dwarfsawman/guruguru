@@ -121,10 +121,11 @@ export interface ProjectDetail {
   assetParents: AssetParent[];
   templates: WorkflowTemplate[];
   /**
-   * assetId → 貼り付け添付(PastedObject[])。グリッドのプレビュー合成と PASTE タグに使う。
-   * 添付が 1 件以上あるアセットのみキーを持つ。
+   * assetId → 貼り付け添付。グリッドのプレビュー合成と PASTE バッジに使う。
+   * `enabled` は次回生成へ添付するかの per-asset フラグ(PASTE バッジでトグル、
+   * OFF でもオブジェクトのデータ自体は保持される)。添付が 1 件以上あるアセットのみキーを持つ。
    */
-  pasteAttachments: Record<string, PastedObject[]>;
+  pasteAttachments: Record<string, { objects: PastedObject[]; enabled: boolean }>;
 }
 
 export interface CollectRoundResponse {

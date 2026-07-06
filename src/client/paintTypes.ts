@@ -28,6 +28,11 @@ export interface PaintDraft {
   pasteObjects: PastedObject[];
   /** 選択中オブジェクト id。pasteObjects に存在しない場合は normalize で null に戻る。 */
   selectedPasteObjectId: string | null;
+  /**
+   * 次回生成へ貼り付けを添付するか(per-asset、PASTE バッジでトグル)。
+   * OFF でも pasteObjects のデータ自体は保持され、再度 ON で復元される。
+   */
+  pasteEnabled: boolean;
 }
 
 export const PAINT_BASE_PALETTE: string[] = [

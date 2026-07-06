@@ -19,7 +19,8 @@ export function defaultPaintDraft(assetId: string): PaintDraft {
     imageWidth: null,
     imageHeight: null,
     pasteObjects: [],
-    selectedPasteObjectId: null
+    selectedPasteObjectId: null,
+    pasteEnabled: true
   };
 }
 

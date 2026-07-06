@@ -183,3 +183,48 @@ function assetDimension(asset: Asset | null, key: "width" | "height") {
   const value = asset?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
+
+/**
+ * グリッドタイル用の静的ポーズスケルトンプレビュー(編集・当たり判定なし)。
+ * `renderPoseOverlay` と違い、当たり判定線・背景 rect・削除ボタンは持たない。
+ * `width`/`height` 属性を asset の intrinsic size に固定し、CSS の object-fit: cover で
+ * `.gen-image`(グリッドサムネイル)のクロップと一致させる。
+ */
+export function renderPoseGridOverlay(draft: PoseDraft | null, asset: Asset) {
+  if (!draft || !draft.poses || draft.poses.length === 0) {
+    return "";
+  }
+  const width = draft.imageWidth ?? assetDimension(asset, "width") ?? 1;
+  const height = draft.imageHeight ?? assetDimension(asset, "height") ?? 1;
+  const removedBones = draft.removedBones;
+  const strokeWidth = Math.max(2, Math.min(width, height) / 200);
+  const jointRadius = Math.max(4, Math.min(width, height) / 128);
+  const body = draft.poses
+    .map((points, poseIndex) => {
+      const removed = removedBones?.[poseIndex];
+      const bones = OPENPOSE_BONES.map((bone, index) => {
+        if (removed?.includes(index)) {
+          return "";
+        }
+        const from = points[bone[0]];
+        const to = points[bone[1]];
+        if (!from || !to || !from.visible || !to.visible) {
+          return "";
+        }
+        const [r, g, b] = OPENPOSE_BONE_COLORS[index] ?? [255, 255, 255];
+        return `<line class="pose-grid-bone" x1="${formatCssNumber(from.x)}" y1="${formatCssNumber(from.y)}" x2="${formatCssNumber(to.x)}" y2="${formatCssNumber(to.y)}" stroke="rgb(${r},${g},${b})" stroke-width="${formatCssNumber(strokeWidth)}"></line>`;
+      }).join("");
+      const joints = points
+        .map((point, index) => {
+          if (!point.visible) {
+            return "";
+          }
+          const [r, g, b] = OPENPOSE_JOINT_COLORS[index] ?? [255, 255, 255];
+          return `<circle class="pose-grid-joint" cx="${formatCssNumber(point.x)}" cy="${formatCssNumber(point.y)}" r="${formatCssNumber(jointRadius)}" fill="rgb(${r},${g},${b})"></circle>`;
+        })
+        .join("");
+      return bones + joints;
+    })
+    .join("");
+  return `<svg class="pose-grid-overlay" width="${formatCssNumber(width)}" height="${formatCssNumber(height)}" viewBox="0 0 ${formatCssNumber(width)} ${formatCssNumber(height)}" aria-hidden="true">${body}</svg>`;
+}

@@ -294,13 +294,13 @@ export function nearestPoseJointIndex(
   return bestIndex;
 }
 
+/** ポーズデータの有無のみを見る(enabled は問わない)。グリッドの POSE バッジ表示に使う。 */
+export function hasPoseData(draft: PoseDraft | null | undefined): draft is PoseDraft {
+  return !!draft?.poses && draft.poses.length > 0 && draft.poses.every((pose) => pose.length === OPENPOSE_JOINT_COUNT);
+}
+
 export function hasActivePoseData(draft: PoseDraft | null | undefined): draft is PoseDraft {
-  return (
-    draft?.enabled === true &&
-    !!draft.poses &&
-    draft.poses.length > 0 &&
-    draft.poses.every((pose) => pose.length === OPENPOSE_JOINT_COUNT)
-  );
+  return draft?.enabled === true && hasPoseData(draft);
 }
 
 export function poseDraftHasAttachment(draft: PoseDraft | null | undefined) {

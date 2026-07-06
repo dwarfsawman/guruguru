@@ -85,12 +85,12 @@ export function getPasteAttachments(assetId: string) {
   if (!asset) {
     throw new HttpError(404, "Asset was not found");
   }
-  const row = getRow<{ objects_json: string }>(
-    "SELECT objects_json FROM asset_paste_attachments WHERE asset_id = ?",
+  const row = getRow<{ objects_json: string; enabled: number }>(
+    "SELECT objects_json, enabled FROM asset_paste_attachments WHERE asset_id = ?",
     [assetId]
   );
   if (!row) {
-    return { objects: [] as PastedObject[] };
+    return { objects: [] as PastedObject[], enabled: true };
   }
   let parsed: unknown = [];
   try {
@@ -98,7 +98,7 @@ export function getPasteAttachments(assetId: string) {
   } catch {
     // 破損した JSON は空扱い(次の PUT で上書きされる)。
   }
-  return { objects: sanitizePastedObjects(parsed) };
+  return { objects: sanitizePastedObjects(parsed), enabled: row.enabled !== 0 };
 }
 
 export function putPasteAttachments(assetId: string, body: unknown) {
@@ -113,6 +113,8 @@ export function putPasteAttachments(assetId: string, body: unknown) {
     throw new HttpError(400, validationError);
   }
   const objects = sanitizePastedObjects(input.objects);
+  // 未指定(旧クライアント)は添付ONのまま維持する。明示的に false のときのみ無効化する。
+  const enabled = input.enabled !== false;
 
   const missingSourceId = findMissingSourceId(objects, String(asset.project_id));
   if (missingSourceId) {
@@ -120,13 +122,13 @@ export function putPasteAttachments(assetId: string, body: unknown) {
   }
 
   runSql(
-    `INSERT INTO asset_paste_attachments (asset_id, objects_json, updated_at)
-     VALUES (?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(asset_id) DO UPDATE SET objects_json = excluded.objects_json, updated_at = CURRENT_TIMESTAMP`,
-    [assetId, JSON.stringify(objects)]
+    `INSERT INTO asset_paste_attachments (asset_id, objects_json, enabled, updated_at)
+     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(asset_id) DO UPDATE SET objects_json = excluded.objects_json, enabled = excluded.enabled, updated_at = CURRENT_TIMESTAMP`,
+    [assetId, JSON.stringify(objects), enabled ? 1 : 0]
   );
 
-  return { objects };
+  return { objects, enabled };
 }
 
 /**

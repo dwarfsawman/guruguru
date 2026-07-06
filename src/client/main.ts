@@ -89,6 +89,7 @@ import {
   handlePastePointerDown,
   handlePastePointerMove,
   handlePastePointerUp,
+  pasteEnabledForGridAsset,
   pasteObjectsForGridAsset,
   syncAssetModalPasteObjects,
   syncGridPasteCanvases,
@@ -543,12 +544,6 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
       render();
     } else if (action === "dismiss-message") {
       dismissToast(id);
-    } else if (action === "toggle-mask-grid-tag") {
-      state.showMaskGridTag = !state.showMaskGridTag;
-      render();
-    } else if (action === "toggle-paste-grid-tag") {
-      state.showPasteGridTag = !state.showPasteGridTag;
-      render();
     } else if (action === "copy-seed") {
       const seedText = target.dataset.seed ?? "";
       if (seedText) {
@@ -748,8 +743,7 @@ function renderProjectDetailView(detail: ProjectDetail) {
     (assetId: string) => inpaintDraftForAsset(assetId),
     (assetId: string) => poseDraftForAsset(assetId),
     (assetId: string) => pasteObjectsForGridAsset(assetId).length,
-    state.showMaskGridTag,
-    state.showPasteGridTag,
+    (assetId: string) => pasteEnabledForGridAsset(assetId),
     state.copiedSeedAssetId,
     state.sidebarCollapsed,
     state.roundProgress

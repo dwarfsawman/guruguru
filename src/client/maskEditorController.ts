@@ -1,6 +1,6 @@
 import { requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
-import { ensureInpaintDraft, inpaintDraftForAsset, setInpaintDraft } from "./draftStore";
+import { ensureInpaintDraft, inpaintDraftForAsset, setInpaintDraft, setInpaintEnabledForAsset } from "./draftStore";
 import { ensureMaskLayerSet, getOrCreateMaskLayerSet, maskLayerCache } from "./maskLayerStore";
 import { clampNumber } from "./clientUtils";
 import { formatCssNumber } from "./format";
@@ -1062,15 +1062,52 @@ export function closeMaskEditorSession() {
  * マスク未作成(データなし)のときは何もしない(ランプ側も disabled 灰色)。
  * なお enabled=true でもマスクが空なら inpaint リクエストは組まれない
  * (`inpaintRequestForParent` が有効な maskDataUrl を要求する)ため、生成には影響しない。
+ * SAM 候補プレビューが未適用(`previewSamMaskDataUrl` のみで `maskDataUrl` 未確定)のときは、
+ * ランプを有効表示にしている都合上、トグル ON 操作で候補を確定適用してから有効化する。
  */
-function toggleMaskAttach() {
+async function toggleMaskAttach() {
   commitActiveMaskCanvas();
   const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
-  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
-  if (!draft || !hasMaskData(draft)) {
+  let draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!draft) {
+    return;
+  }
+  if (!hasMaskData(draft)) {
+    if (!draft.previewSamMaskDataUrl) {
+      return;
+    }
+    await applySelectedSamCandidate();
+    draft = assetId ? inpaintDraftForAsset(assetId) : null;
+    if (!draft || !hasMaskData(draft)) {
+      return;
+    }
+    setInpaintDraft({ ...draft, enabled: true });
+    requestRender();
     return;
   }
   setInpaintDraft({ ...draft, enabled: !draft.enabled });
+  requestRender();
+}
+
+/**
+ * グリッドの MASK バッジ用の添付トグル。対象がモーダルで開いている active asset なら
+ * 既存の `toggleMaskAttach`(SAM 候補の自動確定込み)に委譲し、それ以外(グリッド上の
+ * 非 active asset)は `setInpaintEnabledForAsset` で `enabled` だけを直接切り替える。
+ */
+function toggleMaskAttachForAsset(assetId: string | null) {
+  const targetId = assetId || state.activeAssetId;
+  if (!targetId) {
+    return;
+  }
+  if (targetId === state.activeAssetId) {
+    void toggleMaskAttach();
+    return;
+  }
+  const draft = inpaintDraftForAsset(targetId);
+  if (!draft || !hasMaskData(draft)) {
+    return;
+  }
+  setInpaintEnabledForAsset(targetId, !draft.enabled);
   requestRender();
 }
 
@@ -1078,8 +1115,8 @@ registerActions({
   "toggle-mask-editor": () => {
     toggleMaskEditor();
   },
-  "toggle-mask-attach": () => {
-    toggleMaskAttach();
+  "toggle-mask-attach": (id) => {
+    toggleMaskAttachForAsset(id || null);
   },
   "apply-mask-editor": () => applyMaskEditor(),
   "minimize-mask-toolbar": () => {
