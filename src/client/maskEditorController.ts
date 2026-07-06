@@ -694,6 +694,9 @@ function finishMaskStroke(canvas: HTMLCanvasElement) {
     finishBrushPromptStroke(canvas);
   } else {
     commitActiveMaskCanvas();
+    // 最初のストロークで「マスクあり」に変わる表示(添付ランプ・mask active バッジ)を
+    // 即時反映する(commit だけでは再描画されない)。
+    requestRender();
   }
 }
 
@@ -1054,9 +1057,29 @@ export function closeMaskEditorSession() {
   maskToolbarDrag = null;
 }
 
+/**
+ * タブ横のランプ(四角トグル)によるマスク添付の ON/OFF。
+ * マスク未作成(データなし)のときは何もしない(ランプ側も disabled 灰色)。
+ * なお enabled=true でもマスクが空なら inpaint リクエストは組まれない
+ * (`inpaintRequestForParent` が有効な maskDataUrl を要求する)ため、生成には影響しない。
+ */
+function toggleMaskAttach() {
+  commitActiveMaskCanvas();
+  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  const draft = assetId ? inpaintDraftForAsset(assetId) : null;
+  if (!draft || !hasMaskData(draft)) {
+    return;
+  }
+  setInpaintDraft({ ...draft, enabled: !draft.enabled });
+  requestRender();
+}
+
 registerActions({
   "toggle-mask-editor": () => {
     toggleMaskEditor();
+  },
+  "toggle-mask-attach": () => {
+    toggleMaskAttach();
   },
   "apply-mask-editor": () => applyMaskEditor(),
   "minimize-mask-toolbar": () => {
