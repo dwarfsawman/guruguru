@@ -7,6 +7,7 @@
 import type { Json } from "./json";
 import type { GenerationRequest } from "./types";
 import type { PastedObject } from "./pasteAttachments";
+import type { ModelKind } from "./workflowModels";
 
 export interface ComfyStatus {
   ok: boolean;
@@ -14,6 +15,25 @@ export interface ComfyStatus {
   baseUrl: string;
   checkedAt: string;
   error?: string;
+}
+
+/** `GET /api/comfy/model-check` の1モデル行。`available` は ComfyUI 未接続/照合不能時 null。 */
+export interface ModelCheckEntry {
+  kind: ModelKind;
+  name: string;
+  loaderClass: string;
+  inputName: string;
+  targetDir: string;
+  available: boolean | null;
+}
+
+/** `GET /api/comfy/model-check` のレスポンス全体。 */
+export interface ModelCheckResult {
+  family: string;
+  comfy: { ok: boolean; baseUrl: string; error?: string };
+  nodes: Array<{ classType: string; available: boolean }>;
+  models: ModelCheckEntry[];
+  checkedAt: string;
 }
 
 export interface LlmStatus {

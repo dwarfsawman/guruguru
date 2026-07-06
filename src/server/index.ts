@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
 import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
+import { checkModels } from "./modelCheck";
 import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection } from "./llm";
 import { serveStatic } from "./files";
 import { HttpError, readJson, sendJson } from "./http";
@@ -117,6 +118,16 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "GET" && path === "/api/comfy/status") {
     sendJson(res, 200, await getComfyStatus());
+    return;
+  }
+
+  if (method === "GET" && path === "/api/comfy/model-check") {
+    const family = url.searchParams.get("family");
+    if (family !== "chroma") {
+      sendJson(res, 404, { error: `Unknown model family: ${family}` });
+      return;
+    }
+    sendJson(res, 200, await checkModels(family));
     return;
   }
 

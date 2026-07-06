@@ -104,6 +104,16 @@ export async function getQueue() {
   return comfyFetchJson("/queue");
 }
 
+/**
+ * `/object_info/{classType}` の per-class 版。存在しない class を渡すと
+ * ComfyUI は `{}` を返す(= ノード不在の判定を兼ねる)。呼び出し側
+ * (`modelCheck.ts`)がネットワークエラーを個別に吸収する設計のため、
+ * これ以上のエラーハンドリングはここでは行わない。
+ */
+export async function fetchComfyNodeInfo(classType: string) {
+  return comfyFetchJson(`/object_info/${encodeURIComponent(classType)}`);
+}
+
 export async function deleteQueuedPrompts(promptIds: string[]) {
   if (promptIds.length === 0) {
     return null;
