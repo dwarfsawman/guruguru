@@ -1,5 +1,5 @@
 import { DEFAULT_POSE_MODEL_BASE_URL } from "../shared/constants";
-import { pushToast, requestRender, state } from "./appState";
+import { requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { persistProjectDraft } from "./draftStore";
 import { clampNumber, imageToRawData } from "./clientUtils";
@@ -473,18 +473,6 @@ export function updatePoseDraftFromControl(
   const current = ensurePoseDraft(assetId);
   const next: PoseDraft = { ...current };
   if (field === "enabled" && control instanceof HTMLInputElement) {
-    const hasPose = !!current.poses && current.poses.length > 0;
-    if (control.checked && !hasPose) {
-      // ポーズ未検出のまま添付だけ ON にはできない(送るポーズが無い)。
-      // チェック操作を検出のトリガーにする: 検出成功時に enabled=true が立ち、
-      // チェックが自動で入る(モデル未取得ならロードも走る)。
-      next.enabled = false;
-      setPoseDraft(next);
-      pushToast("ポーズ未検出のため検出を開始しました。検出が完了すると添付されます。");
-      requestRender();
-      void requestPoseDetect();
-      return;
-    }
     next.enabled = control.checked;
   } else if (field === "strength") {
     next.strength = clampNumber(Number(control.value), 0, 2, 1);
@@ -1300,8 +1288,25 @@ export function handlePoseEditorPointerCancel(event: PointerEvent): boolean {
   return false;
 }
 
+/**
+ * タブ横のランプ(四角トグル)によるポーズ添付の ON/OFF。
+ * ポーズ未検出(データなし)のときは何もしない(ランプ側も disabled 灰色)。
+ * なお enabled=true でもポーズが空なら controlnet リクエストは組まれない
+ * (`controlnetRequestForParent` が poses を要求する)ため、生成には影響しない。
+ */
+function togglePoseAttach() {
+  const assetId = state.activeAssetId;
+  const draft = assetId ? poseDraftForAsset(assetId) : null;
+  if (!draft || !draft.poses || draft.poses.length === 0) {
+    return;
+  }
+  setPoseDraft({ ...draft, enabled: !draft.enabled });
+  requestRender();
+}
+
 registerActions({
   "pose-load-model": () => loadActivePoseModel(),
   "pose-detect": () => requestPoseDetect(),
-  "pose-reset": () => resetPoseDetection()
+  "pose-reset": () => resetPoseDetection(),
+  "toggle-pose-attach": () => togglePoseAttach()
 });

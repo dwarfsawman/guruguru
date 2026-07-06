@@ -21,7 +21,7 @@ import {
 import { formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "../websam/models";
 import type { WebSamModelStatus } from "../websam/types";
 import type { InpaintDraft } from "../maskTypes";
-import { defaultInpaintDraft, hasActiveMaskData, maskedContentOptions } from "../maskDraft";
+import { defaultInpaintDraft, hasActiveMaskData, hasMaskData, maskedContentOptions } from "../maskDraft";
 import { normalizePromptBox } from "../maskCanvas";
 import type { PaintDraft } from "../paintTypes";
 import { renderPaintToggleButton, renderPaintToolPanel } from "./paintPanel";
@@ -432,18 +432,18 @@ export function renderSmartMaskSidebar(
 ) {
   const poseActive = maskPanelTab === "pose";
   const poseDetected = !!poseDraft?.poses && poseDraft.poses.length > 0;
-  const poseAttached = poseDraft?.enabled === true;
+  const maskExists = hasMaskData(draft);
   return `
     <aside class="mask-editor-panel smart-mask-panel">
       <div class="mask-panel-header">
         <h2>${poseActive ? "ポーズ" : "スマート選択"}</h2>
         <div class="mask-panel-tabs smart-panel-tabs">
           <div class="smart-tab-item ${poseActive ? "" : "active"}">
-            <input type="checkbox" class="tab-attach-check" data-inpaint-field="enabled" ${draft.enabled ? "checked" : ""} title="マスクを次回生成に添付" aria-label="マスクを次回生成に添付" />
+            ${renderAttachToggle("toggle-mask-attach", "マスク", maskExists, draft.enabled === true)}
             <button class="mask-tab ${poseActive ? "" : "active"}" type="button" data-action="set-mask-panel-tab" data-tab="mask">マスク</button>
           </div>
           <div class="smart-tab-item ${poseActive ? "active" : ""}">
-            <input type="checkbox" class="tab-attach-check" data-pose-field="enabled" ${poseAttached ? "checked" : ""} title="${poseDetected || poseAttached ? "ポーズを次回生成に添付" : "クリックでポーズ検出を開始(検出完了で添付ON)"}" aria-label="ポーズを次回生成に添付" />
+            ${renderAttachToggle("toggle-pose-attach", "ポーズ", poseDetected, poseDraft?.enabled === true)}
             <button class="mask-tab ${poseActive ? "active" : ""}" type="button" data-action="set-mask-panel-tab" data-tab="pose">ポーズ</button>
           </div>
         </div>
@@ -451,4 +451,20 @@ export function renderSmartMaskSidebar(
       ${poseActive ? renderPosePanelSection(poseDraft ?? null, assetId) : renderSmartMaskSection(draft)}
     </aside>
   `;
+}
+
+/**
+ * タブ横の「次回生成に添付」スイッチ(ノブ+on/off ラベルのトグル)。
+ * - 未生成(データなし): 灰色・クリック不可
+ * - 生成済み+添付ON: 緑「on」 / 生成済み+添付OFF: 赤「off」(クリックでトグル)
+ * 3状態は白黒化しても判別できるよう明度差をつける(CSS 側)。
+ */
+export function renderAttachToggle(action: string, label: string, hasData: boolean, attached: boolean) {
+  const stateClass = !hasData ? "empty" : attached ? "on" : "off";
+  const title = !hasData
+    ? `${label}が未生成のため添付できません`
+    : attached
+      ? `${label}を次回生成に添付中(クリックで外す)`
+      : `${label}を次回生成に添付しない(クリックで添付)`;
+  return `<button type="button" class="tab-attach-switch ${stateClass}" data-action="${action}" ${hasData ? "" : "disabled"} role="switch" aria-checked="${hasData && attached}" title="${title}" aria-label="${label}を次回生成に添付"></button>`;
 }
