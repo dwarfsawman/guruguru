@@ -81,6 +81,7 @@ import {
   syncAssetModalPaintCanvas
 } from "./paintEditorController";
 import { setFormValue } from "./formUtils";
+import { syncAssetModalPasteObjects } from "./pasteObjectController";
 import {
   assetPassesFilter,
   captureGenerationDraft,
@@ -590,6 +591,7 @@ function render(_options: RenderOptions = {}) {
   refreshIterationEdges();
   syncAssetModalMaskCanvas();
   syncAssetModalPaintCanvas();
+  syncAssetModalPasteObjects();
   void renderWorkflowDiagramCanvases();
 }
 

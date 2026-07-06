@@ -3,7 +3,7 @@
  * `assetModal.ts` と同様、state は引数で受け取るため main.ts への逆依存を持たない。
  */
 import { escapeAttr } from "../format";
-import { iconBrush, iconChevronDouble, iconEraser, iconLoopArrows, iconReset, iconSave, iconZoom } from "../icons";
+import { iconBrush, iconChevronDouble, iconEraser, iconExpand, iconImage, iconLoopArrows, iconReset, iconSave, iconZoom } from "../icons";
 import { PAINT_BASE_PALETTE, type PaintDraft } from "../paintTypes";
 
 export function renderPaintToggleButton(editing: boolean) {
@@ -25,8 +25,13 @@ export function renderPaintToolPanel(draft: PaintDraft, sidebarCollapsed = false
         <button class="mask-tool-button ${draft.tool === "brush" ? "active" : ""}" type="button" data-action="paint-tool" data-tool="brush" aria-label="ブラシ" title="ブラシ">${iconBrush()}</button>
         <button class="mask-tool-button ${draft.tool === "eraser" ? "active" : ""}" type="button" data-action="paint-tool" data-tool="eraser" aria-label="消しゴム" title="消しゴム">${iconEraser()}</button>
         <button class="mask-tool-button ${draft.tool === "eyedropper" ? "active" : ""}" type="button" data-action="paint-tool" data-tool="eyedropper" aria-label="スポイト" title="スポイト（Altキーで一時使用）">${iconZoom()}</button>
+        <button class="mask-tool-button ${draft.tool === "select" ? "active" : ""}" type="button" data-action="paint-tool" data-tool="select" aria-label="貼り付け画像の選択/変形" title="貼り付け画像の選択/変形（画像のダブルクリックでも選択）">${iconExpand()}</button>
         <button class="mask-tool-button" type="button" data-action="paint-clear" aria-label="ペイントをクリア" title="ペイントをクリア">${iconReset()}</button>
         <button class="mask-tool-button" type="button" data-action="paint-undo" aria-label="元に戻す" title="元に戻す (Ctrl+Z)">${iconLoopArrows()}</button>
+      </div>
+      <div class="paste-import-section">
+        <button class="button-secondary compact" type="button" data-action="paste-pick-file" title="画像を貼り付け(ドラッグ&ドロップでも可)">${iconImage()}画像を貼り付け</button>
+        <p class="paste-import-hint">画像はドラッグ&ドロップでも貼り付けできます</p>
       </div>
       <div class="range-control mask-brush-control">
         <div class="range-label"><span>ブラシサイズ</span><strong id="paintBrushValue">${draft.brushSize}px</strong></div>

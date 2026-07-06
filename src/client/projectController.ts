@@ -13,6 +13,7 @@ import { renderWorkflowDiagramCanvases, renderWorkflowImportPreview } from "./wo
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { draftStorageKey, resetProjectDrafts, restoreOrResetProjectDrafts } from "./draftStore";
+import { clearPasteCaches } from "./pasteObjectController";
 import { clampNumber } from "./clientUtils";
 import { formatCssNumber } from "./format";
 import { formValue, readForm, setFormValue } from "./formUtils";
@@ -27,6 +28,7 @@ export async function loadHome() {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   resetProjectDrafts();
+  clearPasteCaches();
   state.maskEditMode = false;
   state.paintEditMode = false;
   state.maskPanelTab = "mask";
@@ -53,6 +55,7 @@ async function openProject(projectId: string) {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   restoreOrResetProjectDrafts(projectId);
+  clearPasteCaches();
   state.maskEditMode = false;
   state.paintEditMode = false;
   state.maskPanelTab = "mask";

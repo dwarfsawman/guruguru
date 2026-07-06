@@ -133,13 +133,18 @@ export function renderPreviewMedia(
   selectedPoseEdges: ReadonlyArray<{ poseIndex: number; boneIndex: number }> = []
 ) {
   const poseTabActive = editing && maskPanelTab === "pose";
+  // 貼り付けオブジェクト表示面。マスク編集中はマスクの下(マスク描画を隠さない)、
+  // それ以外(ペイント編集・非編集)では最前面(opacity 1 の WYSIWYG)に重ねる。
+  const pasteCanvas = `<canvas id="pasteCanvas" class="paste-canvas" data-asset-id="${asset.id}" aria-hidden="true"></canvas>`;
   return `
     <div class="preview-media${editing || paintEditing ? " mask-preview-media" : ""}${poseTabActive ? " pose-tab-active" : ""}"${zoomStyle}>
       <div class="mask-zoom-stage">
         <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
+        ${editing ? pasteCanvas : ""}
         ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas><canvas id="maskFeatherPreview" class="mask-feather-preview" data-asset-id="${asset.id}" aria-hidden="true"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
         ${poseTabActive && poseDraft ? renderPoseOverlay(poseDraft, asset, selectedPoseEdges) : ""}
         ${paintEditing ? `<canvas id="paintCanvas" class="mask-canvas paint-canvas" data-asset-id="${asset.id}" aria-label="ペイントキャンバス"></canvas>` : ""}
+        ${editing ? "" : pasteCanvas}
       </div>
     </div>
   `;

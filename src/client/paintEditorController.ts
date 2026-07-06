@@ -158,6 +158,11 @@ function beginPaintStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
     pickPaintColorAt(event, canvas, assetId);
     return;
   }
+  if (draft.tool === "select") {
+    // select ツール中の canvas pointerdown はストロークにしない
+    // (選択/変形は pasteObjectController が pointer チェーンの手前で処理する)。
+    return;
+  }
   pushPaintUndoSnapshot(assetId);
   canvas.setPointerCapture(event.pointerId);
   const point = pointerToMaskCanvasPoint(canvas, event);

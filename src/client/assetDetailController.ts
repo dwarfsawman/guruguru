@@ -7,6 +7,7 @@ import {
 import { clearActiveWebSamBoxPrompt, destroyWebSamWorkerSession } from "./webSamController";
 import { clearSelectedPoseEdges, closePoseEditorSession } from "./poseEditorController";
 import { closePaintEditorSession } from "./paintEditorController";
+import { closePasteSession } from "./pasteObjectController";
 
 export function openAssetDetail(assetId: string) {
   state.activeAssetId = assetId;
@@ -25,6 +26,7 @@ export function openAssetDetail(assetId: string) {
 export function closeAssetDetail() {
   closeMaskEditorSession();
   closePaintEditorSession();
+  closePasteSession(state.activeAssetId);
   clearActiveWebSamBoxPrompt();
   void destroyWebSamWorkerSession();
   closePoseEditorSession();

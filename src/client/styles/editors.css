@@ -230,6 +230,54 @@
   touch-action: none;
 }
 
+/*
+ * 貼り付けオブジェクトの表示面。opacity は 1(.mask-canvas の 0.58 を継承しない)で
+ * WYSIWYG に配置できる。入力は #paintCanvas 側で受けるため pointer-events は常に none。
+ */
+.paste-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  pointer-events: none;
+  touch-action: none;
+}
+
+/* ドラッグ中のドロップ受け入れハイライト(classList 直接操作、render を経ない)。 */
+.preview-media.paste-drop-active {
+  outline: 2px dashed var(--accent, #3b82f6);
+  outline-offset: -2px;
+}
+
+.preview-media.paste-drop-active::after {
+  content: attr(data-paste-drop-label);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 5;
+  background: color-mix(in srgb, #000 35%, transparent);
+  color: #fff;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+/* ペイントパネルの貼り付け導入セクション。 */
+.paste-import-section {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.paste-import-hint {
+  margin: 0;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
 .websam-prompt-overlay {
   position: absolute;
   inset: 0;
