@@ -472,6 +472,12 @@
   justify-content: center;
 }
 
+.model-select-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .compact-dropdown {
   gap: 8px;
 }

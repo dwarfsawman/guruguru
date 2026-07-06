@@ -11,6 +11,7 @@ import {
 import { escapeAttr, escapeHtml, formatNumber, formatSliderValue } from "./format";
 import { morph } from "./domMorph";
 import {
+  renderModelInstallModal,
   renderWorkflowDiagramCanvases,
   renderWorkflowDiagramModal,
   renderWorkflowImportModal
@@ -82,6 +83,7 @@ import {
 } from "./paintEditorController";
 import { setFormValue } from "./formUtils";
 import "./edgePopoutController";
+import "./modelCheckController";
 import {
   deselectPasteObjectIfAny,
   handlePasteKeydown,
@@ -591,7 +593,8 @@ function render(_options: RenderOptions = {}) {
     renderAssetModalView(),
     renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft),
     renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId),
-    renderShortcutsHelpModal(state.showShortcutsHelp)
+    renderShortcutsHelpModal(state.showShortcutsHelp),
+    renderModelInstallModal(state.modelInstallFamily, state.modelCheck)
   ];
   const changed = !lastRegionHtml || regions.some((html, i) => html !== lastRegionHtml![i]);
   if (changed) {
@@ -603,6 +606,7 @@ function render(_options: RenderOptions = {}) {
     ${regions[4]}
     ${regions[5]}
     ${regions[6]}
+    ${regions[7]}
   `);
     lastRegionHtml = regions;
   }

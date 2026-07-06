@@ -6,6 +6,8 @@
  */
 import mermaid from "mermaid";
 import { createWorkflowMermaidDiagram, type WorkflowDiagram, type WorkflowDiagramStatus } from "../shared/workflowDiagram";
+import type { ModelCheckResult } from "../shared/apiTypes";
+import type { ModelKind } from "../shared/workflowModels";
 import { parseJsonObjectText } from "./json";
 import { escapeAttr, escapeHtml } from "./format";
 import { iconClose, iconDiagram, iconDownload, iconPlus, iconTrash } from "./icons";
@@ -82,6 +84,22 @@ export function renderWorkflowImportPanel() {
       <button class="button-secondary workflow-import-trigger" type="button" data-action="open-template-import">
         ${iconPlus()}テンプレート登録
       </button>
+    </section>
+  `;
+}
+
+export function renderModelSelectPanel() {
+  return `
+    <section class="panel model-select-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="section-kicker">Models</p>
+          <h2>モデル選択</h2>
+        </div>
+      </div>
+      <div class="model-select-buttons">
+        <button class="button-secondary" type="button" data-action="open-model-install" data-family="chroma">Chroma</button>
+      </div>
     </section>
   `;
 }
@@ -170,6 +188,115 @@ export function renderWorkflowImportModal(open: boolean, draft: WorkflowImportDr
       </section>
     </div>
   `;
+}
+
+const MODEL_KIND_LABELS: Record<ModelKind, string> = {
+  checkpoint: "Checkpoint",
+  diffusionModel: "Diffusion Model",
+  textEncoder: "Text Encoder",
+  vae: "VAE",
+  controlnet: "ControlNet",
+  lora: "LoRA"
+};
+
+export interface ModelCheckState {
+  status: "idle" | "loading" | "ready" | "error";
+  result: ModelCheckResult | null;
+}
+
+export function renderModelInstallModal(family: "chroma" | null, modelCheck: ModelCheckState) {
+  if (!family) {
+    return "";
+  }
+  const result = modelCheck.result;
+  return `
+    <div class="workflow-modal" role="dialog" aria-modal="true" aria-label="必要モデルインストール">
+      <section class="workflow-dialog model-install-dialog">
+        <header class="workflow-dialog-header">
+          <div>
+            <p class="section-kicker">Model Install</p>
+            <h2>必要モデル(${escapeHtml(family)})</h2>
+          </div>
+          <button class="icon-button" type="button" data-action="close-model-install" aria-label="閉じる" title="閉じる">${iconClose()}</button>
+        </header>
+        ${renderModelInstallComfyStatus(modelCheck)}
+        ${renderModelInstallNodeWarning(result)}
+        ${renderModelInstallTable(result)}
+        <div class="workflow-import-modal-actions">
+          <button class="button-secondary" type="button" data-action="recheck-models">再チェック</button>
+          <button class="button-primary" type="button" data-action="close-model-install">${iconClose()}閉じる</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function renderModelInstallComfyStatus(modelCheck: ModelCheckState) {
+  if (modelCheck.status === "loading" && !modelCheck.result) {
+    return `<div class="model-install-comfy-status">ComfyUI接続を確認中...</div>`;
+  }
+  const comfy = modelCheck.result?.comfy;
+  if (!comfy) {
+    return `<div class="model-install-comfy-status">未確認</div>`;
+  }
+  if (comfy.ok) {
+    return `<div class="model-install-comfy-status model-check-ok">ComfyUI 接続済み(${escapeHtml(comfy.baseUrl)})</div>`;
+  }
+  return `<div class="model-install-comfy-status model-check-missing">ComfyUI 未接続(${escapeHtml(comfy.baseUrl)})${comfy.error ? `: ${escapeHtml(comfy.error)}` : ""}</div>`;
+}
+
+function renderModelInstallNodeWarning(result: ModelCheckResult | null) {
+  if (!result) {
+    return "";
+  }
+  const hasMissingNode = result.nodes.some((node) => !node.available);
+  if (!hasMissingNode) {
+    return "";
+  }
+  return `
+    <div class="workflow-diagram-warning">
+      必須ノード ComfySwitchNode / PrimitiveBoolean が見つかりません(ComfyUI のバージョン確認)
+    </div>
+  `;
+}
+
+function renderModelInstallTable(result: ModelCheckResult | null) {
+  const models = result?.models ?? [];
+  if (models.length === 0) {
+    return `<div class="empty">モデル一覧を取得できませんでした。</div>`;
+  }
+  return `
+    <table class="model-check-table">
+      <thead>
+        <tr>
+          <th>種別</th>
+          <th>ファイル名</th>
+          <th>配置先</th>
+          <th>状態</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${models.map((model) => `
+          <tr>
+            <td>${escapeHtml(MODEL_KIND_LABELS[model.kind] ?? model.kind)}</td>
+            <td>${escapeHtml(model.name)}</td>
+            <td><code>ComfyUI/${escapeHtml(model.targetDir)}</code></td>
+            <td>${renderModelCheckBadge(model.available)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderModelCheckBadge(available: boolean | null) {
+  if (available === true) {
+    return `<span class="model-check-badge model-check-ok">✓</span>`;
+  }
+  if (available === false) {
+    return `<span class="model-check-badge model-check-missing">✗</span>`;
+  }
+  return `<span class="model-check-badge model-check-unknown">未確認</span>`;
 }
 
 export function renderWorkflowDiagramModal(templates: WorkflowTemplate[], activeTemplateId: string | null) {

@@ -259,6 +259,84 @@
   white-space: pre-wrap;
 }
 
+.model-install-dialog {
+  width: min(720px, calc(100vw - 48px));
+}
+
+.model-install-comfy-status {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ink) 4.5%, transparent);
+  color: var(--muted);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.model-check-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+
+  th,
+  td {
+    border-bottom: 1px solid var(--line);
+    padding: 8px 10px;
+    text-align: left;
+  }
+
+  th {
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  td {
+    color: var(--muted);
+  }
+
+  code {
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+}
+
+.model-check-badge {
+  display: inline-grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  padding: 0 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.model-check-ok,
+.model-check-badge.model-check-ok {
+  border: 1px solid color-mix(in srgb, var(--good) 40%, transparent);
+  background: color-mix(in srgb, var(--good) 14%, transparent);
+  color: var(--good);
+}
+
+.model-check-missing,
+.model-check-badge.model-check-missing {
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.model-check-unknown,
+.model-check-badge.model-check-unknown {
+  border: 1px solid var(--line-strong);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--faint);
+}
+
 .preview-content {
   position: relative;
   display: grid;
