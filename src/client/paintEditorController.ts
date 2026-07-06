@@ -90,7 +90,7 @@ export function ensurePaintDraft(assetId: string): PaintDraft {
   return draft;
 }
 
-function setPaintDraft(draft: PaintDraft) {
+export function setPaintDraft(draft: PaintDraft) {
   state.paintDrafts[draft.assetId] = normalizePaintDraft(draft);
 }
 

@@ -85,6 +85,8 @@ export interface ActiveImagePan {
   assetId: string;
   startClient: { x: number; y: number };
   originOffset: { x: number; y: number };
+  /** パン開始時の編集モード。paint 中は PaintDraft.panOffset へ、それ以外は InpaintDraft へ永続化する。 */
+  draftKind: "inpaint" | "paint";
 }
 
 export interface MaskLayerSet {
