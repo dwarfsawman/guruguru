@@ -19,7 +19,9 @@
 
 ## Documentation and Git
 
-- Keep repository operation notes, usage steps, and recurring cautions in `操作メモ.md`.
-- When new procedures or cautions are discovered, add them to `操作メモ.md` instead of recreating a broad specification document.
+- Keep repository operation notes, usage steps, and recurring cautions in `操作メモ.md`. Keep it short: this file is read often, so put only what applies regardless of which feature is being touched, plus a changelog trimmed to recent entries (older entries get folded into a one-line monthly summary).
+- Feature-specific internal implementation/behavior detail (how a subsystem currently works, not history) goes in `Docs/Reference-*.md` instead of `操作メモ.md`. These are living references overwritten in place as the code changes — they carry no changelog of their own.
+- Completed-feature design docs and their implementation history/changelog live in `Docs/Done/*.md` (see `Docs/README.md`). In-progress feature design docs live at `Docs/*.md` until done, then move to `Docs/Done/`.
+- When new procedures or cautions are discovered, add them to `操作メモ.md` instead of recreating a broad specification document. When new internal-behavior detail is discovered, add it to the relevant `Docs/Reference-*.md` (or create one) instead of growing `操作メモ.md`.
 - When updating repository Markdown, also add a concise entry to the relevant change history section.
 - After making coherent edits to this repository, proactively create a git commit when the change has been checked. Keep commits scoped and do not include unrelated user changes.
