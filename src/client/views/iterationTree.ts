@@ -182,6 +182,36 @@ export function iterationEdgePopoutHtml(round: Round): string {
         .map(([label, value]) => `<div class="iteration-edge-row"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
         .join("")}
     </dl>
+    ${iterationEdgeAttachmentsHtml(round)}
+  `;
+}
+
+/**
+ * この生成(エッジ)に貼り付け添付が使われていた場合のフッタ+サムネイル。
+ * 折りたたみ時はフッタ「添付 n件 ˅」のみ、ポップアウト上のホイール下スクロール
+ * (またはエッジのクリック)で `.expanded` が付きサムネイルグリッドが現れる
+ * (展開制御は edgePopoutController、Docs/Feature-ImagePaste.md (i))。
+ * サムネイルは request_json に記録された生成時点の objects スナップショット
+ * (sourceId)から paste-sources を参照する。
+ */
+export function iterationEdgeAttachmentsHtml(round: Round): string {
+  const objects = round.request?.pasteComposite?.objects ?? [];
+  if (!objects.length) {
+    return "";
+  }
+  return `
+    <div class="iteration-edge-attachments-footer" data-edge-attachments="${objects.length}">
+      <span>添付 ${objects.length}件</span>
+      <span class="iteration-edge-attachments-chevron" aria-hidden="true">˅</span>
+    </div>
+    <div class="iteration-edge-attachments">
+      ${objects
+        .map(
+          (object) =>
+            `<img loading="lazy" src="/api/projects/${escapeAttr(round.projectId)}/paste-sources/${escapeAttr(object.sourceId)}" alt="添付画像" />`
+        )
+        .join("")}
+    </div>
   `;
 }
 

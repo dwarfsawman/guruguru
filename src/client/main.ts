@@ -81,6 +81,7 @@ import {
   syncAssetModalPaintCanvas
 } from "./paintEditorController";
 import { setFormValue } from "./formUtils";
+import "./edgePopoutController";
 import {
   deselectPasteObjectIfAny,
   handlePasteKeydown,
