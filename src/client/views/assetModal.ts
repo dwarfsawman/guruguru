@@ -443,7 +443,7 @@ export function renderSmartMaskSidebar(
             <button class="mask-tab ${poseActive ? "" : "active"}" type="button" data-action="set-mask-panel-tab" data-tab="mask">マスク</button>
           </div>
           <div class="smart-tab-item ${poseActive ? "active" : ""}">
-            <input type="checkbox" class="tab-attach-check" data-pose-field="enabled" ${poseAttached ? "checked" : ""} ${poseDetected || poseAttached ? "" : "disabled"} title="ポーズを次回生成に添付" aria-label="ポーズを次回生成に添付" />
+            <input type="checkbox" class="tab-attach-check" data-pose-field="enabled" ${poseAttached ? "checked" : ""} title="${poseDetected || poseAttached ? "ポーズを次回生成に添付" : "クリックでポーズ検出を開始(検出完了で添付ON)"}" aria-label="ポーズを次回生成に添付" />
             <button class="mask-tab ${poseActive ? "active" : ""}" type="button" data-action="set-mask-panel-tab" data-tab="pose">ポーズ</button>
           </div>
         </div>
