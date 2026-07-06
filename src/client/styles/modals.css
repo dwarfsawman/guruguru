@@ -56,11 +56,6 @@
   padding-bottom: 12px;
 }
 
-.workflow-import-dialog {
-  width: min(1280px, calc(100vw - 48px));
-  height: min(920px, calc(100vh - 48px));
-}
-
 .shortcuts-help-dialog {
   width: min(560px, calc(100vw - 48px));
   max-height: min(720px, calc(100vh - 48px));
@@ -122,27 +117,6 @@
   overflow: hidden;
 }
 
-.workflow-import-fields {
-  min-height: 0;
-  height: 100%;
-  overflow: auto;
-  padding-right: 8px;
-
-  textarea {
-    min-height: 180px;
-    font-family: var(--mono);
-    font-size: 12px;
-  }
-
-  .workflow-json-textarea {
-    min-height: 260px;
-  }
-
-  .role-map-textarea {
-    min-height: 420px;
-  }
-}
-
 .workflow-diagram-preview {
   display: grid;
   min-height: 0;
@@ -150,10 +124,6 @@
   gap: 12px;
   border-left: 1px solid var(--line);
   padding-left: 16px;
-}
-
-.workflow-import-preview-slot {
-  min-height: 0;
 }
 
 .workflow-import-modal-actions {

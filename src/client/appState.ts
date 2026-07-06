@@ -2,8 +2,7 @@ import type { ComfySettings, LlmSettings } from "../shared/types";
 import type { ModelCheckResult, ProjectDetail, ProjectSummary } from "../shared/apiTypes";
 import type { ConnectionState } from "./views/homeView";
 import type { MaskPanelTab } from "./views/assetModal";
-import type { WorkflowImportDraft, WorkflowTemplate } from "./workflowTypes";
-import { defaultWorkflowImportDraft } from "./workflowImport";
+import type { WorkflowTemplate } from "./workflowTypes";
 import type { InpaintDraft } from "./maskTypes";
 import type { PaintDraft } from "./paintTypes";
 import type { PoseDraft } from "./poseTypes";
@@ -191,8 +190,6 @@ export interface AppState {
   maskPanelWidths: { left: number; right: number };
   copiedSeedAssetId: string | null;
   deletePreviewRoundId: string | null;
-  workflowImportModalOpen: boolean;
-  workflowImportDraft: WorkflowImportDraft;
   activeWorkflowDiagramTemplateId: string | null;
   paintEditMode: boolean;
   paintDrafts: Record<string, PaintDraft>;
@@ -251,8 +248,6 @@ export const state: AppState = {
   maskPanelWidths: { left: 300, right: 300 },
   copiedSeedAssetId: null,
   deletePreviewRoundId: null,
-  workflowImportModalOpen: false,
-  workflowImportDraft: defaultWorkflowImportDraft(),
   activeWorkflowDiagramTemplateId: null,
   paintEditMode: false,
   paintDrafts: {},

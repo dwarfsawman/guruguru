@@ -463,15 +463,6 @@
   margin-top: 0;
 }
 
-.workflow-import-collapsed {
-  padding: 0;
-}
-
-.workflow-import-trigger {
-  width: 100%;
-  justify-content: center;
-}
-
 .model-select-buttons {
   display: flex;
   flex-wrap: wrap;

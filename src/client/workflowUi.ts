@@ -8,10 +8,9 @@ import mermaid from "mermaid";
 import { createWorkflowMermaidDiagram, type WorkflowDiagram, type WorkflowDiagramStatus } from "../shared/workflowDiagram";
 import type { ModelCheckResult } from "../shared/apiTypes";
 import type { ModelKind } from "../shared/workflowModels";
-import { parseJsonObjectText } from "./json";
 import { escapeAttr, escapeHtml } from "./format";
-import { iconClose, iconDiagram, iconDownload, iconPlus, iconTrash } from "./icons";
-import type { TemplateModelDefaults, WorkflowImportDraft, WorkflowTemplate } from "./workflowTypes";
+import { iconClose, iconDiagram, iconDownload, iconTrash } from "./icons";
+import type { TemplateModelDefaults, WorkflowTemplate } from "./workflowTypes";
 
 let workflowDiagramRenderRunId = 0;
 
@@ -78,16 +77,6 @@ export async function renderWorkflowDiagramCanvases() {
   }
 }
 
-export function renderWorkflowImportPanel() {
-  return `
-    <section class="workflow-import-collapsed">
-      <button class="button-secondary workflow-import-trigger" type="button" data-action="open-template-import">
-        ${iconPlus()}テンプレート登録
-      </button>
-    </section>
-  `;
-}
-
 export function renderModelSelectPanel() {
   return `
     <section class="panel model-select-panel">
@@ -137,56 +126,6 @@ export function renderTemplatePanel(templates: WorkflowTemplate[]) {
         `).join("") || `<div class="empty">登録済みテンプレートはありません。</div>`}
       </div>
     </section>
-  `;
-}
-
-export function renderWorkflowImportModal(open: boolean, draft: WorkflowImportDraft) {
-  if (!open) {
-    return "";
-  }
-  return `
-    <div class="workflow-modal" role="dialog" aria-modal="true" aria-label="テンプレート登録">
-      <section class="workflow-dialog workflow-import-dialog">
-        <header class="workflow-dialog-header">
-          <div>
-            <p class="section-kicker">Workflow Import</p>
-            <h2>テンプレート登録</h2>
-          </div>
-          <button class="icon-button" type="button" data-action="close-template-import" aria-label="閉じる" title="閉じる">${iconClose()}</button>
-        </header>
-        <form id="template-form" class="workflow-import-modal-form">
-          <div class="workflow-import-fields form-stack">
-            <label>JSONファイル
-              <input data-file-target="workflowJson" type="file" accept=".json,application/json" />
-            </label>
-            <label>名前<input name="name" placeholder="txt2img_16grid" value="${escapeAttr(draft.name)}" /></label>
-            <label>説明<input name="description" value="${escapeAttr(draft.description)}" /></label>
-            <label>種別
-              <select name="type">
-                ${renderWorkflowTypeOptions(draft.type)}
-              </select>
-            </label>
-            <label>API形式workflow JSON<textarea class="workflow-json-textarea" name="workflowJson" rows="12" spellcheck="false">${escapeHtml(draft.workflowJson)}</textarea></label>
-            <label>role map<textarea class="role-map-textarea" name="roleMap" rows="18" spellcheck="false">${escapeHtml(draft.roleMap)}</textarea></label>
-          </div>
-          <aside class="workflow-diagram-preview">
-            <div class="workflow-diagram-heading">
-              <div>
-                <p class="section-kicker">Preview</p>
-                <h3>diagram</h3>
-              </div>
-            </div>
-            <div class="workflow-import-preview-slot">
-              ${renderWorkflowImportPreview(draft)}
-            </div>
-          </aside>
-          <div class="workflow-import-modal-actions">
-            <button class="button-secondary" type="button" data-action="close-template-import">${iconClose()}閉じる</button>
-            <button class="button-primary" type="button" data-action="create-template">${iconPlus()}テンプレート登録</button>
-          </div>
-        </form>
-      </section>
-    </div>
   `;
 }
 
@@ -322,17 +261,6 @@ export function renderWorkflowDiagramModal(templates: WorkflowTemplate[], active
       </section>
     </div>
   `;
-}
-
-export function renderWorkflowImportPreview(draft: WorkflowImportDraft) {
-  const workflowResult = parseJsonObjectText(draft.workflowJson, "API形式workflow JSON");
-  if (!workflowResult.value) {
-    return renderWorkflowDiagramNotice("invalid", workflowResult.error ?? "workflow JSONを入力してください。");
-  }
-  const roleMapResult = parseJsonObjectText(draft.roleMap, "role map", true);
-  const diagram = createWorkflowMermaidDiagram(workflowResult.value, roleMapResult.value ?? {});
-  const warning = roleMapResult.error ? `<div class="workflow-diagram-warning">${escapeHtml(roleMapResult.error)}</div>` : "";
-  return `${warning}${renderWorkflowDiagramBlock(diagram)}`;
 }
 
 export function renderWorkflowDiagramBlock(diagram: WorkflowDiagram) {

@@ -2,22 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildTemplateExportPayload,
-  defaultWorkflowImportDraft,
-  defaultWorkflowImportRoleMap,
-  parseWorkflowFileContent,
   slugify,
   workflowExportFilename
 } from "./workflowImport.ts";
 import type { WorkflowTemplate } from "./workflowTypes.ts";
-
-test("defaultWorkflowImportDraft: uses empty name/description, txt2img type, and the default role map text", () => {
-  const draft = defaultWorkflowImportDraft();
-  assert.equal(draft.name, "");
-  assert.equal(draft.description, "");
-  assert.equal(draft.type, "txt2img");
-  assert.equal(draft.workflowJson, "{}");
-  assert.equal(draft.roleMap, defaultWorkflowImportRoleMap);
-});
 
 test("slugify: lowercases and replaces non-alphanumeric runs with a single hyphen", () => {
   assert.equal(slugify("My Cool Workflow!"), "my-cool-workflow");
@@ -31,88 +19,6 @@ test("slugify: strips leading/trailing hyphens", () => {
 test("slugify: falls back to 'workflow-template' when the result would be empty", () => {
   assert.equal(slugify("!!!"), "workflow-template");
   assert.equal(slugify(""), "workflow-template");
-});
-
-test("parseWorkflowFileContent: rejects invalid JSON", () => {
-  const result = parseWorkflowFileContent("{not json");
-  assert.equal(result.ok, false);
-  if (!result.ok) {
-    assert.match(result.error, /読み込めませんでした/);
-  }
-});
-
-test("parseWorkflowFileContent: rejects a non-object JSON root", () => {
-  const result = parseWorkflowFileContent("[1,2,3]");
-  assert.equal(result.ok, false);
-  if (!result.ok) {
-    assert.match(result.error, /ルートはJSON objectである必要があります/);
-  }
-});
-
-test("parseWorkflowFileContent: reads workflowJson/roleMap directly when present (camelCase keys)", () => {
-  const payload = {
-    workflowJson: { "1": { class_type: "KSampler", inputs: {} } },
-    roleMap: { seed_input: "1.inputs.seed" },
-    name: "My Template",
-    description: "desc",
-    type: "txt2img"
-  };
-  const result = parseWorkflowFileContent(JSON.stringify(payload));
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.deepEqual(result.result.workflowJson, payload.workflowJson);
-    assert.deepEqual(result.result.roleMap, payload.roleMap);
-    assert.equal(result.result.name, "My Template");
-    assert.equal(result.result.description, "desc");
-    assert.equal(result.result.type, "txt2img");
-    assert.equal(result.message, "workflow JSONとrole mapを読み込みました。");
-  }
-});
-
-test("parseWorkflowFileContent: falls back to workflow_json / role_map snake_case keys", () => {
-  const payload = {
-    workflow_json: { "1": { class_type: "KSampler", inputs: {} } },
-    role_map: { seed_input: "1.inputs.seed" }
-  };
-  const result = parseWorkflowFileContent(JSON.stringify(payload));
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.deepEqual(result.result.workflowJson, payload.workflow_json);
-    assert.deepEqual(result.result.roleMap, payload.role_map);
-  }
-});
-
-test("parseWorkflowFileContent: falls back to role_map_json key when roleMap/role_map are absent", () => {
-  const payload = {
-    workflowJson: { "1": {} },
-    role_map_json: { seed_input: "1.inputs.seed" }
-  };
-  const result = parseWorkflowFileContent(JSON.stringify(payload));
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.deepEqual(result.result.roleMap, payload.role_map_json);
-  }
-});
-
-test("parseWorkflowFileContent: treats the whole root as workflowJson when no workflowJson/workflow_json key exists", () => {
-  const payload = { "1": { class_type: "CLIPTextEncode", inputs: { text: "a cat" }, _meta: { title: "Positive" } } };
-  const result = parseWorkflowFileContent(JSON.stringify(payload));
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.deepEqual(result.result.workflowJson, payload);
-  }
-});
-
-test("parseWorkflowFileContent: infers a role map via inferRoleMap() when none is present, with the auto-set message", () => {
-  const payload = {
-    "6": { class_type: "CLIPTextEncode", inputs: { text: "a cat" }, _meta: { title: "Positive Prompt" } }
-  };
-  const result = parseWorkflowFileContent(JSON.stringify(payload));
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.equal(result.result.roleMap.positive_prompt_node, "6");
-    assert.equal(result.message, "workflow JSONを読み込み、role mapを自動設定しました。必要に応じて内容を確認してください。");
-  }
 });
 
 test("workflowExportFilename: uses .workflow.json suffix for kind 'workflow'", () => {

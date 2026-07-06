@@ -13,8 +13,7 @@ import { morph } from "./domMorph";
 import {
   renderModelInstallModal,
   renderWorkflowDiagramCanvases,
-  renderWorkflowDiagramModal,
-  renderWorkflowImportModal
+  renderWorkflowDiagramModal
 } from "./workflowUi";
 import { renderHome, type ConnectionState, type ConnectionSummary } from "./views/homeView";
 import { renderIterationTracker } from "./views/iterationTree";
@@ -132,7 +131,6 @@ import {
   undoRoundDeletion
 } from "./generationController";
 import {
-  captureWorkflowImportDraftFromElement,
   closeWorkflowModals,
   handleWorkflowDiagramPointerCancel,
   handleWorkflowDiagramPointerDown,
@@ -140,8 +138,6 @@ import {
   handleWorkflowDiagramPointerUp,
   handleWorkflowDiagramWheel,
   loadHome,
-  loadWorkflowFile,
-  refreshWorkflowImportPreview,
   uploadSourceAsset
 } from "./projectController";
 import { closeAssetDetail } from "./assetDetailController";
@@ -211,15 +207,6 @@ function bindEvents() {
       });
       return;
     }
-    if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.fileTarget) {
-      void loadWorkflowFile(target);
-      return;
-    }
-    if (target.closest("#template-form")) {
-      captureWorkflowImportDraftFromElement(target);
-      refreshWorkflowImportPreview();
-      return;
-    }
     if (target.id === "round-filter") {
       state.filter = target.value as typeof state.filter;
       render();
@@ -282,11 +269,6 @@ function bindEvents() {
     }
     if (target.dataset.paintField === "brushSize" && target instanceof HTMLInputElement) {
       setPaintBrushSize(Number(target.value));
-    }
-    if (target.closest("#template-form")) {
-      captureWorkflowImportDraftFromElement(target);
-      refreshWorkflowImportPreview();
-      return;
     }
     if (!valueId) {
       if (target.closest("#generation-form")) {
@@ -591,7 +573,6 @@ function render(_options: RenderOptions = {}) {
       { state: state.llmConnection, text: state.llmStatusText } satisfies ConnectionSummary
     ),
     renderAssetModalView(),
-    renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft),
     renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId),
     renderShortcutsHelpModal(state.showShortcutsHelp),
     renderModelInstallModal(state.modelInstallFamily, state.modelCheck)
@@ -606,7 +587,6 @@ function render(_options: RenderOptions = {}) {
     ${regions[4]}
     ${regions[5]}
     ${regions[6]}
-    ${regions[7]}
   `);
     lastRegionHtml = regions;
   }

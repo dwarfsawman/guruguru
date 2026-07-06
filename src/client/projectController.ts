@@ -5,18 +5,15 @@ import { api } from "./api";
 import type { WorkflowTemplate } from "./workflowTypes";
 import {
   buildTemplateExportPayload,
-  defaultWorkflowImportDraft,
-  parseWorkflowFileContent,
   workflowExportFilename
 } from "./workflowImport";
-import { renderWorkflowDiagramCanvases, renderWorkflowImportPreview } from "./workflowUi";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { draftStorageKey, resetProjectDrafts, restoreOrResetProjectDrafts } from "./draftStore";
 import { clearPasteCaches } from "./pasteObjectController";
 import { clampNumber } from "./clientUtils";
 import { formatCssNumber } from "./format";
-import { formValue, readForm, setFormValue } from "./formUtils";
+import { readForm } from "./formUtils";
 import { applyAssetDimensionsToDraft, generationDraftFromForm } from "./generationDraft";
 import { refreshProject, resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
 import { refreshComfyStatus, refreshLlmStatus } from "./settingsController";
@@ -36,7 +33,6 @@ export async function loadHome() {
   resetRoundDeletionHistory();
   state.roundProgress = {};
   state.iterationScrollReset = true;
-  state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
   state.llmSettings = await api<LlmSettings>("/api/settings/llm");
@@ -63,21 +59,9 @@ async function openProject(projectId: string) {
   resetRoundDeletionHistory();
   state.roundProgress = {};
   state.iterationScrollReset = true;
-  state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
   requestRender();
   resumeAutoCollectForActiveRounds();
-}
-
-function openWorkflowImportModal() {
-  state.workflowImportModalOpen = true;
-  state.activeWorkflowDiagramTemplateId = null;
-  requestRender();
-}
-
-function closeWorkflowImportModal() {
-  state.workflowImportModalOpen = false;
-  requestRender();
 }
 
 function openWorkflowDiagram(target: HTMLElement) {
@@ -88,7 +72,6 @@ function openWorkflowDiagram(target: HTMLElement) {
     return;
   }
   state.activeWorkflowDiagramTemplateId = template.id;
-  state.workflowImportModalOpen = false;
   requestRender();
 }
 
@@ -98,66 +81,7 @@ function closeWorkflowDiagram() {
 }
 
 export function closeWorkflowModals() {
-  state.workflowImportModalOpen = false;
   state.activeWorkflowDiagramTemplateId = null;
-  requestRender();
-}
-
-async function createTemplate() {
-  const form = readForm("template-form");
-  const result = await api<{ template: WorkflowTemplate }>("/api/templates", {
-    method: "POST",
-    body: JSON.stringify({
-      name: form.name,
-      description: form.description,
-      type: form.type,
-      workflowJson: form.workflowJson,
-      roleMap: form.roleMap
-    })
-  });
-  state.templates = [result.template, ...state.templates];
-  if (state.detail) {
-    state.detail.templates = state.templates;
-  }
-  state.workflowImportModalOpen = false;
-  state.workflowImportDraft = defaultWorkflowImportDraft();
-  state.message = `WorkflowTemplate "${result.template.name}" v${result.template.version} を登録しました。`;
-  requestRender();
-}
-
-export async function loadWorkflowFile(input: HTMLInputElement) {
-  const file = input.files?.[0];
-  const form = input.closest<HTMLFormElement>("form");
-  if (!file || !form) {
-    return;
-  }
-
-  const text = await file.text();
-  const parsed = parseWorkflowFileContent(text);
-  if (!parsed.ok) {
-    pushToast(parsed.error, "error");
-    requestRender();
-    return;
-  }
-
-  const { workflowJson, roleMap, name, description, type } = parsed.result;
-  setFormValue(form, "workflowJson", JSON.stringify(workflowJson, null, 2));
-  if (Object.keys(roleMap).length > 0) {
-    setFormValue(form, "roleMap", JSON.stringify(roleMap, null, 2));
-  }
-  state.message = parsed.message;
-  if (name !== undefined) {
-    setFormValue(form, "name", name);
-  } else if (!((form.elements.namedItem("name") as HTMLInputElement | null)?.value)) {
-    setFormValue(form, "name", file.name.replace(/\.json$/i, ""));
-  }
-  if (description !== undefined) {
-    setFormValue(form, "description", description);
-  }
-  if (type !== undefined) {
-    setFormValue(form, "type", type);
-  }
-  captureWorkflowImportDraft(form);
   requestRender();
 }
 
@@ -368,32 +292,6 @@ async function deleteWorkflowTemplate(target: HTMLElement) {
   requestRender();
 }
 
-export function captureWorkflowImportDraftFromElement(target: Element) {
-  const form = target.closest<HTMLFormElement>("#template-form");
-  if (form) {
-    captureWorkflowImportDraft(form);
-  }
-}
-
-function captureWorkflowImportDraft(form: HTMLFormElement) {
-  state.workflowImportDraft = {
-    name: formValue(form, "name"),
-    description: formValue(form, "description"),
-    type: formValue(form, "type") || "txt2img",
-    workflowJson: formValue(form, "workflowJson") || "{}",
-    roleMap: formValue(form, "roleMap") || "{}"
-  };
-}
-
-export function refreshWorkflowImportPreview() {
-  const preview = document.querySelector<HTMLElement>(".workflow-import-preview-slot");
-  if (!preview) {
-    return;
-  }
-  preview.innerHTML = renderWorkflowImportPreview(state.workflowImportDraft);
-  void renderWorkflowDiagramCanvases();
-}
-
 interface ActiveWorkflowDiagramPan {
   pointerId: number;
   element: HTMLElement;
@@ -530,9 +428,6 @@ export function handleWorkflowDiagramWheel(event: WheelEvent): boolean {
 
 registerActions({
   "home": () => loadHome(),
-  "open-template-import": () => openWorkflowImportModal(),
-  "close-template-import": () => closeWorkflowImportModal(),
-  "create-template": () => createTemplate(),
   "open-template-diagram": (_id, target) => openWorkflowDiagram(target),
   "close-template-diagram": () => closeWorkflowDiagram(),
   "export-template": (_id, target) => exportWorkflowTemplate(target, "template"),
