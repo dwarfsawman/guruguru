@@ -26,7 +26,7 @@
 
 ## ポーズ ControlNet 添付
 
-- 画像詳細ビューアのマスク編集サイドバーに「マスク / ポーズ」タブがあり、ポーズタブでは検出モデル(MediaPipe Pose Landmarker Full / Heavy、CIGPose)で検出した OpenPose 18点を関節ドラッグ・エッジ選択・マーキーで編集できる(複数人最大4人・Undo・Shift ドラッグの骨長固定 FK 対応)。編集対象は常に OpenPose 18点(MediaPipe 33 landmarks は検出直後に変換して破棄)。モデルは GitHub Release から `/api/pose-models` 経由で取得し OPFS にキャッシュする。
+- 画像詳細ビューアのマスク編集サイドバーに「マスク / ポーズ」タブがあり、ポーズタブでは検出モデル(MediaPipe Pose Landmarker Full / Heavy、CIGPose)で検出した OpenPose 18点を関節ドラッグ・エッジ選択・マーキーで編集できる(複数人最大4人・Undo・Shift ドラッグの骨長固定 FK 対応)。編集対象は常に OpenPose 18点(MediaPipe 33 landmarks は検出直後に変換して破棄)。モデルは GitHub Release から `/api/pose-models` 経由で取得し OPFS にキャッシュする。モデル DL 進捗による再描画は `POSE_PROGRESS_RENDER_INTERVAL_MS`(150ms)でスロットルする(進捗イベントごとの全再描画でマスク/ポーズタブ切替が重くなる・ボタンが押せなくなる事象への対策)。
 - ポーズタブの添付チェックを ON にした状態で生成すると、`renderPoseSkeletonDataUrl` が黒背景 + OpenPose 標準配色のスケルトン PNG を描画し、`request.controlnet.poseImageDataUrl` として送信する。**送信先テンプレートの workflowJson に `ControlNetApplyAdvanced` ノードが無い場合は添付自体を行わない**(クライアント側 capability チェック、`workflowHasControlNetApply`)。
 - サーバーはマスクと同型の添付パイプラインで処理する: `decodeControlImageDataUrl`(PNG限定・8MB上限)→ `storeControlImage`(`projects/<projectId>/control/<roundId>_pose.png`)→ `uploadImageToComfy` → `patchControlNetPath`。`request_json` へ保存する前に `poseImageDataUrl` は null 化し、巨大 dataURL を DB に残さない(マスクの `maskDataUrl` null 化と同じ規約)。
 - `patchControlNetPath` は `ControlNetApplyAdvanced` ノードを `roleMap.controlnet_apply_node`(無ければクラス名検索)で特定し、その `inputs.image` の**接続を辿って**供給元 LoadImage ノードを見つける(class 検索ではなく connection トレース)。辿り着いた LoadImage が親画像用として使われている場合は上書きせず新規 LoadImage を追加する。ControlNet 非対応テンプレートでは何もせず optional に振る舞う。

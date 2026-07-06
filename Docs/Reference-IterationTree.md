@@ -8,6 +8,10 @@
 - テンプレート登録は通常時ボタンだけを表示し、押すとモーダルで API形式 workflow JSON、role map、Mermaid プレビューを確認して登録する。
 - Mermaid プレビューは workflow JSON の `inputs` にある `[node_id, output_index]` 形式の接続をエッジとして扱う。role map で参照されるノードは図上で強調表示する。
 
+## Round ドットの状態表示
+
+- ノードのドット class は Round の status から決める(`iterationTree.ts`)。終端状態の `interrupted` / `failed` は `pending` のパルス点滅を引き継がない**専用 class** にする(停止後・失敗後に点滅し続けないため)。`completed` / `active` / 実行中の `running` はそれぞれ独立の class。
+
 ## イテレーションツリーのスクロール保持
 
 - イテレーションツリー(`.iteration-tracker`)は `render()` で `app.innerHTML` ごと再生成されるため、DOM 再生成前後で `scrollLeft` / `scrollTop` を保存・復元する必要がある。
