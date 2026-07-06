@@ -1,7 +1,20 @@
 # 画像貼り付け(Paste & Transform)機能
 
-- ステータス: 設計(未着手)
+- ステータス: **実装完了**(フェーズ0〜7。フェーズ8=任意項目のみ未着手)
 - 最終更新: 2026-07-06
+
+## 実装記録(2026-07-06、ブランチ `feature/image-paste`)
+
+全フェーズ実装・検証済み。各フェーズで `typecheck` / `test` / `check`(テストDB)を通し、ブラウザ実機で D&D 取り込み→表示→PUT 永続化→開き直し復元、移動/回転90°/拡縮1.5x の PUT 反映、Esc 選択解除、ブラシ中ダブルクリック再選択、複製/削除+undo 復元、`pasteComposite` のサーバ保存と request_json 記録(dataUrl 破棄)、img2img ボタン一発のクライアント自動合成、エッジポップアウトのホイール展開、実ポインタ(claude-in-chrome)でのストローク→統合 undo を確認した。
+
+### 設計からの主な差分
+
+- 型と検証は計画の検討事項どおり `src/shared/pasteAttachments.ts` に配置(クライアント/サーバ共用)。クライアント側の `pasteTypes.ts` は作らず、幾何は `pasteTransform.ts`、統合履歴は `paintHistory.ts`(generic snapshot で DOM なしテスト)に分離
+- **ドロップ位置はペイント編集中のドロップでのみ尊重**し、モード自動切替(非編集/マスク編集→ペイント)を伴う場合は中央配置とした。切替でレイアウトが変わり、切替前の client 座標が切替後の canvas rect と対応しないため(実測で確認)
+- 循環 import 回避はフック登録 2 本で解決: `setPasteAttachmentsPersistHook`(objects undo 復元後の PUT)と `setPasteLayersProvider`(スポイトのオブジェクト込み採色)。draftStore は触らず、キャッシュ掃除は projectController から `clearPasteCaches()` を呼ぶ形にした
+- ダブルクリック再選択時、1 クリック目に描かれるブラシ/消しゴムの点は `undoPaintStroke()` で自動的に巻き戻す
+- エッジポップアウトの展開制御は専用の `edgePopoutController.ts`(wheel/クリックトグル+mouseleave/focusout リセット、classList 直接操作)
+- 付随修正(フェーズ0): ペイント編集中の中ボタンパンが `InpaintDraft.panOffset` へ永続化され snap-back するバグを修正(`ActiveImagePan.draftKind`)
 
 ## 概要
 
@@ -255,3 +268,4 @@ CREATE TABLE IF NOT EXISTS asset_paste_attachments (
 - 2026-07-06: **保存操作を廃止し「エッジに添付」モデルへ改訂**。添付オブジェクトをアセット単位でサーバ永続化(開き直しで復元)、生成時にクライアント合成を `pasteComposite` として送りサーバがファイル化して ComfyUI へ(maskDataUrl と同型)。親ノード・ツリーは不変。
 - 2026-07-06: ユーザー確認により「生成時合成に未保存のペイントストロークも含める」を決定事項へ移動。実装は着手待ち。
 - 2026-07-06: **エッジポップアウトの添付表示を追加**((i)・フェーズ 7)。ポップアウト上のホイールスクロールで展開し、そのエッジの生成に使った添付画像サムネイルを表示(ユーザーのスケッチ準拠)。request_json に `pasteComposite.objects` を記録する設計変更を伴う。
+- 2026-07-06: **フェーズ0〜7 実装完了**。実装記録と設計からの差分を冒頭に追記。ステータスを実装完了へ。
