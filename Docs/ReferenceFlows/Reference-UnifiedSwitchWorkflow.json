@@ -105,7 +105,7 @@
   "740": {
     "inputs": {
       "filename_prefix": "ComfyUI",
-      "images": ["298", 0]
+      "images": ["790", 0]
     },
     "class_type": "SaveImage",
     "_meta": {
@@ -244,7 +244,7 @@
     "inputs": {
       "switch": ["771", 0],
       "on_false": ["761", 0],
-      "on_true": ["764", 0]
+      "on_true": ["783", 0]
     },
     "class_type": "ComfySwitchNode",
     "_meta": {
@@ -321,6 +321,123 @@
     "class_type": "PrimitiveBoolean",
     "_meta": {
       "title": "MODE: use-controlnet"
+    }
+  },
+  "780": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "MODE: use-empty-latent-content (true=latent_noise/latent_nothing)"
+    }
+  },
+  "781": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "MODE: use-fill (false=original / true=fill)"
+    }
+  },
+  "782": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "MODE: use-noise-mask (false=latent_nothing / true=latent_noise)"
+    }
+  },
+  "783": {
+    "inputs": {
+      "switch": ["780", 0],
+      "on_false": ["784", 0],
+      "on_true": ["785", 0]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "masked-content-switch (false=original/fill / true=latent系)"
+    }
+  },
+  "784": {
+    "inputs": {
+      "switch": ["781", 0],
+      "on_false": ["764", 0],
+      "on_true": ["786", 0]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "pixel-content-switch (false=original / true=fill)"
+    }
+  },
+  "785": {
+    "inputs": {
+      "switch": ["782", 0],
+      "on_false": ["788", 0],
+      "on_true": ["787", 0]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "empty-content-switch (false=latent_nothing / true=latent_noise)"
+    }
+  },
+  "786": {
+    "inputs": {
+      "grow_mask_by": 6,
+      "pixels": ["762", 0],
+      "vae": ["710", 0],
+      "mask": ["763", 0]
+    },
+    "class_type": "VAEEncodeForInpaint",
+    "_meta": {
+      "title": "VAEエンコード (inpaint: maskedContent=fill)"
+    }
+  },
+  "787": {
+    "inputs": {
+      "samples": ["788", 0],
+      "mask": ["763", 0]
+    },
+    "class_type": "SetLatentNoiseMask",
+    "_meta": {
+      "title": "潜在ノイズマスク (inpaint: maskedContent=latent_noise)"
+    }
+  },
+  "788": {
+    "inputs": {
+      "multiplier": 0,
+      "samples": ["761", 0]
+    },
+    "class_type": "LatentMultiply",
+    "_meta": {
+      "title": "空潜在 (親画像サイズのゼロ潜在, latent_noise/latent_nothing)"
+    }
+  },
+  "789": {
+    "inputs": {
+      "x": 0,
+      "y": 0,
+      "resize_source": false,
+      "destination": ["762", 0],
+      "source": ["298", 0],
+      "mask": ["763", 0]
+    },
+    "class_type": "ImageCompositeMasked",
+    "_meta": {
+      "title": "ペーストバック (inpaint時のみ: マスク外を親画像で復元)"
+    }
+  },
+  "790": {
+    "inputs": {
+      "switch": ["771", 0],
+      "on_false": ["298", 0],
+      "on_true": ["789", 0]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "save-image-switch (771と同じboolを共有, true=ペーストバック)"
     }
   }
 }

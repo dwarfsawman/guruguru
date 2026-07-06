@@ -78,6 +78,10 @@ test("resolveUnifiedSwitchRoles: every role resolves to the expected reference n
     samplerNodeId: "747",
     useParentImageBoolNodeId: "770",
     useMaskBoolNodeId: "771",
+    useEmptyLatentContentBoolNodeId: "780",
+    useFillBoolNodeId: "781",
+    useNoiseMaskBoolNodeId: "782",
+    vaeEncodeForInpaintNodeId: "786",
     useControlNetBoolNodeId: "772",
     emptyLatentNodeId: "737",
     vaeEncodeNodeId: "761",
@@ -183,16 +187,21 @@ test("patchUnifiedSwitchWorkflow inpaint (maskedContent=original): use-mask on a
   assert.equal(patched["762"].inputs.image, "parent_upload.png");
   assert.equal(patched["763"].inputs.image, "mask_upload.png");
   assert.equal(patched["763"].inputs.channel, "red");
+  // maskedContent=original: the whole content-switch tree stays on the original branch.
+  assert.equal(patched["780"].inputs.value, false);
+  assert.equal(patched["781"].inputs.value, false);
+  assert.equal(patched["782"].inputs.value, false);
 });
 
-test("patchUnifiedSwitchWorkflow inpaint: rejects maskedContent other than \"original\"", () => {
-  const request = baseRequest({
+function inpaintRequest(maskedContent: "original" | "fill" | "latent_noise" | "latent_nothing", onlyMaskedPadding = 32): GenerationRequest {
+  return baseRequest({
     generationMode: "img2img",
+    denoise: 0.75,
     parentAssetId: "asset_1",
     inpaint: {
-      maskedContent: "fill",
+      maskedContent,
       inpaintArea: "only_masked",
-      onlyMaskedPadding: 32,
+      onlyMaskedPadding,
       featherRadius: 0,
       maskDataUrl: null,
       maskPath: "/tmp/mask.png",
@@ -200,16 +209,80 @@ test("patchUnifiedSwitchWorkflow inpaint: rejects maskedContent other than \"ori
       maskHeight: 688
     }
   });
+}
+
+function patchInpaint(template: Record<string, any>, request: GenerationRequest): Record<string, any> {
+  return patchUnifiedSwitchWorkflow(
+    template,
+    baseContext(request, { uploadedImageName: "parent_upload.png", uploadedMaskName: "mask_upload.png" }),
+    "prefix"
+  ) as Record<string, any>;
+}
+
+test("patchUnifiedSwitchWorkflow inpaint (maskedContent=fill): fill branch on, onlyMaskedPadding mapped to grow_mask_by", () => {
+  const patched = patchInpaint(referenceWorkflow(), inpaintRequest("fill"));
+
+  assert.equal(patched["771"].inputs.value, true);
+  assert.equal(patched["780"].inputs.value, false);
+  assert.equal(patched["781"].inputs.value, true);
+  assert.equal(patched["782"].inputs.value, false);
+  assert.equal(patched["786"].inputs.grow_mask_by, 32);
+});
+
+test("patchUnifiedSwitchWorkflow inpaint (maskedContent=fill): grow_mask_by is clamped to the widget's 0..64 range", () => {
+  const patched = patchInpaint(referenceWorkflow(), inpaintRequest("fill", 256));
+  assert.equal(patched["786"].inputs.grow_mask_by, 64);
+});
+
+test("patchUnifiedSwitchWorkflow inpaint (maskedContent=latent_noise): empty-latent branch with noise mask", () => {
+  const patched = patchInpaint(referenceWorkflow(), inpaintRequest("latent_noise"));
+
+  assert.equal(patched["771"].inputs.value, true);
+  assert.equal(patched["780"].inputs.value, true);
+  assert.equal(patched["781"].inputs.value, false);
+  assert.equal(patched["782"].inputs.value, true);
+});
+
+test("patchUnifiedSwitchWorkflow inpaint (maskedContent=latent_nothing): empty-latent branch without noise mask", () => {
+  const patched = patchInpaint(referenceWorkflow(), inpaintRequest("latent_nothing"));
+
+  assert.equal(patched["771"].inputs.value, true);
+  assert.equal(patched["780"].inputs.value, true);
+  assert.equal(patched["781"].inputs.value, false);
+  assert.equal(patched["782"].inputs.value, false);
+});
+
+test("patchUnifiedSwitchWorkflow inpaint: a legacy template without the content-switch tree rejects non-original maskedContent", () => {
+  // Reproduce a pre-fill imported template: mask-switch.on_true goes straight to the
+  // SetLatentNoiseMask node and none of the content-switch nodes exist.
+  const legacy = referenceWorkflow();
+  legacy["765"].inputs.on_true = ["764", 0];
+  legacy["740"].inputs.images = ["298", 0];
+  for (const nodeId of ["780", "781", "782", "783", "784", "785", "786", "787", "788", "789", "790"]) {
+    delete legacy[nodeId];
+  }
+
+  const patchedOriginal = patchInpaint(legacy, inpaintRequest("original"));
+  assert.equal(patchedOriginal["771"].inputs.value, true);
+  assert.equal(patchedOriginal["763"].inputs.image, "mask_upload.png");
 
   assert.throws(
-    () =>
-      patchUnifiedSwitchWorkflow(
-        referenceWorkflow(),
-        baseContext(request, { uploadedImageName: "parent_upload.png", uploadedMaskName: "mask_upload.png" }),
-        "prefix"
-      ),
+    () => patchInpaint(legacy, inpaintRequest("fill")),
     /supports only maskedContent="original"/
   );
+});
+
+test("reference template: inpaint output is pasted back over the parent image via the save-image switch", () => {
+  const template = referenceWorkflow();
+  // SaveImage reads from the save-image switch, which shares the use-mask boolean (771): raw
+  // decode for txt2img/img2img, ImageCompositeMasked paste-back for all inpaint modes.
+  assert.deepEqual(template["740"].inputs.images, ["790", 0]);
+  assert.deepEqual(template["790"].inputs.switch, ["771", 0]);
+  assert.deepEqual(template["790"].inputs.on_false, ["298", 0]);
+  assert.deepEqual(template["790"].inputs.on_true, ["789", 0]);
+  assert.deepEqual(template["789"].inputs.destination, ["762", 0]);
+  assert.deepEqual(template["789"].inputs.source, ["298", 0]);
+  assert.deepEqual(template["789"].inputs.mask, ["763", 0]);
 });
 
 test("patchUnifiedSwitchWorkflow img2img x pose ControlNet: all three branches configured, pose image and CN params applied", () => {

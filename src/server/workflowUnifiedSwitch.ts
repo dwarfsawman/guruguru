@@ -32,6 +32,10 @@ interface UnifiedSwitchRoles {
   samplerNodeId: string;
   useParentImageBoolNodeId: string;
   useMaskBoolNodeId: string | null;
+  useEmptyLatentContentBoolNodeId: string | null;
+  useFillBoolNodeId: string | null;
+  useNoiseMaskBoolNodeId: string | null;
+  vaeEncodeForInpaintNodeId: string | null;
   useControlNetBoolNodeId: string | null;
   emptyLatentNodeId: string;
   vaeEncodeNodeId: string;
@@ -68,9 +72,11 @@ export function patchUnifiedSwitchWorkflow(
       : null;
   const useControlNet = Boolean(controlImageName) && roles.useControlNetBoolNodeId !== null;
 
-  if (useMask && request.inpaint && request.inpaint.maskedContent !== "original") {
+  const maskedContent = useMask && request.inpaint ? request.inpaint.maskedContent : "original";
+  if (maskedContent !== "original" && !roles.useEmptyLatentContentBoolNodeId) {
     throw new Error(
-      `unified switch workflow supports only maskedContent="original" (got "${request.inpaint.maskedContent}")`
+      `this unified switch template supports only maskedContent="original" (got "${maskedContent}"); ` +
+        "re-import the current reference workflow to enable fill / latent_noise / latent_nothing"
     );
   }
   if (useMask && !roles.useMaskBoolNodeId) {
@@ -80,6 +86,27 @@ export function patchUnifiedSwitchWorkflow(
   setNodeInput(workflow, roles.useParentImageBoolNodeId, ["value"], useParentImage);
   setNodeInput(workflow, roles.useMaskBoolNodeId, ["value"], useMask);
   setNodeInput(workflow, roles.useControlNetBoolNodeId, ["value"], useControlNet);
+
+  // maskedContent selection: two-level switch tree (see Reference-UnifiedSwitchWorkflow.md).
+  // Level 1 picks pixel-based (original/fill) vs empty-latent-based (latent_noise/latent_nothing);
+  // level 2 picks within each pair. All three booleans are written on every generation so a
+  // previous run's mode never leaks into the next one.
+  setNodeInput(
+    workflow,
+    roles.useEmptyLatentContentBoolNodeId,
+    ["value"],
+    maskedContent === "latent_noise" || maskedContent === "latent_nothing"
+  );
+  setNodeInput(workflow, roles.useFillBoolNodeId, ["value"], maskedContent === "fill");
+  setNodeInput(workflow, roles.useNoiseMaskBoolNodeId, ["value"], maskedContent === "latent_noise");
+  if (maskedContent === "fill" && roles.vaeEncodeForInpaintNodeId && request.inpaint) {
+    // The unified template has no explicit GrowMask chain, so onlyMaskedPadding maps onto the
+    // node's own grow_mask_by widget (clamped to its 0..64 range).
+    const padding = Number.isFinite(request.inpaint.onlyMaskedPadding)
+      ? Math.min(64, Math.max(0, Math.trunc(request.inpaint.onlyMaskedPadding)))
+      : 6;
+    setNodeInput(workflow, roles.vaeEncodeForInpaintNodeId, ["grow_mask_by"], padding);
+  }
 
   // Every LoadImage/LoadImageMask must name an existing file even when its branch is switched
   // off (ComfyUI validates the whole graph); fall back to the pre-uploaded dummy image.
@@ -186,14 +213,46 @@ export function resolveUnifiedSwitchRoles(workflow: JsonObject): UnifiedSwitchRo
   }
   let useMaskBoolNodeId: string | null = null;
   let loadImageMaskNodeId: string | null = null;
+  let useEmptyLatentContentBoolNodeId: string | null = null;
+  let useFillBoolNodeId: string | null = null;
+  let useNoiseMaskBoolNodeId: string | null = null;
+  let vaeEncodeForInpaintNodeId: string | null = null;
   let vaeEncodeNodeId: string | null;
   if (isClass(workflow, latentTrueNodeId, "ComfySwitchNode")) {
     const maskSwitchNodeId = latentTrueNodeId;
     useMaskBoolNodeId = requireBoolNode(workflow, maskSwitchNodeId, "mask switch");
     vaeEncodeNodeId = connectedNodeId(workflow, maskSwitchNodeId, ["on_false"]);
-    const noiseMaskNodeId = connectedNodeId(workflow, maskSwitchNodeId, ["on_true"]);
-    if (noiseMaskNodeId) {
-      loadImageMaskNodeId = connectedNodeId(workflow, noiseMaskNodeId, ["mask"]);
+    const maskTrueNodeId = connectedNodeId(workflow, maskSwitchNodeId, ["on_true"]);
+    if (maskTrueNodeId && isClass(workflow, maskTrueNodeId, "ComfySwitchNode")) {
+      // maskedContent switch tree: mask-switch.on_true -> masked-content-switch
+      //   on_false -> pixel-content-switch (on_false=SetLatentNoiseMask[original] /
+      //               on_true=VAEEncodeForInpaint[fill])
+      //   on_true  -> empty-content-switch (on_false=zero latent [latent_nothing] /
+      //               on_true=SetLatentNoiseMask[latent_noise])
+      const contentSwitchNodeId = maskTrueNodeId;
+      useEmptyLatentContentBoolNodeId = requireBoolNode(workflow, contentSwitchNodeId, "masked-content switch");
+      const pixelSwitchNodeId = connectedNodeId(workflow, contentSwitchNodeId, ["on_false"]);
+      if (!pixelSwitchNodeId || !isClass(workflow, pixelSwitchNodeId, "ComfySwitchNode")) {
+        throw new Error(
+          "unified switch workflow: the masked-content switch's on_false must connect to the pixel-content switch"
+        );
+      }
+      useFillBoolNodeId = requireBoolNode(workflow, pixelSwitchNodeId, "pixel-content switch");
+      const originalNoiseMaskNodeId = connectedNodeId(workflow, pixelSwitchNodeId, ["on_false"]);
+      if (originalNoiseMaskNodeId) {
+        loadImageMaskNodeId = connectedNodeId(workflow, originalNoiseMaskNodeId, ["mask"]);
+      }
+      vaeEncodeForInpaintNodeId = connectedNodeId(workflow, pixelSwitchNodeId, ["on_true"]);
+      const emptySwitchNodeId = connectedNodeId(workflow, contentSwitchNodeId, ["on_true"]);
+      if (!emptySwitchNodeId || !isClass(workflow, emptySwitchNodeId, "ComfySwitchNode")) {
+        throw new Error(
+          "unified switch workflow: the masked-content switch's on_true must connect to the empty-content switch"
+        );
+      }
+      useNoiseMaskBoolNodeId = requireBoolNode(workflow, emptySwitchNodeId, "empty-content switch");
+    } else if (maskTrueNodeId) {
+      // Legacy template (pre maskedContent branches): mask-switch.on_true -> SetLatentNoiseMask.
+      loadImageMaskNodeId = connectedNodeId(workflow, maskTrueNodeId, ["mask"]);
     }
   } else {
     vaeEncodeNodeId = latentTrueNodeId;
@@ -252,6 +311,10 @@ export function resolveUnifiedSwitchRoles(workflow: JsonObject): UnifiedSwitchRo
     samplerNodeId,
     useParentImageBoolNodeId,
     useMaskBoolNodeId,
+    useEmptyLatentContentBoolNodeId,
+    useFillBoolNodeId,
+    useNoiseMaskBoolNodeId,
+    vaeEncodeForInpaintNodeId,
     useControlNetBoolNodeId,
     emptyLatentNodeId,
     vaeEncodeNodeId,
