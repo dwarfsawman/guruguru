@@ -10,7 +10,7 @@ import { createTemplate, deleteTemplate, listTemplates } from "./templates";
 import { serveAssetFile, updateAssetStatus } from "./assets";
 import { createProject, deleteProject, getProjectDetail, listProjects } from "./projects";
 import { createSourceAsset } from "./sourceAssets";
-import { createPasteSource, getPasteAttachments, putPasteAttachments, servePasteSource } from "./pasteAttachments";
+import { createPasteSource, getPasteAttachments, purgeOrphanPasteSources, putPasteAttachments, servePasteSource } from "./pasteAttachments";
 import {
   collectRound,
   createGenerationRound,
@@ -66,6 +66,10 @@ server.listen(port, () => {
   const purgedTrash = purgeAllRoundTrash();
   if (purgedTrash > 0) {
     console.log(`Purged ${purgedTrash} leftover round trash snapshot(s).`);
+  }
+  const purgedPasteSources = purgeOrphanPasteSources();
+  if (purgedPasteSources > 0) {
+    console.log(`Purged ${purgedPasteSources} orphan paste source image(s).`);
   }
   if (process.stdin.isTTY) {
     console.log("Press q or Ctrl+C to stop GURUGURU.");
