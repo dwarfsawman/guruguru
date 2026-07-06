@@ -1,3 +1,5 @@
+import type { PastedObject } from "./pasteAttachments";
+
 export type TemplateType = "txt2img" | "img2img" | "ipadapter" | "controlnet" | "hybrid";
 
 export type RoundStatus = "pending" | "running" | "completed" | "failed" | "interrupted";
@@ -50,6 +52,21 @@ export interface ControlNetOptions {
   endPercent: number;
 }
 
+/**
+ * 生成時の貼り付け込み合成画像(Docs/Feature-ImagePaste.md「エッジに添付」モデル)。
+ * クライアントが「元画像+ペイントレイヤー+添付オブジェクト」を合成した PNG を
+ * imageDataUrl で送り、サーバがファイル化して img2img 入力として ComfyUI へ渡す
+ * (inpaint.maskDataUrl → maskPath と同型)。parentAssetId・ツリー構造は変えない。
+ * objects は生成時点の添付スナップショット(エッジポップアウトの添付表示用)。
+ */
+export interface PasteCompositeOptions {
+  imageDataUrl?: string | null;
+  compositePath?: string | null;
+  compositeWidth?: number | null;
+  compositeHeight?: number | null;
+  objects?: PastedObject[] | null;
+}
+
 export interface ComfySettings {
   baseUrl: string;
   websocketUrl: string;
@@ -85,6 +102,7 @@ export interface GenerationRequest {
   relationType?: ParentRelation | null;
   inpaint?: InpaintOptions | null;
   controlnet?: ControlNetOptions | null;
+  pasteComposite?: PasteCompositeOptions | null;
 }
 
 export interface ApiErrorBody {

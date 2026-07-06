@@ -44,18 +44,45 @@ export function renderPaintLayerToCanvas(canvas: HTMLCanvasElement, layer: HTMLC
   context.drawImage(layer, 0, 0, canvas.width, canvas.height);
 }
 
+/** 貼り付けオブジェクトの合成入力(z順)。ビットマップ+変形のみの純データ。 */
+export interface ComposedPasteLayer {
+  bitmap: CanvasImageSource;
+  sourceWidth: number;
+  sourceHeight: number;
+  transform: { x: number; y: number; rotation: number; scaleX: number; scaleY: number };
+}
+
 /**
- * 元画像（`image`）+ ペイントレイヤーの合成結果を新規 offscreen canvas に描き、返す。
- * スポイトの採色・保存時の PNG 化で共通利用する。画像は同一オリジン配信のため canvas taint なし。
+ * 元画像（`image`）+ ペイントレイヤー(+ 貼り付けオブジェクト z順)の合成結果を
+ * 新規 offscreen canvas に描き、返す。スポイトの採色・保存時の PNG 化・生成時の
+ * pasteComposite 作成で共通利用する。画像は同一オリジン配信のため canvas taint なし。
+ * `pastedLayers` 省略時は従来どおりの 2 層合成(既存呼び出し不変)。
  */
-export function composePaintResultCanvas(image: HTMLImageElement, layer: HTMLCanvasElement, width: number, height: number): HTMLCanvasElement {
+export function composePaintResultCanvas(
+  image: CanvasImageSource,
+  layer: HTMLCanvasElement | null,
+  width: number,
+  height: number,
+  pastedLayers: ReadonlyArray<ComposedPasteLayer> = []
+): HTMLCanvasElement {
   const canvas = createLayerCanvas(width, height);
   const context = canvas.getContext("2d");
   if (!context) {
     return canvas;
   }
   context.drawImage(image, 0, 0, width, height);
-  context.drawImage(layer, 0, 0, width, height);
+  if (layer) {
+    context.drawImage(layer, 0, 0, width, height);
+  }
+  for (const pasted of pastedLayers) {
+    context.save();
+    context.translate(pasted.transform.x, pasted.transform.y);
+    context.rotate(pasted.transform.rotation);
+    context.scale(pasted.transform.scaleX, pasted.transform.scaleY);
+    context.imageSmoothingQuality = "high";
+    context.drawImage(pasted.bitmap, -pasted.sourceWidth / 2, -pasted.sourceHeight / 2);
+    context.restore();
+  }
   return canvas;
 }
 

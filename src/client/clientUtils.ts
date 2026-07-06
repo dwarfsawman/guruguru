@@ -9,6 +9,17 @@ export function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+/** keydown/paste 系の一元ハンドラでテキスト入力中をスキップする判定(main.ts から移設)。 */
+export function isTextEntryTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+    return true;
+  }
+  return target.isContentEditable || !!target.closest("[contenteditable=''], [contenteditable='true']");
+}
+
 export function imageToRawData(image: HTMLImageElement) {
   const canvas = document.createElement("canvas");
   canvas.width = image.naturalWidth;

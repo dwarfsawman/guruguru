@@ -14,7 +14,8 @@ import {
   renderPaintLayerToCanvas,
   restorePaintLayerFromSnapshot,
   sampleColorAt,
-  snapshotPaintLayer
+  snapshotPaintLayer,
+  type ComposedPasteLayer
 } from "./paintCanvas";
 
 export const paintLayerCache = new Map<string, HTMLCanvasElement>();
@@ -295,6 +296,20 @@ export function setPasteAttachmentsPersistHook(hook: (assetId: string) => void) 
 }
 
 /**
+ * スポイト採色時に貼り付けオブジェクトを合成へ含めるためのプロバイダ
+ * (pasteObjectController が登録。WYSIWYG 化 — 見えている色を拾う)。
+ */
+let pasteLayersProvider: ((assetId: string) => ComposedPasteLayer[]) | null = null;
+
+export function setPasteLayersProvider(provider: (assetId: string) => ComposedPasteLayer[]) {
+  pasteLayersProvider = provider;
+}
+
+export function pasteLayersForEyedropper(assetId: string): ComposedPasteLayer[] {
+  return pasteLayersProvider?.(assetId) ?? [];
+}
+
+/**
  * 統合 undo: 最新エントリの kind で分岐して復元する。
  * `layer` = 従来どおりレイヤースナップショットの書き戻し(挙動不変)、
  * `objects` = 貼り付けオブジェクト配列と選択状態の差し替え(削除の取り消しも効く)。
@@ -359,7 +374,8 @@ function pickPaintColorAt(event: PointerEvent, canvas: HTMLCanvasElement, assetI
   }
   const point = pointerToMaskCanvasPoint(canvas, event);
   const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
-  const composed = composePaintResultCanvas(image, layer, canvas.width, canvas.height);
+  // 貼り付けオブジェクトも含めた「見えている合成」から採色する(WYSIWYG)。
+  const composed = composePaintResultCanvas(image, layer, canvas.width, canvas.height, pasteLayersForEyedropper(assetId));
   const color = sampleColorAt(composed, point.x, point.y);
   if (!color) {
     return;

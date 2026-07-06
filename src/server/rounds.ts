@@ -11,7 +11,7 @@ import {
   queuePrompt,
   uploadImageToComfy
 } from "./comfy";
-import { readImageSize, storeControlImage, storeImage, storeMaskImage } from "./storage";
+import { readImageSize, storeCompositeImage, storeControlImage, storeImage, storeMaskImage } from "./storage";
 import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
 import { HttpError } from "./http";
 import { isJsonObject, numberOr, objectBody, stringOrNull, stringOr } from "./validate";
@@ -24,7 +24,8 @@ import {
   writeRoundTrashSnapshot,
   type SqlRow
 } from "./roundTrash";
-import { decodeControlImageDataUrl, decodeMaskDataUrl } from "./uploadDataUrl";
+import { decodeCompositeDataUrl, decodeControlImageDataUrl, decodeMaskDataUrl } from "./uploadDataUrl";
+import { sanitizePastedObjects } from "../shared/pasteAttachments";
 import {
   relationForGenerationMode,
   requiresParentAsset
@@ -118,6 +119,7 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
   let request: GenerationRequest = normalizeGenerationRequest({ ...requestBody, generationMode, parentAssetId: requestedParentAssetId, seed });
   request = await prepareInpaintRequest(projectId, roundId, parentAsset, requestBody, request);
   request = await prepareControlNetRequest(projectId, roundId, requestBody, request);
+  request = await preparePasteCompositeRequest(projectId, roundId, parentAsset, requestBody, request);
   const branch = branchAssignmentForRound(projectId, parentAsset, roundId, "txt2img_root");
 
   runSql(
@@ -143,9 +145,13 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
   try {
     const workflow = JSON.parse(String(template.workflow_json));
     const roleMap = JSON.parse(String(template.role_map_json));
-    const uploaded = parentAsset && requiresParentAsset(request.generationMode)
-      ? await uploadImageToComfy(String(parentAsset.image_path))
-      : null;
+    // 貼り付け込み合成があればそれを img2img 入力に使う(親アセット・ツリーは不変。
+    // 「エッジに添付」モデル: 合成はラウンドの入力素材としてのみ記録される)。
+    const uploaded = request.pasteComposite?.compositePath && requiresParentAsset(request.generationMode)
+      ? await uploadImageToComfy(request.pasteComposite.compositePath)
+      : parentAsset && requiresParentAsset(request.generationMode)
+        ? await uploadImageToComfy(String(parentAsset.image_path))
+        : null;
     const uploadedMask = request.inpaint?.maskPath
       ? await uploadImageToComfy(request.inpaint.maskPath)
       : null;
@@ -296,6 +302,64 @@ async function prepareInpaintRequest(
       maskPath: storedMask.maskPath,
       maskWidth: storedMask.width,
       maskHeight: storedMask.height
+    }
+  };
+}
+
+/**
+ * `prepareInpaintRequest` と同型。クライアントが合成した「元画像+ペイント+添付」PNG を
+ * decode → `composites/<roundId>_composite.png` へ保存し、request_json には
+ * compositePath と生成時点の objects スナップショットのみを残す(dataUrl は破棄)。
+ */
+async function preparePasteCompositeRequest(
+  projectId: string,
+  roundId: string,
+  parentAsset: Record<string, unknown> | null,
+  rawRequest: GenerationRequest,
+  normalizedRequest: GenerationRequest
+): Promise<GenerationRequest> {
+  const rawRequestRecord = rawRequest as unknown as Record<string, unknown>;
+  const rawComposite = isJsonObject(rawRequestRecord.pasteComposite)
+    ? rawRequestRecord.pasteComposite as Record<string, unknown>
+    : null;
+  const hasDataUrl = typeof rawComposite?.imageDataUrl === "string" && rawComposite.imageDataUrl.trim() !== "";
+
+  if (!hasDataUrl) {
+    return {
+      ...normalizedRequest,
+      pasteComposite: null
+    };
+  }
+
+  if (!requiresParentAsset(normalizedRequest.generationMode)) {
+    throw new HttpError(400, "pasteComposite is supported only for generations that use a parent image.");
+  }
+  if (!parentAsset) {
+    throw new HttpError(400, "pasteComposite generation requires a parent Asset.");
+  }
+
+  const composite = decodeCompositeDataUrl(rawComposite.imageDataUrl);
+  const compositeSize = readImageSize(composite.bytes);
+  if (!compositeSize) {
+    throw new HttpError(400, "Composite PNG dimensions could not be read.");
+  }
+  const parentSize = await parentAssetDimensions(parentAsset);
+  if (parentSize && (compositeSize.width !== parentSize.width || compositeSize.height !== parentSize.height)) {
+    throw new HttpError(
+      400,
+      `Composite size ${compositeSize.width}x${compositeSize.height} does not match parent image size ${parentSize.width}x${parentSize.height}.`
+    );
+  }
+
+  const stored = await storeCompositeImage(projectId, roundId, composite.bytes);
+
+  return {
+    ...normalizedRequest,
+    pasteComposite: {
+      compositePath: stored.compositePath,
+      compositeWidth: stored.width,
+      compositeHeight: stored.height,
+      objects: sanitizePastedObjects(rawComposite.objects)
     }
   };
 }

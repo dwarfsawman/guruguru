@@ -54,7 +54,7 @@ import {
   handleWebSamPointerUp,
   updateSmartMaskDraftFromControl
 } from "./webSamController";
-import { delay } from "./clientUtils";
+import { delay, isTextEntryTarget } from "./clientUtils";
 import {
   getSelectedPoseEdges,
   handlePoseEditorKeydown,
@@ -525,16 +525,6 @@ function bindEvents() {
   });
 
   bindRegisteredEvents(app);
-}
-
-function isTextEntryTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
-    return true;
-  }
-  return target.isContentEditable || !!target.closest("[contenteditable=''], [contenteditable='true']");
 }
 
 async function handleAction(action: string, id: string, target: HTMLElement) {

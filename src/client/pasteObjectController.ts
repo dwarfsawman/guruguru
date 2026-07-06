@@ -20,13 +20,17 @@ import {
   ensurePaintDraft,
   getOrCreatePaintLayer,
   paintDraftForAsset,
+  paintLayerCache,
   pushPaintObjectsHistory,
   pushPaintUndoSnapshot,
   setPaintDraft,
   setPasteAttachmentsPersistHook,
+  setPasteLayersProvider,
   undoPaintStroke
 } from "./paintEditorController";
-import { renderPaintLayerToCanvas } from "./paintCanvas";
+import { composePaintResultCanvas, renderPaintLayerToCanvas, type ComposedPasteLayer } from "./paintCanvas";
+import { isTextEntryTarget } from "./clientUtils";
+import type { Asset } from "../shared/apiTypes";
 import { commitActiveMaskCanvas } from "./maskEditorController";
 import { pointerToMaskCanvasPoint } from "./maskCanvas";
 import { assetDimension, findAsset } from "./assetLookup";
@@ -1040,8 +1044,39 @@ export async function importPasteImageBlob(
 
 // --- D&D / ファイル選択 ------------------------------------------------------
 
+const PASTE_ASSET_DRAG_MIME = "application/x-guruguru-asset-id";
+
 function dragHasFiles(event: DragEvent): boolean {
   return !!event.dataTransfer && [...event.dataTransfer.types].includes("Files");
+}
+
+function dragHasAcceptablePayload(event: DragEvent): boolean {
+  if (!event.dataTransfer) {
+    return false;
+  }
+  const types = [...event.dataTransfer.types];
+  return types.includes("Files") || types.includes(PASTE_ASSET_DRAG_MIME) || types.includes("text/uri-list");
+}
+
+/** アプリ内アセットの D&D: uri-list から assetId を抽出するフォールバック。 */
+function assetIdFromUriList(uriList: string): string | null {
+  const match = /\/api\/assets\/([^/]+)\/(?:image|thumbnail)/.exec(uriList);
+  return match ? match[1]! : null;
+}
+
+/**
+ * アプリ内アセットの取り込み: 必ず assetId を解決して `/api/assets/:id/image`
+ * (フル解像度・same-origin)を fetch する。uri-list の URL 直 fetch は
+ * サムネイル縮小版を貼ってしまうため行わない。
+ */
+async function importPasteFromAssetId(sourceAssetId: string) {
+  const response = await fetch(`/api/assets/${sourceAssetId}/image`);
+  if (!response.ok) {
+    pushToast(`アセット画像の取得に失敗しました(HTTP ${response.status})`, "error");
+    return;
+  }
+  const blob = await response.blob();
+  await importPasteImageBlob(blob);
 }
 
 function setDropHighlight(active: boolean) {
@@ -1062,9 +1097,17 @@ function setDropHighlight(active: boolean) {
 async function handleWindowDrop(event: DragEvent) {
   setDropHighlight(false);
   if (!state.activeAssetId) {
-    if (dragHasFiles(event)) {
+    if (dragHasAcceptablePayload(event)) {
       pushToast("画像を開いてから編集エリアにドロップしてください。");
     }
+    return;
+  }
+  // アプリ内アセットのドラッグ(専用 MIME 優先、uri-list フォールバック)。
+  const draggedAssetId =
+    event.dataTransfer?.getData(PASTE_ASSET_DRAG_MIME) ||
+    assetIdFromUriList(event.dataTransfer?.getData("text/uri-list") ?? "");
+  if (draggedAssetId) {
+    await importPasteFromAssetId(draggedAssetId);
     return;
   }
   const files = event.dataTransfer ? [...event.dataTransfer.files] : [];
@@ -1091,11 +1134,11 @@ async function handleWindowDrop(event: DragEvent) {
  * 現状アプリに drop リスナは皆無で、ファイルドロップ=ページ遷移によるアプリ離脱に
  * なるため、受け入れ可否に関わらず window ガード(preventDefault)は常設する。
  */
-function bindPasteObjectEvents(_app: HTMLElement) {
+function bindPasteObjectEvents(app: HTMLElement) {
   window.addEventListener("dragover", (event) => {
     event.preventDefault();
     if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = dragHasFiles(event) && state.activeAssetId ? "copy" : "none";
+      event.dataTransfer.dropEffect = dragHasAcceptablePayload(event) && state.activeAssetId ? "copy" : "none";
     }
   });
   window.addEventListener("drop", (event) => {
@@ -1103,7 +1146,7 @@ function bindPasteObjectEvents(_app: HTMLElement) {
     void handleWindowDrop(event);
   });
   window.addEventListener("dragenter", (event) => {
-    if (dragHasFiles(event) && state.activeAssetId) {
+    if (dragHasAcceptablePayload(event) && state.activeAssetId) {
       setDropHighlight(true);
     }
   });
@@ -1111,6 +1154,36 @@ function bindPasteObjectEvents(_app: HTMLElement) {
     // ウィンドウ外へ出たときだけ解除する(子要素間の遷移では relatedTarget が付く)。
     if (!event.relatedTarget) {
       setDropHighlight(false);
+    }
+  });
+  // ギャラリーサムネイルのドラッグ開始: assetId を専用 MIME で仕込む
+  // (drop 側はこれを最優先で読み、フル解像度 /api/assets/:id/image を fetch する)。
+  app.addEventListener("dragstart", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!(target instanceof HTMLImageElement) || !target.classList.contains("gen-image")) {
+      return;
+    }
+    const assetId = target.closest<HTMLElement>("[data-id]")?.dataset.id;
+    if (assetId && event.dataTransfer) {
+      event.dataTransfer.setData(PASTE_ASSET_DRAG_MIME, assetId);
+      event.dataTransfer.effectAllowed = "copy";
+    }
+  });
+  // Ctrl+V: クリップボードの画像をモーダル中央へ貼り付け(テキスト入力中は素通し)。
+  window.addEventListener("paste", (event) => {
+    if (!state.activeAssetId || isTextEntryTarget(event.target)) {
+      return;
+    }
+    const items = event.clipboardData?.items ?? [];
+    for (const item of items) {
+      if (item.kind === "file" && PASTE_ACCEPTED_MIME.includes(item.type)) {
+        const file = item.getAsFile();
+        if (file) {
+          event.preventDefault();
+          void importPasteImageBlob(file);
+          return;
+        }
+      }
     }
   });
 }
@@ -1132,6 +1205,116 @@ function openPasteFilePicker() {
     })();
   });
   input.click();
+}
+
+// --- 生成・保存との合流 -------------------------------------------------------
+
+/** 貼り付けオブジェクトを合成入力(z順)へ変換する。bitmap 未ロード分は含めない。 */
+export function pasteLayersForAsset(assetId: string): ComposedPasteLayer[] {
+  const draft = paintDraftForAsset(assetId);
+  if (!draft) {
+    return [];
+  }
+  const layers: ComposedPasteLayer[] = [];
+  for (const object of draft.pasteObjects) {
+    const bitmap = pasteBitmapCache.get(object.sourceId);
+    if (!bitmap) {
+      continue;
+    }
+    layers.push({
+      bitmap,
+      sourceWidth: object.sourceWidth,
+      sourceHeight: object.sourceHeight,
+      transform: { ...object.transform }
+    });
+  }
+  return layers;
+}
+
+/**
+ * img2img 系生成のための「元画像+ペイントレイヤー+添付オブジェクト」合成。
+ * 添付もペイントも無ければ null(従来どおり親画像がそのまま入力になる)。
+ * モーダルを開いていない生成(ギャラリーのボタン等)でも、永続化済みの添付を
+ * GET + ソース fetch して合成できる。16MB 超過は Error を投げて生成を中断する
+ * (呼び出し元の handleAction catch がトースト化)。
+ */
+export async function buildPasteCompositeForGeneration(
+  asset: Asset
+): Promise<{ imageDataUrl: string; objects: PastedObject[] } | null> {
+  const assetId = asset.id;
+  let objects: PastedObject[];
+  const draft = paintDraftForAsset(assetId);
+  if (draft && loadedAttachmentAssetIds.has(assetId)) {
+    objects = draft.pasteObjects;
+  } else if (draft && draft.pasteObjects.length > 0) {
+    objects = draft.pasteObjects;
+  } else {
+    const response = await api<{ objects: PastedObject[] }>(`/api/assets/${assetId}/paste-attachments`);
+    objects = response.objects;
+  }
+  const layer = paintLayerCache.get(assetId) ?? null;
+  if (objects.length === 0 && !layer) {
+    return null;
+  }
+
+  // 必要なソース bitmap を同期的に揃える(未ロード分を fetch)。
+  const projectId = state.currentProjectId;
+  if (!projectId) {
+    return null;
+  }
+  for (const sourceId of new Set(objects.map((object) => object.sourceId))) {
+    if (pasteBitmapCache.has(sourceId)) {
+      continue;
+    }
+    const response = await fetch(`/api/projects/${projectId}/paste-sources/${sourceId}`);
+    if (!response.ok) {
+      throw new Error(`貼り付け画像の取得に失敗しました(${sourceId}: HTTP ${response.status})`);
+    }
+    pasteBitmapCache.set(sourceId, await decodeBlobToCanvas(await response.blob()));
+  }
+
+  // 元画像は same-origin fetch → decode(モーダル非表示でも合成できるように)。
+  const baseResponse = await fetch(asset.imageUrl);
+  if (!baseResponse.ok) {
+    throw new Error(`元画像の取得に失敗しました(HTTP ${baseResponse.status})`);
+  }
+  const baseCanvas = await decodeBaseImageToCanvas(await baseResponse.blob());
+
+  const pastedLayers: ComposedPasteLayer[] = [];
+  for (const object of objects) {
+    const bitmap = pasteBitmapCache.get(object.sourceId);
+    if (bitmap) {
+      pastedLayers.push({
+        bitmap,
+        sourceWidth: object.sourceWidth,
+        sourceHeight: object.sourceHeight,
+        transform: { ...object.transform }
+      });
+    }
+  }
+
+  const composed = composePaintResultCanvas(baseCanvas, layer, baseCanvas.width, baseCanvas.height, pastedLayers);
+  const imageDataUrl = composed.toDataURL("image/png");
+  if (imageDataUrl.length > PASTE_MAX_DATA_URL_LENGTH) {
+    throw new Error("合成結果が 16MB を超えています。貼り付け画像を縮小してください。");
+  }
+  return { imageDataUrl, objects: objects.map((object) => ({ ...object, transform: { ...object.transform } })) };
+}
+
+/** 元画像 blob をキャップなしでデコードする(貼り付けソースと違い縮小しない)。 */
+async function decodeBaseImageToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    bitmap.close();
+    throw new Error("Canvas 2D context is unavailable");
+  }
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return canvas;
 }
 
 // --- 後始末 -----------------------------------------------------------------
@@ -1187,3 +1370,5 @@ registerActions({
 registerEventBinder(bindPasteObjectEvents);
 // オブジェクト undo(objects エントリ)復元後の永続化フック(循環 import 回避のための登録)。
 setPasteAttachmentsPersistHook(schedulePasteAttachmentsPut);
+// スポイト採色をオブジェクト込みの見た目に揃えるプロバイダ(同じく循環回避の登録)。
+setPasteLayersProvider(pasteLayersForAsset);
