@@ -5,6 +5,7 @@ import { HttpError } from "./http";
 import { deleteProjectStorage, ensureProjectStorage } from "./storage";
 import { listTemplates } from "./templates";
 import { objectBody, requiredString, stringOr, stringOrNull } from "./validate";
+import { sanitizePastedObjects, type PastedObject } from "../shared/pasteAttachments";
 
 type ProjectDetailOptions = {
   ensureRoundMonitor?: (roundId: string) => void;
@@ -121,11 +122,34 @@ export function getProjectDetail(projectId: string, options: ProjectDetailOption
     }
   }
 
+  // グリッドのプレビュー合成/PASTE タグ用に、貼り付け添付を assetId → objects で同梱する。
+  const pasteAttachments: Record<string, PastedObject[]> = {};
+  const attachmentRows = getRows<{ asset_id: string; objects_json: string }>(
+    `SELECT apa.asset_id, apa.objects_json
+     FROM asset_paste_attachments apa
+     JOIN assets a ON a.id = apa.asset_id
+     WHERE a.project_id = ?`,
+    [projectId]
+  );
+  for (const row of attachmentRows) {
+    let parsed: unknown = [];
+    try {
+      parsed = JSON.parse(String(row.objects_json));
+    } catch {
+      // 破損した JSON は空扱い(getPasteAttachments と同じ縮退)。
+    }
+    const objects = sanitizePastedObjects(parsed);
+    if (objects.length > 0) {
+      pasteAttachments[String(row.asset_id)] = objects;
+    }
+  }
+
   return {
     project,
     rounds,
     assets,
     assetParents: parents,
-    templates: listTemplates()
+    templates: listTemplates(),
+    pasteAttachments
   };
 }

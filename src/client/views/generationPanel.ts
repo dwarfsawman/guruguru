@@ -186,7 +186,7 @@ export function renderGenerationPanel(
       <section class="sidebar-section">
         <div class="section-header-row">
           <p class="section-kicker">生成パラメータ</p>
-          <button class="button-secondary compact mini-button" type="button" data-action="reset-generation-params">${iconReset()}JSON初期値</button>
+          <button class="button-secondary compact mini-button" type="button" data-action="reset-generation-params" title="編集内容をこのノード開始時点の値に戻す">${iconReset()}ノード元値</button>
         </div>
         ${renderRangeControl("batchSize", "バッチサイズ", batchSizeValue, 1, 32, 1, "batchValue")}
         ${renderRangeControl("steps", "ステップ数", stepsValue, 1, 50, 1, "stepsValue")}

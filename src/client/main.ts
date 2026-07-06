@@ -89,7 +89,9 @@ import {
   handlePastePointerDown,
   handlePastePointerMove,
   handlePastePointerUp,
+  pasteObjectsForGridAsset,
   syncAssetModalPasteObjects,
+  syncGridPasteCanvases,
   syncPasteGizmoScale
 } from "./pasteObjectController";
 import {
@@ -544,6 +546,9 @@ async function handleAction(action: string, id: string, target: HTMLElement) {
     } else if (action === "toggle-mask-grid-tag") {
       state.showMaskGridTag = !state.showMaskGridTag;
       render();
+    } else if (action === "toggle-paste-grid-tag") {
+      state.showPasteGridTag = !state.showPasteGridTag;
+      render();
     } else if (action === "copy-seed") {
       const seedText = target.dataset.seed ?? "";
       if (seedText) {
@@ -612,6 +617,7 @@ function render(_options: RenderOptions = {}) {
   syncAssetModalMaskCanvas();
   syncAssetModalPaintCanvas();
   syncAssetModalPasteObjects();
+  syncGridPasteCanvases();
   void renderWorkflowDiagramCanvases();
 }
 
@@ -741,7 +747,9 @@ function renderProjectDetailView(detail: ProjectDetail) {
     renderGenerationPanelView(detail, activeAsset),
     (assetId: string) => inpaintDraftForAsset(assetId),
     (assetId: string) => poseDraftForAsset(assetId),
+    (assetId: string) => pasteObjectsForGridAsset(assetId).length,
     state.showMaskGridTag,
+    state.showPasteGridTag,
     state.copiedSeedAssetId,
     state.sidebarCollapsed,
     state.roundProgress

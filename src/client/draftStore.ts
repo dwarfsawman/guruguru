@@ -9,12 +9,43 @@ export function draftStorageKey(projectId: string) {
   return `${DRAFT_STORAGE_PREFIX}${projectId}`;
 }
 
+/**
+ * localStorage への永続化は debounce する。InpaintDraft のマスク dataURL は数MBに
+ * なり得るため、毎 render の同期 JSON.stringify + setItem は UI(タブ切替等)を
+ * 目に見えて遅くする。書き込みはアイドル後に 1 回だけ行い、unload 時に flush する。
+ */
+const PERSIST_DRAFT_DEBOUNCE_MS = 400;
+let persistDraftTimer: number | null = null;
+let persistDraftPendingProjectId: string | null = null;
+
 export function persistProjectDraft(projectId: string) {
+  persistDraftPendingProjectId = projectId;
+  if (persistDraftTimer !== null) {
+    return;
+  }
+  persistDraftTimer = window.setTimeout(() => {
+    persistDraftTimer = null;
+    flushProjectDraftPersist();
+  }, PERSIST_DRAFT_DEBOUNCE_MS);
+}
+
+/** 保留中の draft 永続化を即時に書き込む(unload / プロジェクト離脱時)。 */
+export function flushProjectDraftPersist() {
+  if (persistDraftTimer !== null) {
+    window.clearTimeout(persistDraftTimer);
+    persistDraftTimer = null;
+  }
+  const projectId = persistDraftPendingProjectId;
+  persistDraftPendingProjectId = null;
+  if (!projectId) {
+    return;
+  }
   try {
     window.localStorage.setItem(
       draftStorageKey(projectId),
       JSON.stringify({
         generationDraft: state.generationDraft,
+        generationDraftsByRound: state.generationDraftsByRound,
         inpaintDrafts: state.inpaintDrafts,
         poseDrafts: state.poseDrafts
       })
@@ -24,7 +55,13 @@ export function persistProjectDraft(projectId: string) {
   }
 }
 
-export function restoreProjectDraft(projectId: string): { generationDraft: GenerationDraft | null; inpaintDrafts: Record<string, InpaintDraft>; poseDrafts: Record<string, PoseDraft> } | null {
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    flushProjectDraftPersist();
+  });
+}
+
+export function restoreProjectDraft(projectId: string): { generationDraft: GenerationDraft | null; generationDraftsByRound: Record<string, GenerationDraft>; inpaintDrafts: Record<string, InpaintDraft>; poseDrafts: Record<string, PoseDraft> } | null {
   try {
     const raw = window.localStorage.getItem(draftStorageKey(projectId));
     if (!raw) {
@@ -32,11 +69,13 @@ export function restoreProjectDraft(projectId: string): { generationDraft: Gener
     }
     const parsed = JSON.parse(raw) as {
       generationDraft?: GenerationDraft | null;
+      generationDraftsByRound?: Record<string, GenerationDraft>;
       inpaintDrafts?: Record<string, InpaintDraft>;
       poseDrafts?: Record<string, PoseDraft>;
     };
     return {
       generationDraft: parsed.generationDraft ?? null,
+      generationDraftsByRound: parsed.generationDraftsByRound ?? {},
       inpaintDrafts: parsed.inpaintDrafts ?? {},
       poseDrafts: parsed.poseDrafts ?? {}
     };
@@ -47,7 +86,9 @@ export function restoreProjectDraft(projectId: string): { generationDraft: Gener
 
 /** Project を離れる際(ホームへ戻る等)の draft リセット。永続化済みの draft には触れない。 */
 export function resetProjectDrafts() {
+  flushProjectDraftPersist();
   state.generationDraft = null;
+  state.generationDraftsByRound = {};
   state.inpaintDrafts = {};
   state.paintDrafts = {};
   state.poseDrafts = {};
@@ -55,8 +96,11 @@ export function resetProjectDrafts() {
 
 /** Project を開く際、永続化済みの draft があれば復元し、なければリセットする。 */
 export function restoreOrResetProjectDrafts(projectId: string) {
+  // 前プロジェクトの保留中 debounce 書き込みを、state を差し替える前に確定させる。
+  flushProjectDraftPersist();
   const restored = restoreProjectDraft(projectId);
   state.generationDraft = restored?.generationDraft ?? null;
+  state.generationDraftsByRound = restored?.generationDraftsByRound ?? {};
   state.inpaintDrafts = restored?.inpaintDrafts ?? {};
   state.paintDrafts = {};
   state.poseDrafts = restored?.poseDrafts ?? {};

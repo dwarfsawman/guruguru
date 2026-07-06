@@ -50,7 +50,9 @@ export function renderProjectDetail(
   generationPanelHtml: string,
   getInpaintDraft: (assetId: string) => InpaintDraft | null,
   getPoseDraft: (assetId: string) => PoseDraft | null,
+  getPasteObjectCount: (assetId: string) => number,
   showMaskGridTag: boolean,
+  showPasteGridTag: boolean,
   copiedSeedAssetId: string | null,
   sidebarCollapsed = false,
   roundProgress: RoundProgressMap = {}
@@ -93,7 +95,7 @@ export function renderProjectDetail(
         </div>
         <div class="gallery-scroll">
           <div class="image-grid cols-${gridCols}">
-            ${assets.length ? assets.map((asset) => renderAssetTile(asset, getInpaintDraft, getPoseDraft, showMaskGridTag, copiedSeedAssetId)).join("") : renderEmptyGallery(activeRound)}
+            ${assets.length ? assets.map((asset) => renderAssetTile(asset, getInpaintDraft, getPoseDraft, getPasteObjectCount, showMaskGridTag, showPasteGridTag, copiedSeedAssetId)).join("") : renderEmptyGallery(activeRound)}
           </div>
         </div>
         ${renderIterationTracker(detail.rounds, activeRoundId, deletePreviewRoundId, roundProgress)}
@@ -144,7 +146,9 @@ export function renderAssetTile(
   asset: Asset,
   getInpaintDraft: (assetId: string) => InpaintDraft | null,
   getPoseDraft: (assetId: string) => PoseDraft | null,
+  getPasteObjectCount: (assetId: string) => number,
   showMaskGridTag: boolean,
+  showPasteGridTag: boolean,
   copiedSeedAssetId: string | null
 ) {
   const selected = asset.status === "selected";
@@ -152,10 +156,12 @@ export function renderAssetTile(
   const rejected = asset.status === "rejected";
   const masked = assetHasMaskIndicator(asset, getInpaintDraft);
   const posed = poseDraftHasAttachment(getPoseDraft(asset.id));
+  const pasted = getPasteObjectCount(asset.id) > 0;
   return `
     <article class="image-card ${selected ? "selected" : ""} ${favorite ? "favorite" : ""} ${rejected ? "rejected" : ""} ${masked ? "masked" : ""} ${posed ? "posed" : ""}" data-key="${asset.id}">
       <button class="asset-card-main" data-id="${asset.id}" type="button" aria-label="Asset #${asset.batchIndex + 1}">
         <img class="gen-image" src="${asset.thumbnailMediumUrl || asset.thumbnailUrl}" alt="" loading="lazy" />
+        ${pasted && showPasteGridTag ? `<canvas class="paste-grid-canvas" data-asset-id="${asset.id}" aria-hidden="true"></canvas>` : ""}
       </button>
       <button class="select-badge" data-action="toggle-select" data-id="${asset.id}" type="button" aria-label="選択切替">
         ${iconCheck(selected)}
@@ -169,6 +175,7 @@ export function renderAssetTile(
       <span class="card-number">#${asset.batchIndex + 1}</span>
       ${masked ? `<button class="mask-badge ${showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="マスクタグ表示切替">${iconMask()}MASK</button>` : ""}
       ${posed ? `<button class="pose-badge ${showMaskGridTag ? "active" : "inactive"}" type="button" data-action="toggle-mask-grid-tag" aria-label="ポーズタグ表示切替">${iconPose()}POSE</button>` : ""}
+      ${pasted ? `<button class="paste-badge ${showPasteGridTag ? "active" : "inactive"}" type="button" data-action="toggle-paste-grid-tag" aria-label="貼り付けタグ表示切替" title="貼り付け画像のプレビュー合成をON/OFF">${iconImage()}PASTE</button>` : ""}
       <div class="card-meta">
         <span class="seed-chip" data-action="copy-seed" data-id="${asset.id}" data-seed="${asset.seed ?? ""}" title="クリックでseedをコピー">${copiedSeedAssetId === asset.id ? "copied" : `seed ${asset.seed ?? "-"}`}</span>
         <span class="card-dims">${asset.width && asset.height ? `${asset.width}×${asset.height}` : ""}</span>
