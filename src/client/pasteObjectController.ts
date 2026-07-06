@@ -16,15 +16,36 @@
 import { pushToast, dismissToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { api } from "./api";
-import { ensurePaintDraft, paintDraftForAsset, setPaintDraft } from "./paintEditorController";
+import { ensurePaintDraft, paintDraftForAsset, setPaintDraft, undoPaintStroke } from "./paintEditorController";
 import { commitActiveMaskCanvas } from "./maskEditorController";
 import { pointerToMaskCanvasPoint } from "./maskCanvas";
 import { assetDimension, findAsset } from "./assetLookup";
-import { clampPasteTransform, fitInitialPasteTransform } from "./pasteTransform";
+import { formatCssNumber } from "./format";
+import {
+  applyMoveGesture,
+  applyRotateGesture,
+  applyScaleGesture,
+  clampPasteTransform,
+  fitInitialPasteTransform,
+  hitTestPastedObjects,
+  nudgeTransform,
+  pastedObjectBounds,
+  pastedObjectCorners,
+  unionPasteBounds,
+  type PasteBounds,
+  type PasteGestureKind
+} from "./pasteTransform";
+import { localToWorld } from "./pasteTransform";
+import {
+  PASTE_HANDLE_SCREEN_RADIUS,
+  PASTE_ROTATE_STICK_NATURAL,
+  rotateHandlePosition
+} from "./views/pasteGizmo";
 import {
   PASTE_MAX_OBJECTS,
   PASTE_MAX_SOURCE_DIMENSION,
-  type PastedObject
+  type PastedObject,
+  type PasteTransform
 } from "../shared/pasteAttachments";
 
 /** sourceId → デコード済みビットマップ(offscreen canvas)。morph の外に置く。 */
@@ -172,6 +193,7 @@ export function syncAssetModalPasteObjects() {
     }
     applyPendingPlacement(canvas, assetId);
     renderPasteObjectsToCanvas(canvas, assetId);
+    syncPasteGizmo();
   };
 
   if (image.complete && image.naturalWidth > 0) {
@@ -207,23 +229,52 @@ function applyPendingPlacement(canvas: HTMLCanvasElement, assetId: string) {
   schedulePasteAttachmentsPut(assetId);
 }
 
-/** `#pasteCanvas` へ draft の全オブジェクトを描く。ビットマップ未ロード分はプレースホルダ矩形。 */
-export function renderPasteObjectsToCanvas(canvas: HTMLCanvasElement, assetId: string) {
+/**
+ * `#pasteCanvas` へ draft の全オブジェクトを描く。ビットマップ未ロード分はプレースホルダ矩形。
+ * `dirtyRect` を渡すとその矩形にクリップして再描画する(ジェスチャ中の高速パス)。
+ * `overrideTransform` はジェスチャ中の未確定変形(draft を触らず見た目だけ更新)。
+ */
+export function renderPasteObjectsToCanvas(
+  canvas: HTMLCanvasElement,
+  assetId: string,
+  dirtyRect?: PasteBounds,
+  overrideTransform?: { objectId: string; transform: PasteTransform }
+) {
   const context = canvas.getContext("2d");
   if (!context) {
     return;
   }
-  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.save();
+  if (dirtyRect) {
+    const x = Math.max(0, Math.floor(dirtyRect.x));
+    const y = Math.max(0, Math.floor(dirtyRect.y));
+    const width = Math.min(canvas.width, Math.ceil(dirtyRect.x + dirtyRect.width)) - x;
+    const height = Math.min(canvas.height, Math.ceil(dirtyRect.y + dirtyRect.height)) - y;
+    if (width <= 0 || height <= 0) {
+      context.restore();
+      return;
+    }
+    context.beginPath();
+    context.rect(x, y, width, height);
+    context.clip();
+    context.clearRect(x, y, width, height);
+  } else {
+    context.clearRect(0, 0, canvas.width, canvas.height);
+  }
   const draft = paintDraftForAsset(assetId);
   if (!draft || draft.pasteObjects.length === 0) {
+    context.restore();
     return;
   }
   for (const object of draft.pasteObjects) {
+    const transform = overrideTransform && overrideTransform.objectId === object.id
+      ? overrideTransform.transform
+      : object.transform;
     const bitmap = pasteBitmapCache.get(object.sourceId);
     context.save();
-    context.translate(object.transform.x, object.transform.y);
-    context.rotate(object.transform.rotation);
-    context.scale(object.transform.scaleX, object.transform.scaleY);
+    context.translate(transform.x, transform.y);
+    context.rotate(transform.rotation);
+    context.scale(transform.scaleX, transform.scaleY);
     if (bitmap) {
       context.imageSmoothingQuality = "high";
       context.drawImage(bitmap, -object.sourceWidth / 2, -object.sourceHeight / 2);
@@ -235,6 +286,461 @@ export function renderPasteObjectsToCanvas(canvas: HTMLCanvasElement, assetId: s
       context.strokeRect(-object.sourceWidth / 2, -object.sourceHeight / 2, object.sourceWidth, object.sourceHeight);
     }
     context.restore();
+  }
+  context.restore();
+}
+
+// --- 選択・変形ジェスチャ -----------------------------------------------------
+
+const PASTE_DRAG_THRESHOLD_PX = 3;
+const PASTE_DIRTY_RECT_MARGIN = 4;
+
+interface ActivePasteGesture {
+  pointerId: number;
+  kind: PasteGestureKind;
+  assetId: string;
+  objectId: string;
+  startPoint: { x: number; y: number };
+  startClient: { x: number; y: number };
+  startTransform: PasteTransform;
+  currentTransform: PasteTransform;
+  shiftKey: boolean;
+  moved: boolean;
+  captureTarget: Element | null;
+}
+
+let activePasteGesture: ActivePasteGesture | null = null;
+let pasteGestureRafHandle: number | null = null;
+let pasteGesturePrevBounds: PasteBounds | null = null;
+
+function activePasteCanvases(): { paintCanvas: HTMLCanvasElement; pasteCanvas: HTMLCanvasElement } | null {
+  const paintCanvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
+  const pasteCanvas = document.querySelector<HTMLCanvasElement>("#pasteCanvas");
+  if (!paintCanvas || !pasteCanvas) {
+    return null;
+  }
+  return { paintCanvas, pasteCanvas };
+}
+
+function selectedPastedObject(draft: ReturnType<typeof paintDraftForAsset>): PastedObject | null {
+  if (!draft || !draft.selectedPasteObjectId) {
+    return null;
+  }
+  return draft.pasteObjects.find((object) => object.id === draft.selectedPasteObjectId) ?? null;
+}
+
+function beginPasteGesture(
+  event: PointerEvent,
+  kind: PasteGestureKind,
+  assetId: string,
+  object: PastedObject,
+  paintCanvas: HTMLCanvasElement,
+  captureTarget: Element | null
+) {
+  const point = pointerToMaskCanvasPoint(paintCanvas, event);
+  activePasteGesture = {
+    pointerId: event.pointerId,
+    kind,
+    assetId,
+    objectId: object.id,
+    startPoint: point,
+    startClient: { x: event.clientX, y: event.clientY },
+    startTransform: { ...object.transform },
+    currentTransform: { ...object.transform },
+    shiftKey: event.shiftKey,
+    moved: false,
+    captureTarget
+  };
+  pasteGesturePrevBounds = pastedObjectBounds(object, PASTE_DIRTY_RECT_MARGIN);
+  if (captureTarget && "setPointerCapture" in captureTarget) {
+    try {
+      (captureTarget as HTMLElement).setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may fail; document-level listeners still finish the gesture.
+    }
+  }
+}
+
+function updatePasteGestureTransform(event: PointerEvent) {
+  const gesture = activePasteGesture;
+  const canvases = activePasteCanvases();
+  if (!gesture || !canvases) {
+    return;
+  }
+  const draft = paintDraftForAsset(gesture.assetId);
+  const object = draft?.pasteObjects.find((entry) => entry.id === gesture.objectId);
+  if (!object) {
+    return;
+  }
+  const point = pointerToMaskCanvasPoint(canvases.paintCanvas, event);
+  gesture.shiftKey = event.shiftKey;
+  if (!gesture.moved) {
+    const movedPx = Math.hypot(event.clientX - gesture.startClient.x, event.clientY - gesture.startClient.y);
+    if (movedPx < PASTE_DRAG_THRESHOLD_PX) {
+      return;
+    }
+    gesture.moved = true;
+  }
+  let next: PasteTransform;
+  if (gesture.kind === "move") {
+    next = applyMoveGesture(gesture.startTransform, gesture.startPoint, point, gesture.shiftKey);
+  } else if (gesture.kind === "scale") {
+    next = applyScaleGesture(gesture.startTransform, gesture.startPoint, point, gesture.shiftKey);
+  } else {
+    next = applyRotateGesture(gesture.startTransform, gesture.startPoint, point, gesture.shiftKey);
+  }
+  gesture.currentTransform = clampPasteTransform(
+    next,
+    object.sourceWidth,
+    object.sourceHeight,
+    canvases.pasteCanvas.width,
+    canvases.pasteCanvas.height
+  );
+  schedulePasteGestureFlush();
+}
+
+function schedulePasteGestureFlush() {
+  if (pasteGestureRafHandle !== null) {
+    return;
+  }
+  pasteGestureRafHandle = requestAnimationFrame(() => {
+    pasteGestureRafHandle = null;
+    flushPasteGestureFrame();
+  });
+}
+
+/** ジェスチャ中の 1 フレーム描画。render() を経由せず canvas dirtyRect + SVG 属性を直接更新する。 */
+function flushPasteGestureFrame() {
+  const gesture = activePasteGesture;
+  const canvases = activePasteCanvases();
+  if (!gesture || !canvases) {
+    return;
+  }
+  const draft = paintDraftForAsset(gesture.assetId);
+  const object = draft?.pasteObjects.find((entry) => entry.id === gesture.objectId);
+  if (!object) {
+    return;
+  }
+  const preview: PastedObject = { ...object, transform: gesture.currentTransform };
+  const nextBounds = pastedObjectBounds(preview, PASTE_DIRTY_RECT_MARGIN);
+  const dirty = unionPasteBounds(pasteGesturePrevBounds ? [pasteGesturePrevBounds, nextBounds] : [nextBounds]);
+  pasteGesturePrevBounds = nextBounds;
+  renderPasteObjectsToCanvas(canvases.pasteCanvas, gesture.assetId, dirty ?? undefined, {
+    objectId: gesture.objectId,
+    transform: gesture.currentTransform
+  });
+  updatePasteGizmoGeometry(preview);
+  updatePasteReadout(gesture.currentTransform);
+}
+
+function finishPasteGesture(commit: boolean) {
+  const gesture = activePasteGesture;
+  activePasteGesture = null;
+  if (pasteGestureRafHandle !== null) {
+    cancelAnimationFrame(pasteGestureRafHandle);
+    pasteGestureRafHandle = null;
+  }
+  pasteGesturePrevBounds = null;
+  if (!gesture) {
+    return;
+  }
+  if (gesture.captureTarget && "releasePointerCapture" in gesture.captureTarget) {
+    try {
+      (gesture.captureTarget as HTMLElement).releasePointerCapture(gesture.pointerId);
+    } catch {
+      // Capture may already be released.
+    }
+  }
+  const draft = paintDraftForAsset(gesture.assetId);
+  if (!draft) {
+    return;
+  }
+  if (commit && gesture.moved) {
+    setPaintDraft({
+      ...draft,
+      pasteObjects: draft.pasteObjects.map((object) =>
+        object.id === gesture.objectId ? { ...object, transform: gesture.currentTransform } : object
+      )
+    });
+    schedulePasteAttachmentsPut(gesture.assetId);
+  }
+  requestRender();
+}
+
+/** ダブルクリック時、直前クリック(detail 1)で描かれたブラシ/消しゴムの点を取り消す。 */
+function undoAccidentalStrokeBeforeReselect(tool: string) {
+  if (tool === "brush" || tool === "eraser") {
+    undoPaintStroke();
+  }
+}
+
+function selectPastedObject(assetId: string, objectId: string | null, switchToSelectTool = false) {
+  const draft = ensurePaintDraft(assetId);
+  setPaintDraft({
+    ...draft,
+    selectedPasteObjectId: objectId,
+    tool: switchToSelectTool ? "select" : draft.tool
+  });
+  requestRender();
+}
+
+/**
+ * main.ts の pointerdown 分岐チェーンから `handlePaintEditorPointerDown` の直前に呼ばれる。
+ * true を返した場合、呼び出し側は以降の分岐を処理しない(既存の early return 規約)。
+ */
+export function handlePastePointerDown(event: PointerEvent, target: HTMLElement): boolean {
+  if (!state.paintEditMode || !state.activeAssetId) {
+    return false;
+  }
+  const assetId = state.activeAssetId;
+  const canvases = activePasteCanvases();
+
+  // 1. ギズモハンドル(スケール/回転)
+  const handle = target.closest<HTMLElement>("[data-paste-handle]");
+  if (handle && event.button === 0 && canvases) {
+    const draft = paintDraftForAsset(assetId);
+    const selected = selectedPastedObject(draft);
+    if (!selected) {
+      return true;
+    }
+    event.preventDefault();
+    const kind: PasteGestureKind = handle.dataset.pasteHandle === "rotate" ? "rotate" : "scale";
+    if (kind === "rotate" && event.detail >= 2) {
+      // 回転ハンドルのダブルクリック = 0° リセット
+      const draft2 = paintDraftForAsset(assetId);
+      if (draft2) {
+        setPaintDraft({
+          ...draft2,
+          pasteObjects: draft2.pasteObjects.map((object) =>
+            object.id === selected.id ? { ...object, transform: { ...object.transform, rotation: 0 } } : object
+          )
+        });
+        schedulePasteAttachmentsPut(assetId);
+        requestRender();
+      }
+      return true;
+    }
+    beginPasteGesture(event, kind, assetId, selected, canvases.paintCanvas, handle);
+    return true;
+  }
+
+  if (target.id !== "paintCanvas" || !canvases || event.button !== 0) {
+    return false;
+  }
+  const draft = paintDraftForAsset(assetId);
+  if (!draft) {
+    return false;
+  }
+  const point = pointerToMaskCanvasPoint(canvases.paintCanvas, event);
+  const hit = hitTestPastedObjects(draft.pasteObjects, point);
+
+  // 2. 任意ツールからのダブルクリック再選択(1 クリック目のブラシ点は undo で巻き戻す)
+  if (event.detail >= 2 && hit && draft.tool !== "select") {
+    event.preventDefault();
+    undoAccidentalStrokeBeforeReselect(draft.tool);
+    selectPastedObject(assetId, hit.id, true);
+    return true;
+  }
+
+  // 3. select ツール: クリックで選択+移動開始、空き領域で選択解除
+  if (draft.tool !== "select") {
+    return false;
+  }
+  event.preventDefault();
+  if (!hit) {
+    if (draft.selectedPasteObjectId) {
+      selectPastedObject(assetId, null);
+    }
+    return true;
+  }
+  if (draft.selectedPasteObjectId !== hit.id) {
+    selectPastedObject(assetId, hit.id);
+  }
+  beginPasteGesture(event, "move", assetId, hit, canvases.paintCanvas, canvases.paintCanvas);
+  return true;
+}
+
+export function handlePastePointerMove(event: PointerEvent): boolean {
+  if (!activePasteGesture) {
+    return false;
+  }
+  if (event.pointerId !== activePasteGesture.pointerId) {
+    return true;
+  }
+  event.preventDefault();
+  updatePasteGestureTransform(event);
+  return true;
+}
+
+export function handlePastePointerUp(event: PointerEvent): boolean {
+  if (!activePasteGesture || event.pointerId !== activePasteGesture.pointerId) {
+    return false;
+  }
+  event.preventDefault();
+  finishPasteGesture(true);
+  return true;
+}
+
+export function handlePastePointerCancel(event: PointerEvent): boolean {
+  if (!activePasteGesture || event.pointerId !== activePasteGesture.pointerId) {
+    return false;
+  }
+  finishPasteGesture(false);
+  return true;
+}
+
+/**
+ * main.ts の keydown チェーンから `handlePaintEditorKeydown` の直前に呼ばれる。
+ * Delete/Backspace = 選択オブジェクト削除、矢印 = ナッジ(Shift で 10px)。
+ */
+export function handlePasteKeydown(event: KeyboardEvent): boolean {
+  if (!state.paintEditMode || !state.activeAssetId) {
+    return false;
+  }
+  const assetId = state.activeAssetId;
+  const draft = paintDraftForAsset(assetId);
+  const selected = selectedPastedObject(draft);
+  if (!draft || !selected) {
+    return false;
+  }
+  if (event.key === "Delete" || event.key === "Backspace") {
+    event.preventDefault();
+    deleteSelectedPastedObject(assetId);
+    return true;
+  }
+  const arrowDelta: Record<string, { x: number; y: number }> = {
+    ArrowLeft: { x: -1, y: 0 },
+    ArrowRight: { x: 1, y: 0 },
+    ArrowUp: { x: 0, y: -1 },
+    ArrowDown: { x: 0, y: 1 }
+  };
+  const delta = arrowDelta[event.key];
+  if (delta) {
+    event.preventDefault();
+    const step = event.shiftKey ? 10 : 1;
+    const canvases = activePasteCanvases();
+    const nudged = nudgeTransform(selected.transform, delta.x * step, delta.y * step);
+    const clamped = canvases
+      ? clampPasteTransform(nudged, selected.sourceWidth, selected.sourceHeight, canvases.pasteCanvas.width, canvases.pasteCanvas.height)
+      : nudged;
+    setPaintDraft({
+      ...draft,
+      pasteObjects: draft.pasteObjects.map((object) =>
+        object.id === selected.id ? { ...object, transform: clamped } : object
+      )
+    });
+    schedulePasteAttachmentsPut(assetId);
+    requestRender();
+    return true;
+  }
+  return false;
+}
+
+/** Escape カスケード(main.ts)から呼ばれる。選択があれば解除して true。 */
+export function deselectPasteObjectIfAny(): boolean {
+  const assetId = state.activeAssetId;
+  if (!state.paintEditMode || !assetId) {
+    return false;
+  }
+  const draft = paintDraftForAsset(assetId);
+  if (!draft?.selectedPasteObjectId) {
+    return false;
+  }
+  finishPasteGesture(false);
+  selectPastedObject(assetId, null);
+  return true;
+}
+
+export function deleteSelectedPastedObject(assetId: string) {
+  const draft = paintDraftForAsset(assetId);
+  const selected = selectedPastedObject(draft);
+  if (!draft || !selected) {
+    return;
+  }
+  finishPasteGesture(false);
+  setPaintDraft({
+    ...draft,
+    pasteObjects: draft.pasteObjects.filter((object) => object.id !== selected.id),
+    selectedPasteObjectId: null
+  });
+  schedulePasteAttachmentsPut(assetId);
+  requestRender();
+}
+
+// --- ギズモ sync -------------------------------------------------------------
+
+/**
+ * 毎 render 後 + ジェスチャ中に、ギズモの枠・ハンドル位置とハンドル半径
+ * (画面基準一定サイズ)を再計算して SVG 属性へ反映する。
+ */
+export function syncPasteGizmo() {
+  const svg = document.querySelector<SVGSVGElement>("#pasteGizmoOverlay");
+  if (!svg) {
+    return;
+  }
+  const assetId = svg.dataset.assetId;
+  const objectId = svg.dataset.objectId;
+  const draft = assetId ? paintDraftForAsset(assetId) : null;
+  const object = draft?.pasteObjects.find((entry) => entry.id === objectId);
+  if (!object) {
+    return;
+  }
+  if (activePasteGesture && activePasteGesture.objectId === object.id) {
+    updatePasteGizmoGeometry({ ...object, transform: activePasteGesture.currentTransform });
+  } else {
+    updatePasteGizmoGeometry(object);
+  }
+}
+
+/** wheel zoom tick(render を経ない)中のハンドルサイズ補正。main.ts の wheel ハンドラから呼ぶ。 */
+export function syncPasteGizmoScale() {
+  syncPasteGizmo();
+}
+
+function updatePasteGizmoGeometry(object: PastedObject) {
+  const svg = document.querySelector<SVGSVGElement>("#pasteGizmoOverlay");
+  const pasteCanvas = document.querySelector<HTMLCanvasElement>("#pasteCanvas");
+  if (!svg || !pasteCanvas) {
+    return;
+  }
+  const corners = pastedObjectCorners(object);
+  const outline = svg.querySelector<SVGPolygonElement>("#pasteGizmoOutline");
+  outline?.setAttribute("points", corners.map((corner) => `${corner.x},${corner.y}`).join(" "));
+
+  // 画面基準の一定サイズへ換算(natural px = 画面 px × canvas.width / rect.width)。
+  const rect = pasteCanvas.getBoundingClientRect();
+  const naturalPerScreen = rect.width > 0 ? pasteCanvas.width / rect.width : 1;
+  const radius = PASTE_HANDLE_SCREEN_RADIUS * naturalPerScreen;
+  corners.forEach((corner, index) => {
+    const handle = svg.querySelector<SVGCircleElement>(`#pasteGizmoCorner${index}`);
+    handle?.setAttribute("cx", formatCssNumber(corner.x));
+    handle?.setAttribute("cy", formatCssNumber(corner.y));
+    handle?.setAttribute("r", formatCssNumber(radius));
+  });
+  const stickNatural = PASTE_ROTATE_STICK_NATURAL * naturalPerScreen;
+  const rotatePos = rotateHandlePosition(object, stickNatural);
+  const topMid = localToWorld(object.transform, { x: 0, y: -object.sourceHeight / 2 });
+  const stick = svg.querySelector<SVGLineElement>("#pasteGizmoRotateStick");
+  stick?.setAttribute("x1", formatCssNumber(topMid.x));
+  stick?.setAttribute("y1", formatCssNumber(topMid.y));
+  stick?.setAttribute("x2", formatCssNumber(rotatePos.x));
+  stick?.setAttribute("y2", formatCssNumber(rotatePos.y));
+  const rotateHandle = svg.querySelector<SVGCircleElement>("#pasteGizmoRotateHandle");
+  rotateHandle?.setAttribute("cx", formatCssNumber(rotatePos.x));
+  rotateHandle?.setAttribute("cy", formatCssNumber(rotatePos.y));
+  rotateHandle?.setAttribute("r", formatCssNumber(radius));
+}
+
+/** パネルのスケール%・回転角読み出し(ジェスチャ中は render を経ず直接更新)。 */
+function updatePasteReadout(transform: PasteTransform) {
+  const scaleTarget = document.querySelector<HTMLElement>("#pasteScaleValue");
+  const rotationTarget = document.querySelector<HTMLElement>("#pasteRotationValue");
+  if (scaleTarget) {
+    scaleTarget.textContent = `${Math.round(transform.scaleX * 100)}%`;
+  }
+  if (rotationTarget) {
+    const degrees = Math.round(((transform.rotation * 180) / Math.PI) % 360);
+    rotationTarget.textContent = `${degrees}°`;
   }
 }
 
@@ -518,6 +1024,7 @@ function openPasteFilePicker() {
 
 /** プロジェクト切替/ホーム遷移時のキャッシュ破棄。draft 側は draftStore が消す。 */
 export function clearPasteCaches() {
+  finishPasteGesture(false);
   flushPasteAttachmentsPut();
   pasteBitmapCache.clear();
   loadedAttachmentAssetIds.clear();
@@ -525,8 +1032,9 @@ export function clearPasteCaches() {
   pendingPlacement = null;
 }
 
-/** アセット詳細モーダル close 時の後始末。保留中の PUT を flush する。 */
+/** アセット詳細モーダル close 時の後始末。進行中ジェスチャの破棄と保留中 PUT の flush。 */
 export function closePasteSession(assetId: string | null) {
+  finishPasteGesture(false);
   flushPasteAttachmentsPut(assetId);
   pendingPlacement = null;
 }

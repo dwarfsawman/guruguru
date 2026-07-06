@@ -264,6 +264,71 @@
   pointer-events: none;
 }
 
+/*
+ * 変形ギズモの SVG オーバーレイ。root は素通し(pointer-events: none)、
+ * ハンドルだけ操作可能。枠線は non-scaling-stroke で zoom 中も線幅一定。
+ */
+.paste-gizmo-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.paste-outline {
+  fill: none;
+  stroke: var(--accent, #3b82f6);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.paste-rotate-stick {
+  stroke: var(--accent, #3b82f6);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.paste-handle {
+  fill: #fff;
+  stroke: var(--accent, #3b82f6);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: auto;
+}
+
+.paste-handle-rotate {
+  cursor: grab;
+}
+
+.paste-handle-rotate:active {
+  cursor: grabbing;
+}
+
+/* select ツール中の canvas カーソル(ストロークしないため crosshair をやめる)。 */
+#paintCanvas[data-paint-tool="select"] {
+  cursor: default;
+}
+
+/* 選択中オブジェクトの情報セクション。 */
+.paste-object-section {
+  display: grid;
+  gap: 4px;
+}
+
+.paste-object-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+
+  span {
+    color: color-mix(in srgb, var(--ink) 60%, transparent);
+  }
+}
+
 /* ペイントパネルの貼り付け導入セクション。 */
 .paste-import-section {
   display: grid;

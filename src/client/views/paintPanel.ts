@@ -33,6 +33,7 @@ export function renderPaintToolPanel(draft: PaintDraft, sidebarCollapsed = false
         <button class="button-secondary compact" type="button" data-action="paste-pick-file" title="画像を貼り付け(ドラッグ&ドロップでも可)">${iconImage()}画像を貼り付け</button>
         <p class="paste-import-hint">画像はドラッグ&ドロップでも貼り付けできます</p>
       </div>
+      ${renderPasteObjectSection(draft)}
       <div class="range-control mask-brush-control">
         <div class="range-label"><span>ブラシサイズ</span><strong id="paintBrushValue">${draft.brushSize}px</strong></div>
         <input type="range" min="1" max="256" step="1" value="${draft.brushSize}" data-value-target="paintBrushValue" data-paint-field="brushSize" />
@@ -67,4 +68,29 @@ export function renderPaintToolPanel(draft: PaintDraft, sidebarCollapsed = false
 
 function sameColor(a: string, b: string) {
   return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * 選択中の貼り付けオブジェクトの情報セクション。
+ * スケール%・回転角の読み出しはジェスチャ中に controller が id 経由で直接更新する。
+ */
+function renderPasteObjectSection(draft: PaintDraft) {
+  const selected = draft.selectedPasteObjectId
+    ? draft.pasteObjects.find((object) => object.id === draft.selectedPasteObjectId) ?? null
+    : null;
+  if (!selected) {
+    return "";
+  }
+  const scalePercent = Math.round(selected.transform.scaleX * 100);
+  const rotationDeg = Math.round(((selected.transform.rotation * 180) / Math.PI) % 360);
+  return `
+    <div class="paste-object-section">
+      <div class="paste-object-readout">
+        <span>選択中の貼り付け</span>
+        <strong id="pasteScaleValue">${scalePercent}%</strong>
+        <strong id="pasteRotationValue">${rotationDeg}°</strong>
+      </div>
+      <p class="paste-import-hint">ドラッグ=移動(Shift=軸固定) / 角=拡縮(Shift=縦横独立) / 上ハンドル=回転(Shift=15°) / 矢印=1px / Delete=削除 / Esc=選択解除</p>
+    </div>
+  `;
 }

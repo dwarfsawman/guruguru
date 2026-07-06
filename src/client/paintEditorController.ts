@@ -273,7 +273,7 @@ function pushPaintUndoSnapshot(assetId: string) {
   paintUndoStacks.set(assetId, stack);
 }
 
-function undoPaintStroke() {
+export function undoPaintStroke() {
   const active = activePaintCanvasAndAsset();
   if (!active) {
     return;
