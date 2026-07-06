@@ -4,8 +4,10 @@
  * 本 module は `main.ts` を import しない（circular import なし）。
  */
 
-/** ペイントツールの選択ツール種別。 */
-export type PaintToolKind = "brush" | "eraser" | "eyedropper";
+import type { PastedObject } from "../shared/pasteAttachments";
+
+/** ペイントツールの選択ツール種別。`select` は貼り付けオブジェクトの選択・変形ツール。 */
+export type PaintToolKind = "brush" | "eraser" | "eyedropper" | "select";
 
 export interface PaintDraft {
   assetId: string;
@@ -19,6 +21,13 @@ export interface PaintDraft {
   panOffset: { x: number; y: number };
   imageWidth: number | null;
   imageHeight: number | null;
+  /**
+   * 貼り付けオブジェクト(z順、先頭=最背面)。サーバ永続値(asset_paste_attachments)の
+   * クライアント側キャッシュで、ビットマップ本体は pasteObjectController の module キャッシュに分離。
+   */
+  pasteObjects: PastedObject[];
+  /** 選択中オブジェクト id。pasteObjects に存在しない場合は normalize で null に戻る。 */
+  selectedPasteObjectId: string | null;
 }
 
 export const PAINT_BASE_PALETTE: string[] = [
