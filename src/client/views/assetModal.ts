@@ -25,6 +25,7 @@ import { defaultInpaintDraft, hasActiveMaskData, maskedContentOptions } from "..
 import { normalizePromptBox } from "../maskCanvas";
 import type { PaintDraft } from "../paintTypes";
 import { renderPaintToggleButton, renderPaintToolPanel } from "./paintPanel";
+import { renderPasteGizmoOverlay } from "./pasteGizmo";
 import type { PoseDraft } from "../poseTypes";
 import { renderPoseOverlay, renderPosePanelSection } from "./posePanel";
 import { renderOptions, samplerOptions, schedulerOptions } from "./generationPanel";
@@ -83,7 +84,7 @@ export function renderAssetModal(
     ? ` style="--mask-zoom: ${formatCssNumber(paintDraft.zoomScale)}; --mask-pan-x: ${formatCssNumber(paintDraft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(paintDraft.panOffset.y)}px;"`
     : ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`;
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
-  const media = renderPreviewMedia(asset, draft, editing, zoomStyle, paintEditing, maskPanelTab, poseDraft, selectedPoseEdges);
+  const media = renderPreviewMedia(asset, draft, editing, zoomStyle, paintEditing, maskPanelTab, poseDraft, selectedPoseEdges, paintDraft);
   const footer = renderPreviewFooter(asset, info);
   return `
     <div class="preview-modal ${anyEditing ? "mask-editor-open" : ""}" role="dialog" aria-modal="true">
@@ -130,16 +131,25 @@ export function renderPreviewMedia(
   paintEditing = false,
   maskPanelTab: MaskPanelTab = "mask",
   poseDraft: PoseDraft | null = null,
-  selectedPoseEdges: ReadonlyArray<{ poseIndex: number; boneIndex: number }> = []
+  selectedPoseEdges: ReadonlyArray<{ poseIndex: number; boneIndex: number }> = [],
+  paintDraft: PaintDraft | null = null
 ) {
   const poseTabActive = editing && maskPanelTab === "pose";
+  // 貼り付けオブジェクト表示面。マスク編集中はマスクの下(マスク描画を隠さない)、
+  // それ以外(ペイント編集・非編集)では最前面(opacity 1 の WYSIWYG)に重ねる。
+  const pasteCanvas = `<canvas id="pasteCanvas" class="paste-canvas" data-asset-id="${asset.id}" aria-hidden="true"></canvas>`;
+  const gizmoWidth = paintDraft?.imageWidth ?? asset.width ?? 0;
+  const gizmoHeight = paintDraft?.imageHeight ?? asset.height ?? 0;
   return `
     <div class="preview-media${editing || paintEditing ? " mask-preview-media" : ""}${poseTabActive ? " pose-tab-active" : ""}"${zoomStyle}>
       <div class="mask-zoom-stage">
         <img id="previewImage" src="${asset.imageUrl}" alt="" draggable="false" />
+        ${editing ? pasteCanvas : ""}
         ${editing ? `<canvas id="maskCanvas" class="mask-canvas" data-asset-id="${asset.id}" aria-label="マスクキャンバス"></canvas><canvas id="maskFeatherPreview" class="mask-feather-preview" data-asset-id="${asset.id}" aria-hidden="true"></canvas>${renderWebSamPromptOverlay(draft, asset)}` : ""}
         ${poseTabActive && poseDraft ? renderPoseOverlay(poseDraft, asset, selectedPoseEdges) : ""}
-        ${paintEditing ? `<canvas id="paintCanvas" class="mask-canvas paint-canvas" data-asset-id="${asset.id}" aria-label="ペイントキャンバス"></canvas>` : ""}
+        ${paintEditing && paintDraft ? `<canvas id="paintCanvas" class="mask-canvas paint-canvas" data-asset-id="${asset.id}" data-paint-tool="${paintDraft.tool}" aria-label="ペイントキャンバス"></canvas>` : paintEditing ? `<canvas id="paintCanvas" class="mask-canvas paint-canvas" data-asset-id="${asset.id}" aria-label="ペイントキャンバス"></canvas>` : ""}
+        ${editing ? "" : pasteCanvas}
+        ${paintEditing && paintDraft ? renderPasteGizmoOverlay(paintDraft, gizmoWidth, gizmoHeight) : ""}
       </div>
     </div>
   `;

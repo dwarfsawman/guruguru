@@ -80,6 +80,32 @@ export function decodeControlImageDataUrl(rawValue: unknown): { bytes: Buffer } 
   return { bytes };
 }
 
+/** 貼り付け込み合成画像(pasteComposite.imageDataUrl)。PNG 固定・上限は元画像と同じ 16MB。 */
+export function decodeCompositeDataUrl(rawValue: unknown): { bytes: Buffer } {
+  const dataUrl = requiredString(rawValue, "pasteComposite.imageDataUrl");
+  if (dataUrl.length > Math.ceil(maxSourceImageBytes * 1.4) + 128) {
+    throw new HttpError(413, `Composite image is too large. The maximum upload size is ${formatBytes(maxSourceImageBytes)}.`);
+  }
+
+  const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/i.exec(dataUrl);
+  if (!match) {
+    throw new HttpError(400, "pasteComposite.imageDataUrl must be a base64 PNG data URL.");
+  }
+
+  const bytes = Buffer.from(match[1]!, "base64");
+  if (bytes.length === 0) {
+    throw new HttpError(400, "Composite image is empty.");
+  }
+  if (bytes.length > maxSourceImageBytes) {
+    throw new HttpError(413, `Composite image is too large. The maximum upload size is ${formatBytes(maxSourceImageBytes)}.`);
+  }
+  if (!bytesMatchMimeType(bytes, "image/png")) {
+    throw new HttpError(400, "Composite data URL content is not a PNG image.");
+  }
+
+  return { bytes };
+}
+
 export function normalizedUploadFileName(filename: string, mimeType: string) {
   const trimmed = filename.trim() || "source";
   if (/\.(png|jpe?g|webp)$/i.test(trimmed)) {

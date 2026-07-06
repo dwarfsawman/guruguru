@@ -37,10 +37,11 @@ import {
   activePaintCanvasAndAsset,
   commitActivePaintCanvas,
   getOrCreatePaintLayer,
-  paintLayerCache,
-  paintUndoStacks
+  paintHistoryStacks,
+  paintLayerCache
 } from "./paintEditorController";
 import { composePaintResultCanvas } from "./paintCanvas";
+import { buildPasteCompositeForGeneration, pasteLayersForAsset } from "./pasteObjectController";
 import { clearActiveImagePan } from "./maskEditorController";
 import { setFormValue } from "./formUtils";
 
@@ -95,6 +96,16 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   }
   if (controlnet) {
     request.controlnet = controlnet;
+  }
+  // 貼り付け(添付)やペイントがあれば「見たまま」を合成して img2img 入力にする
+  // (保存操作なし。親アセット・ツリーは不変 — Docs/Feature-ImagePaste.md)。
+  // ペイントストロークは未保存でも含める(ユーザー確認済みの決定事項)。
+  if (resolvedParentAsset && requiresParentAsset(generationMode)) {
+    commitActivePaintCanvas();
+    const composite = await buildPasteCompositeForGeneration(resolvedParentAsset);
+    if (composite) {
+      request.pasteComposite = composite;
+    }
   }
   setGenerationDraftValue(generationMode === "img2img" ? "img2imgTemplateId" : "templateId", template.id);
   setGenerationDraftValue("generationMode", generationMode);
@@ -643,8 +654,16 @@ async function savePaintResultAsSourceAsset() {
   commitActivePaintCanvas();
   const { canvas, assetId } = active;
   const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
-  const composed = composePaintResultCanvas(image, layer, canvas.width, canvas.height);
+  // 貼り付けオブジェクトも見たままの合成に含める(元アセットの添付はそのまま残る)。
+  const composed = composePaintResultCanvas(image, layer, canvas.width, canvas.height, pasteLayersForAsset(assetId));
   const dataUrl = composed.toDataURL("image/png");
+  // サーバ側 16MB 検証(uploadDataUrl.ts)の手前で親切に失敗させるプリフライト。
+  if (dataUrl.length > Math.ceil(16 * 1024 * 1024 * 1.4) + 128) {
+    state.busy = false;
+    pushToast("合成結果が 16MB を超えています。画像サイズを縮小してください。", "error");
+    requestRender();
+    return;
+  }
 
   const form = document.querySelector<HTMLFormElement>("#generation-form");
   const draft = form ? generationDraftFromForm(form) : null;
@@ -696,7 +715,7 @@ async function savePaintResultAsSourceAsset() {
   };
   applyAssetDimensionsToDraft(response.asset);
   paintLayerCache.delete(assetId);
-  paintUndoStacks.delete(assetId);
+  paintHistoryStacks.delete(assetId);
   delete state.paintDrafts[assetId];
   state.paintEditMode = false;
   state.message = "ペイント結果を新規アセットとして保存し、親画像に設定しました。";

@@ -4,6 +4,7 @@
  * 本 module は `main.ts` を import しない（circular import なし）。
  */
 import { PAINT_MAX_RECENT_COLORS, type PaintDraft } from "./paintTypes";
+import { sanitizePastedObjects } from "../shared/pasteAttachments";
 
 export function defaultPaintDraft(assetId: string): PaintDraft {
   return {
@@ -16,17 +17,26 @@ export function defaultPaintDraft(assetId: string): PaintDraft {
     zoomScale: 1,
     panOffset: { x: 0, y: 0 },
     imageWidth: null,
-    imageHeight: null
+    imageHeight: null,
+    pasteObjects: [],
+    selectedPasteObjectId: null
   };
 }
 
 export function normalizePaintDraft(draft: PaintDraft): PaintDraft {
   const defaults = defaultPaintDraft(draft.assetId);
+  const pasteObjects = sanitizePastedObjects(draft.pasteObjects);
+  const selectedPasteObjectId =
+    draft.selectedPasteObjectId && pasteObjects.some((object) => object.id === draft.selectedPasteObjectId)
+      ? draft.selectedPasteObjectId
+      : null;
   return {
     ...defaults,
     ...draft,
     panOffset: draft.panOffset ?? defaults.panOffset,
-    recentColors: draft.recentColors ?? []
+    recentColors: draft.recentColors ?? [],
+    pasteObjects,
+    selectedPasteObjectId
   };
 }
 

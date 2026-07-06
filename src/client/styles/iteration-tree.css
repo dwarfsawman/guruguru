@@ -403,6 +403,63 @@
   font-style: italic;
 }
 
+/*
+ * エッジポップアウトの添付表示(Docs/Feature-ImagePaste.md (i))。
+ * 折りたたみ時はフッタ「添付 n件 ˅」のみ。ポップアウト上のホイール下スクロール
+ * (edgePopoutController)で .expanded が付き、サムネイルグリッドが現れる。
+ * 展開時のみ pointer-events を許可する(ポップアウトはエッジボタンの子孫なので
+ * hover が途切れず表示が維持される)。展開でサイズが変わっても CSS anchor
+ * positioning + flip-block が追随する。
+ */
+.iteration-edge-attachments-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
+  color: color-mix(in srgb, var(--ink) 60%, transparent);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.iteration-edge-attachments-chevron {
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+
+.iteration-edge-attachments {
+  display: none;
+}
+
+.iteration-edge-popout.expanded {
+  pointer-events: auto;
+  max-width: 420px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.iteration-edge-popout.expanded .iteration-edge-attachments {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.iteration-edge-popout.expanded .iteration-edge-attachments-chevron {
+  transform: rotate(180deg);
+}
+
+.iteration-edge-attachments img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  border: 1px solid color-mix(in srgb, var(--ink) 20%, transparent);
+  border-radius: 4px;
+  background: #111;
+}
+
 .iteration-edge-grid {
   display: grid;
   grid-template-columns: auto 1fr;

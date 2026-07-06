@@ -230,6 +230,125 @@
   touch-action: none;
 }
 
+/*
+ * 貼り付けオブジェクトの表示面。opacity は 1(.mask-canvas の 0.58 を継承しない)で
+ * WYSIWYG に配置できる。入力は #paintCanvas 側で受けるため pointer-events は常に none。
+ */
+.paste-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 2px;
+  pointer-events: none;
+  touch-action: none;
+}
+
+/* ドラッグ中のドロップ受け入れハイライト(classList 直接操作、render を経ない)。 */
+.preview-media.paste-drop-active {
+  outline: 2px dashed var(--accent, #3b82f6);
+  outline-offset: -2px;
+}
+
+.preview-media.paste-drop-active::after {
+  content: attr(data-paste-drop-label);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 5;
+  background: color-mix(in srgb, #000 35%, transparent);
+  color: #fff;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+/*
+ * 変形ギズモの SVG オーバーレイ。root は素通し(pointer-events: none)、
+ * ハンドルだけ操作可能。枠線は non-scaling-stroke で zoom 中も線幅一定。
+ */
+.paste-gizmo-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.paste-outline {
+  fill: none;
+  stroke: var(--accent, #3b82f6);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.paste-rotate-stick {
+  stroke: var(--accent, #3b82f6);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.paste-handle {
+  fill: #fff;
+  stroke: var(--accent, #3b82f6);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: auto;
+}
+
+.paste-handle-rotate {
+  cursor: grab;
+}
+
+.paste-handle-rotate:active {
+  cursor: grabbing;
+}
+
+/* select ツール中の canvas カーソル(ストロークしないため crosshair をやめる)。 */
+#paintCanvas[data-paint-tool="select"] {
+  cursor: default;
+}
+
+/* 選択中オブジェクトの情報セクション。 */
+.paste-object-section {
+  display: grid;
+  gap: 4px;
+}
+
+.paste-object-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.paste-object-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+
+  span {
+    color: color-mix(in srgb, var(--ink) 60%, transparent);
+  }
+}
+
+/* ペイントパネルの貼り付け導入セクション。 */
+.paste-import-section {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.paste-import-hint {
+  margin: 0;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
 .websam-prompt-overlay {
   position: absolute;
   inset: 0;

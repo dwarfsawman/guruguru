@@ -54,7 +54,7 @@ import {
   handleWebSamPointerUp,
   updateSmartMaskDraftFromControl
 } from "./webSamController";
-import { delay } from "./clientUtils";
+import { delay, isTextEntryTarget } from "./clientUtils";
 import {
   getSelectedPoseEdges,
   handlePoseEditorKeydown,
@@ -81,6 +81,17 @@ import {
   syncAssetModalPaintCanvas
 } from "./paintEditorController";
 import { setFormValue } from "./formUtils";
+import "./edgePopoutController";
+import {
+  deselectPasteObjectIfAny,
+  handlePasteKeydown,
+  handlePastePointerCancel,
+  handlePastePointerDown,
+  handlePastePointerMove,
+  handlePastePointerUp,
+  syncAssetModalPasteObjects,
+  syncPasteGizmoScale
+} from "./pasteObjectController";
 import {
   assetPassesFilter,
   captureGenerationDraft,
@@ -333,6 +344,8 @@ function bindEvents() {
     event.preventDefault();
     if (state.paintEditMode) {
       handlePaintWheelZoom(event);
+      // wheel tick は render を経ないため、ギズモのハンドルサイズだけ直接再計算する。
+      syncPasteGizmoScale();
     } else {
       handleMaskWheelZoom(event);
     }
@@ -361,6 +374,8 @@ function bindEvents() {
       if (state.deletePreviewRoundId) {
         state.deletePreviewRoundId = null;
         render();
+      } else if (deselectPasteObjectIfAny()) {
+        // Esc カスケード第2段: 貼り付けオブジェクトの選択解除(モーダルは閉じない)。
       } else if (state.activeAssetId) {
         captureGenerationDraft();
         closeAssetDetail();
@@ -398,6 +413,10 @@ function bindEvents() {
       return;
     }
 
+    if (handlePasteKeydown(event)) {
+      return;
+    }
+
     if (handlePaintEditorKeydown(event)) {
       return;
     }
@@ -431,6 +450,9 @@ function bindEvents() {
     if (event.button !== 0 && event.button !== 2) {
       return;
     }
+    if (handlePastePointerDown(event, target)) {
+      return;
+    }
     if (handlePaintEditorPointerDown(event, target)) {
       return;
     }
@@ -448,6 +470,9 @@ function bindEvents() {
       return;
     }
     if (handlePoseEditorPointerMove(event)) {
+      return;
+    }
+    if (handlePastePointerMove(event)) {
       return;
     }
     if (handlePaintEditorPointerMove(event)) {
@@ -469,6 +494,9 @@ function bindEvents() {
     if (handlePoseEditorPointerUp(event)) {
       return;
     }
+    if (handlePastePointerUp(event)) {
+      return;
+    }
     if (handlePaintEditorPointerUp(event)) {
       return;
     }
@@ -488,6 +516,9 @@ function bindEvents() {
     if (handlePoseEditorPointerCancel(event)) {
       return;
     }
+    if (handlePastePointerCancel(event)) {
+      return;
+    }
     if (handlePaintEditorPointerCancel(event)) {
       return;
     }
@@ -495,16 +526,6 @@ function bindEvents() {
   });
 
   bindRegisteredEvents(app);
-}
-
-function isTextEntryTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false;
-  }
-  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
-    return true;
-  }
-  return target.isContentEditable || !!target.closest("[contenteditable=''], [contenteditable='true']");
 }
 
 async function handleAction(action: string, id: string, target: HTMLElement) {
@@ -590,6 +611,7 @@ function render(_options: RenderOptions = {}) {
   refreshIterationEdges();
   syncAssetModalMaskCanvas();
   syncAssetModalPaintCanvas();
+  syncAssetModalPasteObjects();
   void renderWorkflowDiagramCanvases();
 }
 

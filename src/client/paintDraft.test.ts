@@ -44,6 +44,52 @@ test("pushRecentColor: de-duplicates case-insensitively and moves the color to t
   assert.deepEqual(result, ["#ff0000", "#00ff00"]);
 });
 
+test("defaultPaintDraft: paste fields default to empty/unselected", () => {
+  const draft = defaultPaintDraft("asset-p");
+  assert.deepEqual(draft.pasteObjects, []);
+  assert.equal(draft.selectedPasteObjectId, null);
+});
+
+test("normalizePaintDraft: sanitizes pasteObjects and clears a stale selection", () => {
+  const draft = defaultPaintDraft("asset-p");
+  draft.pasteObjects = [
+    {
+      id: "obj-1",
+      sourceId: "src-1",
+      sourceWidth: 10,
+      sourceHeight: 10,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 }
+    },
+    // 不正エントリ(scaleX <= 0)は黙って除外される
+    {
+      id: "obj-2",
+      sourceId: "src-2",
+      sourceWidth: 10,
+      sourceHeight: 10,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 0, scaleY: 1 }
+    }
+  ];
+  draft.selectedPasteObjectId = "obj-2";
+  const normalized = normalizePaintDraft(draft);
+  assert.deepEqual(normalized.pasteObjects.map((object) => object.id), ["obj-1"]);
+  assert.equal(normalized.selectedPasteObjectId, null);
+});
+
+test("normalizePaintDraft: keeps a valid selection", () => {
+  const draft = defaultPaintDraft("asset-p");
+  draft.pasteObjects = [
+    {
+      id: "obj-1",
+      sourceId: "src-1",
+      sourceWidth: 10,
+      sourceHeight: 10,
+      transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 }
+    }
+  ];
+  draft.selectedPasteObjectId = "obj-1";
+  assert.equal(normalizePaintDraft(draft).selectedPasteObjectId, "obj-1");
+});
+
 test("pushRecentColor: truncates to PAINT_MAX_RECENT_COLORS", () => {
   const existing = Array.from({ length: PAINT_MAX_RECENT_COLORS }, (_, index) => `#${index}${index}${index}`);
   const result = pushRecentColor(existing, "#abcdef");

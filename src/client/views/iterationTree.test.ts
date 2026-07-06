@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { childHue, iterationEdgePopoutHtml, promptSynopsis, rootHue } from "./iterationTree.ts";
+import { childHue, iterationEdgeAttachmentsHtml, iterationEdgePopoutHtml, promptSynopsis, rootHue } from "./iterationTree.ts";
 import type { Round } from "../../shared/apiTypes.ts";
 
 function round(overrides: Partial<Round> = {}): Round {
@@ -157,4 +157,45 @@ test("iterationEdgePopoutHtml: shows a placeholder when the prompt is empty", ()
   const html = iterationEdgePopoutHtml(round({ request: { ...round().request, prompt: "" } }));
   assert.match(html, /プロンプトなし/);
   assert.match(html, /0文字/);
+});
+
+function pastedObject(id: string, sourceId: string) {
+  return {
+    id,
+    sourceId,
+    sourceWidth: 10,
+    sourceHeight: 10,
+    transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 }
+  };
+}
+
+test("iterationEdgeAttachmentsHtml: empty when the round has no paste attachments", () => {
+  assert.equal(iterationEdgeAttachmentsHtml(round()), "");
+  assert.equal(
+    iterationEdgeAttachmentsHtml(round({ request: { ...round().request, pasteComposite: { objects: [] } } })),
+    ""
+  );
+});
+
+test("iterationEdgeAttachmentsHtml: renders footer count and paste-source thumbnails", () => {
+  const html = iterationEdgeAttachmentsHtml(
+    round({
+      request: {
+        ...round().request,
+        pasteComposite: { objects: [pastedObject("o1", "pastesrc_a"), pastedObject("o2", "pastesrc_b")] }
+      }
+    })
+  );
+  assert.match(html, /添付 2件/);
+  assert.match(html, /\/api\/projects\/project-1\/paste-sources\/pastesrc_a/);
+  assert.match(html, /\/api\/projects\/project-1\/paste-sources\/pastesrc_b/);
+  assert.match(html, /iteration-edge-attachments-footer/);
+});
+
+test("iterationEdgePopoutHtml: includes the attachments footer only when attachments exist", () => {
+  assert.ok(!iterationEdgePopoutHtml(round()).includes("iteration-edge-attachments-footer"));
+  const withAttachments = iterationEdgePopoutHtml(
+    round({ request: { ...round().request, pasteComposite: { objects: [pastedObject("o1", "pastesrc_a")] } } })
+  );
+  assert.match(withAttachments, /添付 1件/);
 });

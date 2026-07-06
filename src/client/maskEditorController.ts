@@ -40,6 +40,7 @@ import {
   ensurePoseDraft,
   probeActivePoseModelCache
 } from "./poseEditorController";
+import { ensurePaintDraft, paintDraftForAsset, setPaintDraft } from "./paintEditorController";
 
 let activeMaskStroke: ActiveMaskStroke | null = null;
 let activeImagePan: ActiveImagePan | null = null;
@@ -324,12 +325,16 @@ function finishMaskToolbarDrag() {
 }
 
 function beginImagePan(event: PointerEvent, element: HTMLElement, assetId: string) {
-  const draft = ensureInpaintDraft(assetId);
+  // paint 編集中の render は PaintDraft.panOffset を読む(assetModal.ts の zoomStyle)ため、
+  // 開始オフセット・永続化先も PaintDraft に揃える(取り違えると pointerup 直後に snap-back する)。
+  const draftKind = state.paintEditMode ? "paint" : "inpaint";
+  const originOffset = draftKind === "paint" ? ensurePaintDraft(assetId).panOffset : ensureInpaintDraft(assetId).panOffset;
   activeImagePan = {
     pointerId: event.pointerId,
     assetId,
     startClient: { x: event.clientX, y: event.clientY },
-    originOffset: draft.panOffset
+    originOffset,
+    draftKind
   };
   element.classList.add("panning");
   try {
@@ -359,7 +364,6 @@ function finishImagePan() {
     return;
   }
   const media = document.querySelector<HTMLElement>(".preview-media");
-  const draft = inpaintDraftForAsset(activeImagePan.assetId);
   const left = media ? parseFloat(media.style.getPropertyValue("--mask-pan-x")) : activeImagePan.originOffset.x;
   const top = media ? parseFloat(media.style.getPropertyValue("--mask-pan-y")) : activeImagePan.originOffset.y;
   if (media) {
@@ -370,14 +374,20 @@ function finishImagePan() {
       // Capture may already be released.
     }
   }
-  if (draft) {
-    setInpaintDraft({
-      ...draft,
-      panOffset: {
-        x: Number.isFinite(left) ? left : activeImagePan.originOffset.x,
-        y: Number.isFinite(top) ? top : activeImagePan.originOffset.y
-      }
-    });
+  const panOffset = {
+    x: Number.isFinite(left) ? left : activeImagePan.originOffset.x,
+    y: Number.isFinite(top) ? top : activeImagePan.originOffset.y
+  };
+  if (activeImagePan.draftKind === "paint") {
+    const paintDraft = paintDraftForAsset(activeImagePan.assetId);
+    if (paintDraft) {
+      setPaintDraft({ ...paintDraft, panOffset });
+    }
+  } else {
+    const draft = inpaintDraftForAsset(activeImagePan.assetId);
+    if (draft) {
+      setInpaintDraft({ ...draft, panOffset });
+    }
   }
   activeImagePan = null;
   requestRender();
