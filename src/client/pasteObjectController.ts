@@ -16,7 +16,17 @@
 import { pushToast, dismissToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { api } from "./api";
-import { ensurePaintDraft, paintDraftForAsset, setPaintDraft, undoPaintStroke } from "./paintEditorController";
+import {
+  ensurePaintDraft,
+  getOrCreatePaintLayer,
+  paintDraftForAsset,
+  pushPaintObjectsHistory,
+  pushPaintUndoSnapshot,
+  setPaintDraft,
+  setPasteAttachmentsPersistHook,
+  undoPaintStroke
+} from "./paintEditorController";
+import { renderPaintLayerToCanvas } from "./paintCanvas";
 import { commitActiveMaskCanvas } from "./maskEditorController";
 import { pointerToMaskCanvasPoint } from "./maskCanvas";
 import { assetDimension, findAsset } from "./assetLookup";
@@ -456,6 +466,7 @@ function finishPasteGesture(commit: boolean) {
     return;
   }
   if (commit && gesture.moved) {
+    pushPaintObjectsHistory(gesture.assetId, draft.pasteObjects, draft.selectedPasteObjectId);
     setPaintDraft({
       ...draft,
       pasteObjects: draft.pasteObjects.map((object) =>
@@ -509,6 +520,7 @@ export function handlePastePointerDown(event: PointerEvent, target: HTMLElement)
       // 回転ハンドルのダブルクリック = 0° リセット
       const draft2 = paintDraftForAsset(assetId);
       if (draft2) {
+        pushPaintObjectsHistory(assetId, draft2.pasteObjects, draft2.selectedPasteObjectId);
         setPaintDraft({
           ...draft2,
           pasteObjects: draft2.pasteObjects.map((object) =>
@@ -617,6 +629,7 @@ export function handlePasteKeydown(event: KeyboardEvent): boolean {
   const delta = arrowDelta[event.key];
   if (delta) {
     event.preventDefault();
+    pushNudgeHistoryOncePerBurst(assetId, draft);
     const step = event.shiftKey ? 10 : 1;
     const canvases = activePasteCanvases();
     const nudged = nudgeTransform(selected.transform, delta.x * step, delta.y * step);
@@ -658,6 +671,106 @@ export function deleteSelectedPastedObject(assetId: string) {
     return;
   }
   finishPasteGesture(false);
+  pushPaintObjectsHistory(assetId, draft.pasteObjects, draft.selectedPasteObjectId);
+  setPaintDraft({
+    ...draft,
+    pasteObjects: draft.pasteObjects.filter((object) => object.id !== selected.id),
+    selectedPasteObjectId: null
+  });
+  schedulePasteAttachmentsPut(assetId);
+  requestRender();
+}
+
+/** 矢印キー連打で undo エントリが溢れないよう、1 秒空いた最初のナッジだけ履歴に積む。 */
+let lastNudgeHistoryAt = 0;
+function pushNudgeHistoryOncePerBurst(assetId: string, draft: NonNullable<ReturnType<typeof paintDraftForAsset>>) {
+  const now = Date.now();
+  if (now - lastNudgeHistoryAt > 1000) {
+    pushPaintObjectsHistory(assetId, draft.pasteObjects, draft.selectedPasteObjectId);
+  }
+  lastNudgeHistoryAt = now;
+}
+
+// --- オブジェクト操作(パネルの操作行) ---------------------------------------
+
+function duplicateSelectedPastedObject(assetId: string) {
+  const draft = paintDraftForAsset(assetId);
+  const selected = selectedPastedObject(draft);
+  if (!draft || !selected) {
+    return;
+  }
+  if (draft.pasteObjects.length >= PASTE_MAX_OBJECTS) {
+    pushToast(`貼り付けは 1 画像あたり最大 ${PASTE_MAX_OBJECTS} 件までです。`, "error");
+    return;
+  }
+  pushPaintObjectsHistory(assetId, draft.pasteObjects, draft.selectedPasteObjectId);
+  const copy: PastedObject = {
+    ...selected,
+    id: crypto.randomUUID(),
+    transform: { ...selected.transform, x: selected.transform.x + 16, y: selected.transform.y + 16 }
+  };
+  setPaintDraft({
+    ...draft,
+    pasteObjects: [...draft.pasteObjects, copy],
+    selectedPasteObjectId: copy.id
+  });
+  schedulePasteAttachmentsPut(assetId);
+  requestRender();
+}
+
+/** z順の 1 段移動(direction: 1 = 前面へ / -1 = 背面へ)。配列順 = z順(末尾が最前面)。 */
+function reorderSelectedPastedObject(assetId: string, direction: 1 | -1) {
+  const draft = paintDraftForAsset(assetId);
+  const selected = selectedPastedObject(draft);
+  if (!draft || !selected) {
+    return;
+  }
+  const index = draft.pasteObjects.findIndex((object) => object.id === selected.id);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= draft.pasteObjects.length) {
+    return;
+  }
+  pushPaintObjectsHistory(assetId, draft.pasteObjects, draft.selectedPasteObjectId);
+  const objects = [...draft.pasteObjects];
+  const [moved] = objects.splice(index, 1);
+  objects.splice(nextIndex, 0, moved!);
+  setPaintDraft({ ...draft, pasteObjects: objects });
+  schedulePasteAttachmentsPut(assetId);
+  requestRender();
+}
+
+/**
+ * 選択オブジェクトをペイントレイヤーへ焼き込む(以降その上にブラシで加筆できる)。
+ * undo は 2 連 push: 先に layer スナップショット、次に objects。Ctrl+Z 1 回目で
+ * オブジェクトが戻り(見た目は焼き込みと重なる)、2 回目でレイヤーが戻る。
+ */
+function bakeSelectedPastedObject(assetId: string) {
+  const draft = paintDraftForAsset(assetId);
+  const selected = selectedPastedObject(draft);
+  const paintCanvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
+  if (!draft || !selected || !paintCanvas || paintCanvas.width <= 1) {
+    return;
+  }
+  const bitmap = pasteBitmapCache.get(selected.sourceId);
+  if (!bitmap) {
+    pushToast("貼り付け画像の読み込みが完了していません。", "error");
+    return;
+  }
+  pushPaintUndoSnapshot(assetId);
+  pushPaintObjectsHistory(assetId, draft.pasteObjects, draft.selectedPasteObjectId);
+  const layer = getOrCreatePaintLayer(assetId, paintCanvas.width, paintCanvas.height);
+  const context = layer.getContext("2d");
+  if (!context) {
+    return;
+  }
+  context.save();
+  context.translate(selected.transform.x, selected.transform.y);
+  context.rotate(selected.transform.rotation);
+  context.scale(selected.transform.scaleX, selected.transform.scaleY);
+  context.imageSmoothingQuality = "high";
+  context.drawImage(bitmap, -selected.sourceWidth / 2, -selected.sourceHeight / 2);
+  context.restore();
+  renderPaintLayerToCanvas(paintCanvas, layer);
   setPaintDraft({
     ...draft,
     pasteObjects: draft.pasteObjects.filter((object) => object.id !== selected.id),
@@ -904,6 +1017,7 @@ export async function importPasteImageBlob(
       pendingPlacement = { assetId, objectId: object.id, clientX: dropClient.clientX, clientY: dropClient.clientY };
     }
 
+    pushPaintObjectsHistory(assetId, draft.pasteObjects, draft.selectedPasteObjectId);
     setPaintDraft({
       ...draft,
       pasteObjects: [...draft.pasteObjects, object],
@@ -1042,7 +1156,34 @@ export function closePasteSession(assetId: string | null) {
 registerActions({
   "paste-pick-file": () => {
     openPasteFilePicker();
+  },
+  "paste-object-delete": () => {
+    if (state.activeAssetId) {
+      deleteSelectedPastedObject(state.activeAssetId);
+    }
+  },
+  "paste-object-duplicate": () => {
+    if (state.activeAssetId) {
+      duplicateSelectedPastedObject(state.activeAssetId);
+    }
+  },
+  "paste-object-front": () => {
+    if (state.activeAssetId) {
+      reorderSelectedPastedObject(state.activeAssetId, 1);
+    }
+  },
+  "paste-object-back": () => {
+    if (state.activeAssetId) {
+      reorderSelectedPastedObject(state.activeAssetId, -1);
+    }
+  },
+  "paste-object-bake": () => {
+    if (state.activeAssetId) {
+      bakeSelectedPastedObject(state.activeAssetId);
+    }
   }
 });
 
 registerEventBinder(bindPasteObjectEvents);
+// オブジェクト undo(objects エントリ)復元後の永続化フック(循環 import 回避のための登録)。
+setPasteAttachmentsPersistHook(schedulePasteAttachmentsPut);

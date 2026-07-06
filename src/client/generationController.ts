@@ -37,8 +37,8 @@ import {
   activePaintCanvasAndAsset,
   commitActivePaintCanvas,
   getOrCreatePaintLayer,
-  paintLayerCache,
-  paintUndoStacks
+  paintHistoryStacks,
+  paintLayerCache
 } from "./paintEditorController";
 import { composePaintResultCanvas } from "./paintCanvas";
 import { clearActiveImagePan } from "./maskEditorController";
@@ -696,7 +696,7 @@ async function savePaintResultAsSourceAsset() {
   };
   applyAssetDimensionsToDraft(response.asset);
   paintLayerCache.delete(assetId);
-  paintUndoStacks.delete(assetId);
+  paintHistoryStacks.delete(assetId);
   delete state.paintDrafts[assetId];
   state.paintEditMode = false;
   state.message = "ペイント結果を新規アセットとして保存し、親画像に設定しました。";

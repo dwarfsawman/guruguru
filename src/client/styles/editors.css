@@ -318,6 +318,12 @@
   gap: 4px;
 }
 
+.paste-object-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 .paste-object-readout {
   display: flex;
   align-items: baseline;

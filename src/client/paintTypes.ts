@@ -46,4 +46,5 @@ export const PAINT_BASE_PALETTE: string[] = [
 ];
 
 export const PAINT_MAX_RECENT_COLORS = 8;
-export const PAINT_UNDO_STACK_LIMIT = 5;
+// undo 上限は統合履歴化に伴い paintHistory.ts の PAINT_UNDO_LAYER_LIMIT(=5、旧
+// PAINT_UNDO_STACK_LIMIT を継承)へ移動した。

@@ -90,6 +90,13 @@ function renderPasteObjectSection(draft: PaintDraft) {
         <strong id="pasteScaleValue">${scalePercent}%</strong>
         <strong id="pasteRotationValue">${rotationDeg}°</strong>
       </div>
+      <div class="paste-object-actions">
+        <button class="button-secondary compact" type="button" data-action="paste-object-duplicate" title="複製">複製</button>
+        <button class="button-secondary compact" type="button" data-action="paste-object-front" title="1段前面へ">前面へ</button>
+        <button class="button-secondary compact" type="button" data-action="paste-object-back" title="1段背面へ">背面へ</button>
+        <button class="button-secondary compact" type="button" data-action="paste-object-bake" title="ペイントレイヤーへ焼き込み(以降その上にブラシで描けます)">焼き込み</button>
+        <button class="button-danger compact" type="button" data-action="paste-object-delete" title="削除 (Delete)">削除</button>
+      </div>
       <p class="paste-import-hint">ドラッグ=移動(Shift=軸固定) / 角=拡縮(Shift=縦横独立) / 上ハンドル=回転(Shift=15°) / 矢印=1px / Delete=削除 / Esc=選択解除</p>
     </div>
   `;

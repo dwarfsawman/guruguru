@@ -5,8 +5,9 @@ import { formatCssNumber } from "./format";
 import { findAsset, assetDimension } from "./assetLookup";
 import { clearCanvas, dirtyRectForSegments, paintStroke, pointerToMaskCanvasPoint } from "./maskCanvas";
 import type { PaintDraft, PaintToolKind } from "./paintTypes";
-import { PAINT_UNDO_STACK_LIMIT } from "./paintTypes";
 import { defaultPaintDraft, normalizePaintDraft, pushRecentColor } from "./paintDraft";
+import { objectsHistoryEntry, pushPaintHistoryEntry, type PaintHistoryEntry } from "./paintHistory";
+import type { PastedObject } from "../shared/pasteAttachments";
 import {
   composePaintResultCanvas,
   createPaintLayerCanvas,
@@ -17,7 +18,13 @@ import {
 } from "./paintCanvas";
 
 export const paintLayerCache = new Map<string, HTMLCanvasElement>();
-export const paintUndoStacks = new Map<string, HTMLCanvasElement[]>();
+/**
+ * 統合 undo 履歴(旧 paintUndoStacks)。ストローク/クリア/焼き込みは canvas スナップショット、
+ * 貼り付けオブジェクト操作はメタデータ(軽量)として 1 本のスタックに時系列で積む。
+ * オブジェクトが無い限り、旧スナップショットリング(上限 5)と完全に等価
+ * (paintHistory.test.ts で固定)。
+ */
+export const paintHistoryStacks = new Map<string, Array<PaintHistoryEntry<HTMLCanvasElement>>>();
 let activePaintStroke: { pointerId: number; x: number; y: number; pendingSegments: Array<{ from: { x: number; y: number }; to: { x: number; y: number } }> } | null = null;
 let paintStrokeRafHandle: number | null = null;
 let paintAltEyedropperActive = false;
@@ -260,33 +267,59 @@ export function commitActivePaintCanvas() {
   }
 }
 
-function pushPaintUndoSnapshot(assetId: string) {
+export function pushPaintUndoSnapshot(assetId: string) {
   const layer = paintLayerCache.get(assetId);
   if (!layer) {
     return;
   }
-  const stack = paintUndoStacks.get(assetId) ?? [];
-  stack.push(snapshotPaintLayer(layer));
-  while (stack.length > PAINT_UNDO_STACK_LIMIT) {
-    stack.shift();
-  }
-  paintUndoStacks.set(assetId, stack);
+  const stack = paintHistoryStacks.get(assetId) ?? [];
+  pushPaintHistoryEntry(stack, { kind: "layer", snapshot: snapshotPaintLayer(layer) });
+  paintHistoryStacks.set(assetId, stack);
 }
 
+/** 貼り付けオブジェクト操作の undo エントリを統合履歴へ積む(pasteObjectController から呼ぶ)。 */
+export function pushPaintObjectsHistory(assetId: string, objects: ReadonlyArray<PastedObject>, selectedId: string | null) {
+  const stack = paintHistoryStacks.get(assetId) ?? [];
+  pushPaintHistoryEntry(stack, objectsHistoryEntry<HTMLCanvasElement>(objects, selectedId));
+  paintHistoryStacks.set(assetId, stack);
+}
+
+/**
+ * オブジェクト undo 復元後の永続化フック。pasteObjectController が
+ * `schedulePasteAttachmentsPut` を登録する(逆方向 import による循環を避けるため)。
+ */
+let pasteAttachmentsPersistHook: ((assetId: string) => void) | null = null;
+
+export function setPasteAttachmentsPersistHook(hook: (assetId: string) => void) {
+  pasteAttachmentsPersistHook = hook;
+}
+
+/**
+ * 統合 undo: 最新エントリの kind で分岐して復元する。
+ * `layer` = 従来どおりレイヤースナップショットの書き戻し(挙動不変)、
+ * `objects` = 貼り付けオブジェクト配列と選択状態の差し替え(削除の取り消しも効く)。
+ */
 export function undoPaintStroke() {
   const active = activePaintCanvasAndAsset();
   if (!active) {
     return;
   }
   const { canvas, assetId } = active;
-  const stack = paintUndoStacks.get(assetId);
-  const snapshot = stack?.pop();
-  if (!snapshot) {
+  const stack = paintHistoryStacks.get(assetId);
+  const entry = stack?.pop();
+  if (!entry) {
     return;
   }
-  const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
-  restorePaintLayerFromSnapshot(layer, snapshot);
-  renderPaintLayerToCanvas(canvas, layer);
+  if (entry.kind === "layer") {
+    const layer = getOrCreatePaintLayer(assetId, canvas.width, canvas.height);
+    restorePaintLayerFromSnapshot(layer, entry.snapshot);
+    renderPaintLayerToCanvas(canvas, layer);
+    return;
+  }
+  const draft = ensurePaintDraft(assetId);
+  setPaintDraft({ ...draft, pasteObjects: entry.objects, selectedPasteObjectId: entry.selectedId });
+  pasteAttachmentsPersistHook?.(assetId);
+  requestRender();
 }
 
 function setPaintTool(tool: PaintToolKind | undefined) {

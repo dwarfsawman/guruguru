@@ -74,8 +74,16 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
   {
     title: "ペイント編集",
     items: [
-      { keys: "Ctrl / Cmd + Z", description: "1手戻す(undo)" },
-      { keys: "Alt(押している間)", description: "一時的にスポイトへ切り替え" }
+      { keys: "Ctrl / Cmd + Z", description: "1手戻す(undo。貼り付け操作も時系列で戻る)" },
+      { keys: "Alt(押している間)", description: "一時的にスポイトへ切り替え" },
+      { keys: "画像をドラッグ&ドロップ", description: "画像を貼り付け(モーダル表示中ならどこでも)" },
+      { keys: "貼り付け画像をダブルクリック", description: "どのツール中でも再選択(選択/変形ツールへ)" },
+      { keys: "ドラッグ / Shift", description: "貼り付けの移動 / 水平・垂直に固定" },
+      { keys: "角ハンドル / Shift", description: "拡大縮小 / 縦横独立" },
+      { keys: "回転ハンドル / Shift / ダブルクリック", description: "回転 / 15°スナップ / 0°リセット" },
+      { keys: "矢印 / Shift + 矢印", description: "貼り付けを 1px / 10px 移動" },
+      { keys: "Delete / Backspace", description: "選択中の貼り付けを削除" },
+      { keys: "Esc", description: "貼り付けの選択解除" }
     ]
   },
   {
