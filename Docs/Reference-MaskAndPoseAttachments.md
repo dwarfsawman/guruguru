@@ -16,7 +16,7 @@
 - 手動ペン(`manual-include`)で描くときは `manualInclude` レイヤーに加えて同じストローク形状を `manualErase` レイヤーから `destination-out` で削除する。これにより「消しゴムで消した領域を後からペンで再描きして復活させる」ことができる。消しゴムは引き続き `manualErase` に追加し、SAM結果や手動追加を最終合成で抜く。
 - WebSAM Brush prompt のサンプリング間隔は `BRUSH_PROMPT_POINT_SPACING`(48px)/ `BRUSH_PROMPT_MAX_POINTS`(48点)で間引く。マジックナンバーではなく定数化し、過剰な点で decode が重くなるのを防ぐ。消しゴムによる点削除(`removeBrushPromptPointsNearSegment`)はブラシ半径ベースなので間引いた後も整合する。
 - マスク編集時はブラシサイズ相当の半透明円(`.brush-cursor`)を画像座標系で追従表示する。ペン=緑、消しゴム=赤、Brush prompt=青。Point/Box モードでは非表示。ズーム・パンでも画像座標とズレない(SVG overlay が `mask-zoom-stage` 内で一緒にスケールする)。
-- inpaint の `maskedContent` 既定は `original`(元画像の潜在を維持 + `SetLatentNoiseMask`)。`fill`(`VAEEncodeForInpaint` でマスク部をゼロ埋め)は低デノイズで灰色ベタが残りやすいため既定から外した。UIの選択肢ラベルで灰色化の有無を明示している。
+- inpaint の `maskedContent` 既定は `original`(元画像の潜在を維持 + `SetLatentNoiseMask`)。`fill`(`VAEEncodeForInpaint` でマスク部をゼロ埋め)は低デノイズで灰色ベタが残りやすいため既定から外した。UIの選択肢ラベルで灰色化の有無を明示している。統合 Switch テンプレートも 4 値すべてに対応(2026-07-06、`Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.md` 参照)。ただし content-switch ツリーを持たない旧インポート済みテンプレートでは original 以外は生成時エラーになるため、参照 JSON の再インポートが必要。
 - `patchInpaintLatentPath` では、サンプラー用ノイズマスク(`GrowMask` 済み・padding 含む)と、最終 paste back 用 `ImageCompositeMasked` のマスク(元の非拡大マスク)を分離する。これにより padding 領域へ生成結果が意図より広く貼り戻されるのを防ぎ、灰色化を悪化させない。
 - デノイズ強度はラウンド切替や親画像切替でも保持する。`selectRound` はフォーム全体を破棄せず `denoise` だけ引き継ぐ。`fillGenerationFormFromAsset` は既存の denoise を上書きしない(txt2img など `requiresFullDenoise` のモードを除く)。`renderGenerationPanel` の表示値は `normalizeDenoiseForMode` で正規化し、実際に送信される `request.denoise` と一致させる。
 - `generation_rounds.request_json` には `maskedContent`、`inpaintArea`、`onlyMaskedPadding` と保存済みマスク参照だけを残し、巨大な `maskDataUrl` は保存しない。
