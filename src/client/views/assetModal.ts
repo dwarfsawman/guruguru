@@ -432,7 +432,7 @@ export function renderSmartMaskSidebar(
 ) {
   const poseActive = maskPanelTab === "pose";
   const poseDetected = !!poseDraft?.poses && poseDraft.poses.length > 0;
-  const maskExists = hasMaskData(draft);
+  const maskExists = hasMaskData(draft) || !!draft.previewSamMaskDataUrl;
   return `
     <aside class="mask-editor-panel smart-mask-panel">
       <div class="mask-panel-header">
