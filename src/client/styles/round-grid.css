@@ -161,6 +161,7 @@
 }
 
 .asset-card-main {
+  position: relative;
   display: block;
   flex: 1 1 auto;
   min-height: 0;
@@ -169,6 +170,19 @@
   border: 0;
   border-radius: 0;
   background: transparent;
+}
+
+/*
+ * 貼り付け画像のグリッドプレビュー合成面。<img>(object-fit: cover)と同じ
+ * intrinsic size(asset natural px)を持たせて重ねるので、クロップが一致する。
+ */
+.paste-grid-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
 }
 
 .gen-image {
@@ -275,7 +289,8 @@
 .card-number,
 .seed-chip,
 .mask-badge,
-.pose-badge {
+.pose-badge,
+.paste-badge {
   position: absolute;
   z-index: 9;
   border-radius: 2px;
@@ -357,6 +372,38 @@
   border: 0;
   background: var(--accent);
   color: var(--on-accent);
+  padding: 0 5px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+
+  svg {
+    width: 10px;
+    height: 10px;
+  }
+
+  &.inactive {
+    background: rgba(100, 100, 110, 0.55);
+    color: rgba(220, 220, 228, 0.75);
+  }
+
+  &.inactive svg {
+    opacity: 0.5;
+  }
+}
+
+.paste-badge {
+  right: 27px;
+  bottom: 66px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 16px;
+  height: 16px;
+  border: 0;
+  background: var(--good);
+  color: #05170b;
   padding: 0 5px;
   font-size: 8.5px;
   font-weight: 700;

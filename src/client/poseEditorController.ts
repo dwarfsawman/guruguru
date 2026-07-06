@@ -327,7 +327,9 @@ async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
       modelStatusText: poseProgressText(message.progress),
       modelError: ""
     });
-    requestRender();
+    // ダウンロード progress はチャンクごとに大量に届く。毎回フル render すると
+    // タブ切替などのクリックが詰まる(体感フリーズ)ため、描画はスロットルする。
+    requestPoseProgressRender();
     return;
   }
 
@@ -426,6 +428,18 @@ async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
     });
     requestRender();
   }
+}
+
+const POSE_PROGRESS_RENDER_INTERVAL_MS = 150;
+let lastPoseProgressRenderAt = 0;
+
+function requestPoseProgressRender() {
+  const now = performance.now();
+  if (now - lastPoseProgressRenderAt < POSE_PROGRESS_RENDER_INTERVAL_MS) {
+    return;
+  }
+  lastPoseProgressRenderAt = now;
+  requestRender();
 }
 
 function poseProgressText(progress: PoseWorkerProgress) {

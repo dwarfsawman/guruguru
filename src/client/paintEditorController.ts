@@ -20,7 +20,7 @@ import {
 
 export const paintLayerCache = new Map<string, HTMLCanvasElement>();
 /**
- * 統合 undo 履歴(旧 paintUndoStacks)。ストローク/クリア/焼き込みは canvas スナップショット、
+ * 統合 undo 履歴(旧 paintUndoStacks)。ストローク/クリアは canvas スナップショット、
  * 貼り付けオブジェクト操作はメタデータ(軽量)として 1 本のスタックに時系列で積む。
  * オブジェクトが無い限り、旧スナップショットリング(上限 5)と完全に等価
  * (paintHistory.test.ts で固定)。

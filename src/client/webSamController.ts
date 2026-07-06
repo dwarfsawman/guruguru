@@ -4,6 +4,8 @@ import { registerActions } from "./actionRegistry";
 import { ensureInpaintDraft, inpaintDraftForAsset, setInpaintDraft } from "./draftStore";
 import { ensureMaskLayerSet, getOrCreateMaskLayerSet, maskLayerCache } from "./maskLayerStore";
 import { clampNumber, imageToRawData } from "./clientUtils";
+import { paintLayerCache, pasteLayersForEyedropper } from "./paintEditorController";
+import { composePaintResultCanvas } from "./paintCanvas";
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
 import type {
   WebSamModelStatus,
@@ -228,7 +230,9 @@ async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
       webSamStatusText: webSamProgressText(message.progress),
       webSamError: ""
     });
-    requestRender();
+    // ダウンロード progress はチャンクごとに大量に届く。毎回フル render すると
+    // タブ切替などのクリックが詰まる(体感フリーズ)ため、描画はスロットルする。
+    requestWebSamProgressRender();
     return;
   }
 
@@ -314,6 +318,18 @@ async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
   }
 }
 
+const WEBSAM_PROGRESS_RENDER_INTERVAL_MS = 150;
+let lastWebSamProgressRenderAt = 0;
+
+function requestWebSamProgressRender() {
+  const now = performance.now();
+  if (now - lastWebSamProgressRenderAt < WEBSAM_PROGRESS_RENDER_INTERVAL_MS) {
+    return;
+  }
+  lastWebSamProgressRenderAt = now;
+  requestRender();
+}
+
 function webSamProgressText(progress: { status: WebSamModelStatus; bytesDownloaded: number; totalBytes: number; cached: boolean; detail?: string }) {
   if (progress.status === "cached") {
     return "キャッシュ済み";
@@ -380,7 +396,7 @@ async function encodeActiveImageForWebSam() {
       image.addEventListener("error", () => reject(new Error("画像を読み込めませんでした。")), { once: true });
     });
   }
-  const raw = imageToRawData(image);
+  const raw = webSamInputRawData(image, assetId);
   const requestId = nextWebSamRequestId();
   latestWebSamEncodeRequestId = requestId;
   setInpaintDraft({
@@ -393,6 +409,26 @@ async function encodeActiveImageForWebSam() {
   postWebSamMessage({ type: "encode-image", requestId, imageData: raw });
 }
 
+
+/**
+ * WebSAM のエンコード入力を作る。貼り付け画像(添付オブジェクト)やペイントレイヤーが
+ * あれば「見たまま」の合成(生成時の pasteComposite と同じ層順)を入力にし、
+ * 無ければ従来どおり元画像をそのまま使う。貼り付けた被写体も SAM の選択対象になる。
+ */
+function webSamInputRawData(image: HTMLImageElement, assetId: string) {
+  const pastedLayers = pasteLayersForEyedropper(assetId);
+  const layer = paintLayerCache.get(assetId) ?? null;
+  if (pastedLayers.length === 0 && !layer) {
+    return imageToRawData(image);
+  }
+  const composed = composePaintResultCanvas(image, layer, image.naturalWidth, image.naturalHeight, pastedLayers);
+  const context = composed.getContext("2d");
+  if (!context) {
+    return imageToRawData(image);
+  }
+  const imageData = context.getImageData(0, 0, composed.width, composed.height);
+  return { data: imageData.data, width: composed.width, height: composed.height };
+}
 
 export async function requestWebSamDecode() {
   const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;

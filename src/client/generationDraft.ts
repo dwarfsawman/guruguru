@@ -272,6 +272,37 @@ export function preserveGenerationDenoise() {
   state.generationDraft = denoiseValue ? { denoise: denoiseValue } : null;
 }
 
+/**
+ * 現在のフォーム内容を activeRound の per-round draft として記憶する。
+ * Round 切替・ブランチングの直前に呼ぶことで、後でそのノードへ戻ったとき
+ * 「最後に編集していた内容(プロンプト等)」を復元できる。
+ */
+export function rememberActiveRoundDraft() {
+  const roundId = state.activeRoundId;
+  const form = document.querySelector<HTMLFormElement>("#generation-form");
+  if (!roundId || !form) {
+    return;
+  }
+  state.generationDraftsByRound[roundId] = generationDraftFromForm(form);
+  if (state.currentProjectId) {
+    persistProjectDraft(state.currentProjectId);
+  }
+}
+
+/**
+ * Round 切替時に、その Round で記憶済みの編集内容があれば復元する。
+ * 無い場合は従来どおり denoise のみ引き継ぎ、他は Round の request 値へ
+ * フォールバックする(currentXxxValue 系の既存挙動)。
+ */
+export function restoreGenerationDraftForRound(roundId: string) {
+  const stored = state.generationDraftsByRound[roundId];
+  if (stored) {
+    state.generationDraft = { ...stored };
+    return;
+  }
+  preserveGenerationDenoise();
+}
+
 export function currentPositivePromptValue(asset: Asset) {
   const activeRound = state.detail ? getActiveRound(state.detail) : null;
   return state.generationDraft?.prompt ?? activeRound?.request?.prompt ?? asset.prompt ?? defaultPrompt;

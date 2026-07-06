@@ -48,6 +48,13 @@ function bindEdgePopoutEvents(app: HTMLElement) {
     if (!found) {
       return;
     }
+    // ポップアウト本体のクリックでは閉じない(誤クリックで消えるのを防ぐ)。
+    // 展開トグルはフッタ(添付 n件 ˅)のクリックのみ受け付ける。
+    // ポップアウト外のクリックはエッジボタンの focus が外れることで閉じる(focusout)。
+    const inPopout = event.target instanceof Element && event.target.closest(".iteration-edge-popout");
+    if (inPopout && !(event.target as Element).closest(".iteration-edge-attachments-footer")) {
+      return;
+    }
     setExpanded(found.popout, !found.popout.classList.contains("expanded"));
   });
 
@@ -58,6 +65,12 @@ function bindEdgePopoutEvents(app: HTMLElement) {
     }
     const next = (event as MouseEvent).relatedTarget;
     if (next instanceof Node && found.edge.contains(next)) {
+      return;
+    }
+    // クリックでエッジに focus が乗っている間(=ピン留め状態)は hover が外れても
+    // 折りたたまない。ポップアウト外クリックで focus が外れたときに閉じる(focusout)。
+    const focused = document.activeElement;
+    if (focused instanceof Node && found.edge.contains(focused)) {
       return;
     }
     setExpanded(found.popout, false);

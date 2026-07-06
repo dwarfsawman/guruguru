@@ -253,6 +253,20 @@
     box-shadow: 0 0 0 3px var(--accent-line);
   }
 
+  /* 停止済み: pending と同じ暖色だが点滅しない(終端状態)。 */
+  &.interrupted {
+    border-color: var(--warn);
+    background: var(--panel-soft);
+    color: var(--warn);
+  }
+
+  /* 失敗: 点滅しない終端状態。 */
+  &.failed {
+    border-color: var(--danger);
+    background: var(--panel-soft);
+    color: var(--danger);
+  }
+
   /* UX改善#5: ComfyUI が実際にサンプリング中(queued/pendingで待機中ではない)を示す強調。 */
   &.running {
     border-color: var(--good);
@@ -429,8 +443,28 @@
   transition: transform 0.12s ease;
 }
 
+/*
+ * 展開/折りたたみは grid-template-rows(0fr ⇄ 1fr)の transition で
+ * 「ニュルっと」高さアニメーションする(高さ auto を直接 transition できないための定石)。
+ * サムネイル本体は inner 側に置き、min-height: 0 + overflow: hidden で 0fr 時に潰す。
+ */
 .iteration-edge-attachments {
-  display: none;
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: 0;
+  opacity: 0;
+  transition:
+    grid-template-rows 0.28s ease,
+    margin-top 0.28s ease,
+    opacity 0.22s ease;
+}
+
+.iteration-edge-attachments-inner {
+  display: grid;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 6px;
 }
 
 .iteration-edge-popout.expanded {
@@ -441,17 +475,16 @@
 }
 
 .iteration-edge-popout.expanded .iteration-edge-attachments {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
-  gap: 6px;
+  grid-template-rows: 1fr;
   margin-top: 8px;
+  opacity: 1;
 }
 
 .iteration-edge-popout.expanded .iteration-edge-attachments-chevron {
   transform: rotate(180deg);
 }
 
-.iteration-edge-attachments img {
+.iteration-edge-attachments-inner img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: contain;

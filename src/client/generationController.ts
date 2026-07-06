@@ -23,12 +23,14 @@ import {
   findRound,
   generationDraftFromForm,
   generationDraftFromRequest,
+  getActiveRound,
   getActiveRoundAssets,
   getPreferredParentAsset,
   inpaintRequestForParent,
   prepareGenerationFormForParent,
-  preserveGenerationDenoise,
+  rememberActiveRoundDraft,
   resolveTemplateForGeneration,
+  restoreGenerationDraftForRound,
   setGenerationDraftValue
 } from "./generationDraft";
 import { openAssetDetail } from "./assetDetailController";
@@ -60,6 +62,9 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   }
 
   const form = readForm("generation-form");
+  // ブランチング後に親ノードへ戻ったとき、編集途中の内容(プロンプト等)を
+  // 復元できるよう、送信前のフォーム内容を現在の Round に記憶しておく。
+  rememberActiveRoundDraft();
   const generationMode = overrideMode ?? form.generationMode ?? "txt2img";
   const resolvedParentAsset = resolveParentAssetForGeneration(parentAsset, generationMode, form.parentAssetId);
   const parentAssetId = resolvedParentAsset?.id ?? null;
@@ -122,6 +127,7 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   if (previousInpaint && inpaint && previousInpaint.parentAssetId === parentAssetId) {
     state.generationDraft.inpaint = previousInpaint;
   }
+  state.generationDraftsByRound[roundId] = state.generationDraft;
   state.message = `ComfyUIに送信しました。prompt_id: ${response.promptId}`;
   state.busy = false;
   await refreshProject(roundId, null);
@@ -479,7 +485,9 @@ export function previewRoundDeletion(roundId: string) {
 }
 
 export function selectRound(roundId: string) {
-  preserveGenerationDenoise();
+  // 現在の Round の編集内容を記憶してから切り替え、切替先で記憶済みの内容を復元する。
+  rememberActiveRoundDraft();
+  restoreGenerationDraftForRound(roundId);
   state.activeRoundId = roundId;
   state.activeAssetId = null;
   state.deletePreviewRoundId = null;
@@ -616,12 +624,52 @@ export function roundToStep(value: number, step: number) {
   return Math.max(step, Math.round(value / step) * step);
 }
 
-export function resetGenerationParamsToTemplateDefaults() {
+/**
+ * 「ノード元値」: 編集内容(プロンプト・生成パラメータ)を、表示中ノード(activeRound)の
+ * 開始時点の値(round.request)へ戻す。request を持たないノード(初回など)は従来どおり
+ * Workflow JSON の初期値へフォールバックする。
+ */
+export function resetGenerationParamsToNodeValues() {
   const form = document.querySelector<HTMLFormElement>("#generation-form");
   if (!form) {
     return;
   }
 
+  const round = state.detail ? getActiveRound(state.detail) : null;
+  const request = round?.request;
+  if (!request) {
+    resetGenerationParamsToTemplateDefaults(form);
+    return;
+  }
+
+  const mode = request.generationMode === "manual_upload" ? "img2img" : request.generationMode;
+  if (state.templates.some((template) => template.id === request.templateId)) {
+    setFormValue(form, "templateId", request.templateId);
+    if (mode === "img2img") {
+      setFormValue(form, "img2imgTemplateId", request.templateId);
+    }
+  }
+  setFormValue(form, "prompt", request.prompt ?? "");
+  setFormValue(form, "negativePrompt", request.negativePrompt ?? "");
+  setFormValue(form, "batchSize", String(request.batchSize ?? 16));
+  setFormValue(form, "steps", String(request.steps ?? 20));
+  setFormValue(form, "cfg", String(request.cfg ?? 7));
+  setFormValue(form, "denoise", String(normalizeDenoiseForMode(request.denoise ?? defaultDenoiseForMode(mode), mode)));
+  setFormValue(form, "width", String(request.width ?? 512));
+  setFormValue(form, "height", String(request.height ?? 768));
+  setFormValue(form, "seed", request.seed === null || request.seed === undefined ? "" : String(request.seed));
+  setFormValue(form, "seedMode", request.seedMode ?? "random");
+  setFormValue(form, "sampler", request.sampler ?? "euler");
+  setFormValue(form, "scheduler", request.scheduler ?? "normal");
+  setFormValue(form, "generationMode", mode);
+
+  captureGenerationDraft();
+  rememberActiveRoundDraft();
+  state.message = "編集内容をノード開始時点の値に戻しました。";
+  requestRender();
+}
+
+function resetGenerationParamsToTemplateDefaults(form: HTMLFormElement) {
   const templateId = (form.elements.namedItem("templateId") as HTMLSelectElement | null)?.value ?? "";
   const template = state.templates.find((item) => item.id === templateId) ?? null;
   const defaults = templateGenerationDefaults(template);
@@ -640,6 +688,7 @@ export function resetGenerationParamsToTemplateDefaults() {
   setFormValue(form, "generationMode", mode);
 
   captureGenerationDraft();
+  rememberActiveRoundDraft();
   state.message = "生成パラメータをWorkflow JSONの初期値に戻しました。";
   requestRender();
 }
@@ -754,7 +803,7 @@ registerActions({
   "invert-selection": () => invertSelectionActiveRound(),
   "export-selected": () => exportSelected(),
   "reset-session": () => resetActiveRoundMarks(),
-  "reset-generation-params": () => resetGenerationParamsToTemplateDefaults(),
+  "reset-generation-params": () => resetGenerationParamsToNodeValues(),
   "random-seed": () => randomSeed(),
   "swap-resolution": () => swapResolution(),
   "scale-resolution": (_id, target) => scaleResolution(target.dataset.scaleDirection === "down" ? -1 : 1),

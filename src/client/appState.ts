@@ -177,6 +177,11 @@ export interface AppState {
   message: string;
   toasts: Toast[];
   generationDraft: GenerationDraft | null;
+  /**
+   * Round ごとの編集内容(プロンプト等)の記憶。Round を切り替えても、その Round で
+   * 最後に編集していたフォーム内容へ戻れる(ブランチングで親ノードの編集が消えない)。
+   */
+  generationDraftsByRound: Record<string, GenerationDraft>;
   inpaintDrafts: Record<string, InpaintDraft>;
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
   iterationScrollReset: boolean;
@@ -185,6 +190,8 @@ export interface AppState {
   maskToolbarPos: { left: number; top: number } | null;
   maskPanelWidths: { left: number; right: number };
   showMaskGridTag: boolean;
+  /** グリッドの PASTE タグ(貼り付け画像のプレビュー合成)の表示 ON/OFF。 */
+  showPasteGridTag: boolean;
   copiedSeedAssetId: string | null;
   deletePreviewRoundId: string | null;
   workflowImportModalOpen: boolean;
@@ -231,6 +238,7 @@ export const state: AppState = {
     return toastsValue;
   },
   generationDraft: null,
+  generationDraftsByRound: {},
   inpaintDrafts: {},
   iterationScrollReset: false,
   maskEditMode: false,
@@ -238,6 +246,7 @@ export const state: AppState = {
   maskToolbarPos: null,
   maskPanelWidths: { left: 300, right: 300 },
   showMaskGridTag: true,
+  showPasteGridTag: true,
   copiedSeedAssetId: null,
   deletePreviewRoundId: null,
   workflowImportModalOpen: false,

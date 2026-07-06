@@ -6,6 +6,7 @@
  */
 import type { Json } from "./json";
 import type { GenerationRequest } from "./types";
+import type { PastedObject } from "./pasteAttachments";
 
 export interface ComfyStatus {
   ok: boolean;
@@ -119,6 +120,11 @@ export interface ProjectDetail {
   assets: Asset[];
   assetParents: AssetParent[];
   templates: WorkflowTemplate[];
+  /**
+   * assetId → 貼り付け添付(PastedObject[])。グリッドのプレビュー合成と PASTE タグに使う。
+   * 添付が 1 件以上あるアセットのみキーを持つ。
+   */
+  pasteAttachments: Record<string, PastedObject[]>;
 }
 
 export interface CollectRoundResponse {

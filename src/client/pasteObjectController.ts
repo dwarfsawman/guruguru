@@ -18,17 +18,15 @@ import { registerActions, registerEventBinder } from "./actionRegistry";
 import { api } from "./api";
 import {
   ensurePaintDraft,
-  getOrCreatePaintLayer,
   paintDraftForAsset,
   paintLayerCache,
   pushPaintObjectsHistory,
-  pushPaintUndoSnapshot,
   setPaintDraft,
   setPasteAttachmentsPersistHook,
   setPasteLayersProvider,
   undoPaintStroke
 } from "./paintEditorController";
-import { composePaintResultCanvas, renderPaintLayerToCanvas, type ComposedPasteLayer } from "./paintCanvas";
+import { composePaintResultCanvas, type ComposedPasteLayer } from "./paintCanvas";
 import { isTextEntryTarget } from "./clientUtils";
 import type { Asset } from "../shared/apiTypes";
 import { commitActiveMaskCanvas } from "./maskEditorController";
@@ -284,24 +282,79 @@ export function renderPasteObjectsToCanvas(
     const transform = overrideTransform && overrideTransform.objectId === object.id
       ? overrideTransform.transform
       : object.transform;
-    const bitmap = pasteBitmapCache.get(object.sourceId);
-    context.save();
-    context.translate(transform.x, transform.y);
-    context.rotate(transform.rotation);
-    context.scale(transform.scaleX, transform.scaleY);
-    if (bitmap) {
-      context.imageSmoothingQuality = "high";
-      context.drawImage(bitmap, -object.sourceWidth / 2, -object.sourceHeight / 2);
-    } else {
-      ensureSourceBitmap(object.sourceId);
-      context.strokeStyle = "rgba(160, 160, 160, 0.9)";
-      context.setLineDash([8, 6]);
-      context.lineWidth = 2;
-      context.strokeRect(-object.sourceWidth / 2, -object.sourceHeight / 2, object.sourceWidth, object.sourceHeight);
-    }
-    context.restore();
+    drawPastedObject(context, object, transform);
   }
   context.restore();
+}
+
+/** 1 オブジェクトを natural 座標系の 2D context へ描く(未ロード分はプレースホルダ+lazy fetch)。 */
+function drawPastedObject(context: CanvasRenderingContext2D, object: PastedObject, transform: PasteTransform) {
+  const bitmap = pasteBitmapCache.get(object.sourceId);
+  context.save();
+  context.translate(transform.x, transform.y);
+  context.rotate(transform.rotation);
+  context.scale(transform.scaleX, transform.scaleY);
+  if (bitmap) {
+    context.imageSmoothingQuality = "high";
+    context.drawImage(bitmap, -object.sourceWidth / 2, -object.sourceHeight / 2);
+  } else {
+    ensureSourceBitmap(object.sourceId);
+    context.strokeStyle = "rgba(160, 160, 160, 0.9)";
+    context.setLineDash([8, 6]);
+    context.lineWidth = 2;
+    context.strokeRect(-object.sourceWidth / 2, -object.sourceHeight / 2, object.sourceWidth, object.sourceHeight);
+  }
+  context.restore();
+}
+
+// --- グリッド(Round グリッド)のプレビュー合成 --------------------------------
+
+/**
+ * グリッドタイル表示用の貼り付けオブジェクト一覧。
+ * このセッションで編集済み(ロード済み)ならクライアント draft が真実、
+ * 未ロードならプロジェクト詳細に同梱されたサーバ永続値(detail.pasteAttachments)を使う。
+ */
+export function pasteObjectsForGridAsset(assetId: string): PastedObject[] {
+  const draft = paintDraftForAsset(assetId);
+  if (draft && (loadedAttachmentAssetIds.has(assetId) || draft.pasteObjects.length > 0)) {
+    return draft.pasteObjects;
+  }
+  return state.detail?.pasteAttachments?.[assetId] ?? [];
+}
+
+/**
+ * 毎 render 後に、グリッドの `.paste-grid-canvas`(タイルの <img> に重ねる合成面)を
+ * natural size で描き直す。canvas は <img> と同じ intrinsic size + object-fit: cover
+ * なのでクロップが一致する。ビットマップは lazy fetch(ロード完了で requestRender)。
+ */
+export function syncGridPasteCanvases() {
+  const canvases = document.querySelectorAll<HTMLCanvasElement>(".paste-grid-canvas");
+  canvases.forEach((canvas) => {
+    const assetId = canvas.dataset.assetId;
+    if (!assetId) {
+      return;
+    }
+    const asset = findAsset(assetId);
+    const width = assetDimension(asset, "width");
+    const height = assetDimension(asset, "height");
+    if (!width || !height) {
+      return;
+    }
+    if (canvas.width !== width) {
+      canvas.width = width;
+    }
+    if (canvas.height !== height) {
+      canvas.height = height;
+    }
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return;
+    }
+    context.clearRect(0, 0, width, height);
+    for (const object of pasteObjectsForGridAsset(assetId)) {
+      drawPastedObject(context, object, object.transform);
+    }
+  });
 }
 
 // --- 選択・変形ジェスチャ -----------------------------------------------------
@@ -739,47 +792,6 @@ function reorderSelectedPastedObject(assetId: string, direction: 1 | -1) {
   const [moved] = objects.splice(index, 1);
   objects.splice(nextIndex, 0, moved!);
   setPaintDraft({ ...draft, pasteObjects: objects });
-  schedulePasteAttachmentsPut(assetId);
-  requestRender();
-}
-
-/**
- * 選択オブジェクトをペイントレイヤーへ焼き込む(以降その上にブラシで加筆できる)。
- * undo は 2 連 push: 先に layer スナップショット、次に objects。Ctrl+Z 1 回目で
- * オブジェクトが戻り(見た目は焼き込みと重なる)、2 回目でレイヤーが戻る。
- */
-function bakeSelectedPastedObject(assetId: string) {
-  const draft = paintDraftForAsset(assetId);
-  const selected = selectedPastedObject(draft);
-  const paintCanvas = document.querySelector<HTMLCanvasElement>("#paintCanvas");
-  if (!draft || !selected || !paintCanvas || paintCanvas.width <= 1) {
-    return;
-  }
-  const bitmap = pasteBitmapCache.get(selected.sourceId);
-  if (!bitmap) {
-    pushToast("貼り付け画像の読み込みが完了していません。", "error");
-    return;
-  }
-  pushPaintUndoSnapshot(assetId);
-  pushPaintObjectsHistory(assetId, draft.pasteObjects, draft.selectedPasteObjectId);
-  const layer = getOrCreatePaintLayer(assetId, paintCanvas.width, paintCanvas.height);
-  const context = layer.getContext("2d");
-  if (!context) {
-    return;
-  }
-  context.save();
-  context.translate(selected.transform.x, selected.transform.y);
-  context.rotate(selected.transform.rotation);
-  context.scale(selected.transform.scaleX, selected.transform.scaleY);
-  context.imageSmoothingQuality = "high";
-  context.drawImage(bitmap, -selected.sourceWidth / 2, -selected.sourceHeight / 2);
-  context.restore();
-  renderPaintLayerToCanvas(paintCanvas, layer);
-  setPaintDraft({
-    ...draft,
-    pasteObjects: draft.pasteObjects.filter((object) => object.id !== selected.id),
-    selectedPasteObjectId: null
-  });
   schedulePasteAttachmentsPut(assetId);
   requestRender();
 }
@@ -1358,11 +1370,6 @@ registerActions({
   "paste-object-back": () => {
     if (state.activeAssetId) {
       reorderSelectedPastedObject(state.activeAssetId, -1);
-    }
-  },
-  "paste-object-bake": () => {
-    if (state.activeAssetId) {
-      bakeSelectedPastedObject(state.activeAssetId);
     }
   }
 });

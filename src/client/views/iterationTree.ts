@@ -105,7 +105,16 @@ export function renderRoundTreeNode(
   const active = round.id === activeRoundId;
   const completed = round.status === "completed";
   const running = round.status === "running";
-  const dotClass = `${active ? "active" : completed ? "completed" : "pending"}${running ? " running" : ""}`;
+  // 終端状態(interrupted / failed)は pending のパルス点滅を引き継がない専用 class にする
+  // (停止後・失敗後に点滅し続けないため)。
+  const statusClass = completed
+    ? "completed"
+    : round.status === "interrupted"
+      ? "interrupted"
+      : round.status === "failed"
+        ? "failed"
+        : "pending";
+  const dotClass = `${active ? "active" : statusClass}${running ? " running" : ""}`;
   const hue = parentHue == null ? rootHue(round) : childHue(parentHue, round.request?.denoise ?? 1);
   const isDeleteRoot = deletePreviewRoundId === round.id;
   const isDeleteTarget = deleteTargetIds.has(round.id);
@@ -205,12 +214,14 @@ export function iterationEdgeAttachmentsHtml(round: Round): string {
       <span class="iteration-edge-attachments-chevron" aria-hidden="true">˅</span>
     </div>
     <div class="iteration-edge-attachments">
-      ${objects
-        .map(
-          (object) =>
-            `<img loading="lazy" src="/api/projects/${escapeAttr(round.projectId)}/paste-sources/${escapeAttr(object.sourceId)}" alt="添付画像" />`
-        )
-        .join("")}
+      <div class="iteration-edge-attachments-inner">
+        ${objects
+          .map(
+            (object) =>
+              `<img loading="lazy" src="/api/projects/${escapeAttr(round.projectId)}/paste-sources/${escapeAttr(object.sourceId)}" alt="添付画像" />`
+          )
+          .join("")}
+      </div>
     </div>
   `;
 }
