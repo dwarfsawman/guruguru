@@ -275,6 +275,41 @@ UNETLoader(731) → [Hyper LoRA] → [IP-Adapter apply] → [PuLID apply] → Mo
 
 ## 未決事項（実装中に判断）
 
-- カスタムノードの正確な入力名・モデル配置先（Phase 1 で `/object_info` から確定）
 - PuLID / IP-Adapter の strength を UI に露出するか（初期は固定値、必要なら per-reference スライダを後付け）
 - Hyper LoRA を完全自動挿入にするか、モデル選択 UI に小さなトグルを設けるか
+
+## Phase 1 実施記録（2026-07-07）: 実機確認の代替手段と確定した実データ
+
+テスト用 ComfyUI(8288) の `custom_nodes` は空(model-select機能検証時のまま)で、PuLID-Flux/x-flux-comfyui/
+comfyui-easy-use は未導入。これらは insightface・onnxruntime・facexlib 等の重い C 拡張依存を伴い、
+Desktop 版と共有している `standalone-env` へ pip install するのは、他機能の検証にも使う共有環境を壊すリスクが
+ある(操作メモ.md: torch 消失時の再インストール事例が既にある通り環境自体が脆い)。そのため **実際にパックを
+導入して `/object_info` を叩く代わりに、各パックの GitHub 上のノード実装ソースを直接読んで INPUT_TYPES を
+確定**した(`PaoloC68/ComfyUI-PuLID-Flux-Chroma` の `pulidflux.py`、`XLabs-AI/x-flux-comfyui` の `nodes.py`、
+`yolain/ComfyUI-Easy-Use` の `py/nodes/image.py`)。参照ワークフロー JSON の `widgets_values` 個数・順序と
+突合し、一致することを確認済み(下表)。**実際のカスタムノードパックをテスト環境に導入しての `/object_info`
+実機確認・生成テストは、共有 Python 環境への重い依存追加を伴うため、着手前にユーザーへ確認する**
+(Phase 5 検証時の注意事項として引き継ぐ)。
+
+### 確定した入力名・モデルディレクトリ
+
+| ノードクラス | 入力名 | folder_paths カテゴリ | 配置先 | 備考 |
+|---|---|---|---|---|
+| `PulidFluxModelLoader` | `pulid_file` | `pulid` | `models/pulid` | |
+| `PulidFluxInsightFaceLoader` | `provider`(CPU/CUDA/ROCM) | — | `models/insightface`(自動DL) | ファイル選択なし。antelopev2 を自動取得 |
+| `PulidFluxEvaClipLoader` | (入力なし) | — | —(自動DL) | EVA02-CLIP-L-14-336 を自動取得 |
+| `ApplyPulidFlux` | model/pulid_flux/eva_clip/face_analysis/image + optional attn_mask/**prior_image** + weight/start_at/end_at/fusion/fusion_weight_max/fusion_weight_min/train_step/use_gray | — | — | `prior_image` が「顔参照画像」の実体(train_weight fusion 時のターゲット) |
+| `LoadFluxIPAdapter` | **`ipadatper`**(原文ママ、タイポ) | `xlabs_ipadapters` | `models/xlabs/ipadapters` | 入力名のタイポに注意。model-check の照合キーもこれに合わせる |
+| `LoadFluxIPAdapter` | `clip_vision` | `clip_vision`(コア共通) | `models/clip_vision` | コアの `CLIPVisionLoader` は入力名 `clip_name` のため衝突なし |
+| `ApplyAdvancedFluxIPAdapter` | model/ip_adapter_flux/image + begin_strength/end_strength/**smothing_type**(原文ママ、タイポ) | — | — | |
+| `easy imageRemBg`(comfyui-easy-use) | images + rem_mode(固定enum: RMBG-2.0/RMBG-1.4/Inspyrenet/BEN2)/image_output/save_prefix + optional torchscript_jit/add_background/refine_foreground | — | REMBG_DIR に自動DL | **ファイル選択ウィジェットが無い**(rem_mode は固定リストで、モデル実体は初回使用時に自動DL)。この feature の必要モデルファイル一覧は空にし、ノードパック存在チェックのみで可用性を判定する |
+
+MODEL チェーン順・ウィジェット値は参照ワークフロー JSON と完全一致(`ApplyPulidFlux` の8ウィジェット、
+`LoadFluxIPAdapter` の出力名 `ipadapterFlux`、`ApplyAdvancedFluxIPAdapter` の3ウィジェット、
+`easy imageRemBg` の6ウィジェット、すべて順序含め一致)。ただし参照 JSON の `ApplyPulidFlux` には
+`options`(OPTIONS型、未接続)という追加の optional 入力があり、取得した `main` ブランチのソースには
+無い。未接続のため実装上は無視してよい(新しめのバージョン差分と思われる)。
+
+これにより `ModelKind` を拡張する: `pulid` / `ipadapterFlux` / `clipVision` を追加
+(`pulid_file`→`pulid`、`ipadatper`→`ipadapterFlux`、`clip_vision`→`clipVision`)。
+RMBG は `models` 要件が空配列になる想定で feature スキーマを設計する(ノードパック存在のみで可用性判定)。
