@@ -43,7 +43,6 @@
 
 .workflow-dialog-header,
 .workflow-diagram-heading,
-.workflow-diagram-meta,
 .workflow-import-modal-actions {
   display: flex;
   align-items: center;
@@ -133,65 +132,7 @@
   padding-top: 12px;
 }
 
-.workflow-diagram-block {
-  display: grid;
-  min-height: 0;
-  gap: 10px;
-}
-
-.workflow-diagram-meta {
-  justify-content: flex-start;
-  color: var(--muted);
-  font-size: 12px;
-
-  span {
-    display: inline-grid;
-    min-height: 24px;
-    place-items: center;
-    border: 1px solid var(--line);
-    border-radius: 2px;
-    background: color-mix(in srgb, var(--ink) 4.5%, transparent);
-    padding: 3px 8px;
-  }
-}
-
-.workflow-diagram-canvas {
-  position: relative;
-  min-height: 360px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #14141f;
-  padding: 16px;
-  cursor: grab;
-  user-select: none;
-
-  &.panning {
-    cursor: grabbing;
-  }
-
-  svg {
-    display: block;
-    min-width: 100%;
-    max-width: none;
-    height: auto;
-    transform: translate(var(--wf-pan-x, 0px), var(--wf-pan-y, 0px)) scale(var(--wf-zoom, 1));
-    transform-origin: 0 0;
-  }
-}
-
-.workflow-diagram-dialog .workflow-diagram-canvas {
-  height: min(68vh, 720px);
-}
-
-.workflow-diagram-source {
-  display: none;
-}
-
-.workflow-diagram-loading,
-.workflow-diagram-error,
-.workflow-diagram-warning,
-.workflow-diagram-notice {
+.workflow-diagram-warning {
   border: 1px solid var(--line);
   border-radius: 3px;
   background: color-mix(in srgb, var(--ink) 4.5%, transparent);
@@ -199,34 +140,10 @@
   padding: 12px;
   font-size: 12px;
   line-height: 1.5;
-}
-
-.workflow-diagram-warning {
   margin-bottom: 10px;
   border-color: color-mix(in srgb, var(--warn) 28%, transparent);
   background: color-mix(in srgb, var(--warn) 8%, transparent);
   color: #fde68a;
-}
-
-.workflow-diagram-notice {
-  display: grid;
-  gap: 4px;
-
-  strong {
-    color: var(--ink);
-  }
-}
-
-.workflow-diagram-fallback {
-  max-height: 220px;
-  overflow: auto;
-  margin: 10px 0 0;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.24);
-  color: var(--muted);
-  padding: 10px;
-  white-space: pre-wrap;
 }
 
 .model-install-dialog {

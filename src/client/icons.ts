@@ -46,10 +46,6 @@ export function iconDownload() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"></path></svg>`;
 }
 
-export function iconDiagram() {
-  return `<svg viewBox="0.1 1.9 18 8.2" aria-hidden="true" class="icon-diagram"><rect x="1" y="3" width="6" height="6" rx="1.4"></rect><path d="M8 6h2.8"></path><path d="M14 2.8 17.2 6 14 9.2 10.8 6Z"></path></svg>`;
-}
-
 export function iconPlay() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7Z"></path></svg>`;
 }

@@ -3,16 +3,10 @@ import type { ComfySettings, LlmSettings } from "../shared/types";
 import type { Asset, ProjectDetail, ProjectRow, ProjectSummary, Round } from "../shared/apiTypes";
 import { api } from "./api";
 import type { WorkflowTemplate } from "./workflowTypes";
-import {
-  buildTemplateExportPayload,
-  workflowExportFilename
-} from "./workflowImport";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { draftStorageKey, resetProjectDrafts, restoreOrResetProjectDrafts } from "./draftStore";
 import { clearPasteCaches } from "./pasteObjectController";
-import { clampNumber } from "./clientUtils";
-import { formatCssNumber } from "./format";
 import { readForm } from "./formUtils";
 import { applyAssetDimensionsToDraft, generationDraftFromForm } from "./generationDraft";
 import { refreshProject, resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
@@ -33,7 +27,6 @@ export async function loadHome() {
   resetRoundDeletionHistory();
   state.roundProgress = {};
   state.iterationScrollReset = true;
-  state.activeWorkflowDiagramTemplateId = null;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
   state.llmSettings = await api<LlmSettings>("/api/settings/llm");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
@@ -59,29 +52,12 @@ async function openProject(projectId: string) {
   resetRoundDeletionHistory();
   state.roundProgress = {};
   state.iterationScrollReset = true;
-  state.activeWorkflowDiagramTemplateId = null;
   requestRender();
   resumeAutoCollectForActiveRounds();
 }
 
-function openWorkflowDiagram(target: HTMLElement) {
-  const template = findTemplateFromActionTarget(target);
-  if (!template) {
-    state.message = "diagramを表示するWorkflowTemplateがありません。";
-    requestRender();
-    return;
-  }
-  state.activeWorkflowDiagramTemplateId = template.id;
-  requestRender();
-}
-
-function closeWorkflowDiagram() {
-  state.activeWorkflowDiagramTemplateId = null;
-  requestRender();
-}
-
 export function closeWorkflowModals() {
-  state.activeWorkflowDiagramTemplateId = null;
+  state.modelInstallFamily = null;
   requestRender();
 }
 
@@ -153,42 +129,6 @@ export async function uploadSourceAsset(input: HTMLInputElement) {
   state.message = "画像を source asset として登録し、親画像に設定しました。";
   await refreshProject(response.round.id, null);
   requestRender();
-}
-
-function exportWorkflowTemplate(target: HTMLElement, kind: "template" | "workflow") {
-  const template = findTemplateFromActionTarget(target);
-  if (!template) {
-    state.message = "エクスポートするWorkflowTemplateがありません。";
-    requestRender();
-    return;
-  }
-
-  if (kind === "workflow") {
-    downloadJson(workflowExportFilename(template.name, "workflow"), template.workflowJson);
-    state.message = `WorkflowTemplate "${template.name}" のraw workflow JSONを書き出しました。`;
-  } else {
-    downloadJson(workflowExportFilename(template.name, "template"), buildTemplateExportPayload(template));
-    state.message = `WorkflowTemplate "${template.name}" をGURUGURU template形式で書き出しました。`;
-  }
-  requestRender();
-}
-
-function findTemplateFromActionTarget(target: HTMLElement) {
-  const directId = target.dataset.templateId;
-  const sourceId = target.dataset.templateSource;
-  const source = sourceId ? document.getElementById(sourceId) as HTMLSelectElement | null : null;
-  const templateId = directId ?? source?.value ?? "";
-  return state.templates.find((template) => template.id === templateId) ?? null;
-}
-
-function downloadJson(filename: string, value: unknown) {
-  const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function fileToDataUrl(file: File) {
@@ -272,167 +212,8 @@ async function deleteProject(projectId: string) {
   requestRender();
 }
 
-async function deleteWorkflowTemplate(target: HTMLElement) {
-  const template = findTemplateFromActionTarget(target);
-  if (!template) {
-    state.message = "削除するWorkflowTemplateがありません。";
-    requestRender();
-    return;
-  }
-  if (!window.confirm(`WorkflowTemplate "${template.name}" v${template.version} を削除しますか？既存の生成履歴は残ります。`)) {
-    return;
-  }
-
-  await api(`/api/templates/${template.id}`, { method: "DELETE" });
-  state.templates = state.templates.filter((item) => item.id !== template.id);
-  if (state.detail) {
-    await refreshProject(state.activeRoundId, state.activeAssetId);
-  }
-  state.message = `WorkflowTemplate "${template.name}" を削除しました。`;
-  requestRender();
-}
-
-interface ActiveWorkflowDiagramPan {
-  pointerId: number;
-  element: HTMLElement;
-  startClient: { x: number; y: number };
-  originPan: { x: number; y: number };
-}
-
-let activeWorkflowDiagramPan: ActiveWorkflowDiagramPan | null = null;
-
-function beginWorkflowDiagramPan(event: PointerEvent, canvas: HTMLElement) {
-  const panX = parseFloat(canvas.dataset.wfPanX ?? "0");
-  const panY = parseFloat(canvas.dataset.wfPanY ?? "0");
-  activeWorkflowDiagramPan = {
-    pointerId: event.pointerId,
-    element: canvas,
-    startClient: { x: event.clientX, y: event.clientY },
-    originPan: { x: panX, y: panY }
-  };
-  canvas.classList.add("panning");
-  try {
-    canvas.setPointerCapture(event.pointerId);
-  } catch {
-    // Pointer capture may fail
-  }
-}
-
-function continueWorkflowDiagramPan(event: PointerEvent) {
-  if (!activeWorkflowDiagramPan) {
-    return;
-  }
-  const dx = event.clientX - activeWorkflowDiagramPan.startClient.x;
-  const dy = event.clientY - activeWorkflowDiagramPan.startClient.y;
-  applyWorkflowDiagramTransform(
-    activeWorkflowDiagramPan.element,
-    undefined,
-    activeWorkflowDiagramPan.originPan.x + dx,
-    activeWorkflowDiagramPan.originPan.y + dy
-  );
-}
-
-function finishWorkflowDiagramPan() {
-  if (!activeWorkflowDiagramPan) {
-    return;
-  }
-  const canvas = activeWorkflowDiagramPan.element;
-  canvas.classList.remove("panning");
-  try {
-    canvas.releasePointerCapture(activeWorkflowDiagramPan.pointerId);
-  } catch {
-    // Capture may already be released
-  }
-  // Persist final pan values
-  canvas.dataset.wfPanX = formatCssNumber(
-    parseFloat(canvas.style.getPropertyValue("--wf-pan-x")) || 0
-  );
-  canvas.dataset.wfPanY = formatCssNumber(
-    parseFloat(canvas.style.getPropertyValue("--wf-pan-y")) || 0
-  );
-  activeWorkflowDiagramPan = null;
-}
-
-function handleWorkflowDiagramWheelZoom(event: WheelEvent, canvas: HTMLElement) {
-  const zoom = parseFloat(canvas.dataset.wfZoom ?? "1");
-  const direction = event.deltaY < 0 ? 1 : -1;
-  const nextZoom = clampNumber(zoom + direction * 0.12, 0.25, 4, 1);
-  canvas.dataset.wfZoom = String(nextZoom);
-  applyWorkflowDiagramTransform(canvas, nextZoom);
-}
-
-function applyWorkflowDiagramTransform(canvas: HTMLElement, zoom?: number, panX?: number, panY?: number) {
-  const z = zoom ?? parseFloat(canvas.dataset.wfZoom ?? "1");
-  const px = panX ?? parseFloat(canvas.dataset.wfPanX ?? "0");
-  const py = panY ?? parseFloat(canvas.dataset.wfPanY ?? "0");
-  canvas.style.setProperty("--wf-zoom", String(z));
-  canvas.style.setProperty("--wf-pan-x", `${formatCssNumber(px)}px`);
-  canvas.style.setProperty("--wf-pan-y", `${formatCssNumber(py)}px`);
-}
-
-/** main.ts の pointerdown ハンドラから同じ優先順位で呼ばれる。workflow diagram のパン開始のみ扱う。 */
-export function handleWorkflowDiagramPointerDown(event: PointerEvent): boolean {
-  const target = event.target as HTMLElement;
-  const wfCanvas = target.closest<HTMLElement>(".workflow-diagram-canvas");
-  if (wfCanvas && (event.button === 0 || event.button === 1)) {
-    event.preventDefault();
-    beginWorkflowDiagramPan(event, wfCanvas);
-    return true;
-  }
-  return false;
-}
-
-/**
- * pan 中は pointerId が一致しなくても後続ハンドラをブロックする（従来の
- * `if (activeWorkflowDiagramPan) { ...; return; }` と同じ挙動）。
- */
-export function handleWorkflowDiagramPointerMove(event: PointerEvent): boolean {
-  if (!activeWorkflowDiagramPan) {
-    return false;
-  }
-  if (event.pointerId !== activeWorkflowDiagramPan.pointerId) {
-    return true;
-  }
-  event.preventDefault();
-  continueWorkflowDiagramPan(event);
-  return true;
-}
-
-export function handleWorkflowDiagramPointerUp(event: PointerEvent): boolean {
-  if (activeWorkflowDiagramPan && event.pointerId === activeWorkflowDiagramPan.pointerId) {
-    event.preventDefault();
-    finishWorkflowDiagramPan();
-    return true;
-  }
-  return false;
-}
-
-export function handleWorkflowDiagramPointerCancel(event: PointerEvent): boolean {
-  if (activeWorkflowDiagramPan && event.pointerId === activeWorkflowDiagramPan.pointerId) {
-    activeWorkflowDiagramPan = null;
-    return true;
-  }
-  return false;
-}
-
-export function handleWorkflowDiagramWheel(event: WheelEvent): boolean {
-  const target = event.target as HTMLElement;
-  const wfCanvas = target.closest<HTMLElement>(".workflow-diagram-canvas");
-  if (wfCanvas) {
-    event.preventDefault();
-    handleWorkflowDiagramWheelZoom(event, wfCanvas);
-    return true;
-  }
-  return false;
-}
-
 registerActions({
   "home": () => loadHome(),
-  "open-template-diagram": (_id, target) => openWorkflowDiagram(target),
-  "close-template-diagram": () => closeWorkflowDiagram(),
-  "export-template": (_id, target) => exportWorkflowTemplate(target, "template"),
-  "export-workflow": (_id, target) => exportWorkflowTemplate(target, "workflow"),
-  "delete-template": (_id, target) => deleteWorkflowTemplate(target),
   "create-project": () => createProject(),
   "open-project": (id) => openProject(id),
   "delete-project": (id) => deleteProject(id)

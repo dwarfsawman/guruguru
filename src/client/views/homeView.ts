@@ -8,7 +8,7 @@ import type { ProjectSummary, WorkflowTemplate } from "../../shared/apiTypes";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../../shared/constants";
 import { escapeAttr, escapeHtml, formatDate } from "../format";
 import { iconChevron, iconPlus, iconTrash } from "../icons";
-import { renderModelSelectPanel, renderTemplatePanel } from "../workflowUi";
+import { renderModelSelectPanel } from "../workflowUi";
 import { renderRangeControl } from "./generationPanel";
 
 export type ConnectionState = "unknown" | "checking" | "connected" | "disconnected";
@@ -59,7 +59,6 @@ export function renderHome(
       <div class="home-side">
         ${renderSettingsPanel(settings, llmSettings, comfyStatus, llmStatus)}
         ${renderModelSelectPanel()}
-        ${renderTemplatePanel(templates)}
       </div>
     </main>
   `;

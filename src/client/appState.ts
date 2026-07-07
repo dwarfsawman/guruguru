@@ -190,7 +190,6 @@ export interface AppState {
   maskPanelWidths: { left: number; right: number };
   copiedSeedAssetId: string | null;
   deletePreviewRoundId: string | null;
-  activeWorkflowDiagramTemplateId: string | null;
   paintEditMode: boolean;
   paintDrafts: Record<string, PaintDraft>;
   maskPanelTab: MaskPanelTab;
@@ -248,7 +247,6 @@ export const state: AppState = {
   maskPanelWidths: { left: 300, right: 300 },
   copiedSeedAssetId: null,
   deletePreviewRoundId: null,
-  activeWorkflowDiagramTemplateId: null,
   paintEditMode: false,
   paintDrafts: {},
   maskPanelTab: "mask",
