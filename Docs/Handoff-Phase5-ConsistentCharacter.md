@@ -3,6 +3,8 @@
 作成: 2026-07-07。前セッションのコンテキストウィンドウ逼迫のため引継ぎ。
 **このファイルは一時的な引継ぎメモ。Phase 5 完了後は内容を `Docs/Feature-ConsistentCharacter.md` に統合してこのファイルは削除してよい。**
 
+**追記(同日、引継ぎ直後の確認)**: `curl http://127.0.0.1:8288/system_stats` と `curl http://127.0.0.1:3000/api/settings/comfy` で両サーバの生存を確認済み。GURUGURU(3000)の ComfyUI 接続先設定は `http://127.0.0.1:8288` のまま維持されている。**新セッションはまずこの2つの curl で疎通確認すれば、再起動不要でそのまま Phase 5 の続き(参照画像アップロード→生成)に進めるはず。**
+
 ## タスク全体像
 
 ユーザー提供の ComfyUI ワークフロー `Consistent Character Chroma.json`(`~/Downloads/consistentCharactersFaceAndBody_v10/`)の機能を GURUGURU に取り込む。
