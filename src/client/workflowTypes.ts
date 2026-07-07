@@ -6,14 +6,6 @@
  */
 export type { WorkflowTemplate } from "../shared/apiTypes";
 
-export interface WorkflowImportDraft {
-  name: string;
-  description: string;
-  type: string;
-  workflowJson: string;
-  roleMap: string;
-}
-
 export interface TemplateModelDefaults {
   checkpoint?: string;
   diffusionModel?: string;

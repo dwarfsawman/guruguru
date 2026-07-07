@@ -1,9 +1,8 @@
 import type { ComfySettings, LlmSettings } from "../shared/types";
-import type { ProjectDetail, ProjectSummary } from "../shared/apiTypes";
+import type { ModelCheckResult, ProjectDetail, ProjectSummary } from "../shared/apiTypes";
 import type { ConnectionState } from "./views/homeView";
 import type { MaskPanelTab } from "./views/assetModal";
-import type { WorkflowImportDraft, WorkflowTemplate } from "./workflowTypes";
-import { defaultWorkflowImportDraft } from "./workflowImport";
+import type { WorkflowTemplate } from "./workflowTypes";
 import type { InpaintDraft } from "./maskTypes";
 import type { PaintDraft } from "./paintTypes";
 import type { PoseDraft } from "./poseTypes";
@@ -191,9 +190,6 @@ export interface AppState {
   maskPanelWidths: { left: number; right: number };
   copiedSeedAssetId: string | null;
   deletePreviewRoundId: string | null;
-  workflowImportModalOpen: boolean;
-  workflowImportDraft: WorkflowImportDraft;
-  activeWorkflowDiagramTemplateId: string | null;
   paintEditMode: boolean;
   paintDrafts: Record<string, PaintDraft>;
   maskPanelTab: MaskPanelTab;
@@ -202,6 +198,13 @@ export interface AppState {
   roundProgress: Record<string, { value: number; max: number }>;
   /** UX改善#6: `?` キーで開閉するショートカット一覧オーバーレイの表示状態。 */
   showShortcutsHelp: boolean;
+  /** 「必要モデルインストール」モーダルで表示中のモデルファミリ。null=モーダル閉。 */
+  modelInstallFamily: "chroma" | null;
+  /** `GET /api/comfy/model-check` の結果と取得状態。 */
+  modelCheck: {
+    status: "idle" | "loading" | "ready" | "error";
+    result: ModelCheckResult | null;
+  };
 }
 
 export const state: AppState = {
@@ -244,13 +247,12 @@ export const state: AppState = {
   maskPanelWidths: { left: 300, right: 300 },
   copiedSeedAssetId: null,
   deletePreviewRoundId: null,
-  workflowImportModalOpen: false,
-  workflowImportDraft: defaultWorkflowImportDraft(),
-  activeWorkflowDiagramTemplateId: null,
   paintEditMode: false,
   paintDrafts: {},
   maskPanelTab: "mask",
   poseDrafts: {},
   roundProgress: {},
-  showShortcutsHelp: false
+  showShortcutsHelp: false,
+  modelInstallFamily: null,
+  modelCheck: { status: "idle", result: null }
 };

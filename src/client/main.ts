@@ -5,16 +5,11 @@ import type {
 } from "../shared/apiTypes";
 import {
   iconClose,
-  iconDiagram,
   iconMenu
 } from "./icons";
 import { escapeAttr, escapeHtml, formatNumber, formatSliderValue } from "./format";
 import { morph } from "./domMorph";
-import {
-  renderWorkflowDiagramCanvases,
-  renderWorkflowDiagramModal,
-  renderWorkflowImportModal
-} from "./workflowUi";
+import { renderModelInstallModal } from "./workflowUi";
 import { renderHome, type ConnectionState, type ConnectionSummary } from "./views/homeView";
 import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
@@ -82,6 +77,7 @@ import {
 } from "./paintEditorController";
 import { setFormValue } from "./formUtils";
 import "./edgePopoutController";
+import "./modelCheckController";
 import {
   deselectPasteObjectIfAny,
   handlePasteKeydown,
@@ -130,16 +126,8 @@ import {
   undoRoundDeletion
 } from "./generationController";
 import {
-  captureWorkflowImportDraftFromElement,
   closeWorkflowModals,
-  handleWorkflowDiagramPointerCancel,
-  handleWorkflowDiagramPointerDown,
-  handleWorkflowDiagramPointerMove,
-  handleWorkflowDiagramPointerUp,
-  handleWorkflowDiagramWheel,
   loadHome,
-  loadWorkflowFile,
-  refreshWorkflowImportPreview,
   uploadSourceAsset
 } from "./projectController";
 import { closeAssetDetail } from "./assetDetailController";
@@ -209,15 +197,6 @@ function bindEvents() {
       });
       return;
     }
-    if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.fileTarget) {
-      void loadWorkflowFile(target);
-      return;
-    }
-    if (target.closest("#template-form")) {
-      captureWorkflowImportDraftFromElement(target);
-      refreshWorkflowImportPreview();
-      return;
-    }
     if (target.id === "round-filter") {
       state.filter = target.value as typeof state.filter;
       render();
@@ -281,11 +260,6 @@ function bindEvents() {
     if (target.dataset.paintField === "brushSize" && target instanceof HTMLInputElement) {
       setPaintBrushSize(Number(target.value));
     }
-    if (target.closest("#template-form")) {
-      captureWorkflowImportDraftFromElement(target);
-      refreshWorkflowImportPreview();
-      return;
-    }
     if (!valueId) {
       if (target.closest("#generation-form")) {
         captureGenerationDraft();
@@ -334,9 +308,6 @@ function bindEvents() {
   });
 
   app.addEventListener("wheel", (event) => {
-    if (handleWorkflowDiagramWheel(event)) {
-      return;
-    }
     const target = event.target as HTMLElement;
     if (target.id !== "maskCanvas" && target.id !== "paintCanvas" && !target.closest(".preview-media")) {
       return;
@@ -447,9 +418,6 @@ function bindEvents() {
     if (handleMaskEditorPointerDown(event)) {
       return;
     }
-    if (handleWorkflowDiagramPointerDown(event)) {
-      return;
-    }
     if (event.button !== 0 && event.button !== 2) {
       return;
     }
@@ -464,9 +432,6 @@ function bindEvents() {
 
   app.addEventListener("pointermove", (event) => {
     if (handleMaskEditorPointerMove(event)) {
-      return;
-    }
-    if (handleWorkflowDiagramPointerMove(event)) {
       return;
     }
     if (handleWebSamPointerMove(event)) {
@@ -488,9 +453,6 @@ function bindEvents() {
     if (handleMaskEditorPointerUp(event)) {
       return;
     }
-    if (handleWorkflowDiagramPointerUp(event)) {
-      return;
-    }
     if (handleWebSamPointerUp(event)) {
       return;
     }
@@ -508,9 +470,6 @@ function bindEvents() {
 
   app.addEventListener("pointercancel", (event) => {
     if (handleMaskEditorPointerCancel(event)) {
-      return;
-    }
-    if (handleWorkflowDiagramPointerCancel(event)) {
       return;
     }
     if (handleWebSamPointerCancel(event)) {
@@ -589,9 +548,8 @@ function render(_options: RenderOptions = {}) {
       { state: state.llmConnection, text: state.llmStatusText } satisfies ConnectionSummary
     ),
     renderAssetModalView(),
-    renderWorkflowImportModal(state.workflowImportModalOpen, state.workflowImportDraft),
-    renderWorkflowDiagramModal(state.templates, state.activeWorkflowDiagramTemplateId),
-    renderShortcutsHelpModal(state.showShortcutsHelp)
+    renderShortcutsHelpModal(state.showShortcutsHelp),
+    renderModelInstallModal(state.modelInstallFamily, state.modelCheck)
   ];
   const changed = !lastRegionHtml || regions.some((html, i) => html !== lastRegionHtml![i]);
   if (changed) {
@@ -602,7 +560,6 @@ function render(_options: RenderOptions = {}) {
     ${regions[3]}
     ${regions[4]}
     ${regions[5]}
-    ${regions[6]}
   `);
     lastRegionHtml = regions;
   }
@@ -613,7 +570,6 @@ function render(_options: RenderOptions = {}) {
   syncAssetModalPaintCanvas();
   syncAssetModalPasteObjects();
   syncGridPasteCanvases();
-  void renderWorkflowDiagramCanvases();
 }
 
 /**
