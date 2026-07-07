@@ -278,6 +278,42 @@ UNETLoader(731) → [Hyper LoRA] → [IP-Adapter apply] → [PuLID apply] → Mo
 - PuLID / IP-Adapter の strength を UI に露出するか（初期は固定値、必要なら per-reference スライダを後付け）
 - Hyper LoRA を完全自動挿入にするか、モデル選択 UI に小さなトグルを設けるか
 
+## 実施記録(2026-07-07): Phase 0〜4 完了
+
+worktree `guruguru-wt-consistent-char`(ブランチ `feature/consistent-character`)でコミット済み。
+
+- **Phase 0〜3**: 計画どおり実施。`workflowFeatureFragments.ts`(新規)+ `workflowUnifiedSwitch.ts` 接続 +
+  `modelCheck.ts` の feature 別可用性 + `rounds.ts` の参照画像アップロード。単体テスト25件追加
+  (フラグメント組み立て10件・CN prune 2件・`patchUnifiedSwitchWorkflow` 統合テスト7件・model-check複合キー
+  修正1件 ほか)。`npm test` 381/381、`npm run typecheck` 0エラー。
+- **Phase 4**: 生成フォームに「参照画像」枠(親画像の直下)+ 顔スタイル参照/全体スタイル参照トグルを追加
+  (`referenceController.ts` 新規)。install モーダルを feature別カード表示に拡張(`requiredNodePacks`/
+  `missingNodePacks` を追加)。Project 展開時に `refreshModelCheck("chroma")` を先行実行し、モーダルを
+  開かなくてもトグルの disabled 判定ができるようにした。
+- **実機ブラウザ検証**(テスト用データディレクトリ + **本番 ComfyUI 8188 への疎通確認レベルAPI呼び出しのみ**、
+  生成は一切行っていない):
+  - 参照画像のアップロード→プレビュー→クリアが動作
+  - 顔/スタイルトグルが実際の `/api/comfy/model-check` 結果(本番8188の実データ)に応じて正しく
+    disabled/tooltip表示: PuLID系ノードは存在するがモデルファイル名不一致→「未確認」、x-flux-comfyui
+    不在→ノードパックごと disabled、comfyui-easy-use(RMBG)存在→有効 — 設計どおりの3パターンを
+    実データで確認できた
+  - install モーダルの feature カードが正しくレンダリング。検証中に発見した CSS 折り返しバグ
+    (`table-layout` 未指定でネストしたテーブルの長いパスがダイアログをはみ出す)を修正済み
+
+### 残課題(Phase 5、ユーザー判断待ち)
+
+**実際に PuLID-Flux(Chroma対応fork) / x-flux-comfyui / (任意で comfyui-easy-use) をどこかの ComfyUI へ
+導入し、参照画像を使った実生成(顔同一性・スタイル反映)を確認する**工程が残っている。これは
+insightface・onnxruntime・facexlib 等の重い依存追加を伴い、共有 Python 環境(Desktop版流用の
+`standalone-env`)を壊すリスクがあるため、着手前にユーザーへの確認が必要(このドキュメントの
+「Phase 1 実施記録」に記載の判断を踏襲)。テスト用 ComfyUI(8288)へ導入するか、ユーザー自身の
+環境で確認するかは要相談。
+
+コード自体は上記の実機ブラウザ検証(本番ComfyUIの実データでの可用性判定)により、
+「導入済みモデル/ノードパックに応じて機能をON/OFFする」という本機能の中核設計が実際に機能する
+ことは確認済み。残る不確実性は「実際に生成した画像が意図通り(顔が似ている・スタイルが反映される)か」
+という品質面のみ。
+
 ## Phase 1 実施記録（2026-07-07）: 実機確認の代替手段と確定した実データ
 
 テスト用 ComfyUI(8288) の `custom_nodes` は空(model-select機能検証時のまま)で、PuLID-Flux/x-flux-comfyui/
