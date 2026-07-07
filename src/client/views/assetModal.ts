@@ -375,6 +375,7 @@ export function renderMaskPromptSidebar(
       <div class="mask-toolbar-row">
         <button class="mask-tool-button ${!smartActive && !draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="brush" aria-label="ブラシ" title="ブラシ">${iconBrush()}</button>
         <button class="mask-tool-button ${draft.eraser ? "active" : ""}" type="button" data-action="mask-tool" data-tool="eraser" aria-label="消しゴム" title="消しゴム">${iconEraser()}</button>
+        <button class="mask-tool-button" type="button" data-action="mask-undo" aria-label="元に戻す" title="元に戻す (Ctrl+Z)">${iconLoopArrows()}</button>
         <button class="mask-tool-button" type="button" data-action="invert-mask" aria-label="マスク領域を反転" title="マスク領域を反転">${iconInvert()}</button>
         <button class="mask-tool-button" type="button" data-action="remove-mask-islands" aria-label="微小なマスク領域を除去" title="微小なマスク領域を除去">${iconTrash()}</button>
         <button class="mask-tool-button" type="button" data-action="clear-mask" aria-label="マスクをクリア" title="マスクをクリア">${iconReset()}</button>

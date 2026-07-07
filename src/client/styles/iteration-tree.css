@@ -1,4 +1,6 @@
 .iteration-tracker {
+  position: relative;
+  z-index: 20;
   flex: 0 0 auto;
   height: clamp(96px, 14vh, 200px);
   min-height: 0;
@@ -33,6 +35,10 @@
     display: grid;
     place-items: center;
   }
+}
+
+.iteration-tracker:has(.iteration-edge:hover, .iteration-edge:focus, .iteration-edge-popout.expanded) {
+  z-index: 80;
 }
 
 .iteration-forest {
@@ -338,6 +344,12 @@
   anchor-scope: --iteration-edge;
 }
 
+.iteration-edge:hover,
+.iteration-edge:focus,
+.iteration-edge:has(.iteration-edge-popout.expanded) {
+  z-index: 90;
+}
+
 /* 単一の子は1本のエッジが全域(link-long)に伸びるため、hover 領域も全域に広げる。 */
 
 .iteration-children.single-child > .iteration-child > .iteration-node > .iteration-edge {
@@ -359,7 +371,7 @@
   margin-block: 8px;
   margin-inline: 8px;
   position-try-fallbacks: flip-block;
-  z-index: 60;
+  z-index: 100;
   width: max-content;
   max-width: 320px;
   padding: 10px 12px;
@@ -372,7 +384,7 @@
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
   opacity: 0;
   visibility: hidden;
-  pointer-events: none;
+  pointer-events: auto;
   transition: opacity 0.12s ease;
 }
 
@@ -421,8 +433,8 @@
  * エッジポップアウトの添付表示(Docs/Feature-ImagePaste.md (i))。
  * 折りたたみ時はフッタ「添付 n件 ˅」のみ。ポップアウト上のホイール下スクロール
  * (edgePopoutController)で .expanded が付き、サムネイルグリッドが現れる。
- * 展開時のみ pointer-events を許可する(ポップアウトはエッジボタンの子孫なので
- * hover が途切れず表示が維持される)。展開でサイズが変わっても CSS anchor
+ * ポップアウトはエッジボタンの子孫なので、ポップアウト上へ移動しても
+ * hover が途切れず表示が維持される。展開でサイズが変わっても CSS anchor
  * positioning + flip-block が追随する。
  */
 .iteration-edge-attachments-footer {
@@ -459,18 +471,22 @@
     opacity 0.22s ease;
 }
 
-.iteration-edge-attachments-inner {
+.iteration-edge-attachments-body {
   display: grid;
   min-height: 0;
   overflow: hidden;
-  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
-  gap: 6px;
+}
+
+.iteration-edge-attachments-inner {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 8px;
 }
 
 .iteration-edge-popout.expanded {
-  pointer-events: auto;
-  max-width: 420px;
-  max-height: 60vh;
+  width: min(560px, calc(100vw - 32px));
+  max-width: min(560px, calc(100vw - 32px));
+  max-height: 72vh;
   overflow-y: auto;
 }
 
@@ -484,13 +500,48 @@
   transform: rotate(180deg);
 }
 
-.iteration-edge-attachments-inner img {
+.iteration-edge-attachment-preview {
+  display: grid;
+  min-height: 0;
+  overflow: hidden;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.iteration-edge-attachment-preview img {
   width: 100%;
-  aspect-ratio: 1;
+  max-height: 36vh;
   object-fit: contain;
   border: 1px solid color-mix(in srgb, var(--ink) 20%, transparent);
   border-radius: 4px;
   background: #111;
+}
+
+.iteration-edge-attachment-preview span,
+.iteration-edge-attachment-item span {
+  color: color-mix(in srgb, var(--ink) 62%, transparent);
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.iteration-edge-attachment-item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  cursor: zoom-in;
+}
+
+.iteration-edge-attachment-item img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  border: 1px solid color-mix(in srgb, var(--ink) 20%, transparent);
+  border-radius: 4px;
+  background: #111;
+}
+
+.iteration-edge-attachment-item:hover img {
+  border-color: color-mix(in srgb, var(--ink) 42%, transparent);
 }
 
 .iteration-edge-grid {
@@ -523,4 +574,3 @@
   color: var(--faint);
   font-size: 12px;
 }
-

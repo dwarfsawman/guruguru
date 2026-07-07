@@ -34,6 +34,7 @@ import {
   handleMaskEditorPointerDown,
   handleMaskEditorPointerMove,
   handleMaskEditorPointerUp,
+  handleMaskEditorKeydown,
   handleMaskStrokePointerCancel,
   handleMaskStrokePointerMove,
   handleMaskStrokePointerUp,
@@ -391,6 +392,10 @@ function bindEvents() {
       return;
     }
 
+    if (handleMaskEditorKeydown(event)) {
+      return;
+    }
+
     if (handlePaintEditorKeydown(event)) {
       return;
     }
@@ -680,7 +685,7 @@ function getConnectionView() {
 function renderProjectDetailView(detail: ProjectDetail) {
   const activeRound = getActiveRound(detail);
   const assets = getActiveRoundAssets().filter(assetPassesFilter);
-  const selectedAssets = getActiveRoundAssets().filter((asset) => asset.status === "selected");
+  const selectedAssets = getActiveRoundAssets().filter((asset) => asset.status === "selected").slice(0, 1);
   const activeAsset = state.activeAssetId ? findAsset(state.activeAssetId) : null;
   const roundActive = isRoundActive(activeRound);
 
@@ -754,5 +759,3 @@ function renderAssetModalView() {
     getSelectedPoseEdges()
   );
 }
-
-

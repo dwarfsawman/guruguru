@@ -40,6 +40,42 @@ export function createMaskLayerSet(assetId: string, width: number, height: numbe
   };
 }
 
+function copyCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
+  const snapshot = createLayerCanvas(source.width, source.height);
+  snapshot.getContext("2d")?.drawImage(source, 0, 0);
+  return snapshot;
+}
+
+function restoreCanvas(target: HTMLCanvasElement, snapshot: HTMLCanvasElement) {
+  const context = target.getContext("2d");
+  if (!context) {
+    return;
+  }
+  context.clearRect(0, 0, target.width, target.height);
+  context.drawImage(snapshot, 0, 0, target.width, target.height);
+}
+
+export function snapshotMaskLayerSet(layers: MaskLayerSet): MaskLayerSet {
+  return {
+    assetId: layers.assetId,
+    width: layers.width,
+    height: layers.height,
+    samMask: copyCanvas(layers.samMask),
+    previewSamMask: copyCanvas(layers.previewSamMask),
+    manualInclude: copyCanvas(layers.manualInclude),
+    manualErase: copyCanvas(layers.manualErase),
+    brushPrompt: copyCanvas(layers.brushPrompt)
+  };
+}
+
+export function restoreMaskLayerSet(layers: MaskLayerSet, snapshot: MaskLayerSet) {
+  restoreCanvas(layers.samMask, snapshot.samMask);
+  restoreCanvas(layers.previewSamMask, snapshot.previewSamMask);
+  restoreCanvas(layers.manualInclude, snapshot.manualInclude);
+  restoreCanvas(layers.manualErase, snapshot.manualErase);
+  restoreCanvas(layers.brushPrompt, snapshot.brushPrompt);
+}
+
 export function clearCanvas(canvas: HTMLCanvasElement) {
   const context = canvas.getContext("2d");
   context?.clearRect(0, 0, canvas.width, canvas.height);

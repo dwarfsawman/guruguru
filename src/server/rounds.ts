@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
+import { resolve } from "node:path";
+import type { ServerResponse } from "node:http";
+import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import {
   deleteQueuedPrompts,
   ensureDummyComfyImage,
@@ -17,6 +19,7 @@ import { HttpError } from "./http";
 import { isJsonObject, numberOr, objectBody, stringOrNull, stringOr } from "./validate";
 import { isUnifiedSwitchWorkflow, patchWorkflow, resolveSeed } from "./workflow";
 import { decorateAsset } from "./assets";
+import { streamFile } from "./files";
 import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
 import {
   readRoundTrashSnapshot,
@@ -31,6 +34,7 @@ import {
   requiresParentAsset
 } from "../shared/generationMode";
 import { nodeIdFromRolePath } from "../shared/workflowRolePath";
+import { isPathInside } from "./paths";
 import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent } from "../shared/types";
 import type { Asset, Round } from "../shared/apiTypes";
 
@@ -48,6 +52,7 @@ type GenerationJob = {
   last_error_json?: string | null;
 };
 type CollectRoundResult = { statusCode: number; body: Record<string, unknown> };
+export type RoundAttachmentKind = "mask" | "pose";
 type JobStats = {
   total: number;
   pending: number;
@@ -72,6 +77,38 @@ const roundProgress = new Map<string, { value: number; max: number }>();
 /** UX改善#5: `pollCollectRound` の collect レスポンスに乗せる現在の生成進捗。 */
 export function getRoundProgress(roundId: string): { value: number; max: number } | null {
   return roundProgress.get(roundId) ?? null;
+}
+
+export function roundAttachmentPathFromRequest(request: GenerationRequest, kind: RoundAttachmentKind): string | null {
+  const path = kind === "mask" ? request.inpaint?.maskPath : request.controlnet?.poseImagePath;
+  return typeof path === "string" && path.trim() !== "" ? path : null;
+}
+
+function resolveRoundAttachmentPath(roundId: string, kind: RoundAttachmentKind): string {
+  const round = getRow<{ request_json: string }>("SELECT request_json FROM generation_rounds WHERE id = ?", [roundId]);
+  if (!round) {
+    throw new HttpError(404, "Round was not found");
+  }
+  let request: GenerationRequest;
+  try {
+    request = JSON.parse(round.request_json) as GenerationRequest;
+  } catch {
+    throw new HttpError(404, "Round attachment was not found");
+  }
+  const path = roundAttachmentPathFromRequest(request, kind);
+  const resolved = path ? resolve(path) : "";
+  if (!resolved || !isPathInside(resolved, resolve(dataRoot))) {
+    throw new HttpError(404, "Round attachment was not found");
+  }
+  return resolved;
+}
+
+export function serveRoundAttachment(res: ServerResponse, roundId: string, kind: RoundAttachmentKind) {
+  try {
+    streamFile(res, resolveRoundAttachmentPath(roundId, kind));
+  } catch (error) {
+    throw error;
+  }
 }
 
 function getRoundForApi(roundId: string): Round | null {

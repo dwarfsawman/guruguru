@@ -12,6 +12,13 @@
 
 - ノードのドット class は Round の status から決める(`iterationTree.ts`)。終端状態の `interrupted` / `failed` は `pending` のパルス点滅を引き継がない**専用 class** にする(停止後・失敗後に点滅し続けないため)。`completed` / `active` / 実行中の `running` はそれぞれ独立の class。
 
+## エッジポップアウト
+
+- 親→子エッジの hover/focus ポップアウトは、生成時のプロンプト・解像度・デノイズ・step などを表示する。ポップアウトは `position: fixed` + CSS anchor positioning で、`.iteration-tracker` のスクロール領域にクリップされない。
+- 添付があるエッジでは、フッタ「添付 n件」をクリックまたはポップアウト上で下方向ホイールすると展開する。展開後は貼り付け画像、マスク形状、ポーズ画像を別アイテムとして表示し、クリックしたアイテムを上部の拡大プレビューに出す。
+- 添付のデータ源は `round.request`: 貼り付けは `pasteComposite.objects[].sourceId` から `/api/projects/:projectId/paste-sources/:sourceId`、マスクは `inpaint.maskPath` から `/api/rounds/:roundId/attachments/mask`、ポーズは `controlnet.poseImagePath` から `/api/rounds/:roundId/attachments/pose` を参照する。
+- `.iteration-edge` は通常時もエッジの当たり判定として `z-index` を持つ。ポップアウト表示中は `.iteration-tracker` と対象エッジをさらに持ち上げ、グリッドカードのバッジ・seed・カード番号の背面に回らないようにする。
+
 ## イテレーションツリーのスクロール保持
 
 - イテレーションツリー(`.iteration-tracker`)は `render()` で `app.innerHTML` ごと再生成されるため、DOM 再生成前後で `scrollLeft` / `scrollTop` を保存・復元する必要がある。

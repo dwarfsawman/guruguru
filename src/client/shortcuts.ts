@@ -57,7 +57,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
     items: [
       { keys: "?", description: "このショートカット一覧を開閉" },
       { keys: "Esc", description: "モーダル/サイドバーを閉じる" },
-      { keys: "Ctrl / Cmd + A", description: "現在のRoundの全アセットを選択" },
+      { keys: "Ctrl / Cmd + A", description: "親画像の選択を1枚に揃える" },
       { keys: "Ctrl / Cmd + Z", description: "Round削除を元に戻す" },
       { keys: "Ctrl / Cmd + Y (または Shift+Z)", description: "Round削除をやり直す" }
     ]
@@ -69,6 +69,12 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: "F", description: "お気に入りを切り替え" },
       { keys: "Space", description: "選択を切り替え" },
       { keys: "Enter", description: "この画像からimg2imgへ" }
+    ]
+  },
+  {
+    title: "マスク編集",
+    items: [
+      { keys: "Ctrl / Cmd + Z", description: "手動マスク操作を1手戻す" }
     ]
   },
   {

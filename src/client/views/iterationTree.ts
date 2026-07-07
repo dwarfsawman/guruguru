@@ -204,26 +204,61 @@ export function iterationEdgePopoutHtml(round: Round): string {
  * (sourceId)から paste-sources を参照する。
  */
 export function iterationEdgeAttachmentsHtml(round: Round): string {
-  const objects = round.request?.pasteComposite?.objects ?? [];
-  if (!objects.length) {
+  const attachments = iterationEdgeAttachmentItems(round);
+  if (!attachments.length) {
     return "";
   }
+  const preview = attachments[0]!;
   return `
-    <div class="iteration-edge-attachments-footer" data-edge-attachments="${objects.length}">
-      <span>添付 ${objects.length}件</span>
+    <div class="iteration-edge-attachments-footer" data-edge-attachments="${attachments.length}">
+      <span>添付 ${attachments.length}件</span>
       <span class="iteration-edge-attachments-chevron" aria-hidden="true">˅</span>
     </div>
     <div class="iteration-edge-attachments">
-      <div class="iteration-edge-attachments-inner">
-        ${objects
-          .map(
-            (object) =>
-              `<img loading="lazy" src="/api/projects/${escapeAttr(round.projectId)}/paste-sources/${escapeAttr(object.sourceId)}" alt="添付画像" />`
-          )
-          .join("")}
+      <div class="iteration-edge-attachments-body">
+        <div class="iteration-edge-attachment-preview">
+          <img loading="lazy" src="${escapeAttr(preview.src)}" alt="${escapeAttr(preview.label)} 拡大表示" data-edge-attachment-preview-image />
+          <span data-edge-attachment-preview-label>${escapeHtml(preview.label)}</span>
+        </div>
+        <div class="iteration-edge-attachments-inner">
+          ${attachments
+            .map(
+              (attachment) => `
+                <span class="iteration-edge-attachment-item" data-edge-attachment-src="${escapeAttr(attachment.src)}" data-edge-attachment-label="${escapeAttr(attachment.label)}">
+                  <img loading="lazy" src="${escapeAttr(attachment.src)}" alt="${escapeAttr(attachment.label)}" />
+                  <span>${escapeHtml(attachment.label)}</span>
+                </span>
+              `
+            )
+            .join("")}
+        </div>
       </div>
     </div>
   `;
+}
+
+function iterationEdgeAttachmentItems(round: Round): Array<{ src: string; label: string }> {
+  const items: Array<{ src: string; label: string }> = [];
+  const objects = round.request?.pasteComposite?.objects ?? [];
+  objects.forEach((object, index) => {
+    items.push({
+      src: `/api/projects/${round.projectId}/paste-sources/${object.sourceId}`,
+      label: objects.length > 1 ? `貼り付け画像 ${index + 1}` : "貼り付け画像"
+    });
+  });
+  if (round.request?.inpaint?.maskPath) {
+    items.push({
+      src: `/api/rounds/${round.id}/attachments/mask`,
+      label: "マスク形状"
+    });
+  }
+  if (round.request?.controlnet?.poseImagePath) {
+    items.push({
+      src: `/api/rounds/${round.id}/attachments/pose`,
+      label: "ポーズ画像"
+    });
+  }
+  return items;
 }
 
 export function rootHue(round: Round) {

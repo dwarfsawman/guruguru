@@ -189,7 +189,38 @@ test("iterationEdgeAttachmentsHtml: renders footer count and paste-source thumbn
   assert.match(html, /添付 2件/);
   assert.match(html, /\/api\/projects\/project-1\/paste-sources\/pastesrc_a/);
   assert.match(html, /\/api\/projects\/project-1\/paste-sources\/pastesrc_b/);
+  assert.match(html, /貼り付け画像 1/);
+  assert.match(html, /data-edge-attachment-preview-image/);
   assert.match(html, /iteration-edge-attachments-footer/);
+});
+
+test("iterationEdgeAttachmentsHtml: includes mask and pose attachments independently", () => {
+  const html = iterationEdgeAttachmentsHtml(
+    round({
+      request: {
+        ...round().request,
+        inpaint: {
+          maskDataUrl: null,
+          maskPath: "C:/data/project/masks/round_mask.png",
+          maskedContent: "original",
+          inpaintArea: "only_masked",
+          onlyMaskedPadding: 32
+        },
+        controlnet: {
+          poseImageDataUrl: null,
+          poseImagePath: "C:/data/project/control/round_pose.png",
+          strength: 1,
+          startPercent: 0,
+          endPercent: 1
+        }
+      }
+    })
+  );
+  assert.match(html, /添付 2件/);
+  assert.match(html, /\/api\/rounds\/round-1\/attachments\/mask/);
+  assert.match(html, /\/api\/rounds\/round-1\/attachments\/pose/);
+  assert.match(html, /マスク形状/);
+  assert.match(html, /ポーズ画像/);
 });
 
 test("iterationEdgePopoutHtml: includes the attachments footer only when attachments exist", () => {

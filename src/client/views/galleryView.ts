@@ -75,13 +75,11 @@ export function renderProjectDetail(
         <div class="round-toolbar">
           <div>
             <h1>イテレーション ${activeRound ? `#${activeRound.roundIndex}` : ""}<span class="tag">${iconDot()}${escapeHtml(generationModeLabel(mode))}</span></h1>
-            <p>${activeRound ? `<b>${activeRound.assetCount ?? 0}</b>枚生成 · <b>${selectedAssets.length}</b>枚選択中 · ${escapeHtml(activeRound.status)}${escapeHtml(progressSuffix)}` : "新規Roundを生成してください。"}</p>
+            <p>${activeRound ? `<b>${activeRound.assetCount ?? 0}</b>枚生成 · 親画像 <b>${selectedAssets.length ? "#".concat(String(selectedAssets[0]!.batchIndex + 1)) : "-"}</b> · ${escapeHtml(activeRound.status)}${escapeHtml(progressSuffix)}` : "新規Roundを生成してください。"}</p>
           </div>
           <div class="toolbar-actions">
             <div class="segment-group">
-              <button class="button-secondary compact" type="button" data-action="select-all">全選択</button>
               <button class="button-secondary compact" type="button" data-action="clear-selection">選択解除</button>
-              <button class="button-secondary compact" type="button" data-action="invert-selection">選択反転</button>
             </div>
             <span class="toolbar-divider"></span>
             <select id="grid-cols" class="compact-select" aria-label="グリッド列数">
@@ -201,18 +199,17 @@ export function renderBottomActionBar(selectedAssets: Asset[], activeRound: Roun
           </div>
         ` : `
           <div class="selected-thumbs">
-            ${selectedAssets.slice(0, 5).map((asset) => `<img src="${asset.thumbnailUrl}" alt="" />`).join("")}
-            ${selectedAssets.length > 5 ? `<span>+${selectedAssets.length - 5}</span>` : ""}
+            ${selectedAssets.map((asset) => `<img src="${asset.thumbnailUrl}" alt="" />`).join("")}
           </div>
-          <span class="selected-label"><b>${selectedAssets.length}</b>枚の画像を次のブランチングに使用</span>
+          <span class="selected-label">${selectedAssets.length ? "選択画像を次のブランチングに使用" : "親画像未選択"}</span>
         `}
       </div>
       <div class="bottom-actions">
         <button class="button-danger" type="button" data-action="reset-session">${iconTrash()}リセット</button>
         <button class="button-secondary" type="button" data-action="export-selected">${iconDownload()}保存</button>
         <button class="button-secondary" type="button" data-action="generate-round">${iconPlay()}${activeRound ? "画像無しで生成" : "初回生成"}</button>
-        <button class="button-primary" type="button" data-action="img2img-next" ${selectedAssets.length === 0 ? "disabled" : ""}>
-          ${iconLoopArrows()}選択画像でブランチング <span class="button-count">${selectedAssets.length}</span>
+        <button class="button-primary" type="button" data-action="img2img-next" ${selectedAssets.length !== 1 ? "disabled" : ""}>
+          ${iconLoopArrows()}選択画像でブランチング
         </button>
       </div>
     </div>

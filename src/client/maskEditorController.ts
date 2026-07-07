@@ -10,6 +10,7 @@ import type {
   ActiveImagePan,
   ActiveMaskStroke,
   InpaintDraft,
+  MaskLayerSet,
   MaskBrushCursorKind,
   MaskStrokeKind
 } from "./maskTypes";
@@ -26,7 +27,9 @@ import {
   removeMaskIslandsFromLayers,
   renderFinalMaskToCanvas,
   renderMaskFeatherPreview,
-  sampleBrushPromptPoints
+  restoreMaskLayerSet,
+  sampleBrushPromptPoints,
+  snapshotMaskLayerSet
 } from "./maskCanvas";
 import {
   addWebSamPointPrompt,
@@ -46,6 +49,28 @@ let activeMaskStroke: ActiveMaskStroke | null = null;
 let activeImagePan: ActiveImagePan | null = null;
 let maskToolbarDrag: { pointerId: number; startX: number; startY: number; originLeft: number; originTop: number } | null = null;
 let maskPanelResize: { pointerId: number; side: "left" | "right"; startX: number; startWidth: number; pendingWidth: number } | null = null;
+
+type MaskDraftSnapshot = Pick<
+  InpaintDraft,
+  | "maskDataUrl"
+  | "samMaskDataUrl"
+  | "previewSamMaskDataUrl"
+  | "manualIncludeMaskDataUrl"
+  | "manualEraseMaskDataUrl"
+  | "brushPromptMaskDataUrl"
+  | "foregroundPoints"
+  | "boxPrompt"
+  | "samCandidates"
+  | "selectedSamCandidateIndex"
+>;
+
+type MaskEditSnapshot = {
+  layers: MaskLayerSet;
+  draft: MaskDraftSnapshot;
+};
+
+const maskUndoStacks = new Map<string, MaskEditSnapshot[]>();
+const MASK_UNDO_LIMIT = 20;
 
 export function syncAssetModalMaskCanvas() {
   const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
@@ -105,10 +130,13 @@ export function syncAssetModalMaskCanvas() {
 }
 
 function resolveMaskBrushCursorKind(draft: InpaintDraft): MaskBrushCursorKind | null {
+  if (draft.eraser) {
+    return "eraser";
+  }
   if (draft.selectedSmartMaskProvider !== "manual") {
     return draft.webSamPromptMode === "brush" ? "brush-prompt" : null;
   }
-  return draft.eraser ? "eraser" : "pen";
+  return "pen";
 }
 
 // Cached `.brush-cursor` element reference, avoiding a `document.querySelector` on every
@@ -168,6 +196,76 @@ function hideMaskBrushCursor() {
   cursor.removeAttribute("r");
   cursor.setAttribute("r", "0");
   cursor.classList.remove("visible", "pen", "eraser", "brush-prompt");
+}
+
+function cloneMaskDraftSnapshot(draft: InpaintDraft): MaskDraftSnapshot {
+  return {
+    maskDataUrl: draft.maskDataUrl,
+    samMaskDataUrl: draft.samMaskDataUrl,
+    previewSamMaskDataUrl: draft.previewSamMaskDataUrl,
+    manualIncludeMaskDataUrl: draft.manualIncludeMaskDataUrl,
+    manualEraseMaskDataUrl: draft.manualEraseMaskDataUrl,
+    brushPromptMaskDataUrl: draft.brushPromptMaskDataUrl,
+    foregroundPoints: draft.foregroundPoints.map((point) => ({ ...point })),
+    boxPrompt: draft.boxPrompt ? { ...draft.boxPrompt } : null,
+    samCandidates: draft.samCandidates.map((candidate) => ({ ...candidate })),
+    selectedSamCandidateIndex: draft.selectedSamCandidateIndex
+  };
+}
+
+function pushMaskUndoSnapshot(assetId: string, width: number, height: number) {
+  const draft = inpaintDraftForAsset(assetId);
+  if (!draft) {
+    return;
+  }
+  const layers = getOrCreateMaskLayerSet(assetId, width, height);
+  const stack = maskUndoStacks.get(assetId) ?? [];
+  stack.push({
+    layers: snapshotMaskLayerSet(layers),
+    draft: cloneMaskDraftSnapshot(draft)
+  });
+  while (stack.length > MASK_UNDO_LIMIT) {
+    stack.shift();
+  }
+  maskUndoStacks.set(assetId, stack);
+}
+
+function clearMaskUndo(assetId: string | null | undefined) {
+  if (assetId) {
+    maskUndoStacks.delete(assetId);
+  }
+}
+
+function undoMaskEdit() {
+  if (!state.maskEditMode || state.maskPanelTab === "pose") {
+    return;
+  }
+  const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
+  const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
+  if (!canvas || !assetId) {
+    return;
+  }
+  cancelPendingMaskStrokeFlush();
+  activeMaskStroke = null;
+  const stack = maskUndoStacks.get(assetId);
+  const snapshot = stack?.pop();
+  if (!snapshot) {
+    return;
+  }
+  const current = ensureInpaintDraft(assetId);
+  const layers = getOrCreateMaskLayerSet(assetId, snapshot.layers.width, snapshot.layers.height);
+  restoreMaskLayerSet(layers, snapshot.layers);
+  const nextDraft: InpaintDraft = {
+    ...current,
+    ...snapshot.draft
+  };
+  setInpaintDraft(nextDraft);
+  renderFinalMaskToCanvas(canvas, layers, nextDraft, true);
+  const featherCanvas = document.querySelector<HTMLCanvasElement>("#maskFeatherPreview");
+  if (featherCanvas && featherCanvas.dataset.assetId === assetId) {
+    renderMaskFeatherPreview(featherCanvas, layers, nextDraft);
+  }
+  requestRender();
 }
 
 function commitMaskLayers(assetId: string) {
@@ -557,6 +655,7 @@ function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement, kind: M
     return;
   }
   ensureInpaintDraft(assetId);
+  pushMaskUndoSnapshot(assetId, canvas.width, canvas.height);
   canvas.setPointerCapture(event.pointerId);
   const point = pointerToMaskCanvasPoint(canvas, event);
   activeMaskStroke = {
@@ -947,6 +1046,7 @@ async function invertActiveMask() {
   }
   const draft = ensureInpaintDraft(assetId);
   const layers = await ensureMaskLayerSet(draft, canvas.width, canvas.height);
+  pushMaskUndoSnapshot(assetId, canvas.width, canvas.height);
   invertMaskLayers(layers, !!draft.previewSamMaskDataUrl);
   const nextDraft: InpaintDraft = {
     ...draft,
@@ -985,8 +1085,10 @@ function removeSmallMaskIslands() {
     return;
   }
   const minAreaPx = maskIslandMinAreaPx(canvas.width, canvas.height);
+  pushMaskUndoSnapshot(assetId, canvas.width, canvas.height);
   const changed = removeMaskIslandsFromLayers(layers, !!draft.previewSamMaskDataUrl, minAreaPx);
   if (!changed) {
+    maskUndoStacks.get(assetId)?.pop();
     state.message = "微小なマスク領域は見つかりませんでした。";
     requestRender();
     return;
@@ -1012,6 +1114,9 @@ function clearActiveMaskCanvas() {
   const assetId = canvas?.dataset.assetId ?? state.activeAssetId;
   if (!assetId) {
     return;
+  }
+  if (canvas) {
+    pushMaskUndoSnapshot(assetId, canvas.width, canvas.height);
   }
   maskLayerCache.delete(assetId);
   const draft = ensureInpaintDraft(assetId);
@@ -1039,6 +1144,7 @@ function clearInpaintDraft() {
   clearActiveWebSamBoxPrompt();
   if (state.activeAssetId) {
     maskLayerCache.delete(state.activeAssetId);
+    clearMaskUndo(state.activeAssetId);
   }
   setInpaintDraft(null);
   requestRender();
@@ -1055,6 +1161,18 @@ export function closeMaskEditorSession() {
   activeMaskStroke = null;
   activeImagePan = null;
   maskToolbarDrag = null;
+}
+
+export function handleMaskEditorKeydown(event: KeyboardEvent): boolean {
+  if (!state.maskEditMode || state.maskPanelTab === "pose") {
+    return false;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    undoMaskEdit();
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -1132,6 +1250,9 @@ registerActions({
   },
   "clear-mask": () => {
     clearActiveMaskCanvas();
+  },
+  "mask-undo": () => {
+    undoMaskEdit();
   },
   "invert-mask": () => invertActiveMask(),
   "remove-mask-islands": () => {

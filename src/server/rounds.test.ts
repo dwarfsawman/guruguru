@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeInpaintOptions } from "./rounds.ts";
+import { normalizeInpaintOptions, roundAttachmentPathFromRequest } from "./rounds.ts";
+import type { GenerationRequest } from "../shared/types.ts";
 
 // Characterization tests: pin the behavior of normalizeInpaintOptions, including the
 // featherRadius field added by the mask feather feature. See Docs/Feature-MaskFeather.md.
@@ -67,4 +68,50 @@ test("normalizeInpaintOptions: accepts snake_case alias for featherRadius", () =
 test("normalizeInpaintOptions: maskDataUrl is always null regardless of input", () => {
   const options = normalizeInpaintOptions({ maskDataUrl: "data:image/png;base64,abc" });
   assert.equal(options.maskDataUrl, null);
+});
+
+function request(overrides: Partial<GenerationRequest> = {}): GenerationRequest {
+  return {
+    templateId: "template-1",
+    prompt: "",
+    negativePrompt: "",
+    seed: null,
+    seedMode: "fixed",
+    batchSize: 1,
+    steps: 20,
+    cfg: 7,
+    sampler: "euler",
+    scheduler: "normal",
+    denoise: 1,
+    width: 512,
+    height: 512,
+    generationMode: "img2img",
+    ...overrides
+  };
+}
+
+test("roundAttachmentPathFromRequest: reads stored mask and pose paths", () => {
+  const input = request({
+    inpaint: {
+      maskDataUrl: null,
+      maskPath: "C:/data/project/masks/round_mask.png",
+      maskedContent: "original",
+      inpaintArea: "only_masked",
+      onlyMaskedPadding: 32
+    },
+    controlnet: {
+      poseImageDataUrl: null,
+      poseImagePath: "C:/data/project/control/round_pose.png",
+      strength: 1,
+      startPercent: 0,
+      endPercent: 1
+    }
+  });
+  assert.equal(roundAttachmentPathFromRequest(input, "mask"), "C:/data/project/masks/round_mask.png");
+  assert.equal(roundAttachmentPathFromRequest(input, "pose"), "C:/data/project/control/round_pose.png");
+});
+
+test("roundAttachmentPathFromRequest: empty when attachment is absent", () => {
+  assert.equal(roundAttachmentPathFromRequest(request(), "mask"), null);
+  assert.equal(roundAttachmentPathFromRequest(request(), "pose"), null);
 });

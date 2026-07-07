@@ -421,7 +421,11 @@ export async function toggleSelect(assetId: string) {
   if (!asset) {
     return;
   }
-  await setAssetStatus(assetId, asset.status === "selected" ? "generated" : "selected");
+  if (asset.status === "selected") {
+    await setAssetStatus(assetId, "generated");
+    return;
+  }
+  await selectSingleAsset(assetId);
 }
 
 export async function toggleFavorite(assetId: string) {
@@ -432,14 +436,30 @@ export async function toggleFavorite(assetId: string) {
   await setAssetStatus(assetId, asset.status === "favorite" ? "generated" : "favorite");
 }
 
-export async function selectAllActiveRound() {
-  const assets = getActiveRoundAssets().filter((asset) => !["archived", "failed"].includes(asset.status));
+async function selectSingleAsset(assetId: string) {
+  const target = findAsset(assetId);
+  if (!target) {
+    return;
+  }
+  const assets = getActiveRoundAssets();
   for (const asset of assets) {
-    if (asset.status !== "selected") {
-      await setAssetStatus(asset.id, "selected", false);
+    if (asset.id !== assetId && asset.status === "selected") {
+      await setAssetStatus(asset.id, "generated", false);
     }
   }
+  await setAssetStatus(assetId, "selected", false);
   await refreshProject(state.activeRoundId, state.activeAssetId);
+  requestRender();
+}
+
+export async function selectAllActiveRound() {
+  const assets = getActiveRoundAssets().filter((asset) => !["archived", "failed"].includes(asset.status));
+  const target = assets.find((asset) => asset.status === "selected") ?? assets[0] ?? null;
+  if (!target) {
+    return;
+  }
+  await selectSingleAsset(target.id);
+  state.message = "img2imgに使える画像は1枚のみです。";
   requestRender();
 }
 
@@ -454,11 +474,12 @@ export async function clearSelectionActiveRound() {
 
 export async function invertSelectionActiveRound() {
   const assets = getActiveRoundAssets().filter((asset) => !["archived", "failed", "rejected"].includes(asset.status));
-  for (const asset of assets) {
-    await setAssetStatus(asset.id, asset.status === "selected" ? "generated" : "selected", false);
+  if (assets.length === 0) {
+    return;
   }
-  await refreshProject(state.activeRoundId, state.activeAssetId);
-  requestRender();
+  const currentIndex = assets.findIndex((asset) => asset.status === "selected");
+  const target = assets[(currentIndex + 1) % assets.length]!;
+  await selectSingleAsset(target.id);
 }
 
 export async function resetActiveRoundMarks() {
@@ -472,9 +493,9 @@ export async function resetActiveRoundMarks() {
 }
 
 export function exportSelected() {
-  const count = getActiveRoundAssets().filter((asset) => asset.status === "selected").length;
+  const count = getActiveRoundAssets().some((asset) => asset.status === "selected") ? 1 : 0;
   state.message = count > 0
-    ? `${count}枚の選択画像を保存対象にしました。保存先はComfyUI接続設定の保存先です。`
+    ? "選択画像を保存対象にしました。保存先はComfyUI接続設定の保存先です。"
     : "保存対象の選択画像がありません。";
   requestRender();
 }
@@ -830,7 +851,7 @@ registerActions({
     }
   },
   "paint-save": () => savePaintResultAsSourceAsset(),
-  "asset-selected": (id) => setAssetStatus(id, "selected"),
+  "asset-selected": (id) => selectSingleAsset(id),
   "asset-rejected": (id) => setAssetStatus(id, "rejected"),
   "asset-unmarked": (id) => setAssetStatus(id, "generated"),
   "toggle-select": (id) => toggleSelect(id),

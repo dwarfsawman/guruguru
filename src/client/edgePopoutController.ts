@@ -7,8 +7,8 @@
  * - フォールバックとしてエッジ(<button class="iteration-edge">)のクリックでもトグルする
  *   (タッチ・キーボード向け。エッジは UX改善#7 で focus 可能なボタンになっている)。
  * - 展開状態は classList 直接操作(render を経ない)。mouseleave / focusout で自動リセット。
- * - ポップアウトは通常 pointer-events: none。展開時のみ CSS 側で auto になるが、
- *   ポップアウトはエッジボタンの DOM 子孫なので hover 継続で表示が消えることはない。
+ * - ポップアウトはエッジボタンの DOM 子孫なので、ポップアウト上でホイール/クリックしても
+ *   hover 継続で表示が消えることはない。
  */
 import { registerEventBinder } from "./actionRegistry";
 
@@ -26,6 +26,21 @@ function edgePopoutFor(target: EventTarget | null): { edge: HTMLElement; popout:
 
 function setExpanded(popout: HTMLElement, expanded: boolean) {
   popout.classList.toggle("expanded", expanded);
+}
+
+function showAttachmentPreview(item: HTMLElement, popout: HTMLElement) {
+  const src = item.dataset.edgeAttachmentSrc;
+  const label = item.dataset.edgeAttachmentLabel ?? "";
+  const image = popout.querySelector<HTMLImageElement>("[data-edge-attachment-preview-image]");
+  const caption = popout.querySelector<HTMLElement>("[data-edge-attachment-preview-label]");
+  if (!src || !image) {
+    return;
+  }
+  image.src = src;
+  image.alt = label ? `${label} 拡大表示` : "";
+  if (caption) {
+    caption.textContent = label;
+  }
 }
 
 function bindEdgePopoutEvents(app: HTMLElement) {
@@ -46,6 +61,15 @@ function bindEdgePopoutEvents(app: HTMLElement) {
   app.addEventListener("click", (event) => {
     const found = edgePopoutFor(event.target);
     if (!found) {
+      return;
+    }
+    const previewItem = event.target instanceof Element
+      ? event.target.closest<HTMLElement>("[data-edge-attachment-src]")
+      : null;
+    if (previewItem) {
+      event.preventDefault();
+      showAttachmentPreview(previewItem, found.popout);
+      setExpanded(found.popout, true);
       return;
     }
     // ポップアウト本体のクリックでは閉じない(誤クリックで消えるのを防ぐ)。

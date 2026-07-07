@@ -18,7 +18,8 @@ import {
   deleteRoundTree,
   restoreRounds,
   ensureRoundMonitor,
-  interruptRound
+  interruptRound,
+  serveRoundAttachment
 } from "./rounds";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
@@ -250,6 +251,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (method === "PUT" && pasteAttachmentsMatch) {
     sendJson(res, 200, putPasteAttachments(pasteAttachmentsMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const roundAttachmentMatch = path.match(/^\/api\/rounds\/([^/]+)\/attachments\/(mask|pose)$/);
+  if (method === "GET" && roundAttachmentMatch) {
+    serveRoundAttachment(res, roundAttachmentMatch[1]!, roundAttachmentMatch[2]! as "mask" | "pose");
     return;
   }
 
