@@ -85,8 +85,14 @@ export const MODEL_TARGET_DIRS: Record<ModelKind, string>; // "models/diffusion_
 
 残す(今回触らない):
 - サーバー `POST /api/templates`(`templates.ts` の `createTemplate`)— UI 呼び出し元は消えるが、テストと後続の内蔵テンプレート seed で再利用するため温存
-- テンプレート一覧の diagram / export / 削除ボタン(`renderTemplatePanel`)
 - `shared/workflowRoleMap.ts`(サーバー `createTemplate` が `validateRoleMapReferences` を使用)
+
+### 5. 実装中の追加指示 — WorkflowTemplateパネル + diagram機能の削除
+
+Phase 4 完了後、ユーザーからの追加指示でスコープを拡大: ホーム画面の「WorkflowTemplate」一覧パネル(`renderTemplatePanel`。diagram表示・export・削除ボタンを含む)を丸ごと削除し、そこからしか呼ばれなくなる Mermaid diagram 表示機能(`renderWorkflowDiagramModal`・`shared/workflowDiagram.ts`・`mermaid` npm依存・パン/ズーム処理一式)も削除した(元の計画では「残す」としていたが、ユーザー確認の上で変更)。
+
+残すもの: `GET /api/templates` の取得(生成フォーム・「新規Project作成」の「デフォルトWorkflowTemplate」ドロップダウンで使用継続)、`renderTemplateOption`、サーバー側 `templates.ts` 一式(`POST`/`DELETE`/`GET`)。
+副次的な修正: `closeWorkflowModals()`(モーダル背景クリックで閉じる処理)が `activeWorkflowDiagramTemplateId` ではなく `modelInstallFamily` をリセットするよう繋ぎ直した(diagram機能削除に伴う対応。以前は必要モデルインストールモーダルが背景クリックで閉じない状態だった)。
 
 ## 実装フェーズ
 
@@ -97,13 +103,14 @@ export const MODEL_TARGET_DIRS: Record<ModelKind, string>; // "models/diffusion_
 - Phase 2 — サーバー API: `comfy.ts` / `modelCheck.ts` / `apiTypes.ts` / `index.ts` ルート。`modelCheck.test.ts` は pure 部のみ。`npm test` / `npm run check`
 - Phase 3 — クライアント新 UI: モデル選択項 / モーダル / `modelCheckController.ts` / appState / CSS。`npm run check` + ブラウザ確認
 - Phase 4 — 登録UI削除: 上記削除一覧を実施。`npm test` / `npm run typecheck` / `npm run check` 全通し
+- Phase 4.5(追加指示) — WorkflowTemplateパネル + diagram機能削除。`npm test` / `npm run typecheck` / `npm run check` 全通し
 - Phase 5 — 実機検証・マージ: 実機検証 → 本ドキュメント仕上げ → main へマージ、`Docs/Done/` へ移動
 
 ## 変えないこと
 
 - `patchWorkflow` / roleMap / 動的パッチ生成経路(削除は後続フィーチャー)
-- サーバーのテンプレート API(POST /api/templates 含む)・テンプレート一覧の diagram/export/削除 UI
-- 生成パネルのモデル欄(`modelDefaultsFromWorkflow` / `renderModelReadout`)
+- サーバーのテンプレート API(POST/DELETE/GET /api/templates 含む)
+- 生成パネルのモデル欄(`modelDefaultsFromWorkflow` / `renderModelReadout`)・テンプレート選択ドロップダウン(`renderTemplateOption`)
 - DB スキーマ
 
 ## 検証
@@ -111,11 +118,12 @@ export const MODEL_TARGET_DIRS: Record<ModelKind, string>; // "models/diffusion_
 - 単体: `npm test` / `npm run typecheck` / `npm run check`
 - API 単体: テスト起動(PORT≠5177・`GURUGURU_TEST_DB=1`)で `curl "http://127.0.0.1:<port>/api/comfy/model-check?family=chroma"`(ComfyUI 停止時も 200 + available:null になること)
 - 実機: テスト用 ComfyUI(port 8288、操作メモ.md の手順)で
-  1. ホームの「モデル選択」に Chroma ボタンが出る/テンプレート登録ボタンが消えている
+  1. ホームの「モデル選択」に Chroma ボタンが出る/テンプレート登録ボタン・WorkflowTemplate一覧パネルが消えている
   2. Chroma クリック → モーダルに4モデル+配置先が並び、モデル配置済みなら全行 ✓
   3. ComfyUI 停止状態で「未確認」+配置先案内が表示される(再チェックで復帰)
   4. ComfySwitchNode / PrimitiveBoolean チェックが ✓
-  5. 既存機能の回帰: テンプレート選択・生成・export・diagram が従来どおり動く
+  5. モーダルは「閉じる」ボタンと背景クリックの両方で閉じる
+  6. 既存機能の回帰: 「新規Project作成」の「デフォルトWorkflowTemplate」ドロップダウン・生成フォームのテンプレート選択が従来どおり動く
   - 本番 8188 の /history・/view は読まない
 
 ## 今後の方向(今回スコープ外)
@@ -125,3 +133,14 @@ Chroma テンプレートの内蔵化(起動時 seed / バージョン更新)、
 ## 未決事項(実装中に判断)
 
 - モデル一覧の出所を参照 JSON にしたため、DB 上のテンプレートが参照 JSON から改変されている場合は実使用モデルと表示がずれ得る(テンプレート内蔵化で解消する前提の割り切り)
+
+## 実施記録(2026-07-07)
+
+Phase 0〜5 を worktree `guruguru-wt-model-select`(ブランチ `feature/model-select`)で実施し、全フェーズ完了。
+
+- Phase 0〜4: 計画どおり実施(本ドキュメント上部・削除一覧のとおり)。
+- Phase 4.5(実装中の追加指示): 上記「実装中の追加指示」節のとおり、WorkflowTemplate一覧パネルと Mermaid diagram 機能一式を追加で削除。
+- 死コード `renderWorkflowTypeOptions`(旧テンプレート登録フォーム専用)を削除。
+- 実機検証: テスト用 ComfyUI(port 8288、Desktop版流用)に接続し、実際に配置済みの4モデル(Chroma1-HD-fp8mixed.safetensors 等)すべてで ✓ バッジ表示を確認。ComfyUI未接続時の「未確認」表示、再チェックでの復帰、モーダルの「閉じる」ボタン・背景クリック双方での閉じる動作、ComfySwitchNode/PrimitiveBooleanの検出、「デフォルトWorkflowTemplate」ドロップダウンの残存を確認。
+- 最終検証: `npm test`(360/360 pass)・`npm run typecheck`(0エラー)・`npm run check` すべて通過。
+- main へマージ済み(push はユーザー依頼時のみのため未実施)。
