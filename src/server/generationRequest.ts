@@ -3,8 +3,10 @@ import {
   normalizeDenoiseForMode,
   relationForGenerationMode
 } from "../shared/generationMode";
-import type { GenerationMode, GenerationRequest, ParentRelation } from "../shared/types";
+import type { GenerationMode, GenerationRequest, ParentRelation, StyleLoraSelection } from "../shared/types";
 import { numberOr, positiveIntegerOr, requiredString, stringOr, stringOrNull } from "./validate";
+
+export const maxStyleLoras = 4;
 
 export const maxBatchSize = 32;
 
@@ -28,8 +30,27 @@ export function normalizeGenerationRequest(input: GenerationRequest): Generation
     height: positiveIntegerOr(input.height, 1024),
     generationMode,
     parentAssetId: stringOrNull(input.parentAssetId),
-    relationType: (stringOrNull(input.relationType) as ParentRelation | null) ?? relationForGenerationMode(generationMode)
+    relationType: (stringOrNull(input.relationType) as ParentRelation | null) ?? relationForGenerationMode(generationMode),
+    loras: normalizeStyleLoras(input.loras)
   };
+}
+
+function normalizeStyleLoras(raw: unknown): StyleLoraSelection[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+    .map((entry) => ({ name: stringOr(entry.name, "").trim(), strength: clampStrength(numberOr(entry.strength, 1)) }))
+    .filter((lora) => lora.name !== "")
+    .slice(0, maxStyleLoras);
+}
+
+function clampStrength(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 1;
+  }
+  return Math.min(2, Math.max(0, value));
 }
 
 export function clampInteger(value: number, min: number, max: number) {

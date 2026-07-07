@@ -32,7 +32,6 @@ const MODEL_KIND_LABELS: Record<ModelKind, string> = {
   textEncoder: "Text Encoder",
   vae: "VAE",
   controlnet: "ControlNet",
-  lora: "LoRA",
   pulid: "PuLID"
 };
 

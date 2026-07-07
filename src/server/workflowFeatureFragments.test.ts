@@ -10,7 +10,7 @@ function baseWorkflow(): Record<string, any> {
 }
 
 function flags(overrides: Partial<FeatureFlags> = {}): FeatureFlags {
-  return { lora: false, pulid: false, ...overrides };
+  return { pulid: false, ...overrides };
 }
 
 test("assembleFeatureFragments: no-op when every flag is false", () => {
@@ -21,15 +21,24 @@ test("assembleFeatureFragments: no-op when every flag is false", () => {
   assert.deepEqual(patched["2"].inputs.model, ["1", 0]);
 });
 
-test("assembleFeatureFragments: lora only splices LoraLoaderModelOnly between the base model and ModelSamplingAuraFlow", () => {
+test("assembleFeatureFragments: style loras splice LoraLoaderModelOnly nodes in request order between the base model and ModelSamplingAuraFlow", () => {
   const workflow = baseWorkflow();
-  const patched = assembleFeatureFragments(workflow, flags({ lora: true }), null) as Record<string, any>;
+  const patched = assembleFeatureFragments(workflow, flags(), null, [
+    { name: "chroma\\A.safetensors", strength: 0.8 },
+    { name: "chroma\\B.safetensors", strength: 1.2 }
+  ]) as Record<string, any>;
 
-  const loraNodeId = patched["2"].inputs.model[0];
-  assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
-  assert.deepEqual(patched[loraNodeId].inputs.model, ["1", 0]);
-  assert.equal(patched[loraNodeId].inputs.lora_name, "Hyper-Chroma-low-step-LoRA.safetensors");
-  assert.equal(patched[loraNodeId].inputs.strength_model, 1.0);
+  // Chain: base UNETLoader -> A -> B -> ModelSamplingAuraFlow (request order, last one nearest sampler).
+  const bNodeId = patched["2"].inputs.model[0];
+  assert.equal(patched[bNodeId].class_type, "LoraLoaderModelOnly");
+  assert.equal(patched[bNodeId].inputs.lora_name, "chroma\\B.safetensors");
+  assert.equal(patched[bNodeId].inputs.strength_model, 1.2);
+
+  const aNodeId = patched[bNodeId].inputs.model[0];
+  assert.equal(patched[aNodeId].class_type, "LoraLoaderModelOnly");
+  assert.equal(patched[aNodeId].inputs.lora_name, "chroma\\A.safetensors");
+  assert.equal(patched[aNodeId].inputs.strength_model, 0.8);
+  assert.deepEqual(patched[aNodeId].inputs.model, ["1", 0]);
 });
 
 test("assembleFeatureFragments: pulid only wires model/image/prior_image and a shared LoadImage node", () => {
@@ -55,12 +64,13 @@ test("assembleFeatureFragments: pulid only wires model/image/prior_image and a s
   assert.equal(apply.inputs.weight, 1.0);
 });
 
-test("assembleFeatureFragments: lora + pulid chain in the documented order and share one reference-image node", () => {
+test("assembleFeatureFragments: style lora + pulid chain in the documented order (LoRA before PuLID)", () => {
   const workflow = baseWorkflow();
   const patched = assembleFeatureFragments(
     workflow,
-    flags({ lora: true, pulid: true }),
-    "ref.png"
+    flags({ pulid: true }),
+    "ref.png",
+    [{ name: "chroma\\Style.safetensors", strength: 1.0 }]
   ) as Record<string, any>;
 
   const pulidApplyId = patched["2"].inputs.model[0];
@@ -69,6 +79,7 @@ test("assembleFeatureFragments: lora + pulid chain in the documented order and s
 
   const loraNodeId = pulidApply.inputs.model[0];
   assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
+  assert.equal(patched[loraNodeId].inputs.lora_name, "chroma\\Style.safetensors");
   assert.deepEqual(patched[loraNodeId].inputs.model, ["1", 0]);
 
   // image and prior_image both resolve to the exact same LoadImage node id (one shared upload).
@@ -85,7 +96,7 @@ test("assembleFeatureFragments: throws when pulid is enabled but no reference im
 
 test("assembleFeatureFragments: throws when the base template has no ModelSamplingAuraFlow node", () => {
   assert.throws(
-    () => assembleFeatureFragments({ "1": { class_type: "UNETLoader", inputs: {} } }, flags({ lora: true }), null),
+    () => assembleFeatureFragments({ "1": { class_type: "UNETLoader", inputs: {} } }, flags(), null, [{ name: "x.safetensors", strength: 1 }]),
     /require a ModelSamplingAuraFlow node/
   );
 });

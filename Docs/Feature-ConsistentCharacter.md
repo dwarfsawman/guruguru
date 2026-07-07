@@ -449,3 +449,39 @@ txt2img 実生成を完走**させ、本機能の中核設計(フラグメント
 - 実機(テスト用 ComfyUI 8288、fp8 コアテンプレートに復元済み)で `GET /api/comfy/model-check?family=chroma`
   の features が `controlnet, lora, pulid` のみ(ipadapter/rmbg 消滅)、models kinds からも ipadapterFlux/clipVision
   が消えたことを確認。UI の「参照画像」枠は **顔スタイル参照(PuLID)トグルのみ**表示(全体スタイル参照は撤去)。
+
+## 実施記録(2026-07-07): スタイル LoRA 選択機能(絵柄コントロール)+ 自動 Hyper LoRA 撤去
+
+**絵柄コントロールを「ユーザーが models/loras から選ぶ複数スタック可能なスタイル LoRA」に置換**し、
+これに伴い自動 Hyper LoRA(`lora` feature)を撤去した。
+
+### 背景・判断
+
+- 「Hyper-Chroma-low-step-LoRA」は**低ステップ化(速度)LoRA**であって絵柄制御はしない。絵柄は
+  任意の style/character LoRA で行うのが実態(ユーザー判断:「絵柄は LoRA 全盛」)。
+- ユーザーが LoRA を `models/loras/chroma/` サブフォルダへ整理した結果、ComfyUI の
+  `LoraLoaderModelOnly.lora_name` choices が `chroma\...`(サブフォルダ込み)になり、**固定ベース名を
+  注入する旧・自動 Hyper は choices と食い違って ComfyUI に拒否される**(model-check は basename 一致で
+  「available」に見えるのに生成が落ちる)不整合も判明。→ 自動挿入を廃止し、全 LoRA を「実 choice 文字列を
+  そのまま使うユーザー選択」に一本化。
+
+### 実装
+
+- **サーバ**: `GET /api/comfy/loras`(`modelCheck.ts:listAvailableLoras` — `LoraLoaderModelOnly` の choices を
+  そのまま返す)を追加。`GenerationRequest.loras: StyleLoraSelection[]`(`{name, strength}`)を追加し、
+  `normalizeGenerationRequest` で空名除去・強度 0〜2 clamp・最大4本 cap。`workflowFeatureFragments.ts` の
+  `assembleFeatureFragments` を `UNETLoader → [style LoRAs…(request 順)] → [PuLID] → ModelSamplingAuraFlow`
+  の順で `LoraLoaderModelOnly` を連結する形に変更(`lora_name` は request の実 choice 文字列を verbatim 使用)。
+  `lora` feature / `ModelKind` の `lora` / 旧 `LORA_FILE` 定数は撤去。
+- **フロント**: 生成フォームに「スタイル LoRA」枠(新規 `styleLoraController.ts`)。行=名前 select(候補は
+  `/api/comfy/loras`、表示は basename・値はサブフォルダ込みフルパス)+ 強度 slider(0〜2)+ 削除、最大4本、
+  「LoRA を追加」ボタン。選択は form レベルの `state.loraDraft`(`draftStore` で localStorage 永続化)。
+  project 展開時に `refreshLoraChoices()`。送信は `styleLorasForRequest()` → `GenerationRequest.loras`。
+
+### 検証
+
+- `npm run typecheck` 0エラー、`npm test` 380/380 pass(スタイル LoRA 注入・正規化の単体テスト追加)。
+- 実機(8288)で `GET /api/comfy/loras` が `["chroma\\Chroma_Voyager_86.safetensors","chroma\\Hyper-Chroma-low-step-LoRA.safetensors"]`
+  を返すこと、UI で「LoRA を追加」→ 候補選択→強度指定ができること、`chroma\Chroma_Voyager_86.safetensors` を
+  選んで txt2img 実生成が **completed**(patched workflow に `LoraLoaderModelOnly` が実 choice 文字列で注入され、
+  **サブフォルダパスでも ComfyUI が受理**)を確認。

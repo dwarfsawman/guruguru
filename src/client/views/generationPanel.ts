@@ -9,6 +9,7 @@ import {
   requiresFullDenoise
 } from "../../shared/generationMode";
 import type { Asset, ProjectDetail, Round } from "../../shared/apiTypes";
+import type { StyleLoraSelection } from "../../shared/types";
 import { escapeAttr, escapeHtml, formatNumber } from "../format";
 import {
   iconChevron,
@@ -100,7 +101,9 @@ export function renderGenerationPanel(
   llmConfigured = false,
   llmImproving = false,
   referenceDraft: ReferenceDraft | null = null,
-  referenceAvailability: { pulid: boolean } = { pulid: false }
+  referenceAvailability: { pulid: boolean } = { pulid: false },
+  loraDraft: StyleLoraSelection[] = [],
+  loraChoices: { status: "idle" | "loading" | "ready" | "error"; names: string[] } = { status: "idle", names: [] }
 ) {
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
@@ -170,6 +173,8 @@ export function renderGenerationPanel(
       </section>
 
       ${renderReferenceImageSection(referenceDraft, referenceAvailability)}
+
+      ${renderStyleLoraSection(loraDraft, loraChoices)}
 
       <section class="sidebar-section">
         <p class="section-kicker">プロンプト</p>
@@ -288,6 +293,67 @@ function renderReferenceToggle(action: string, label: string, checked: boolean, 
       ${escapeHtml(label)}
     </label>
   `;
+}
+
+/**
+ * Consistent Character(Docs/Feature-ConsistentCharacter.md)の「スタイル LoRA」枠。絵柄コントロール用に
+ * models/loras の LoRA を複数選択・強度指定して MODEL チェーンへ適用する。候補は ComfyUI の
+ * LoraLoaderModelOnly choices(サブフォルダ込みの実ファイル名)。行の追加/削除/変更は styleLoraController。
+ */
+function renderStyleLoraSection(
+  draft: StyleLoraSelection[],
+  choices: { status: "idle" | "loading" | "ready" | "error"; names: string[] }
+) {
+  const maxLoras = 4;
+  const rows = draft.map((row, index) => renderStyleLoraRow(row, index, choices.names)).join("");
+  const hint =
+    choices.status === "ready" && choices.names.length === 0
+      ? `<p class="section-hint">models/loras に LoRA がありません(ComfyUI に配置してください)。</p>`
+      : choices.status === "error"
+        ? `<p class="section-hint">LoRA 一覧を取得できませんでした(ComfyUI 未接続)。</p>`
+        : "";
+  return `
+    <section class="sidebar-section style-lora-section">
+      <p class="section-kicker">スタイル LoRA</p>
+      ${rows}
+      ${hint}
+      ${draft.length < maxLoras
+        ? `<button class="button-secondary compact" type="button" data-action="add-style-lora">${iconPlus()}LoRA を追加</button>`
+        : `<p class="section-hint">LoRA は最大 ${maxLoras} 本までです。</p>`}
+    </section>
+  `;
+}
+
+function renderStyleLoraRow(row: StyleLoraSelection, index: number, names: string[]) {
+  const valueId = `styleLoraStrength${index}`;
+  // 現在の選択が候補一覧に無い場合(LoRA を後から消した等)でも「選択済み」を保てるよう option に含める。
+  const options = names.includes(row.name) || row.name === "" ? names : [row.name, ...names];
+  const optionHtml = [
+    `<option value="" ${row.name === "" ? "selected" : ""}>(選択)</option>`,
+    ...options.map(
+      (name) =>
+        `<option value="${escapeAttr(name)}" ${name === row.name ? "selected" : ""}>${escapeHtml(loraBasename(name))}</option>`
+    )
+  ].join("");
+  return `
+    <div class="style-lora-row" data-lora-index="${index}">
+      <div class="style-lora-head">
+        <select class="style-lora-select" data-lora-field="name" data-lora-index="${index}">${optionHtml}</select>
+        <button class="icon-button" type="button" data-action="remove-style-lora" data-lora-index="${index}" aria-label="この LoRA を削除" title="削除">${iconTrash()}</button>
+      </div>
+      <div class="range-control">
+        <div class="range-label"><span>強度</span><strong id="${valueId}">${formatNumber(row.strength)}</strong></div>
+        <input type="range" min="0" max="2" step="0.05" value="${row.strength}" data-value-target="${valueId}" data-lora-field="strength" data-lora-index="${index}" />
+        <div class="range-minmax"><span>0</span><span>2</span></div>
+      </div>
+    </div>
+  `;
+}
+
+function loraBasename(name: string): string {
+  const normalized = name.replace(/\\/g, "/");
+  const slash = normalized.lastIndexOf("/");
+  return slash === -1 ? normalized : normalized.slice(slash + 1);
 }
 
 export function renderInpaintSidebarSection(inpaint: InpaintDraft) {

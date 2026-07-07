@@ -12,7 +12,6 @@ export type ModelKind =
   | "textEncoder"
   | "vae"
   | "controlnet"
-  | "lora"
   | "pulid";
 
 /**
@@ -20,7 +19,7 @@ export type ModelKind =
  * トグル対象外)。それ以外はユーザーが任意にON/OFFできる機能で、`Docs/Feature-ConsistentCharacter.md`
  * の「必要ノードパック」表に対応する。
  */
-export type FeatureKey = "base" | "controlnet" | "lora" | "pulid";
+export type FeatureKey = "base" | "controlnet" | "pulid";
 
 export interface WorkflowModelRequirement {
   kind: ModelKind;
@@ -39,7 +38,6 @@ const INPUT_NAME_TO_KIND: Record<string, ModelKind> = {
   clip_name3: "textEncoder",
   vae_name: "vae",
   control_net_name: "controlnet",
-  lora_name: "lora",
   // PulidFluxModelLoader(PaoloC68/ComfyUI-PuLID-Flux-Chroma)の実ソースで確認した入力名。
   pulid_file: "pulid"
 };
@@ -50,7 +48,6 @@ export const MODEL_TARGET_DIRS: Record<ModelKind, string> = {
   textEncoder: "models/text_encoders",
   vae: "models/vae",
   controlnet: "models/controlnet",
-  lora: "models/loras",
   pulid: "models/pulid"
 };
 
@@ -60,7 +57,6 @@ export const KIND_TO_FEATURE: Record<ModelKind, FeatureKey> = {
   textEncoder: "base",
   vae: "base",
   controlnet: "controlnet",
-  lora: "lora",
   pulid: "pulid"
 };
 

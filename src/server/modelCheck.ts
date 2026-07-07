@@ -13,7 +13,7 @@ import type { ModelCheckEntry, ModelCheckFeatureStatus, ModelCheckResult } from 
 const REQUIRED_CORE_NODES = ["ComfySwitchNode", "PrimitiveBoolean"] as const;
 // Features tracked for togglable availability -- "base" (the 4 always-required models) is
 // excluded, it is not something a user can turn on/off.
-const TOGGLABLE_FEATURES: FeatureKey[] = ["controlnet", "lora", "pulid"];
+const TOGGLABLE_FEATURES: FeatureKey[] = ["controlnet", "pulid"];
 
 const referencePath = fileURLToPath(
   new URL("../../Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.json", import.meta.url)
@@ -181,9 +181,23 @@ export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
   };
 }
 
+/**
+ * 生成フォームの「スタイル LoRA」枠が選ばせる LoRA 一覧。ComfyUI の LoraLoaderModelOnly が
+ * 報告する choices(サブフォルダ込みの実ファイル名)をそのまま返す。ComfyUI 未接続/ノード不在時は
+ * `ok: false` + 空配列(この関数自体は例外を投げない)。
+ */
+export async function listAvailableLoras(): Promise<{ ok: boolean; loras: string[] }> {
+  try {
+    const info = await fetchComfyNodeInfo("LoraLoaderModelOnly");
+    const choices = extractChoices(info, "LoraLoaderModelOnly", "lora_name");
+    return choices == null ? { ok: false, loras: [] } : { ok: true, loras: choices };
+  } catch {
+    return { ok: false, loras: [] };
+  }
+}
+
 export interface FeatureAvailability {
   controlnet: boolean;
-  lora: boolean;
   pulid: boolean;
 }
 
@@ -206,16 +220,15 @@ export async function resolveFeatureAvailability(): Promise<FeatureAvailability>
   try {
     raw = await runRawCheck();
   } catch {
-    return { controlnet: false, lora: false, pulid: false };
+    return { controlnet: false, pulid: false };
   }
 
   const value: FeatureAvailability = raw.comfyOk
     ? {
         controlnet: isFeatureAvailable(raw, "controlnet"),
-        lora: isFeatureAvailable(raw, "lora"),
         pulid: isFeatureAvailable(raw, "pulid")
       }
-    : { controlnet: false, lora: false, pulid: false };
+    : { controlnet: false, pulid: false };
 
   cachedAvailability = { value, expiresAt: now + FEATURE_AVAILABILITY_CACHE_MS };
   return value;

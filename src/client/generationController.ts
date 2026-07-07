@@ -35,6 +35,7 @@ import {
   setGenerationDraftValue
 } from "./generationDraft";
 import { openAssetDetail } from "./assetDetailController";
+import { styleLorasForRequest } from "./styleLoraController";
 import { commitActiveMaskCanvas } from "./maskEditorController";
 import {
   activePaintCanvasAndAsset,
@@ -106,6 +107,10 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   const reference = referenceRequestForForm();
   if (reference) {
     request.reference = reference;
+  }
+  const loras = styleLorasForRequest();
+  if (loras.length > 0) {
+    request.loras = loras;
   }
   // 貼り付け(添付)やペイントがあれば「見たまま」を合成して img2img 入力にする
   // (保存操作なし。親アセット・ツリーは不変 — Docs/Feature-ImagePaste.md)。

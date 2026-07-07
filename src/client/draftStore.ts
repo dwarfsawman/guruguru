@@ -2,6 +2,7 @@ import { state, type GenerationDraft, type ReferenceDraft } from "./appState";
 import type { InpaintDraft } from "./maskTypes";
 import { defaultInpaintDraft, normalizeInpaintDraft } from "./maskDraft";
 import type { PoseDraft } from "./poseTypes";
+import type { StyleLoraSelection } from "../shared/types";
 
 const DRAFT_STORAGE_PREFIX = "guruguru:draft:";
 
@@ -48,7 +49,8 @@ export function flushProjectDraftPersist() {
         generationDraftsByRound: state.generationDraftsByRound,
         inpaintDrafts: state.inpaintDrafts,
         poseDrafts: state.poseDrafts,
-        referenceDraft: state.referenceDraft
+        referenceDraft: state.referenceDraft,
+        loraDraft: state.loraDraft
       })
     );
   } catch {
@@ -68,6 +70,7 @@ export function restoreProjectDraft(projectId: string): {
   inpaintDrafts: Record<string, InpaintDraft>;
   poseDrafts: Record<string, PoseDraft>;
   referenceDraft: ReferenceDraft | null;
+  loraDraft: StyleLoraSelection[];
 } | null {
   try {
     const raw = window.localStorage.getItem(draftStorageKey(projectId));
@@ -80,13 +83,15 @@ export function restoreProjectDraft(projectId: string): {
       inpaintDrafts?: Record<string, InpaintDraft>;
       poseDrafts?: Record<string, PoseDraft>;
       referenceDraft?: ReferenceDraft | null;
+      loraDraft?: StyleLoraSelection[];
     };
     return {
       generationDraft: parsed.generationDraft ?? null,
       generationDraftsByRound: parsed.generationDraftsByRound ?? {},
       inpaintDrafts: parsed.inpaintDrafts ?? {},
       poseDrafts: parsed.poseDrafts ?? {},
-      referenceDraft: parsed.referenceDraft ?? null
+      referenceDraft: parsed.referenceDraft ?? null,
+      loraDraft: parsed.loraDraft ?? []
     };
   } catch {
     return null;
@@ -102,6 +107,7 @@ export function resetProjectDrafts() {
   state.paintDrafts = {};
   state.poseDrafts = {};
   state.referenceDraft = null;
+  state.loraDraft = [];
 }
 
 /** Project を開く際、永続化済みの draft があれば復元し、なければリセットする。 */
@@ -115,6 +121,7 @@ export function restoreOrResetProjectDrafts(projectId: string) {
   state.paintDrafts = {};
   state.poseDrafts = restored?.poseDrafts ?? {};
   state.referenceDraft = restored?.referenceDraft ?? null;
+  state.loraDraft = restored?.loraDraft ?? [];
 }
 
 export function inpaintDraftForAsset(assetId: string | null | undefined) {

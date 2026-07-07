@@ -79,6 +79,16 @@ export interface ReferenceImageOptions {
   face: { enabled: boolean };
 }
 
+/**
+ * Consistent Character: 絵柄コントロール用の LoRA 選択(1件)。`name` は ComfyUI の
+ * `LoraLoaderModelOnly.lora_name` が報告する実 choice 文字列(サブフォルダ込み。例
+ * `chroma\\Chroma_Voyager_86.safetensors`)をそのまま使う。`strength` は 0〜2。
+ */
+export interface StyleLoraSelection {
+  name: string;
+  strength: number;
+}
+
 export interface ComfySettings {
   baseUrl: string;
   websocketUrl: string;
@@ -116,6 +126,8 @@ export interface GenerationRequest {
   controlnet?: ControlNetOptions | null;
   pasteComposite?: PasteCompositeOptions | null;
   reference?: ReferenceImageOptions | null;
+  /** Consistent Character: ユーザーが選んだ絵柄/キャラ LoRA(複数スタック可)。 */
+  loras?: StyleLoraSelection[] | null;
 }
 
 export interface ApiErrorBody {

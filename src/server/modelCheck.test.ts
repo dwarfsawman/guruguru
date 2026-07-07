@@ -80,7 +80,7 @@ test("matchRequirements: loaderClass+inputName absent from the map (node not pre
 
 test("matchRequirements: two requirements sharing a loaderClass but different inputName resolve independently", () => {
   const requirements = [
-    requirement({ kind: "lora", loaderClass: "DualInputLoader", inputName: "first_name", name: "first.safetensors", feature: "lora" }),
+    requirement({ kind: "controlnet", loaderClass: "DualInputLoader", inputName: "first_name", name: "first.safetensors", feature: "controlnet" }),
     requirement({ kind: "pulid", loaderClass: "DualInputLoader", inputName: "second_name", name: "second.safetensors", feature: "pulid" })
   ];
   const choices = new Map([

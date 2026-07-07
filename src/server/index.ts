@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
 import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
-import { checkModels } from "./modelCheck";
+import { checkModels, listAvailableLoras } from "./modelCheck";
 import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection } from "./llm";
 import { serveStatic } from "./files";
 import { HttpError, readJson, sendJson } from "./http";
@@ -129,6 +129,11 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       return;
     }
     sendJson(res, 200, await checkModels(family));
+    return;
+  }
+
+  if (method === "GET" && path === "/api/comfy/loras") {
+    sendJson(res, 200, await listAvailableLoras());
     return;
   }
 

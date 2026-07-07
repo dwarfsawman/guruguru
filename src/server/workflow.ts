@@ -27,7 +27,6 @@ export { ensureWorkflowObject, hashJson, normalizeRoleMap, isUnifiedSwitchWorkfl
  */
 export interface FeatureAvailabilityFlags {
   controlnet: boolean;
-  lora: boolean;
   pulid: boolean;
 }
 

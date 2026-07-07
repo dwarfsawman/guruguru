@@ -68,7 +68,6 @@ export function patchUnifiedSwitchWorkflow(
   // validation would reject even plain txt2img/img2img prompts.
   const featureAvailability: FeatureAvailabilityFlags = context.featureAvailability ?? {
     controlnet: true,
-    lora: false,
     pulid: false
   };
   if (!featureAvailability.controlnet) {
@@ -201,19 +200,16 @@ export function patchUnifiedSwitchWorkflow(
 
   setNodeInput(workflow, roles.saveImageNodeId, ["filename_prefix"], savePrefix);
 
-  // Consistent Character: splice in the optional MODEL-chain fragments. LoRA has no per-round
-  // toggle (loaded whenever installed, per the reference workflow's own behavior); the face-style
-  // (PuLID) reference requires both the request toggle AND a shared reference image to have
-  // actually been uploaded this round.
+  // Consistent Character: splice in the optional MODEL-chain additions. Style LoRAs come straight
+  // from the request (validated/capped in normalizeGenerationRequest); the face-style (PuLID)
+  // reference requires both the request toggle AND a shared reference image uploaded this round.
   const hasReferenceImage = Boolean(context.uploadedReferenceImageName);
   const pulidEnabled = featureAvailability.pulid && Boolean(request.reference?.face?.enabled) && hasReferenceImage;
   assembleFeatureFragments(
     workflow,
-    {
-      lora: featureAvailability.lora,
-      pulid: pulidEnabled
-    },
-    context.uploadedReferenceImageName ?? null
+    { pulid: pulidEnabled },
+    context.uploadedReferenceImageName ?? null,
+    request.loras ?? []
   );
 
   return workflow;

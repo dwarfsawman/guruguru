@@ -70,6 +70,37 @@
   }
 }
 
+.style-lora-section {
+  display: grid;
+  gap: 10px;
+}
+
+.style-lora-row {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+
+.style-lora-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.style-lora-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.section-hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--faint);
+}
+
 @keyframes pulse {
   0%,
   100% {

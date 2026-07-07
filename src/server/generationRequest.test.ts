@@ -39,6 +39,31 @@ test("clampInteger: returns min for non-finite values", () => {
   assert.equal(clampInteger(Infinity, 2, 10), 2);
 });
 
+test("normalizeGenerationRequest: style loras drop blank names, clamp strength to 0..2, and cap at 4", () => {
+  const result = normalizeGenerationRequest(baseInput({
+    loras: [
+      { name: "chroma\\A.safetensors", strength: 0.8 },
+      { name: "  ", strength: 1 },                     // blank name -> dropped
+      { name: "chroma\\B.safetensors", strength: 5 },  // strength clamped to 2
+      { name: "chroma\\C.safetensors", strength: -3 }, // clamped to 0
+      { name: "chroma\\D.safetensors", strength: 1 },
+      { name: "chroma\\E.safetensors", strength: 1 }   // 5th valid -> dropped by cap(4)
+    ] as unknown as GenerationRequest["loras"]
+  }));
+
+  assert.deepEqual(result.loras, [
+    { name: "chroma\\A.safetensors", strength: 0.8 },
+    { name: "chroma\\B.safetensors", strength: 2 },
+    { name: "chroma\\C.safetensors", strength: 0 },
+    { name: "chroma\\D.safetensors", strength: 1 }
+  ]);
+});
+
+test("normalizeGenerationRequest: style loras default to [] when absent or non-array", () => {
+  assert.deepEqual(normalizeGenerationRequest(baseInput()).loras, []);
+  assert.deepEqual(normalizeGenerationRequest(baseInput({ loras: "nope" as unknown as GenerationRequest["loras"] })).loras, []);
+});
+
 test("maxBatchSize: is 32", () => {
   assert.equal(maxBatchSize, 32);
 });

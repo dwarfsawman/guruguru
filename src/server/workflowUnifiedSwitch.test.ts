@@ -392,7 +392,7 @@ test("patchUnifiedSwitchWorkflow: featureAvailability.controlnet=false prunes th
   const patched = patchUnifiedSwitchWorkflow(
     referenceWorkflow(),
     baseContext(request, {
-      featureAvailability: { controlnet: false, lora: false, pulid: false }
+      featureAvailability: { controlnet: false, pulid: false }
     }),
     "prefix"
   ) as Record<string, any>;
@@ -414,7 +414,7 @@ test("patchUnifiedSwitchWorkflow: generationMode=\"controlnet\" throws a clear e
         referenceWorkflow(),
         baseContext(request, {
           uploadedImageName: "parent_upload.png",
-          featureAvailability: { controlnet: false, lora: false, pulid: false }
+          featureAvailability: { controlnet: false, pulid: false }
         }),
         "prefix"
       ),
@@ -433,7 +433,7 @@ test("patchUnifiedSwitchWorkflow: a pose attachment is silently ignored (not an 
     baseContext(request, {
       uploadedImageName: "parent_upload.png",
       uploadedControlImageName: "pose_control.png",
-      featureAvailability: { controlnet: false, lora: false, pulid: false }
+      featureAvailability: { controlnet: false, pulid: false }
     }),
     "prefix"
   ) as Record<string, any>;
@@ -442,15 +442,16 @@ test("patchUnifiedSwitchWorkflow: a pose attachment is silently ignored (not an 
   assert.deepEqual(patched["694"].inputs.positive, ["748", 0]);
 });
 
-test("patchUnifiedSwitchWorkflow: face reference + lora splice PuLID and the LoRA into the MODEL chain feeding ModelSamplingAuraFlow", () => {
+test("patchUnifiedSwitchWorkflow: request style loras + face reference splice the LoRA and PuLID into the MODEL chain feeding ModelSamplingAuraFlow", () => {
   const request = baseRequest({
-    reference: { imageDataUrl: null, imagePath: "/tmp/ref.png", face: { enabled: true } }
+    reference: { imageDataUrl: null, imagePath: "/tmp/ref.png", face: { enabled: true } },
+    loras: [{ name: "chroma\\Chroma_Voyager_86.safetensors", strength: 0.9 }]
   });
   const patched = patchUnifiedSwitchWorkflow(
     referenceWorkflow(),
     baseContext(request, {
       uploadedReferenceImageName: "reference_upload.png",
-      featureAvailability: { controlnet: true, lora: true, pulid: true }
+      featureAvailability: { controlnet: true, pulid: true }
     }),
     "prefix"
   ) as Record<string, any>;
@@ -462,6 +463,8 @@ test("patchUnifiedSwitchWorkflow: face reference + lora splice PuLID and the LoR
   assert.equal(patched[pulidApplyId].class_type, "ApplyPulidFlux");
   const loraNodeId = patched[pulidApplyId].inputs.model[0];
   assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
+  assert.equal(patched[loraNodeId].inputs.lora_name, "chroma\\Chroma_Voyager_86.safetensors");
+  assert.equal(patched[loraNodeId].inputs.strength_model, 0.9);
   assert.deepEqual(patched[loraNodeId].inputs.model, ["731", 0]);
 
   const refImageNodeId = patched[pulidApplyId].inputs.image[0];
@@ -478,7 +481,7 @@ test("patchUnifiedSwitchWorkflow: face toggle enabled but no reference image was
     referenceWorkflow(),
     baseContext(request, {
       uploadedReferenceImageName: null,
-      featureAvailability: { controlnet: true, lora: false, pulid: true }
+      featureAvailability: { controlnet: true, pulid: true }
     }),
     "prefix"
   ) as Record<string, any>;

@@ -12,6 +12,7 @@ import { applyAssetDimensionsToDraft, generationDraftFromForm } from "./generati
 import { refreshProject, resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
 import { refreshComfyStatus, refreshLlmStatus } from "./settingsController";
 import { refreshModelCheck } from "./modelCheckController";
+import { refreshLoraChoices } from "./styleLoraController";
 
 export async function loadHome() {
   state.currentProjectId = null;
@@ -58,6 +59,7 @@ async function openProject(projectId: string) {
   // 顔スタイル参照(PuLID)トグルの disabled 判定に使うため、
   // モーダルを開かなくても機能可用性を先取りしておく(Docs/Feature-ConsistentCharacter.md)。
   void refreshModelCheck("chroma");
+  void refreshLoraChoices();
 }
 
 export function closeWorkflowModals() {

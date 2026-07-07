@@ -6,6 +6,7 @@ import type { WorkflowTemplate } from "./workflowTypes";
 import type { InpaintDraft } from "./maskTypes";
 import type { PaintDraft } from "./paintTypes";
 import type { PoseDraft } from "./poseTypes";
+import type { StyleLoraSelection } from "../shared/types";
 
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。フォームレベルの
@@ -216,6 +217,13 @@ export interface AppState {
     status: "idle" | "loading" | "ready" | "error";
     result: ModelCheckResult | null;
   };
+  /** Consistent Character: 生成フォームの「スタイル LoRA」枠(絵柄制御)。フォームレベルの共有リスト。 */
+  loraDraft: StyleLoraSelection[];
+  /** `GET /api/comfy/loras`(選択候補の LoRA 一覧)の取得状態。 */
+  loraChoices: {
+    status: "idle" | "loading" | "ready" | "error";
+    names: string[];
+  };
 }
 
 export const state: AppState = {
@@ -266,5 +274,7 @@ export const state: AppState = {
   roundProgress: {},
   showShortcutsHelp: false,
   modelInstallFamily: null,
-  modelCheck: { status: "idle", result: null }
+  modelCheck: { status: "idle", result: null },
+  loraDraft: [],
+  loraChoices: { status: "idle", names: [] }
 };

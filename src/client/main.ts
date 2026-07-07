@@ -132,6 +132,7 @@ import {
   uploadSourceAsset
 } from "./projectController";
 import { referenceFeatureAvailability, uploadReferenceImage } from "./referenceController";
+import { refreshLoraChoices, updateStyleLoraFromControl } from "./styleLoraController";
 import { closeAssetDetail } from "./assetDetailController";
 import { closeShortcutsHelp, handleAssetActionShortcuts, renderShortcutsHelpModal, toggleShortcutsHelp } from "./shortcuts";
 
@@ -231,6 +232,10 @@ function bindEvents() {
       updateInpaintDraftFromControl(target);
       return;
     }
+    if (target.dataset.loraField) {
+      updateStyleLoraFromControl(target);
+      return;
+    }
     if (target instanceof HTMLInputElement && target.dataset.paintColorPicker) {
       setPaintColor(target.value);
       return;
@@ -252,6 +257,9 @@ function bindEvents() {
   app.addEventListener("input", (event) => {
     const target = event.target as HTMLInputElement | HTMLTextAreaElement;
     const valueId = target instanceof HTMLInputElement ? target.dataset.valueTarget : undefined;
+    if (target.dataset.loraField && target instanceof HTMLInputElement) {
+      updateStyleLoraFromControl(target);
+    }
     if (target.dataset.generationField === "prompt") {
       setPositivePromptDraft(target.value);
       return;
@@ -735,7 +743,9 @@ function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | n
     llmConfigured,
     state.llmImproving,
     state.referenceDraft,
-    referenceFeatureAvailability()
+    referenceFeatureAvailability(),
+    state.loraDraft,
+    state.loraChoices
   );
 }
 
