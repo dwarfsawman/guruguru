@@ -85,6 +85,7 @@ export const MODEL_TARGET_DIRS: Record<ModelKind, string>; // "models/diffusion_
 
 残す(今回触らない):
 - サーバー `POST /api/templates`(`templates.ts` の `createTemplate`)— UI 呼び出し元は消えるが、テストと後続の内蔵テンプレート seed で再利用するため温存
+- サーバー `DELETE /api/templates/:id` — Phase 4.5 でクライアントの削除ボタンごと削除したため、現状は API を直接叩く手段でしか到達しない(意図的。UIから再度使う場合は将来のフィーチャーで呼び出し口を追加する)
 - `shared/workflowRoleMap.ts`(サーバー `createTemplate` が `validateRoleMapReferences` を使用)
 
 ### 5. 実装中の追加指示 — WorkflowTemplateパネル + diagram機能の削除
