@@ -2,6 +2,14 @@
 
 起票: 2026-07-07
 
+> **⚠️ スコープ変更(2026-07-07)**: **全体スタイル参照(IP-Adapter)と連動 RMBG は撤去しました。**
+> 現行 ComfyUI のネイティブ Chroma アーキテクチャは per-block の `img_mod` を持たず、x-flux の
+> IP-Adapter(`img_mod` を書き換える)は Chroma で実行時に落ちる(量子化 fp8/GGUF・モデルバージョンに
+> 依存しない非互換であることを実機で確定)。代替の siglip/unCLIP も、ComfyUI ソース上 Chroma/Flux が
+> `unclip_conditioning` を読まないため no-op。絵柄コントロールは LoRA に委ねる方針とし、**参照画像系は
+> PuLID(顔)+ Hyper LoRA(自動挿入)のみ**を残した。以下の本文中で IP-Adapter/RMBG/siglip に言及する
+> 箇所は当時の設計であり現行コードには存在しない。詳細は末尾「実施記録(2026-07-07): IP-Adapter/RMBG 撤去」。
+
 ## 現状(調査結果)
 
 ユーザー提供の ComfyUI ワークフロー `Consistent Character Chroma.json` は、Chroma ベース生成に対して
@@ -401,3 +409,43 @@ txt2img 実生成を完走**させ、本機能の中核設計(フラグメント
   追加のモデルダウンロードが必要なため未実施。コードの可用性判定・フラグメント組み立て・CN prune は
   ユニットテスト(25件)と実データの feature 可用性で検証済みなので、必須ではない。必要ならモデル配置後に
   同手順で確認可能。
+
+## 実施記録(2026-07-07): IP-Adapter/RMBG 撤去(PuLID+LoRA へ集約)
+
+冒頭の「⚠️ スコープ変更」のとおり、**全体スタイル参照(IP-Adapter)と連動 RMBG をコードから撤去**した。
+
+### 判断の根拠(すべて実機/ソースで確定)
+
+1. **IP-Adapter(x-flux)は Chroma と実行時非互換**。`ApplyAdvancedFluxIPAdapter` は素の Flux の
+   `DoubleStreamBlock.img_mod` を書き換えるが、現行 ComfyUI のネイティブ Chroma(`class Chroma(Flux)`)は
+   その per-block 変調を除去しているため `AttributeError: 'DoubleStreamBlock' object has no attribute 'img_mod'`
+   で落ちる。**3ローダ(core fp8 UNETLoader / city96 UnetLoaderGGUF v37 / 元ワークフローと同一の
+   `UnetLoaderGGUFAdvancedDisTorchMultiGPU`)すべてで再現** — 量子化やモデルバージョンに依存しない。
+   元ワークフローが動いていたのは、旧 ComfyUI が Chroma を Flux として(`ModelSamplingFlux` 経路・`img_mod` あり)
+   ロードしていた時代だから。
+2. **siglip/unCLIP は Chroma で no-op**。`unCLIPConditioning` は `unclip_conditioning` を条件へ添付するだけで、
+   ComfyUI ソース(`comfy/model_base.py`)上それを読むのは `StableCascade_C`/SD2-unCLIP/Z-Image のみ。
+   `Chroma(Flux)` の `extra_conds` は参照しないため、siglip 参照を実装しても絵に反映されない。
+   (Chroma で本当に画像スタイル参照を効かせるなら Flux Redux=`StyleModelApply` + `flux1-redux-dev` が必要。今回はスコープ外。)
+3. **絵柄コントロールは LoRA が主流**というユーザー判断。参照画像系は PuLID(顔)に集約する。
+
+### 変更内容
+
+- **撤去**: `workflowFeatureFragments.ts` の IP-Adapter/RMBG フラグメント・`FEATURE_MODEL_REQUIREMENTS`
+  (ipadapterFlux/clipVision)・`FEATURE_NODE_PACKS`(ipadapter/rmbg)・`FEATURE_LABELS`・`FeatureFlags`。
+  `workflowModels.ts` の `ModelKind`(ipadapterFlux/clipVision)・`FeatureKey`(ipadapter/rmbg)・入力名/配置先/
+  kind→feature マッピング。`modelCheck.ts`(TOGGLABLE_FEATURES・FeatureAvailability)、`workflow.ts`
+  (FeatureAvailabilityFlags)、`workflowUnifiedSwitch.ts`(ipadapter 有効化)、`rounds.ts`(reference.style)、
+  `types.ts`(ReferenceImageOptions.style)、`apiTypes.ts`。フロント: `referenceController.ts`
+  (toggle-reference-style・styleEnabled)、`appState.ts`(ReferenceDraft.styleEnabled)、`generationPanel.ts`
+  (全体スタイル参照トグル)、`generationDraft.ts`、`workflowUi.ts`。関連ユニットテストも更新。
+- **維持**: PuLID(顔スタイル参照)+ 参照画像 UI(顔用)、**Hyper LoRA の自動挿入**、**ControlNet prune**
+  (CN モデル未配置でも txt2img が通る base 修正 — 参照機能とは独立)。
+  ※ `TemplateType`/`GenerationMode` の `"ipadapter"` は本機能以前からある別タクソノミなので温存。
+
+### 検証
+
+- `npm run typecheck` 0エラー、`npm test` 378/378 pass。
+- 実機(テスト用 ComfyUI 8288、fp8 コアテンプレートに復元済み)で `GET /api/comfy/model-check?family=chroma`
+  の features が `controlnet, lora, pulid` のみ(ipadapter/rmbg 消滅)、models kinds からも ipadapterFlux/clipVision
+  が消えたことを確認。UI の「参照画像」枠は **顔スタイル参照(PuLID)トグルのみ**表示(全体スタイル参照は撤去)。

@@ -10,13 +10,11 @@ import type { PoseDraft } from "./poseTypes";
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。フォームレベルの
  * ドラフト(per-asset ではない -- 親画像取り込みの直下に置く共有の1枚)。顔スタイル参照
- * (PuLID)と全体スタイル参照(IP-Adapter)は同じ imageDataUrl を共用し、それぞれ独立に
- * トグルできる。
+ * (PuLID)の参照元で、face トグルで有効化する。
  */
 export interface ReferenceDraft {
   imageDataUrl: string | null;
   faceEnabled: boolean;
-  styleEnabled: boolean;
 }
 
 export const generationDraftFields = [

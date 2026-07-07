@@ -13,7 +13,7 @@ import type { ModelCheckEntry, ModelCheckFeatureStatus, ModelCheckResult } from 
 const REQUIRED_CORE_NODES = ["ComfySwitchNode", "PrimitiveBoolean"] as const;
 // Features tracked for togglable availability -- "base" (the 4 always-required models) is
 // excluded, it is not something a user can turn on/off.
-const TOGGLABLE_FEATURES: FeatureKey[] = ["controlnet", "lora", "pulid", "ipadapter", "rmbg"];
+const TOGGLABLE_FEATURES: FeatureKey[] = ["controlnet", "lora", "pulid"];
 
 const referencePath = fileURLToPath(
   new URL("../../Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.json", import.meta.url)
@@ -185,8 +185,6 @@ export interface FeatureAvailability {
   controlnet: boolean;
   lora: boolean;
   pulid: boolean;
-  ipadapter: boolean;
-  rmbg: boolean;
 }
 
 const FEATURE_AVAILABILITY_CACHE_MS = 10_000;
@@ -208,18 +206,16 @@ export async function resolveFeatureAvailability(): Promise<FeatureAvailability>
   try {
     raw = await runRawCheck();
   } catch {
-    return { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false };
+    return { controlnet: false, lora: false, pulid: false };
   }
 
   const value: FeatureAvailability = raw.comfyOk
     ? {
         controlnet: isFeatureAvailable(raw, "controlnet"),
         lora: isFeatureAvailable(raw, "lora"),
-        pulid: isFeatureAvailable(raw, "pulid"),
-        ipadapter: isFeatureAvailable(raw, "ipadapter"),
-        rmbg: isFeatureAvailable(raw, "rmbg")
+        pulid: isFeatureAvailable(raw, "pulid")
       }
-    : { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false };
+    : { controlnet: false, lora: false, pulid: false };
 
   cachedAvailability = { value, expiresAt: now + FEATURE_AVAILABILITY_CACHE_MS };
   return value;

@@ -29,8 +29,6 @@ export interface FeatureAvailabilityFlags {
   controlnet: boolean;
   lora: boolean;
   pulid: boolean;
-  ipadapter: boolean;
-  rmbg: boolean;
 }
 
 export interface PatchContext {
@@ -41,7 +39,7 @@ export interface PatchContext {
   uploadedImageName?: string | null;
   uploadedMaskName?: string | null;
   uploadedControlImageName?: string | null;
-  // Consistent Character shared reference image (face-style/PuLID + overall-style/IP-Adapter).
+  // Consistent Character reference image (face-style / PuLID).
   uploadedReferenceImageName?: string | null;
   featureAvailability?: FeatureAvailabilityFlags | null;
   // Placeholder image filename (already uploaded to ComfyUI) for image inputs on branches a

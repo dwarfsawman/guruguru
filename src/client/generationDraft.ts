@@ -174,8 +174,7 @@ export function referenceRequestForForm(): ReferenceImageOptions | null {
   const availability = referenceFeatureAvailability();
   return {
     imageDataUrl: draft.imageDataUrl,
-    face: { enabled: draft.faceEnabled && availability.pulid },
-    style: { enabled: draft.styleEnabled && availability.ipadapter }
+    face: { enabled: draft.faceEnabled && availability.pulid }
   };
 }
 

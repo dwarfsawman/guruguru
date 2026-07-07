@@ -484,12 +484,10 @@ async function prepareReferenceRequest(
 
 function normalizeReferenceOptions(rawReference: Record<string, unknown>, imagePath: string): ReferenceImageOptions {
   const rawFace = isJsonObject(rawReference.face) ? (rawReference.face as Record<string, unknown>) : null;
-  const rawStyle = isJsonObject(rawReference.style) ? (rawReference.style as Record<string, unknown>) : null;
   return {
     imageDataUrl: null,
     imagePath,
-    face: { enabled: Boolean(rawFace?.enabled) },
-    style: { enabled: Boolean(rawStyle?.enabled) }
+    face: { enabled: Boolean(rawFace?.enabled) }
   };
 }
 

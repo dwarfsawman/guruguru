@@ -1,26 +1,24 @@
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像取り込み controller。
- * 生成フォームの「参照画像」枠(親画像の直下)の取り込み・クリア・顔スタイル参照(PuLID)/
- * 全体スタイル参照(IP-Adapter)トグルを扱う。AGENTS.md 規約により data-action は
- * `registerActions` で登録する。
+ * 生成フォームの「参照画像」枠(親画像の直下)の取り込み・クリア・顔スタイル参照(PuLID)
+ * トグルを扱う。AGENTS.md 規約により data-action は `registerActions` で登録する。
  */
 import { requestRender, state, type ReferenceDraft } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { persistProjectDraft } from "./draftStore";
 
 export function defaultReferenceDraft(): ReferenceDraft {
-  return { imageDataUrl: null, faceEnabled: false, styleEnabled: false };
+  return { imageDataUrl: null, faceEnabled: false };
 }
 
 /**
- * `state.modelCheck.result.features` から顔/スタイル参照の可用性を読む。
+ * `state.modelCheck.result.features` から顔スタイル参照(PuLID)の可用性を読む。
  * 未取得(モデルチェック未実行)またはComfyUI未接続時は false(トグルは無効のまま)。
  */
-export function referenceFeatureAvailability(): { pulid: boolean; ipadapter: boolean } {
+export function referenceFeatureAvailability(): { pulid: boolean } {
   const features = state.modelCheck.result?.features ?? [];
   return {
-    pulid: features.find((feature) => feature.key === "pulid")?.available === true,
-    ipadapter: features.find((feature) => feature.key === "ipadapter")?.available === true
+    pulid: features.find((feature) => feature.key === "pulid")?.available === true
   };
 }
 
@@ -70,15 +68,6 @@ registerActions({
     }
     const draft = state.referenceDraft ?? defaultReferenceDraft();
     state.referenceDraft = { ...draft, faceEnabled: !draft.faceEnabled };
-    persist();
-    requestRender();
-  },
-  "toggle-reference-style": () => {
-    if (!referenceFeatureAvailability().ipadapter) {
-      return;
-    }
-    const draft = state.referenceDraft ?? defaultReferenceDraft();
-    state.referenceDraft = { ...draft, styleEnabled: !draft.styleEnabled };
     persist();
     requestRender();
   },

@@ -115,7 +115,7 @@ export async function storeControlImage(projectId: string, roundId: string, byte
 }
 
 /**
- * 顔スタイル参照(PuLID)/全体スタイル参照(IP-Adapter)共用の参照画像を
+ * 顔スタイル参照(PuLID)の参照画像を
  * `reference/<roundId><ext>` へ保存する(mask/control と同型のパイプライン)。
  */
 export async function storeReferenceImage(projectId: string, roundId: string, ext: string, bytes: Buffer): Promise<StoredReferenceImage> {

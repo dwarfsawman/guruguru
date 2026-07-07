@@ -10,7 +10,7 @@ function baseWorkflow(): Record<string, any> {
 }
 
 function flags(overrides: Partial<FeatureFlags> = {}): FeatureFlags {
-  return { lora: false, ipadapter: false, pulid: false, rmbg: false, ...overrides };
+  return { lora: false, pulid: false, ...overrides };
 }
 
 test("assembleFeatureFragments: no-op when every flag is false", () => {
@@ -55,46 +55,11 @@ test("assembleFeatureFragments: pulid only wires model/image/prior_image and a s
   assert.equal(apply.inputs.weight, 1.0);
 });
 
-test("assembleFeatureFragments: ipadapter only, without rmbg, feeds the reference image straight into ApplyAdvancedFluxIPAdapter", () => {
-  const workflow = baseWorkflow();
-  const patched = assembleFeatureFragments(workflow, flags({ ipadapter: true }), "ref.png") as Record<string, any>;
-
-  const applyNodeId = patched["2"].inputs.model[0];
-  const apply = patched[applyNodeId];
-  assert.equal(apply.class_type, "ApplyAdvancedFluxIPAdapter");
-  assert.deepEqual(apply.inputs.model, ["1", 0]);
-
-  const loaderNodeId = apply.inputs.ip_adapter_flux[0];
-  assert.equal(patched[loaderNodeId].class_type, "LoadFluxIPAdapter");
-  assert.equal(patched[loaderNodeId].inputs.ipadatper, "ip_adapter.safetensors");
-  assert.equal(patched[loaderNodeId].inputs.clip_vision, "clip-vit-large-patch14.safetensors");
-
-  const imageNodeId = apply.inputs.image[0];
-  assert.equal(patched[imageNodeId].class_type, "LoadImage");
-  assert.equal(patched[imageNodeId].inputs.image, "ref.png");
-  assert.equal(Object.values(patched).filter((n: any) => n.class_type === "easy imageRemBg").length, 0);
-});
-
-test("assembleFeatureFragments: ipadapter + rmbg inserts background removal between the reference image and the apply node", () => {
-  const workflow = baseWorkflow();
-  const patched = assembleFeatureFragments(workflow, flags({ ipadapter: true, rmbg: true }), "ref.png") as Record<string, any>;
-
-  const applyNodeId = patched["2"].inputs.model[0];
-  const apply = patched[applyNodeId];
-  const rmbgNodeId = apply.inputs.image[0];
-  assert.equal(patched[rmbgNodeId].class_type, "easy imageRemBg");
-  assert.equal(patched[rmbgNodeId].inputs.rem_mode, "RMBG-1.4");
-
-  const imageNodeId = patched[rmbgNodeId].inputs.images[0];
-  assert.equal(patched[imageNodeId].class_type, "LoadImage");
-  assert.equal(patched[imageNodeId].inputs.image, "ref.png");
-});
-
-test("assembleFeatureFragments: lora + ipadapter + pulid chain in the documented order and share one reference-image node", () => {
+test("assembleFeatureFragments: lora + pulid chain in the documented order and share one reference-image node", () => {
   const workflow = baseWorkflow();
   const patched = assembleFeatureFragments(
     workflow,
-    flags({ lora: true, ipadapter: true, pulid: true, rmbg: true }),
+    flags({ lora: true, pulid: true }),
     "ref.png"
   ) as Record<string, any>;
 
@@ -102,29 +67,18 @@ test("assembleFeatureFragments: lora + ipadapter + pulid chain in the documented
   const pulidApply = patched[pulidApplyId];
   assert.equal(pulidApply.class_type, "ApplyPulidFlux");
 
-  const ipadapterApplyId = pulidApply.inputs.model[0];
-  const ipadapterApply = patched[ipadapterApplyId];
-  assert.equal(ipadapterApply.class_type, "ApplyAdvancedFluxIPAdapter");
-
-  const loraNodeId = ipadapterApply.inputs.model[0];
+  const loraNodeId = pulidApply.inputs.model[0];
   assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
   assert.deepEqual(patched[loraNodeId].inputs.model, ["1", 0]);
 
-  // Both consumers of the reference image resolve to the exact same LoadImage node id.
-  const rmbgNodeId = ipadapterApply.inputs.image[0];
-  const imageViaRmbg = patched[rmbgNodeId].inputs.images[0];
-  const imageViaPulid = pulidApply.inputs.image[0];
-  assert.equal(imageViaRmbg, imageViaPulid);
+  // image and prior_image both resolve to the exact same LoadImage node id (one shared upload).
+  assert.deepEqual(pulidApply.inputs.prior_image, pulidApply.inputs.image);
   assert.equal(Object.values(patched).filter((n: any) => n.class_type === "LoadImage").length, 1);
 });
 
-test("assembleFeatureFragments: throws when pulid/ipadapter is enabled but no reference image name was given", () => {
+test("assembleFeatureFragments: throws when pulid is enabled but no reference image name was given", () => {
   assert.throws(
     () => assembleFeatureFragments(baseWorkflow(), flags({ pulid: true }), null),
-    /reference image name/
-  );
-  assert.throws(
-    () => assembleFeatureFragments(baseWorkflow(), flags({ ipadapter: true }), null),
     /reference image name/
   );
 });

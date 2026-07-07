@@ -392,7 +392,7 @@ test("patchUnifiedSwitchWorkflow: featureAvailability.controlnet=false prunes th
   const patched = patchUnifiedSwitchWorkflow(
     referenceWorkflow(),
     baseContext(request, {
-      featureAvailability: { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false }
+      featureAvailability: { controlnet: false, lora: false, pulid: false }
     }),
     "prefix"
   ) as Record<string, any>;
@@ -414,7 +414,7 @@ test("patchUnifiedSwitchWorkflow: generationMode=\"controlnet\" throws a clear e
         referenceWorkflow(),
         baseContext(request, {
           uploadedImageName: "parent_upload.png",
-          featureAvailability: { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false }
+          featureAvailability: { controlnet: false, lora: false, pulid: false }
         }),
         "prefix"
       ),
@@ -433,7 +433,7 @@ test("patchUnifiedSwitchWorkflow: a pose attachment is silently ignored (not an 
     baseContext(request, {
       uploadedImageName: "parent_upload.png",
       uploadedControlImageName: "pose_control.png",
-      featureAvailability: { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false }
+      featureAvailability: { controlnet: false, lora: false, pulid: false }
     }),
     "prefix"
   ) as Record<string, any>;
@@ -442,15 +442,15 @@ test("patchUnifiedSwitchWorkflow: a pose attachment is silently ignored (not an 
   assert.deepEqual(patched["694"].inputs.positive, ["748", 0]);
 });
 
-test("patchUnifiedSwitchWorkflow: face+style reference splice PuLID and IP-Adapter into the MODEL chain feeding ModelSamplingAuraFlow", () => {
+test("patchUnifiedSwitchWorkflow: face reference + lora splice PuLID and the LoRA into the MODEL chain feeding ModelSamplingAuraFlow", () => {
   const request = baseRequest({
-    reference: { imageDataUrl: null, imagePath: "/tmp/ref.png", face: { enabled: true }, style: { enabled: true } }
+    reference: { imageDataUrl: null, imagePath: "/tmp/ref.png", face: { enabled: true } }
   });
   const patched = patchUnifiedSwitchWorkflow(
     referenceWorkflow(),
     baseContext(request, {
       uploadedReferenceImageName: "reference_upload.png",
-      featureAvailability: { controlnet: true, lora: true, pulid: true, ipadapter: true, rmbg: true }
+      featureAvailability: { controlnet: true, lora: true, pulid: true }
     }),
     "prefix"
   ) as Record<string, any>;
@@ -460,48 +460,25 @@ test("patchUnifiedSwitchWorkflow: face+style reference splice PuLID and IP-Adapt
   assert.notDeepEqual(patched["701"].inputs.model, ["731", 0]);
   const pulidApplyId = patched["701"].inputs.model[0];
   assert.equal(patched[pulidApplyId].class_type, "ApplyPulidFlux");
-  const ipadapterApplyId = patched[pulidApplyId].inputs.model[0];
-  assert.equal(patched[ipadapterApplyId].class_type, "ApplyAdvancedFluxIPAdapter");
-  const loraNodeId = patched[ipadapterApplyId].inputs.model[0];
+  const loraNodeId = patched[pulidApplyId].inputs.model[0];
   assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
   assert.deepEqual(patched[loraNodeId].inputs.model, ["731", 0]);
 
-  const rmbgNodeId = patched[ipadapterApplyId].inputs.image[0];
-  assert.equal(patched[rmbgNodeId].class_type, "easy imageRemBg");
-  const refImageNodeId = patched[rmbgNodeId].inputs.images[0];
+  const refImageNodeId = patched[pulidApplyId].inputs.image[0];
   assert.equal(patched[refImageNodeId].class_type, "LoadImage");
   assert.equal(patched[refImageNodeId].inputs.image, "reference_upload.png");
-  assert.deepEqual(patched[pulidApplyId].inputs.image, [refImageNodeId, 0]);
+  assert.deepEqual(patched[pulidApplyId].inputs.prior_image, [refImageNodeId, 0]);
 });
 
-test("patchUnifiedSwitchWorkflow: face reference off leaves only the IP-Adapter fragment spliced in", () => {
+test("patchUnifiedSwitchWorkflow: face toggle enabled but no reference image was uploaded leaves the base MODEL chain untouched", () => {
   const request = baseRequest({
-    reference: { imageDataUrl: null, imagePath: "/tmp/ref.png", face: { enabled: false }, style: { enabled: true } }
-  });
-  const patched = patchUnifiedSwitchWorkflow(
-    referenceWorkflow(),
-    baseContext(request, {
-      uploadedReferenceImageName: "reference_upload.png",
-      featureAvailability: { controlnet: true, lora: false, pulid: true, ipadapter: true, rmbg: false }
-    }),
-    "prefix"
-  ) as Record<string, any>;
-
-  const ipadapterApplyId = patched["701"].inputs.model[0];
-  assert.equal(patched[ipadapterApplyId].class_type, "ApplyAdvancedFluxIPAdapter");
-  assert.deepEqual(patched[ipadapterApplyId].inputs.model, ["731", 0]);
-  assert.equal(Object.values(patched).some((n: any) => n.class_type === "ApplyPulidFlux"), false);
-});
-
-test("patchUnifiedSwitchWorkflow: face/style toggles enabled but no reference image was uploaded leaves the base MODEL chain untouched", () => {
-  const request = baseRequest({
-    reference: { imageDataUrl: null, imagePath: null, face: { enabled: true }, style: { enabled: true } }
+    reference: { imageDataUrl: null, imagePath: null, face: { enabled: true } }
   });
   const patched = patchUnifiedSwitchWorkflow(
     referenceWorkflow(),
     baseContext(request, {
       uploadedReferenceImageName: null,
-      featureAvailability: { controlnet: true, lora: false, pulid: true, ipadapter: true, rmbg: false }
+      featureAvailability: { controlnet: true, lora: false, pulid: true }
     }),
     "prefix"
   ) as Record<string, any>;

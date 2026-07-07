@@ -33,9 +33,7 @@ const MODEL_KIND_LABELS: Record<ModelKind, string> = {
   vae: "VAE",
   controlnet: "ControlNet",
   lora: "LoRA",
-  pulid: "PuLID",
-  ipadapterFlux: "IP-Adapter",
-  clipVision: "CLIP Vision"
+  pulid: "PuLID"
 };
 
 export interface ModelCheckState {

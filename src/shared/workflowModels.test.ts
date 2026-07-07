@@ -62,19 +62,13 @@ test("extractModelRequirements: finds all model loaders in the reference unified
   );
 });
 
-test("extractModelRequirements: recognizes PuLID / IP-Adapter Flux loader inputs (Docs/Feature-ConsistentCharacter.md)", () => {
+test("extractModelRequirements: recognizes the PuLID loader input (Docs/Feature-ConsistentCharacter.md)", () => {
   const requirements = extractModelRequirements({
-    "1": { class_type: "PulidFluxModelLoader", inputs: { pulid_file: "pulid_flux_v0.9.0.safetensors" } },
-    "2": {
-      class_type: "LoadFluxIPAdapter",
-      inputs: { ipadatper: "ip_adapter.safetensors", clip_vision: "clip-vit-large-patch14.safetensors", provider: "CPU" }
-    }
+    "1": { class_type: "PulidFluxModelLoader", inputs: { pulid_file: "pulid_flux_v0.9.1.safetensors" } }
   });
 
   assert.deepEqual(requirements, [
-    { kind: "pulid", name: "pulid_flux_v0.9.0.safetensors", loaderClass: "PulidFluxModelLoader", inputName: "pulid_file", feature: "pulid" },
-    { kind: "ipadapterFlux", name: "ip_adapter.safetensors", loaderClass: "LoadFluxIPAdapter", inputName: "ipadatper", feature: "ipadapter" },
-    { kind: "clipVision", name: "clip-vit-large-patch14.safetensors", loaderClass: "LoadFluxIPAdapter", inputName: "clip_vision", feature: "ipadapter" }
+    { kind: "pulid", name: "pulid_flux_v0.9.1.safetensors", loaderClass: "PulidFluxModelLoader", inputName: "pulid_file", feature: "pulid" }
   ]);
 });
 

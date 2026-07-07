@@ -2,12 +2,15 @@ import type { FeatureKey, WorkflowModelRequirement } from "../shared/workflowMod
 import { type JsonObject, getNodeInput, isConnection, isObject, findNodeIdByExactClass, nextNodeId, setNodeInput } from "./workflowGraph";
 
 // Consistent Character (Docs/Feature-ConsistentCharacter.md): optional feature branches
-// (Hyper-Chroma low-step LoRA / face-style reference PuLID-Flux / overall-style reference
-// IP-Adapter, plus an IP-Adapter-only RMBG background removal step) are NOT baked into the
+// (Hyper-Chroma low-step LoRA / face-style reference PuLID-Flux) are NOT baked into the
 // persisted Reference-UnifiedSwitchWorkflow.json -- they are spliced into the MODEL chain at
-// generation time, only when both (a) the user has actually placed the required model file(s)
-// in ComfyUI and (b) the corresponding request-level toggle is on. This keeps the base template
-// working unmodified for users who have none of these installed.
+// generation time, only when the user has actually placed the required model file(s) in ComfyUI
+// (LoRA auto-loads when installed; PuLID additionally needs its request toggle + a reference
+// image). This keeps the base template working unmodified for users who have none installed.
+//
+// (Overall-style reference / IP-Adapter and its RMBG background-removal step were dropped: the
+// x-flux IP-Adapter patches Flux-only DoubleStreamBlock.img_mod which ComfyUI's native Chroma
+// architecture removes, so it cannot run on the Chroma base -- see Docs/Feature-ConsistentCharacter.md.)
 //
 // Because these fragments never appear in the persisted reference workflow, their required
 // model files cannot be discovered by scanning that JSON the way extractModelRequirements()
@@ -22,14 +25,10 @@ const LORA_FILE = "Hyper-Chroma-low-step-LoRA.safetensors";
 // verification (Phase 5) found the actually-distributed file is v0.9.1 -- updated to match what
 // ComfyUI installs actually report today (see Docs/Feature-ConsistentCharacter.md "Phase 5 実施記録").
 const PULID_FILE = "pulid_flux_v0.9.1.safetensors";
-const IPADAPTER_FILE = "ip_adapter.safetensors";
-const CLIP_VISION_FILE = "clip-vit-large-patch14.safetensors";
 
 export const FEATURE_MODEL_REQUIREMENTS: WorkflowModelRequirement[] = [
   { kind: "lora", name: LORA_FILE, loaderClass: "LoraLoaderModelOnly", inputName: "lora_name", feature: "lora" },
-  { kind: "pulid", name: PULID_FILE, loaderClass: "PulidFluxModelLoader", inputName: "pulid_file", feature: "pulid" },
-  { kind: "ipadapterFlux", name: IPADAPTER_FILE, loaderClass: "LoadFluxIPAdapter", inputName: "ipadatper", feature: "ipadapter" },
-  { kind: "clipVision", name: CLIP_VISION_FILE, loaderClass: "LoadFluxIPAdapter", inputName: "clip_vision", feature: "ipadapter" }
+  { kind: "pulid", name: PULID_FILE, loaderClass: "PulidFluxModelLoader", inputName: "pulid_file", feature: "pulid" }
 ];
 
 export interface FeatureNodePack {
@@ -46,26 +45,19 @@ export const FEATURE_NODE_PACKS: Record<FeatureKey, FeatureNodePack[]> = {
   base: [],
   controlnet: [],
   lora: [],
-  pulid: [{ label: "PuLID-Flux (Chroma対応fork, 例: PaoloC68/ComfyUI-PuLID-Flux-Chroma)", representativeClass: "ApplyPulidFlux" }],
-  ipadapter: [{ label: "x-flux-comfyui", representativeClass: "ApplyAdvancedFluxIPAdapter" }],
-  rmbg: [{ label: "comfyui-easy-use", representativeClass: "easy imageRemBg" }]
+  pulid: [{ label: "PuLID-Flux (Chroma対応fork, 例: PaoloC68/ComfyUI-PuLID-Flux-Chroma)", representativeClass: "ApplyPulidFlux" }]
 };
 
 export const FEATURE_LABELS: Record<FeatureKey, string> = {
   base: "ベース",
   controlnet: "ポーズ(ControlNet)",
   lora: "高速化LoRA(Hyper-Chroma)",
-  pulid: "顔スタイル参照(PuLID)",
-  ipadapter: "全体スタイル参照(IP-Adapter)",
-  rmbg: "IP-Adapter背景除去(RMBG)"
+  pulid: "顔スタイル参照(PuLID)"
 };
 
 export interface FeatureFlags {
   lora: boolean;
-  ipadapter: boolean;
   pulid: boolean;
-  /** Only meaningful when ipadapter is true; ignored otherwise. */
-  rmbg: boolean;
 }
 
 function addNode(workflow: JsonObject, node: JsonObject): string {
@@ -77,10 +69,10 @@ function addNode(workflow: JsonObject, node: JsonObject): string {
 /**
  * Splices the enabled optional-feature fragments into the MODEL chain that feeds
  * ModelSamplingAuraFlow, in the same order as the example workflow this feature set was modeled
- * on: UNETLoader -> [LoRA] -> [IP-Adapter apply] -> [PuLID apply] -> ModelSamplingAuraFlow.
+ * on: UNETLoader -> [LoRA] -> [PuLID apply] -> ModelSamplingAuraFlow.
  * A no-op when every flag is false (the common case: base txt2img/img2img/inpaint generation).
  *
- * `referenceImageName` must be non-null whenever ipadapter or pulid is enabled -- callers are
+ * `referenceImageName` must be non-null whenever pulid is enabled -- callers are
  * expected to have already ANDed the request-level toggle with feature availability AND the
  * presence of an uploaded reference image before setting those flags (see
  * patchUnifiedSwitchWorkflow), so reaching this function with a flag on but no image is a
@@ -91,7 +83,7 @@ export function assembleFeatureFragments(
   enabled: FeatureFlags,
   referenceImageName: string | null
 ): JsonObject {
-  if (!enabled.lora && !enabled.ipadapter && !enabled.pulid) {
+  if (!enabled.lora && !enabled.pulid) {
     return workflow;
   }
 
@@ -111,7 +103,7 @@ export function assembleFeatureFragments(
       return referenceImageNodeId;
     }
     if (!referenceImageName) {
-      throw new Error("consistent-character fragments: pulid/ipadapter enabled without a reference image name");
+      throw new Error("consistent-character fragments: pulid enabled without a reference image name");
     }
     referenceImageNodeId = addNode(workflow, {
       class_type: "LoadImage",
@@ -130,45 +122,6 @@ export function assembleFeatureFragments(
       }
     });
     modelConnection = [loraNodeId, 0];
-  }
-
-  if (enabled.ipadapter) {
-    const loaderNodeId = addNode(workflow, {
-      class_type: "LoadFluxIPAdapter",
-      inputs: {
-        ipadatper: IPADAPTER_FILE,
-        clip_vision: CLIP_VISION_FILE,
-        provider: "CPU"
-      }
-    });
-    let ipImageConnection: unknown[] = [ensureReferenceImageNode(), 0];
-    if (enabled.rmbg) {
-      const rmbgNodeId = addNode(workflow, {
-        class_type: "easy imageRemBg",
-        inputs: {
-          images: ipImageConnection,
-          rem_mode: "RMBG-1.4",
-          image_output: "Preview",
-          save_prefix: "ComfyUI",
-          torchscript_jit: false,
-          add_background: "none",
-          refine_foreground: false
-        }
-      });
-      ipImageConnection = [rmbgNodeId, 0];
-    }
-    const applyNodeId = addNode(workflow, {
-      class_type: "ApplyAdvancedFluxIPAdapter",
-      inputs: {
-        model: modelConnection,
-        ip_adapter_flux: [loaderNodeId, 0],
-        image: ipImageConnection,
-        begin_strength: 0,
-        end_strength: 1.0,
-        smothing_type: "Linear"
-      }
-    });
-    modelConnection = [applyNodeId, 0];
   }
 
   if (enabled.pulid) {

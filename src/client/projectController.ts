@@ -55,7 +55,7 @@ async function openProject(projectId: string) {
   state.iterationScrollReset = true;
   requestRender();
   resumeAutoCollectForActiveRounds();
-  // 顔スタイル参照(PuLID)/全体スタイル参照(IP-Adapter)トグルの disabled 判定に使うため、
+  // 顔スタイル参照(PuLID)トグルの disabled 判定に使うため、
   // モーダルを開かなくても機能可用性を先取りしておく(Docs/Feature-ConsistentCharacter.md)。
   void refreshModelCheck("chroma");
 }

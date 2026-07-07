@@ -100,7 +100,7 @@ export function renderGenerationPanel(
   llmConfigured = false,
   llmImproving = false,
   referenceDraft: ReferenceDraft | null = null,
-  referenceAvailability: { pulid: boolean; ipadapter: boolean } = { pulid: false, ipadapter: false }
+  referenceAvailability: { pulid: boolean } = { pulid: false }
 ) {
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
@@ -253,13 +253,12 @@ export function renderGenerationPanel(
 
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像枠。親画像の直下に
- * 置き、顔スタイル参照(PuLID)/全体スタイル参照(IP-Adapter)を同じ1枚の画像に対して
- * 独立にトグルできる。対応するモデル/ノードパックが未導入の機能はトグルを disabled にし、
- * 「モデル選択→Chroma」で確認するよう促す。
+ * 置き、取り込んだ1枚の画像に対して顔スタイル参照(PuLID)をトグルできる。対応するモデル/
+ * ノードパックが未導入のときはトグルを disabled にし、「モデル選択→Chroma」で確認するよう促す。
  */
 function renderReferenceImageSection(
   draft: ReferenceDraft | null,
-  availability: { pulid: boolean; ipadapter: boolean }
+  availability: { pulid: boolean }
 ) {
   const imageDataUrl = draft?.imageDataUrl ?? null;
   return `
@@ -277,7 +276,6 @@ function renderReferenceImageSection(
             <input data-reference-upload="1" type="file" accept="image/png,image/jpeg,image/webp" />
           </label>`}
       ${renderReferenceToggle("toggle-reference-face", "顔スタイル参照(PuLID)", Boolean(draft?.faceEnabled), availability.pulid)}
-      ${renderReferenceToggle("toggle-reference-style", "全体スタイル参照(IP-Adapter)", Boolean(draft?.styleEnabled), availability.ipadapter)}
     </section>
   `;
 }

@@ -78,14 +78,14 @@ test("matchRequirements: loaderClass+inputName absent from the map (node not pre
   assert.equal(result[0].available, null);
 });
 
-test("matchRequirements: two requirements sharing a loaderClass but different inputName resolve independently (LoadFluxIPAdapter)", () => {
+test("matchRequirements: two requirements sharing a loaderClass but different inputName resolve independently", () => {
   const requirements = [
-    requirement({ kind: "ipadapterFlux", loaderClass: "LoadFluxIPAdapter", inputName: "ipadatper", name: "ip_adapter.safetensors", feature: "ipadapter" }),
-    requirement({ kind: "clipVision", loaderClass: "LoadFluxIPAdapter", inputName: "clip_vision", name: "clip-vit-large-patch14.safetensors", feature: "ipadapter" })
+    requirement({ kind: "lora", loaderClass: "DualInputLoader", inputName: "first_name", name: "first.safetensors", feature: "lora" }),
+    requirement({ kind: "pulid", loaderClass: "DualInputLoader", inputName: "second_name", name: "second.safetensors", feature: "pulid" })
   ];
   const choices = new Map([
-    ["LoadFluxIPAdapter::ipadatper", ["ip_adapter.safetensors"]],
-    ["LoadFluxIPAdapter::clip_vision", ["other-clip.safetensors"]]
+    ["DualInputLoader::first_name", ["first.safetensors"]],
+    ["DualInputLoader::second_name", ["other.safetensors"]]
   ]);
 
   const result = matchRequirements(requirements, choices);
