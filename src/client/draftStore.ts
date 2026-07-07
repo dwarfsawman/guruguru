@@ -1,4 +1,4 @@
-import { state, type GenerationDraft } from "./appState";
+import { state, type GenerationDraft, type ReferenceDraft } from "./appState";
 import type { InpaintDraft } from "./maskTypes";
 import { defaultInpaintDraft, normalizeInpaintDraft } from "./maskDraft";
 import type { PoseDraft } from "./poseTypes";
@@ -47,7 +47,8 @@ export function flushProjectDraftPersist() {
         generationDraft: state.generationDraft,
         generationDraftsByRound: state.generationDraftsByRound,
         inpaintDrafts: state.inpaintDrafts,
-        poseDrafts: state.poseDrafts
+        poseDrafts: state.poseDrafts,
+        referenceDraft: state.referenceDraft
       })
     );
   } catch {
@@ -61,7 +62,13 @@ if (typeof window !== "undefined") {
   });
 }
 
-export function restoreProjectDraft(projectId: string): { generationDraft: GenerationDraft | null; generationDraftsByRound: Record<string, GenerationDraft>; inpaintDrafts: Record<string, InpaintDraft>; poseDrafts: Record<string, PoseDraft> } | null {
+export function restoreProjectDraft(projectId: string): {
+  generationDraft: GenerationDraft | null;
+  generationDraftsByRound: Record<string, GenerationDraft>;
+  inpaintDrafts: Record<string, InpaintDraft>;
+  poseDrafts: Record<string, PoseDraft>;
+  referenceDraft: ReferenceDraft | null;
+} | null {
   try {
     const raw = window.localStorage.getItem(draftStorageKey(projectId));
     if (!raw) {
@@ -72,12 +79,14 @@ export function restoreProjectDraft(projectId: string): { generationDraft: Gener
       generationDraftsByRound?: Record<string, GenerationDraft>;
       inpaintDrafts?: Record<string, InpaintDraft>;
       poseDrafts?: Record<string, PoseDraft>;
+      referenceDraft?: ReferenceDraft | null;
     };
     return {
       generationDraft: parsed.generationDraft ?? null,
       generationDraftsByRound: parsed.generationDraftsByRound ?? {},
       inpaintDrafts: parsed.inpaintDrafts ?? {},
-      poseDrafts: parsed.poseDrafts ?? {}
+      poseDrafts: parsed.poseDrafts ?? {},
+      referenceDraft: parsed.referenceDraft ?? null
     };
   } catch {
     return null;
@@ -92,6 +101,7 @@ export function resetProjectDrafts() {
   state.inpaintDrafts = {};
   state.paintDrafts = {};
   state.poseDrafts = {};
+  state.referenceDraft = null;
 }
 
 /** Project を開く際、永続化済みの draft があれば復元し、なければリセットする。 */
@@ -104,6 +114,7 @@ export function restoreOrResetProjectDrafts(projectId: string) {
   state.inpaintDrafts = restored?.inpaintDrafts ?? {};
   state.paintDrafts = {};
   state.poseDrafts = restored?.poseDrafts ?? {};
+  state.referenceDraft = restored?.referenceDraft ?? null;
 }
 
 export function inpaintDraftForAsset(assetId: string | null | undefined) {

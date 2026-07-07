@@ -28,6 +28,8 @@ import { hasActiveMaskData, maskedContentOptions } from "../maskDraft";
 import { defaultModeForTemplate, templateGenerationDefaults } from "../workflowDefaults";
 import { renderModelReadout, renderTemplateOption } from "../workflowUi";
 import { renderSourceUploadButton } from "./galleryView";
+import type { ReferenceDraft } from "../appState";
+import { iconImage } from "../icons";
 
 export const defaultPrompt =
   "masterpiece, best quality, 1girl, beautiful detailed eyes, flowing hair, fantasy landscape, dramatic lighting, ethereal atmosphere";
@@ -96,7 +98,9 @@ export function renderGenerationPanel(
   draft: GenerationDraftLike | null,
   activeInpaint: InpaintDraft | null,
   llmConfigured = false,
-  llmImproving = false
+  llmImproving = false,
+  referenceDraft: ReferenceDraft | null = null,
+  referenceAvailability: { pulid: boolean; ipadapter: boolean } = { pulid: false, ipadapter: false }
 ) {
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
@@ -164,6 +168,8 @@ export function renderGenerationPanel(
         <p class="section-kicker">親画像</p>
         ${renderSourceUploadButton("source asset をアップロード")}
       </section>
+
+      ${renderReferenceImageSection(referenceDraft, referenceAvailability)}
 
       <section class="sidebar-section">
         <p class="section-kicker">プロンプト</p>
@@ -242,6 +248,47 @@ export function renderGenerationPanel(
         ${renderModelReadout(defaults.model)}
       </details>
     </form>
+  `;
+}
+
+/**
+ * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像枠。親画像の直下に
+ * 置き、顔スタイル参照(PuLID)/全体スタイル参照(IP-Adapter)を同じ1枚の画像に対して
+ * 独立にトグルできる。対応するモデル/ノードパックが未導入の機能はトグルを disabled にし、
+ * 「モデル選択→Chroma」で確認するよう促す。
+ */
+function renderReferenceImageSection(
+  draft: ReferenceDraft | null,
+  availability: { pulid: boolean; ipadapter: boolean }
+) {
+  const imageDataUrl = draft?.imageDataUrl ?? null;
+  return `
+    <section class="sidebar-section reference-image-section">
+      <p class="section-kicker">参照画像</p>
+      ${imageDataUrl
+        ? `
+          <div class="reference-image-preview">
+            <img src="${imageDataUrl}" alt="参照画像プレビュー" />
+            <button class="icon-button" type="button" data-action="clear-reference-image" aria-label="参照画像を削除" title="参照画像を削除">${iconTrash()}</button>
+          </div>
+        `
+        : `<label class="button-secondary compact source-upload-button">
+            ${iconImage()}参照画像をアップロード
+            <input data-reference-upload="1" type="file" accept="image/png,image/jpeg,image/webp" />
+          </label>`}
+      ${renderReferenceToggle("toggle-reference-face", "顔スタイル参照(PuLID)", Boolean(draft?.faceEnabled), availability.pulid)}
+      ${renderReferenceToggle("toggle-reference-style", "全体スタイル参照(IP-Adapter)", Boolean(draft?.styleEnabled), availability.ipadapter)}
+    </section>
+  `;
+}
+
+function renderReferenceToggle(action: string, label: string, checked: boolean, available: boolean) {
+  const title = available ? "" : `title="モデル未導入。モデル選択→Chroma で確認してください"`;
+  return `
+    <label class="reference-toggle" ${title}>
+      <input type="checkbox" data-action="${action}" ${checked && available ? "checked" : ""} ${available ? "" : "disabled"} />
+      ${escapeHtml(label)}
+    </label>
   `;
 }
 

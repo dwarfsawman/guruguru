@@ -3,7 +3,7 @@ import {
   normalizeDenoiseForMode,
   requiresFullDenoise
 } from "../shared/generationMode";
-import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions } from "../shared/types";
+import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, ReferenceImageOptions } from "../shared/types";
 import type { Asset, ProjectDetail } from "../shared/apiTypes";
 import {
   generationDraftFields,
@@ -20,6 +20,7 @@ import { renderPoseSkeletonDataUrl } from "./poseSkeleton";
 import { poseDraftForAsset } from "./poseEditorController";
 import { defaultPrompt } from "./views/generationPanel";
 import { setFormValue } from "./formUtils";
+import { referenceFeatureAvailability } from "./referenceController";
 
 export function captureGenerationDraft() {
   const form = document.querySelector<HTMLFormElement>("#generation-form");
@@ -156,6 +157,25 @@ export function controlnetRequestForParent(
     strength: draft.strength,
     startPercent: draft.startPercent,
     endPercent: draft.endPercent
+  };
+}
+
+/**
+ * `state.referenceDraft`(フォームレベル、親画像取り込みの直下の参照画像)から
+ * request.reference を組み立てる。画像が無ければ null(inpaint/controlnet と同じ規約)。
+ * トグルは「ユーザーがONにした」AND「導入済み」の両方を満たすときだけ true にする
+ * (UI 側で無効化済みのため通常は一致するが、defense in depth として再ゲートする)。
+ */
+export function referenceRequestForForm(): ReferenceImageOptions | null {
+  const draft = state.referenceDraft;
+  if (!draft?.imageDataUrl) {
+    return null;
+  }
+  const availability = referenceFeatureAvailability();
+  return {
+    imageDataUrl: draft.imageDataUrl,
+    face: { enabled: draft.faceEnabled && availability.pulid },
+    style: { enabled: draft.styleEnabled && availability.ipadapter }
   };
 }
 

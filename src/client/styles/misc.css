@@ -26,6 +26,50 @@
   }
 }
 
+.reference-image-section {
+  display: grid;
+  gap: 8px;
+}
+
+.reference-image-preview {
+  position: relative;
+  width: fit-content;
+
+  img {
+    display: block;
+    max-width: 100%;
+    max-height: 140px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+  }
+
+  .icon-button {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    background: color-mix(in srgb, var(--bg) 70%, transparent);
+  }
+}
+
+.reference-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--ink) 82%, transparent);
+
+  input[type="checkbox"] {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--accent);
+  }
+
+  &:has(input:disabled) {
+    color: var(--faint);
+    cursor: not-allowed;
+  }
+}
+
 @keyframes pulse {
   0%,
   100% {

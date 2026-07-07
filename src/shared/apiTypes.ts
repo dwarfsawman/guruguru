@@ -37,6 +37,9 @@ export interface ModelCheckFeatureStatus {
   key: FeatureKey;
   label: string;
   available: boolean | null;
+  /** そのfeatureが必要とする全ノードパック(順序は宣言順、0件=コアノードのみで完結)。 */
+  requiredNodePacks: Array<{ label: string; representativeClass: string }>;
+  /** `requiredNodePacks` のうち未導入のもの。ComfyUI未接続時は requiredNodePacks と同一。 */
   missingNodePacks: Array<{ label: string; representativeClass: string }>;
 }
 

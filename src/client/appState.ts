@@ -7,6 +7,18 @@ import type { InpaintDraft } from "./maskTypes";
 import type { PaintDraft } from "./paintTypes";
 import type { PoseDraft } from "./poseTypes";
 
+/**
+ * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。フォームレベルの
+ * ドラフト(per-asset ではない -- 親画像取り込みの直下に置く共有の1枚)。顔スタイル参照
+ * (PuLID)と全体スタイル参照(IP-Adapter)は同じ imageDataUrl を共用し、それぞれ独立に
+ * トグルできる。
+ */
+export interface ReferenceDraft {
+  imageDataUrl: string | null;
+  faceEnabled: boolean;
+  styleEnabled: boolean;
+}
+
 export const generationDraftFields = [
   "templateId",
   "img2imgTemplateId",
@@ -182,6 +194,7 @@ export interface AppState {
    */
   generationDraftsByRound: Record<string, GenerationDraft>;
   inpaintDrafts: Record<string, InpaintDraft>;
+  referenceDraft: ReferenceDraft | null;
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
   iterationScrollReset: boolean;
   maskEditMode: boolean;
@@ -240,6 +253,7 @@ export const state: AppState = {
   generationDraft: null,
   generationDraftsByRound: {},
   inpaintDrafts: {},
+  referenceDraft: null,
   iterationScrollReset: false,
   maskEditMode: false,
   maskToolbarMinimized: false,

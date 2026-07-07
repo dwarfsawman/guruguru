@@ -28,6 +28,7 @@ import {
   getPreferredParentAsset,
   inpaintRequestForParent,
   prepareGenerationFormForParent,
+  referenceRequestForForm,
   rememberActiveRoundDraft,
   resolveTemplateForGeneration,
   restoreGenerationDraftForRound,
@@ -101,6 +102,10 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   }
   if (controlnet) {
     request.controlnet = controlnet;
+  }
+  const reference = referenceRequestForForm();
+  if (reference) {
+    request.reference = reference;
   }
   // 貼り付け(添付)やペイントがあれば「見たまま」を合成して img2img 入力にする
   // (保存操作なし。親アセット・ツリーは不変 — Docs/Feature-ImagePaste.md)。

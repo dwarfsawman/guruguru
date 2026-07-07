@@ -4,7 +4,7 @@
  * state は引数で受け取るため main.ts への逆依存を持たない（circular import なし）。
  * selector・data-action・HTML 構造・文言は維持。
  */
-import type { ModelCheckResult } from "../shared/apiTypes";
+import type { ModelCheckEntry, ModelCheckResult } from "../shared/apiTypes";
 import type { ModelKind } from "../shared/workflowModels";
 import { escapeAttr, escapeHtml } from "./format";
 import { iconClose } from "./icons";
@@ -60,12 +60,43 @@ export function renderModelInstallModal(family: "chroma" | null, modelCheck: Mod
         </header>
         ${renderModelInstallComfyStatus(modelCheck)}
         ${renderModelInstallNodeWarning(result)}
-        ${renderModelInstallTable(result)}
+        <h3 class="model-install-section-title">ベース(常時必須)</h3>
+        ${renderModelInstallTable(result?.models.filter((model) => model.feature === "base") ?? null)}
+        <h3 class="model-install-section-title">任意機能(導入済みモデル/ノードパックに応じて自動 ON/OFF)</h3>
+        ${renderFeatureCards(result)}
         <div class="workflow-import-modal-actions">
           <button class="button-secondary" type="button" data-action="recheck-models">再チェック</button>
           <button class="button-primary" type="button" data-action="close-model-install">${iconClose()}閉じる</button>
         </div>
       </section>
+    </div>
+  `;
+}
+
+function renderFeatureCards(result: ModelCheckResult | null) {
+  const features = result?.features ?? [];
+  if (features.length === 0) {
+    return `<div class="empty">機能一覧を取得できませんでした。</div>`;
+  }
+  return `
+    <div class="model-feature-cards">
+      ${features.map((feature) => `
+        <div class="model-feature-card">
+          <div class="model-feature-card-header">
+            <strong>${escapeHtml(feature.label)}</strong>
+            ${renderModelCheckBadge(feature.available)}
+          </div>
+          ${feature.requiredNodePacks.length > 0
+            ? `<ul class="model-feature-nodepacks">
+                ${feature.requiredNodePacks.map((pack) => {
+                  const missing = feature.missingNodePacks.some((m) => m.representativeClass === pack.representativeClass);
+                  return `<li>${renderModelCheckBadge(result?.comfy.ok ? !missing : null)} ${escapeHtml(pack.label)}</li>`;
+                }).join("")}
+              </ul>`
+            : ""}
+          ${renderModelInstallTable(result?.models.filter((model) => model.feature === feature.key) ?? null, true)}
+        </div>
+      `).join("")}
     </div>
   `;
 }
@@ -99,10 +130,9 @@ function renderModelInstallNodeWarning(result: ModelCheckResult | null) {
   `;
 }
 
-function renderModelInstallTable(result: ModelCheckResult | null) {
-  const models = result?.models ?? [];
-  if (models.length === 0) {
-    return `<div class="empty">モデル一覧を取得できませんでした。</div>`;
+function renderModelInstallTable(models: ModelCheckEntry[] | null, compact = false) {
+  if (!models || models.length === 0) {
+    return compact ? "" : `<div class="empty">モデル一覧を取得できませんでした。</div>`;
   }
   return `
     <table class="model-check-table">

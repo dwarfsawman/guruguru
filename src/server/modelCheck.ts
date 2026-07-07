@@ -141,6 +141,7 @@ export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
         key,
         label: FEATURE_LABELS[key],
         available: null,
+        requiredNodePacks: FEATURE_NODE_PACKS[key],
         missingNodePacks: FEATURE_NODE_PACKS[key]
       })),
       checkedAt
@@ -159,7 +160,13 @@ export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
     const missingNodePacks = FEATURE_NODE_PACKS[key].filter(
       (pack) => !isNodePresent(raw.objectInfoByClass.get(pack.representativeClass), pack.representativeClass)
     );
-    return { key, label: FEATURE_LABELS[key], available, missingNodePacks: raw.comfyOk ? missingNodePacks : FEATURE_NODE_PACKS[key] };
+    return {
+      key,
+      label: FEATURE_LABELS[key],
+      available,
+      requiredNodePacks: FEATURE_NODE_PACKS[key],
+      missingNodePacks: raw.comfyOk ? missingNodePacks : FEATURE_NODE_PACKS[key]
+    };
   });
 
   return {

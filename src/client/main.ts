@@ -131,6 +131,7 @@ import {
   loadHome,
   uploadSourceAsset
 } from "./projectController";
+import { referenceFeatureAvailability, uploadReferenceImage } from "./referenceController";
 import { closeAssetDetail } from "./assetDetailController";
 import { closeShortcutsHelp, handleAssetActionShortcuts, renderShortcutsHelpModal, toggleShortcutsHelp } from "./shortcuts";
 
@@ -193,6 +194,13 @@ function bindEvents() {
     if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.sourceUpload) {
       void uploadSourceAsset(target).catch((error) => {
         state.busy = false;
+        pushToast(error instanceof Error ? error.message : String(error), "error");
+        render();
+      });
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.referenceUpload) {
+      void uploadReferenceImage(target).catch((error) => {
         pushToast(error instanceof Error ? error.message : String(error), "error");
         render();
       });
@@ -718,7 +726,17 @@ function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | n
   const previous = activeAsset ?? draftParent ?? getPreferredParentAsset();
   const activeInpaint = previous?.id ? inpaintDraftForAsset(previous.id) : null;
   const llmConfigured = Boolean(state.llmSettings?.baseUrl.trim() && state.llmSettings?.model.trim());
-  return renderGenerationPanel(detail, activeRound, previous, draft, activeInpaint, llmConfigured, state.llmImproving);
+  return renderGenerationPanel(
+    detail,
+    activeRound,
+    previous,
+    draft,
+    activeInpaint,
+    llmConfigured,
+    state.llmImproving,
+    state.referenceDraft,
+    referenceFeatureAvailability()
+  );
 }
 
 function renderAssetModalView() {
