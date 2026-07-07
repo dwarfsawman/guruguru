@@ -41,7 +41,7 @@ test("assembleFeatureFragments: pulid only wires model/image/prior_image and a s
   assert.equal(apply.class_type, "ApplyPulidFlux");
   assert.deepEqual(apply.inputs.model, ["1", 0]);
   assert.equal(patched[apply.inputs.pulid_flux[0]].class_type, "PulidFluxModelLoader");
-  assert.equal(patched[apply.inputs.pulid_flux[0]].inputs.pulid_file, "pulid_flux_v0.9.0.safetensors");
+  assert.equal(patched[apply.inputs.pulid_flux[0]].inputs.pulid_file, "pulid_flux_v0.9.1.safetensors");
   assert.equal(patched[apply.inputs.eva_clip[0]].class_type, "PulidFluxEvaClipLoader");
   assert.equal(patched[apply.inputs.face_analysis[0]].class_type, "PulidFluxInsightFaceLoader");
 

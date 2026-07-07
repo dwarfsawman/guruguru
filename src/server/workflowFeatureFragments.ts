@@ -18,7 +18,10 @@ import { type JsonObject, getNodeInput, isConnection, isObject, findNodeIdByExac
 // avoid a Windows-vs-POSIX path-separator mismatch against ComfyUI's reported choices list.
 
 const LORA_FILE = "Hyper-Chroma-low-step-LoRA.safetensors";
-const PULID_FILE = "pulid_flux_v0.9.0.safetensors";
+// v0.9.0 was the version named in the original example workflow (Phase 1), but real-machine
+// verification (Phase 5) found the actually-distributed file is v0.9.1 -- updated to match what
+// ComfyUI installs actually report today (see Docs/Feature-ConsistentCharacter.md "Phase 5 実施記録").
+const PULID_FILE = "pulid_flux_v0.9.1.safetensors";
 const IPADAPTER_FILE = "ip_adapter.safetensors";
 const CLIP_VISION_FILE = "clip-vit-large-patch14.safetensors";
 
