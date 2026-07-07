@@ -254,9 +254,9 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
-  const roundAttachmentMatch = path.match(/^\/api\/rounds\/([^/]+)\/attachments\/(mask|pose)$/);
+  const roundAttachmentMatch = path.match(/^\/api\/rounds\/([^/]+)\/attachments\/(mask|pose|reference)$/);
   if (method === "GET" && roundAttachmentMatch) {
-    serveRoundAttachment(res, roundAttachmentMatch[1]!, roundAttachmentMatch[2]! as "mask" | "pose");
+    serveRoundAttachment(res, roundAttachmentMatch[1]!, roundAttachmentMatch[2]! as "mask" | "pose" | "reference");
     return;
   }
 

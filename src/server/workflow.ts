@@ -18,6 +18,21 @@ import { isUnifiedSwitchWorkflow, patchUnifiedSwitchWorkflow } from "./workflowU
 
 export { ensureWorkflowObject, hashJson, normalizeRoleMap, isUnifiedSwitchWorkflow };
 
+/**
+ * Per-round, precomputed availability of the optional Consistent Character features
+ * (Docs/Feature-ConsistentCharacter.md). Resolved once via modelCheck.ts's
+ * resolveFeatureAvailability() before the batch job loop (querying ComfyUI per job would be
+ * wasteful), then reused unchanged for every job in the round. Unset/undefined on the
+ * dynamic-patch path, which does not support fragment injection.
+ */
+export interface FeatureAvailabilityFlags {
+  controlnet: boolean;
+  lora: boolean;
+  pulid: boolean;
+  ipadapter: boolean;
+  rmbg: boolean;
+}
+
 export interface PatchContext {
   projectId: string;
   roundIndex: number;
@@ -26,6 +41,9 @@ export interface PatchContext {
   uploadedImageName?: string | null;
   uploadedMaskName?: string | null;
   uploadedControlImageName?: string | null;
+  // Consistent Character shared reference image (face-style/PuLID + overall-style/IP-Adapter).
+  uploadedReferenceImageName?: string | null;
+  featureAvailability?: FeatureAvailabilityFlags | null;
   // Placeholder image filename (already uploaded to ComfyUI) for image inputs on branches a
   // unified-switch template does not execute; unused by the dynamic-patch path.
   dummyImageName?: string | null;

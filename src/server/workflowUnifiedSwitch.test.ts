@@ -387,6 +387,129 @@ test("patchUnifiedSwitchWorkflow: throws when an unused image input has no dummy
   );
 });
 
+test("patchUnifiedSwitchWorkflow: featureAvailability.controlnet=false prunes the ControlNet branch even for plain txt2img", () => {
+  const request = baseRequest();
+  const patched = patchUnifiedSwitchWorkflow(
+    referenceWorkflow(),
+    baseContext(request, {
+      featureAvailability: { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false }
+    }),
+    "prefix"
+  ) as Record<string, any>;
+
+  for (const removedId of ["752", "753", "754", "766", "767", "772"]) {
+    assert.equal(removedId in patched, false, `node ${removedId} should have been pruned`);
+  }
+  assert.deepEqual(patched["694"].inputs.positive, ["748", 0]);
+  assert.deepEqual(patched["694"].inputs.negative, ["749", 0]);
+  // Plain txt2img still works: value writes untouched.
+  assert.equal(patched["748"].inputs.text, "a watercolor fox");
+});
+
+test("patchUnifiedSwitchWorkflow: generationMode=\"controlnet\" throws a clear error when the ControlNet model is unavailable", () => {
+  const request = baseRequest({ generationMode: "controlnet", parentAssetId: "asset_1" });
+  assert.throws(
+    () =>
+      patchUnifiedSwitchWorkflow(
+        referenceWorkflow(),
+        baseContext(request, {
+          uploadedImageName: "parent_upload.png",
+          featureAvailability: { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false }
+        }),
+        "prefix"
+      ),
+    /ControlNet model is not installed/
+  );
+});
+
+test("patchUnifiedSwitchWorkflow: a pose attachment is silently ignored (not an error) when ControlNet is unavailable", () => {
+  const request = baseRequest({
+    generationMode: "img2img",
+    parentAssetId: "asset_1",
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1, startPercent: 0, endPercent: 1 }
+  });
+  const patched = patchUnifiedSwitchWorkflow(
+    referenceWorkflow(),
+    baseContext(request, {
+      uploadedImageName: "parent_upload.png",
+      uploadedControlImageName: "pose_control.png",
+      featureAvailability: { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false }
+    }),
+    "prefix"
+  ) as Record<string, any>;
+
+  assert.equal("772" in patched, false);
+  assert.deepEqual(patched["694"].inputs.positive, ["748", 0]);
+});
+
+test("patchUnifiedSwitchWorkflow: face+style reference splice PuLID and IP-Adapter into the MODEL chain feeding ModelSamplingAuraFlow", () => {
+  const request = baseRequest({
+    reference: { imageDataUrl: null, imagePath: "/tmp/ref.png", face: { enabled: true }, style: { enabled: true } }
+  });
+  const patched = patchUnifiedSwitchWorkflow(
+    referenceWorkflow(),
+    baseContext(request, {
+      uploadedReferenceImageName: "reference_upload.png",
+      featureAvailability: { controlnet: true, lora: true, pulid: true, ipadapter: true, rmbg: true }
+    }),
+    "prefix"
+  ) as Record<string, any>;
+
+  // 701 = ModelSamplingAuraFlow in the reference template; its model input no longer points
+  // straight at the base UNETLoader (731) -- the fragment chain is spliced in front of it.
+  assert.notDeepEqual(patched["701"].inputs.model, ["731", 0]);
+  const pulidApplyId = patched["701"].inputs.model[0];
+  assert.equal(patched[pulidApplyId].class_type, "ApplyPulidFlux");
+  const ipadapterApplyId = patched[pulidApplyId].inputs.model[0];
+  assert.equal(patched[ipadapterApplyId].class_type, "ApplyAdvancedFluxIPAdapter");
+  const loraNodeId = patched[ipadapterApplyId].inputs.model[0];
+  assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
+  assert.deepEqual(patched[loraNodeId].inputs.model, ["731", 0]);
+
+  const rmbgNodeId = patched[ipadapterApplyId].inputs.image[0];
+  assert.equal(patched[rmbgNodeId].class_type, "easy imageRemBg");
+  const refImageNodeId = patched[rmbgNodeId].inputs.images[0];
+  assert.equal(patched[refImageNodeId].class_type, "LoadImage");
+  assert.equal(patched[refImageNodeId].inputs.image, "reference_upload.png");
+  assert.deepEqual(patched[pulidApplyId].inputs.image, [refImageNodeId, 0]);
+});
+
+test("patchUnifiedSwitchWorkflow: face reference off leaves only the IP-Adapter fragment spliced in", () => {
+  const request = baseRequest({
+    reference: { imageDataUrl: null, imagePath: "/tmp/ref.png", face: { enabled: false }, style: { enabled: true } }
+  });
+  const patched = patchUnifiedSwitchWorkflow(
+    referenceWorkflow(),
+    baseContext(request, {
+      uploadedReferenceImageName: "reference_upload.png",
+      featureAvailability: { controlnet: true, lora: false, pulid: true, ipadapter: true, rmbg: false }
+    }),
+    "prefix"
+  ) as Record<string, any>;
+
+  const ipadapterApplyId = patched["701"].inputs.model[0];
+  assert.equal(patched[ipadapterApplyId].class_type, "ApplyAdvancedFluxIPAdapter");
+  assert.deepEqual(patched[ipadapterApplyId].inputs.model, ["731", 0]);
+  assert.equal(Object.values(patched).some((n: any) => n.class_type === "ApplyPulidFlux"), false);
+});
+
+test("patchUnifiedSwitchWorkflow: face/style toggles enabled but no reference image was uploaded leaves the base MODEL chain untouched", () => {
+  const request = baseRequest({
+    reference: { imageDataUrl: null, imagePath: null, face: { enabled: true }, style: { enabled: true } }
+  });
+  const patched = patchUnifiedSwitchWorkflow(
+    referenceWorkflow(),
+    baseContext(request, {
+      uploadedReferenceImageName: null,
+      featureAvailability: { controlnet: true, lora: false, pulid: true, ipadapter: true, rmbg: false }
+    }),
+    "prefix"
+  ) as Record<string, any>;
+
+  assert.deepEqual(patched["701"].inputs.model, ["731", 0]);
+  assert.deepEqual(Object.keys(patched).sort(), Object.keys(referenceWorkflow()).sort());
+});
+
 test("patchWorkflow dispatch: a unified-switch template is patched by value writes only, even with a poisoned roleMap", () => {
   // The roleMap points load_image_input at ControlNetApplyAdvanced.inputs.image -- the stale-DB
   // misinference behind the ComfyUI 400 return_type_mismatch error. The unified path must ignore

@@ -13,11 +13,12 @@ import {
   queuePrompt,
   uploadImageToComfy
 } from "./comfy";
-import { readImageSize, storeCompositeImage, storeControlImage, storeImage, storeMaskImage } from "./storage";
+import { readImageSize, storeCompositeImage, storeControlImage, storeImage, storeMaskImage, storeReferenceImage } from "./storage";
 import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
 import { HttpError } from "./http";
 import { isJsonObject, numberOr, objectBody, stringOrNull, stringOr } from "./validate";
-import { isUnifiedSwitchWorkflow, patchWorkflow, resolveSeed } from "./workflow";
+import { isUnifiedSwitchWorkflow, patchWorkflow, resolveSeed, type FeatureAvailabilityFlags } from "./workflow";
+import { resolveFeatureAvailability } from "./modelCheck";
 import { decorateAsset } from "./assets";
 import { streamFile } from "./files";
 import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
@@ -27,7 +28,8 @@ import {
   writeRoundTrashSnapshot,
   type SqlRow
 } from "./roundTrash";
-import { decodeCompositeDataUrl, decodeControlImageDataUrl, decodeMaskDataUrl } from "./uploadDataUrl";
+import { decodeCompositeDataUrl, decodeControlImageDataUrl, decodeImageDataUrl, decodeMaskDataUrl } from "./uploadDataUrl";
+import { pasteSourceExtension } from "./pasteAttachments";
 import { sanitizePastedObjects } from "../shared/pasteAttachments";
 import {
   relationForGenerationMode,
@@ -35,7 +37,7 @@ import {
 } from "../shared/generationMode";
 import { nodeIdFromRolePath } from "../shared/workflowRolePath";
 import { isPathInside } from "./paths";
-import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent } from "../shared/types";
+import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ReferenceImageOptions } from "../shared/types";
 import type { Asset, Round } from "../shared/apiTypes";
 
 type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
@@ -52,7 +54,7 @@ type GenerationJob = {
   last_error_json?: string | null;
 };
 type CollectRoundResult = { statusCode: number; body: Record<string, unknown> };
-export type RoundAttachmentKind = "mask" | "pose";
+export type RoundAttachmentKind = "mask" | "pose" | "reference";
 type JobStats = {
   total: number;
   pending: number;
@@ -80,7 +82,12 @@ export function getRoundProgress(roundId: string): { value: number; max: number 
 }
 
 export function roundAttachmentPathFromRequest(request: GenerationRequest, kind: RoundAttachmentKind): string | null {
-  const path = kind === "mask" ? request.inpaint?.maskPath : request.controlnet?.poseImagePath;
+  const path =
+    kind === "mask"
+      ? request.inpaint?.maskPath
+      : kind === "pose"
+        ? request.controlnet?.poseImagePath
+        : request.reference?.imagePath;
   return typeof path === "string" && path.trim() !== "" ? path : null;
 }
 
@@ -157,6 +164,7 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
   request = await prepareInpaintRequest(projectId, roundId, parentAsset, requestBody, request);
   request = await prepareControlNetRequest(projectId, roundId, requestBody, request);
   request = await preparePasteCompositeRequest(projectId, roundId, parentAsset, requestBody, request);
+  request = await prepareReferenceRequest(projectId, roundId, requestBody, request);
   const branch = branchAssignmentForRound(projectId, parentAsset, roundId, "txt2img_root");
 
   runSql(
@@ -195,11 +203,20 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
     const uploadedControlImage = request.controlnet?.poseImagePath
       ? await uploadImageToComfy(request.controlnet.poseImagePath)
       : null;
+    const uploadedReferenceImage = request.reference?.imagePath
+      ? await uploadImageToComfy(request.reference.imagePath)
+      : null;
     // Unified-switch templates keep every branch's LoadImage nodes in the graph; unused image
     // inputs are pointed at a pre-uploaded 1px dummy so ComfyUI's graph-wide filename validation
     // passes (lazy evaluation never actually reads it).
-    const dummyImageName = isUnifiedSwitchWorkflow(workflow)
-      ? await ensureDummyComfyImage()
+    const isUnifiedSwitch = isUnifiedSwitchWorkflow(workflow);
+    const dummyImageName = isUnifiedSwitch ? await ensureDummyComfyImage() : null;
+    // Consistent Character (Docs/Feature-ConsistentCharacter.md): resolved once per round (not
+    // per batch job) and shared by every job's PatchContext, so a round's batch of images never
+    // hits ComfyUI's /object_info once per job. Only meaningful for the unified-switch path --
+    // the legacy dynamic-patch templates do not support fragment injection.
+    const featureAvailability: FeatureAvailabilityFlags | null = isUnifiedSwitch
+      ? await resolveFeatureAvailability()
       : null;
     const clientId = createId("comfy_client");
     const jobCount = clampInteger(request.batchSize, 1, maxBatchSize);
@@ -229,6 +246,8 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
         uploadedImageName: uploaded?.name ?? null,
         uploadedMaskName: uploadedMask?.name ?? null,
         uploadedControlImageName: uploadedControlImage?.name ?? null,
+        uploadedReferenceImageName: uploadedReferenceImage?.name ?? null,
+        featureAvailability,
         dummyImageName
       });
 
@@ -426,6 +445,51 @@ async function prepareControlNetRequest(
   return {
     ...normalizedRequest,
     controlnet: normalizeControlNetOptions(rawControlNet, stored.controlPath)
+  };
+}
+
+/**
+ * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。`prepareControlNetRequest`
+ * と同型: dataUrl を decode → `reference/<roundId><ext>` へ保存 → request_json には
+ * imagePath とトグル状態だけ残し、imageDataUrl は null化する。img2img 系のように親アセットを
+ * 要求しない(顔/スタイル参照は generationMode と独立)。
+ */
+async function prepareReferenceRequest(
+  projectId: string,
+  roundId: string,
+  rawRequest: GenerationRequest,
+  normalizedRequest: GenerationRequest
+): Promise<GenerationRequest> {
+  const rawRequestRecord = rawRequest as unknown as Record<string, unknown>;
+  const rawReference = isJsonObject(rawRequestRecord.reference)
+    ? rawRequestRecord.reference as Record<string, unknown>
+    : null;
+  const hasImageDataUrl = typeof rawReference?.imageDataUrl === "string" && rawReference.imageDataUrl.trim() !== "";
+
+  if (!hasImageDataUrl) {
+    return {
+      ...normalizedRequest,
+      reference: null
+    };
+  }
+
+  const { mimeType, bytes } = decodeImageDataUrl(rawReference.imageDataUrl);
+  const stored = await storeReferenceImage(projectId, roundId, pasteSourceExtension(mimeType), bytes);
+
+  return {
+    ...normalizedRequest,
+    reference: normalizeReferenceOptions(rawReference, stored.referencePath)
+  };
+}
+
+function normalizeReferenceOptions(rawReference: Record<string, unknown>, imagePath: string): ReferenceImageOptions {
+  const rawFace = isJsonObject(rawReference.face) ? (rawReference.face as Record<string, unknown>) : null;
+  const rawStyle = isJsonObject(rawReference.style) ? (rawReference.style as Record<string, unknown>) : null;
+  return {
+    imageDataUrl: null,
+    imagePath,
+    face: { enabled: Boolean(rawFace?.enabled) },
+    style: { enabled: Boolean(rawStyle?.enabled) }
   };
 }
 

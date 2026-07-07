@@ -24,6 +24,12 @@ export interface StoredControlImage {
   height: number | null;
 }
 
+export interface StoredReferenceImage {
+  referencePath: string;
+  width: number | null;
+  height: number | null;
+}
+
 export function ensureProjectStorage(projectId: string) {
   const projectRoot = join(dataRoot, "projects", projectId);
   const paths = {
@@ -32,6 +38,7 @@ export function ensureProjectStorage(projectId: string) {
     thumbnails: join(projectRoot, "assets", "thumbnails"),
     masks: join(projectRoot, "masks"),
     control: join(projectRoot, "control"),
+    reference: join(projectRoot, "reference"),
     workflows: join(projectRoot, "workflows"),
     exports: join(projectRoot, "exports"),
     pasteSources: join(projectRoot, "paste_sources"),
@@ -102,6 +109,30 @@ export async function storeControlImage(projectId: string, roundId: string, byte
   const size = readImageSize(bytes);
   return {
     controlPath: resolvedControlPath,
+    width: size?.width ?? null,
+    height: size?.height ?? null
+  };
+}
+
+/**
+ * 顔スタイル参照(PuLID)/全体スタイル参照(IP-Adapter)共用の参照画像を
+ * `reference/<roundId><ext>` へ保存する(mask/control と同型のパイプライン)。
+ */
+export async function storeReferenceImage(projectId: string, roundId: string, ext: string, bytes: Buffer): Promise<StoredReferenceImage> {
+  const storage = ensureProjectStorage(projectId);
+  const baseName = `${sanitizeBaseName(roundId)}${ext}`;
+  const referencePath = join(storage.reference, baseName);
+  const resolvedReferencePath = resolve(referencePath);
+  const resolvedProjectRoot = resolve(storage.projectRoot);
+
+  if (!isPathInside(resolvedReferencePath, resolvedProjectRoot)) {
+    throw new Error("Reference image storage path is outside the project directory");
+  }
+
+  await writeFile(resolvedReferencePath, bytes);
+  const size = readImageSize(bytes);
+  return {
+    referencePath: resolvedReferencePath,
     width: size?.width ?? null,
     height: size?.height ?? null
   };

@@ -67,6 +67,20 @@ export interface PasteCompositeOptions {
   objects?: PastedObject[] | null;
 }
 
+/**
+ * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。顔スタイル参照
+ * (PuLID)と全体スタイル参照(IP-Adapter)は同じ1枚の画像を共用し、それぞれ独立に
+ * 有効化できる。両方 false でも imageDataUrl/imagePath を持ちうる(先に画像だけ
+ * 取り込んでおくケース)。inpaint.maskDataUrl と同じ規約で、保存後は imageDataUrl を
+ * null化して request_json に残さない。
+ */
+export interface ReferenceImageOptions {
+  imageDataUrl?: string | null;
+  imagePath?: string | null;
+  face: { enabled: boolean };
+  style: { enabled: boolean };
+}
+
 export interface ComfySettings {
   baseUrl: string;
   websocketUrl: string;
@@ -103,6 +117,7 @@ export interface GenerationRequest {
   inpaint?: InpaintOptions | null;
   controlnet?: ControlNetOptions | null;
   pasteComposite?: PasteCompositeOptions | null;
+  reference?: ReferenceImageOptions | null;
 }
 
 export interface ApiErrorBody {

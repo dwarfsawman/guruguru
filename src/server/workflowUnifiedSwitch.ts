@@ -1,4 +1,4 @@
-import type { PatchContext } from "./workflow";
+import type { FeatureAvailabilityFlags, PatchContext } from "./workflow";
 import {
   type JsonObject,
   findNodeIdByExactClass,
@@ -7,6 +7,7 @@ import {
   isObject,
   setNodeInput
 } from "./workflowGraph";
+import { assembleFeatureFragments, pruneControlNetBranch } from "./workflowFeatureFragments";
 
 // Patches a "unified switch" template (Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.md):
 // the template statically contains every branch (txt2img / img2img / inpaint / ControlNet on/off)
@@ -59,7 +60,25 @@ export function patchUnifiedSwitchWorkflow(
   savePrefix: string
 ): JsonObject {
   const { request } = context;
-  const roles = resolveUnifiedSwitchRoles(workflow);
+  let roles = resolveUnifiedSwitchRoles(workflow);
+
+  // Consistent Character (Docs/Feature-ConsistentCharacter.md): the base template hard-codes a
+  // ControlNet model file, so unlike the other optional features it must be pruned out of the
+  // graph entirely when that model is missing -- otherwise ComfyUI's graph-wide choices
+  // validation would reject even plain txt2img/img2img prompts.
+  const featureAvailability: FeatureAvailabilityFlags = context.featureAvailability ?? {
+    controlnet: true,
+    lora: false,
+    pulid: false,
+    ipadapter: false,
+    rmbg: false
+  };
+  if (!featureAvailability.controlnet) {
+    if (request.generationMode === "controlnet") {
+      throw new Error('ControlNet model is not installed; cannot use generationMode="controlnet"');
+    }
+    roles = pruneControlNetBranch(workflow, roles);
+  }
 
   const useParentImage = request.generationMode === "img2img" && Boolean(context.uploadedImageName);
   const useMask = useParentImage && Boolean(request.inpaint) && Boolean(context.uploadedMaskName);
@@ -183,6 +202,24 @@ export function patchUnifiedSwitchWorkflow(
   }
 
   setNodeInput(workflow, roles.saveImageNodeId, ["filename_prefix"], savePrefix);
+
+  // Consistent Character: splice in the optional MODEL-chain fragments. LoRA has no per-round
+  // toggle (loaded whenever installed, per the reference workflow's own behavior); face/style
+  // reference each require both the matching request toggle AND a shared reference image to
+  // have actually been uploaded this round.
+  const hasReferenceImage = Boolean(context.uploadedReferenceImageName);
+  const pulidEnabled = featureAvailability.pulid && Boolean(request.reference?.face?.enabled) && hasReferenceImage;
+  const ipadapterEnabled = featureAvailability.ipadapter && Boolean(request.reference?.style?.enabled) && hasReferenceImage;
+  assembleFeatureFragments(
+    workflow,
+    {
+      lora: featureAvailability.lora,
+      ipadapter: ipadapterEnabled,
+      pulid: pulidEnabled,
+      rmbg: ipadapterEnabled && featureAvailability.rmbg
+    },
+    context.uploadedReferenceImageName ?? null
+  );
 
   return workflow;
 }
