@@ -32,7 +32,10 @@ const MODEL_KIND_LABELS: Record<ModelKind, string> = {
   textEncoder: "Text Encoder",
   vae: "VAE",
   controlnet: "ControlNet",
-  lora: "LoRA"
+  lora: "LoRA",
+  pulid: "PuLID",
+  ipadapterFlux: "IP-Adapter",
+  clipVision: "CLIP Vision"
 };
 
 export interface ModelCheckState {

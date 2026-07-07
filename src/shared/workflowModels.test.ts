@@ -23,7 +23,8 @@ test("extractModelRequirements: finds all model loaders in the reference unified
       kind: "diffusionModel",
       name: "Chroma1-HD-fp8mixed.safetensors",
       loaderClass: "UNETLoader",
-      inputName: "unet_name"
+      inputName: "unet_name",
+      feature: "base"
     }
   );
 
@@ -33,7 +34,8 @@ test("extractModelRequirements: finds all model loaders in the reference unified
       kind: "textEncoder",
       name: "t5xxl_fp8_e4m3fn_scaled.safetensors",
       loaderClass: "CLIPLoader",
-      inputName: "clip_name"
+      inputName: "clip_name",
+      feature: "base"
     }
   );
 
@@ -43,7 +45,8 @@ test("extractModelRequirements: finds all model loaders in the reference unified
       kind: "vae",
       name: "ae.safetensors",
       loaderClass: "VAELoader",
-      inputName: "vae_name"
+      inputName: "vae_name",
+      feature: "base"
     }
   );
 
@@ -53,9 +56,26 @@ test("extractModelRequirements: finds all model loaders in the reference unified
       kind: "controlnet",
       name: "diffusion_pytorch_model.safetensors",
       loaderClass: "ControlNetLoader",
-      inputName: "control_net_name"
+      inputName: "control_net_name",
+      feature: "controlnet"
     }
   );
+});
+
+test("extractModelRequirements: recognizes PuLID / IP-Adapter Flux loader inputs (Docs/Feature-ConsistentCharacter.md)", () => {
+  const requirements = extractModelRequirements({
+    "1": { class_type: "PulidFluxModelLoader", inputs: { pulid_file: "pulid_flux_v0.9.0.safetensors" } },
+    "2": {
+      class_type: "LoadFluxIPAdapter",
+      inputs: { ipadatper: "ip_adapter.safetensors", clip_vision: "clip-vit-large-patch14.safetensors", provider: "CPU" }
+    }
+  });
+
+  assert.deepEqual(requirements, [
+    { kind: "pulid", name: "pulid_flux_v0.9.0.safetensors", loaderClass: "PulidFluxModelLoader", inputName: "pulid_file", feature: "pulid" },
+    { kind: "ipadapterFlux", name: "ip_adapter.safetensors", loaderClass: "LoadFluxIPAdapter", inputName: "ipadatper", feature: "ipadapter" },
+    { kind: "clipVision", name: "clip-vit-large-patch14.safetensors", loaderClass: "LoadFluxIPAdapter", inputName: "clip_vision", feature: "ipadapter" }
+  ]);
 });
 
 test("extractModelRequirements: ignores non-string / connection-wired input values", () => {

@@ -7,7 +7,7 @@
 import type { Json } from "./json";
 import type { GenerationRequest } from "./types";
 import type { PastedObject } from "./pasteAttachments";
-import type { ModelKind } from "./workflowModels";
+import type { FeatureKey, ModelKind } from "./workflowModels";
 
 export interface ComfyStatus {
   ok: boolean;
@@ -24,7 +24,20 @@ export interface ModelCheckEntry {
   loaderClass: string;
   inputName: string;
   targetDir: string;
+  feature: FeatureKey;
   available: boolean | null;
+}
+
+/**
+ * `GET /api/comfy/model-check` の feature 単位の可用性。`available` は「必要ノードパックが
+ * 全て導入済み AND 必要モデルファイルが全て配置済み」。ComfyUI 未接続時は null(未確認)。
+ * `base`(常時必須の4モデル)は対象外 -- 任意にON/OFFできる機能だけを列挙する。
+ */
+export interface ModelCheckFeatureStatus {
+  key: FeatureKey;
+  label: string;
+  available: boolean | null;
+  missingNodePacks: Array<{ label: string; representativeClass: string }>;
 }
 
 /** `GET /api/comfy/model-check` のレスポンス全体。 */
@@ -33,6 +46,7 @@ export interface ModelCheckResult {
   comfy: { ok: boolean; baseUrl: string; error?: string };
   nodes: Array<{ classType: string; available: boolean }>;
   models: ModelCheckEntry[];
+  features: ModelCheckFeatureStatus[];
   checkedAt: string;
 }
 

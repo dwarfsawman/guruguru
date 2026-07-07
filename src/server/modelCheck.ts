@@ -6,26 +6,32 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { fetchComfyNodeInfo, getComfySettings } from "./comfy";
-import { extractModelRequirements, MODEL_TARGET_DIRS, type WorkflowModelRequirement } from "../shared/workflowModels";
-import type { ModelCheckEntry, ModelCheckResult } from "../shared/apiTypes";
+import { extractModelRequirements, MODEL_TARGET_DIRS, type FeatureKey, type WorkflowModelRequirement } from "../shared/workflowModels";
+import { FEATURE_LABELS, FEATURE_MODEL_REQUIREMENTS, FEATURE_NODE_PACKS } from "./workflowFeatureFragments";
+import type { ModelCheckEntry, ModelCheckFeatureStatus, ModelCheckResult } from "../shared/apiTypes";
 
 const REQUIRED_CORE_NODES = ["ComfySwitchNode", "PrimitiveBoolean"] as const;
+// Features tracked for togglable availability -- "base" (the 4 always-required models) is
+// excluded, it is not something a user can turn on/off.
+const TOGGLABLE_FEATURES: FeatureKey[] = ["controlnet", "lora", "pulid", "ipadapter", "rmbg"];
 
 const referencePath = fileURLToPath(
   new URL("../../Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.json", import.meta.url)
 );
 
 /**
- * 各 requirement を `choicesByLoaderClass`(loaderClass → ComfyUI の choices 配列。
- * `null` は choices 取得不能=ノード不在または ComfyUI 未接続)と突き合わせる。
- * 一致判定は完全一致 or basename 一致(`/` `\` どちらのセパレータも対応)。
+ * 各 requirement を `choicesByRequirement`(`loaderClass::inputName` 複合キー → ComfyUI の
+ * choices 配列。`null` は choices 取得不能=ノード不在または ComfyUI 未接続)と突き合わせる。
+ * 複合キーなのは、LoadFluxIPAdapter のように同じ loaderClass が異なる入力名(`ipadatper` /
+ * `clip_vision`)で2つのモデルファイルを要求するケースで、片方の choices をもう片方に
+ * 誤って使い回さないため。一致判定は完全一致 or basename 一致(`/` `\` どちらのセパレータも対応)。
  */
 export function matchRequirements(
   requirements: WorkflowModelRequirement[],
-  choicesByLoaderClass: Map<string, string[] | null>
+  choicesByRequirement: Map<string, string[] | null>
 ): ModelCheckEntry[] {
   return requirements.map((requirement) => {
-    const choices = choicesByLoaderClass.get(requirement.loaderClass);
+    const choices = choicesByRequirement.get(choiceKey(requirement.loaderClass, requirement.inputName));
     const available = choices == null ? null : matchesAny(choices, requirement.name);
 
     return {
@@ -34,6 +40,7 @@ export function matchRequirements(
       loaderClass: requirement.loaderClass,
       inputName: requirement.inputName,
       targetDir: MODEL_TARGET_DIRS[requirement.kind],
+      feature: requirement.feature,
       available
     };
   });
@@ -49,30 +56,32 @@ function basenameOf(path: string): string {
   return lastSlash === -1 ? normalized : normalized.slice(lastSlash + 1);
 }
 
-/**
- * ComfyUI に接続し、参照ワークフローが要求するモデル/コアノードの在不在を確認する。
- * ComfyUI 未接続でも常に 200 相当の結果を返せるよう、この関数自体は例外を投げない。
- */
-export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
-  const settings = getComfySettings();
-  const checkedAt = new Date().toISOString();
+function choiceKey(loaderClass: string, inputName: string): string {
+  return `${loaderClass}::${inputName}`;
+}
 
-  let requirements: WorkflowModelRequirement[];
-  try {
-    const workflow = JSON.parse(readFileSync(referencePath, "utf8"));
-    requirements = extractModelRequirements(workflow);
-  } catch (error) {
-    return {
-      family,
-      comfy: { ok: false, baseUrl: settings.baseUrl, error: errorMessage(error) },
-      nodes: REQUIRED_CORE_NODES.map((classType) => ({ classType, available: false })),
-      models: [],
-      checkedAt
-    };
-  }
+interface RawCheck {
+  comfyOk: boolean;
+  requirements: WorkflowModelRequirement[];
+  objectInfoByClass: Map<string, unknown | null>;
+  choicesByRequirement: Map<string, string[] | null>;
+}
+
+const NODE_PACK_CLASSES = [...new Set(Object.values(FEATURE_NODE_PACKS).flatMap((packs) => packs.map((p) => p.representativeClass)))];
+
+/**
+ * ComfyUI へ接続し、参照ワークフロー(base 4モデル + ControlNet)と、任意機能
+ * (`FEATURE_MODEL_REQUIREMENTS`/`FEATURE_NODE_PACKS`)双方の在不在を1回の `/object_info`
+ * 走査でまとめて確認する共通部。`checkModels`(UI向け表示)と `resolveFeatureAvailability`
+ * (生成時のフラグメント注入ゲート)の両方がこれを使う。例外を投げず、取得不能時は
+ * `comfyOk: false` を返す。
+ */
+async function runRawCheck(): Promise<RawCheck> {
+  const workflow = JSON.parse(readFileSync(referencePath, "utf8"));
+  const requirements = [...extractModelRequirements(workflow), ...FEATURE_MODEL_REQUIREMENTS];
 
   const loaderClasses = [...new Set(requirements.map((r) => r.loaderClass))];
-  const targetClasses = [...new Set([...loaderClasses, ...REQUIRED_CORE_NODES])];
+  const targetClasses = [...new Set([...loaderClasses, ...REQUIRED_CORE_NODES, ...NODE_PACK_CLASSES])];
 
   const objectInfoByClass = new Map<string, unknown | null>();
   await Promise.all(
@@ -87,35 +96,126 @@ export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
 
   const comfyOk = [...objectInfoByClass.values()].some((info) => info !== null);
 
-  const choicesByLoaderClass = new Map<string, string[] | null>();
-  for (const loaderClass of loaderClasses) {
-    const requirement = requirements.find((r) => r.loaderClass === loaderClass);
-    const info = comfyOk ? objectInfoByClass.get(loaderClass) : null;
-    choicesByLoaderClass.set(
-      loaderClass,
-      comfyOk ? extractChoices(info, loaderClass, requirement?.inputName) : null
-    );
+  const requirementKeys = [...new Set(requirements.map((r) => choiceKey(r.loaderClass, r.inputName)))];
+  const choicesByRequirement = new Map<string, string[] | null>();
+  for (const key of requirementKeys) {
+    const requirement = requirements.find((r) => choiceKey(r.loaderClass, r.inputName) === key)!;
+    const info = comfyOk ? objectInfoByClass.get(requirement.loaderClass) : null;
+    choicesByRequirement.set(key, comfyOk ? extractChoices(info, requirement.loaderClass, requirement.inputName) : null);
   }
 
-  const models = matchRequirements(requirements, choicesByLoaderClass);
+  return { comfyOk, requirements, objectInfoByClass, choicesByRequirement };
+}
 
-  const nodes = REQUIRED_CORE_NODES.map((classType) => {
-    const info = objectInfoByClass.get(classType);
+function isFeatureAvailable(raw: RawCheck, feature: FeatureKey): boolean {
+  const nodePacksOk = FEATURE_NODE_PACKS[feature].every((pack) =>
+    isNodePresent(raw.objectInfoByClass.get(pack.representativeClass), pack.representativeClass)
+  );
+  const modelsOk = raw.requirements
+    .filter((requirement) => requirement.feature === feature)
+    .every((requirement) => {
+      const choices = raw.choicesByRequirement.get(choiceKey(requirement.loaderClass, requirement.inputName));
+      return choices != null && matchesAny(choices, requirement.name);
+    });
+  return nodePacksOk && modelsOk;
+}
+
+/**
+ * ComfyUI に接続し、参照ワークフローが要求するモデル/コアノードの在不在を確認する。
+ * ComfyUI 未接続でも常に 200 相当の結果を返せるよう、この関数自体は例外を投げない。
+ */
+export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
+  const settings = getComfySettings();
+  const checkedAt = new Date().toISOString();
+
+  let raw: RawCheck;
+  try {
+    raw = await runRawCheck();
+  } catch (error) {
     return {
-      classType,
-      available: isNodePresent(info, classType)
+      family,
+      comfy: { ok: false, baseUrl: settings.baseUrl, error: errorMessage(error) },
+      nodes: REQUIRED_CORE_NODES.map((classType) => ({ classType, available: false })),
+      models: [],
+      features: TOGGLABLE_FEATURES.map((key) => ({
+        key,
+        label: FEATURE_LABELS[key],
+        available: null,
+        missingNodePacks: FEATURE_NODE_PACKS[key]
+      })),
+      checkedAt
     };
+  }
+
+  const models = matchRequirements(raw.requirements, raw.choicesByRequirement);
+
+  const nodes = REQUIRED_CORE_NODES.map((classType) => ({
+    classType,
+    available: isNodePresent(raw.objectInfoByClass.get(classType), classType)
+  }));
+
+  const features: ModelCheckFeatureStatus[] = TOGGLABLE_FEATURES.map((key) => {
+    const available = raw.comfyOk ? isFeatureAvailable(raw, key) : null;
+    const missingNodePacks = FEATURE_NODE_PACKS[key].filter(
+      (pack) => !isNodePresent(raw.objectInfoByClass.get(pack.representativeClass), pack.representativeClass)
+    );
+    return { key, label: FEATURE_LABELS[key], available, missingNodePacks: raw.comfyOk ? missingNodePacks : FEATURE_NODE_PACKS[key] };
   });
 
   return {
     family,
-    comfy: comfyOk
+    comfy: raw.comfyOk
       ? { ok: true, baseUrl: settings.baseUrl }
       : { ok: false, baseUrl: settings.baseUrl, error: "ComfyUI に接続できませんでした" },
     nodes,
     models,
+    features,
     checkedAt
   };
+}
+
+export interface FeatureAvailability {
+  controlnet: boolean;
+  lora: boolean;
+  pulid: boolean;
+  ipadapter: boolean;
+  rmbg: boolean;
+}
+
+const FEATURE_AVAILABILITY_CACHE_MS = 10_000;
+let cachedAvailability: { value: FeatureAvailability; expiresAt: number } | null = null;
+
+/**
+ * 生成のたびにフラグメント注入をゲートするための、真偽値のみの可用性。ComfyUI 未接続時は
+ * 「未確認」を許容せず安全側に倒して全機能 false を返す(そのラウンド自体どうせ失敗するため)。
+ * すべてのラウンドで `/object_info` を叩き直すのを避けるため短い TTL でキャッシュする
+ * (手動の「再チェック」`checkModels()` は常に非キャッシュ)。
+ */
+export async function resolveFeatureAvailability(): Promise<FeatureAvailability> {
+  const now = Date.now();
+  if (cachedAvailability && cachedAvailability.expiresAt > now) {
+    return cachedAvailability.value;
+  }
+
+  let raw: RawCheck;
+  try {
+    raw = await runRawCheck();
+  } catch {
+    return { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false };
+  }
+
+  const value: FeatureAvailability = raw.comfyOk
+    ? {
+        controlnet: isFeatureAvailable(raw, "controlnet"),
+        lora: isFeatureAvailable(raw, "lora"),
+        pulid: isFeatureAvailable(raw, "pulid"),
+        ipadapter: isFeatureAvailable(raw, "ipadapter"),
+        rmbg: isFeatureAvailable(raw, "rmbg")
+      }
+    : { controlnet: false, lora: false, pulid: false, ipadapter: false, rmbg: false };
+
+  cachedAvailability = { value, expiresAt: now + FEATURE_AVAILABILITY_CACHE_MS };
+  return value;
 }
 
 function extractChoices(info: unknown, classType: string, inputName: string | undefined): string[] | null {
