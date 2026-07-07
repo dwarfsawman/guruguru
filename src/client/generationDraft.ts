@@ -163,8 +163,8 @@ export function controlnetRequestForParent(
 /**
  * `state.referenceDraft`(フォームレベル、親画像取り込みの直下の参照画像)から
  * request.reference を組み立てる。画像が無ければ null(inpaint/controlnet と同じ規約)。
- * トグルは「ユーザーがONにした」AND「導入済み」の両方を満たすときだけ true にする
- * (UI 側で無効化済みのため通常は一致するが、defense in depth として再ゲートする)。
+ * 明示トグルは廃止したので、参照画像がある時は PuLID が導入済み(availability.pulid)なら
+ * 顔参照を有効にする(未導入なら false = 適用されない)。
  */
 export function referenceRequestForForm(): ReferenceImageOptions | null {
   const draft = state.referenceDraft;
@@ -174,7 +174,7 @@ export function referenceRequestForForm(): ReferenceImageOptions | null {
   const availability = referenceFeatureAvailability();
   return {
     imageDataUrl: draft.imageDataUrl,
-    face: { enabled: draft.faceEnabled && availability.pulid }
+    face: { enabled: availability.pulid }
   };
 }
 

@@ -258,6 +258,12 @@ function iterationEdgeAttachmentItems(round: Round): Array<{ src: string; label:
       label: "ポーズ画像"
     });
   }
+  if (round.request?.reference?.imagePath) {
+    items.push({
+      src: `/api/rounds/${round.id}/attachments/reference`,
+      label: "顔参照画像"
+    });
+  }
   return items;
 }
 

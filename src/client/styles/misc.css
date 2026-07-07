@@ -43,30 +43,15 @@
     border: 1px solid var(--line);
   }
 
+  img.reference-image-zoomable {
+    cursor: zoom-in;
+  }
+
   .icon-button {
     position: absolute;
     top: 4px;
     right: 4px;
     background: color-mix(in srgb, var(--bg) 70%, transparent);
-  }
-}
-
-.reference-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: color-mix(in srgb, var(--ink) 82%, transparent);
-
-  input[type="checkbox"] {
-    width: 15px;
-    height: 15px;
-    accent-color: var(--accent);
-  }
-
-  &:has(input:disabled) {
-    color: var(--faint);
-    cursor: not-allowed;
   }
 }
 

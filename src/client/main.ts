@@ -78,6 +78,7 @@ import {
 } from "./paintEditorController";
 import { setFormValue } from "./formUtils";
 import "./edgePopoutController";
+import "./imageLightboxController";
 import "./modelCheckController";
 import {
   deselectPasteObjectIfAny,

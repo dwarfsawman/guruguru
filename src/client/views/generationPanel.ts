@@ -257,41 +257,34 @@ export function renderGenerationPanel(
 }
 
 /**
- * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像枠。親画像の直下に
- * 置き、取り込んだ1枚の画像に対して顔スタイル参照(PuLID)をトグルできる。対応するモデル/
- * ノードパックが未導入のときはトグルを disabled にし、「モデル選択→Chroma」で確認するよう促す。
+ * Consistent Character(Docs/Feature-ConsistentCharacter.md)の顔スタイル参照(PuLID)画像枠。
+ * 親画像の直下に置き、取り込んだ1枚を PuLID の顔参照元にする。明示トグルは持たず、画像があり
+ * PuLID が導入済みなら適用する(未導入時はヒントを表示)。プレビューはクリックで拡大できる。
  */
 function renderReferenceImageSection(
   draft: ReferenceDraft | null,
   availability: { pulid: boolean }
 ) {
   const imageDataUrl = draft?.imageDataUrl ?? null;
+  const unavailableHint = availability.pulid
+    ? ""
+    : `<p class="section-hint">PuLID が未導入のため顔参照は適用されません(モデル選択→Chroma で確認してください)。</p>`;
   return `
     <section class="sidebar-section reference-image-section">
-      <p class="section-kicker">参照画像</p>
+      <p class="section-kicker">顔スタイル参照画像（PuLID）</p>
       ${imageDataUrl
         ? `
           <div class="reference-image-preview">
-            <img src="${imageDataUrl}" alt="参照画像プレビュー" />
+            <img class="reference-image-zoomable" src="${imageDataUrl}" alt="顔参照画像プレビュー(クリックで拡大)" data-image-zoom-src="${imageDataUrl}" data-image-zoom-label="顔参照画像" />
             <button class="icon-button" type="button" data-action="clear-reference-image" aria-label="参照画像を削除" title="参照画像を削除">${iconTrash()}</button>
           </div>
         `
         : `<label class="button-secondary compact source-upload-button">
-            ${iconImage()}参照画像をアップロード
+            ${iconImage()}顔参照画像をアップロード
             <input data-reference-upload="1" type="file" accept="image/png,image/jpeg,image/webp" />
           </label>`}
-      ${renderReferenceToggle("toggle-reference-face", "顔スタイル参照(PuLID)", Boolean(draft?.faceEnabled), availability.pulid)}
+      ${unavailableHint}
     </section>
-  `;
-}
-
-function renderReferenceToggle(action: string, label: string, checked: boolean, available: boolean) {
-  const title = available ? "" : `title="モデル未導入。モデル選択→Chroma で確認してください"`;
-  return `
-    <label class="reference-toggle" ${title}>
-      <input type="checkbox" data-action="${action}" ${checked && available ? "checked" : ""} ${available ? "" : "disabled"} />
-      ${escapeHtml(label)}
-    </label>
   `;
 }
 

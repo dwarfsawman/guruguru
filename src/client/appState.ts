@@ -11,11 +11,10 @@ import type { StyleLoraSelection } from "../shared/types";
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。フォームレベルの
  * ドラフト(per-asset ではない -- 親画像取り込みの直下に置く共有の1枚)。顔スタイル参照
- * (PuLID)の参照元で、face トグルで有効化する。
+ * (PuLID)の参照元。画像を取り込めば(PuLID 導入時に)顔参照が適用される -- 明示トグルは持たない。
  */
 export interface ReferenceDraft {
   imageDataUrl: string | null;
-  faceEnabled: boolean;
 }
 
 export const generationDraftFields = [

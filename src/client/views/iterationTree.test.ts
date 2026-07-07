@@ -223,6 +223,24 @@ test("iterationEdgeAttachmentsHtml: includes mask and pose attachments independe
   assert.match(html, /ポーズ画像/);
 });
 
+test("iterationEdgeAttachmentsHtml: includes the face-style (PuLID) reference attachment", () => {
+  const html = iterationEdgeAttachmentsHtml(
+    round({
+      request: {
+        ...round().request,
+        reference: {
+          imageDataUrl: null,
+          imagePath: "C:/data/project/reference/round_ref.jpg",
+          face: { enabled: true }
+        }
+      }
+    })
+  );
+  assert.match(html, /添付 1件/);
+  assert.match(html, /\/api\/rounds\/round-1\/attachments\/reference/);
+  assert.match(html, /顔参照画像/);
+});
+
 test("iterationEdgePopoutHtml: includes the attachments footer only when attachments exist", () => {
   assert.ok(!iterationEdgePopoutHtml(round()).includes("iteration-edge-attachments-footer"));
   const withAttachments = iterationEdgePopoutHtml(

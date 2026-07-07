@@ -8,7 +8,7 @@ import { registerActions } from "./actionRegistry";
 import { persistProjectDraft } from "./draftStore";
 
 export function defaultReferenceDraft(): ReferenceDraft {
-  return { imageDataUrl: null, faceEnabled: false };
+  return { imageDataUrl: null };
 }
 
 /**
@@ -62,15 +62,6 @@ function fileToDataUrl(file: File) {
 }
 
 registerActions({
-  "toggle-reference-face": () => {
-    if (!referenceFeatureAvailability().pulid) {
-      return;
-    }
-    const draft = state.referenceDraft ?? defaultReferenceDraft();
-    state.referenceDraft = { ...draft, faceEnabled: !draft.faceEnabled };
-    persist();
-    requestRender();
-  },
   "clear-reference-image": () => {
     clearReferenceImage();
   }
