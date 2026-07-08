@@ -54,15 +54,10 @@
   text-align: center;
 }
 
-.page-card-open:hover .page-card-thumb {
-  border-color: var(--accent-line);
-}
-
 .page-card-thumb {
   position: relative;
   display: block;
   aspect-ratio: 1 / 1;
-  border: 1px solid var(--line-strong);
   border-radius: 2px;
   background: transparent;
   padding: 14px;
