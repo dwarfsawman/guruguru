@@ -21,12 +21,13 @@
 /* --- ページグリッド --- */
 .page-grid {
   margin-top: 4px;
+  gap: 10px 14px;
+  grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
 }
 
 .page-card {
   position: relative;
   border-radius: 2px;
-  background: var(--panel-strong);
   cursor: grab;
 }
 
@@ -43,19 +44,17 @@
 .page-card-open {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   width: 100%;
   padding: 0;
-  border: 1px solid var(--line-strong);
-  border-radius: 2px;
+  border: none;
   background: transparent;
   color: var(--ink);
   cursor: inherit;
-  overflow: hidden;
-  text-align: left;
+  text-align: center;
 }
 
-.page-card-open:hover {
+.page-card-open:hover .page-card-thumb {
   border-color: var(--accent-line);
 }
 
@@ -63,6 +62,8 @@
   position: relative;
   display: block;
   aspect-ratio: 3 / 4;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
   background: var(--input);
   overflow: hidden;
 }
@@ -86,44 +87,11 @@
   letter-spacing: 0.1em;
 }
 
-.page-card-number {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  padding: 3px 6px;
-  border-radius: 2px;
-  background: rgba(0, 0, 0, 0.65);
-  color: var(--ink);
-  font-family: var(--mono);
-  font-size: 9.5px;
-  font-weight: 600;
-}
-
-.page-card-caption {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 0 8px 8px;
-}
-
-.page-card-title {
-  overflow: hidden;
-  color: var(--ink);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.page-card-title.untitled {
-  color: var(--faint);
-}
-
-.page-card-count {
-  flex: 0 0 auto;
+.page-card-index {
+  display: block;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 9.5px;
+  font-size: 11.5px;
 }
 
 .page-card-actions {
