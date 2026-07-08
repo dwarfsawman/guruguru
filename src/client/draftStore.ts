@@ -1,4 +1,4 @@
-import { state, type GenerationDraft, type ReferenceDraft } from "./appState";
+import { state, type GenerationDraft, type GenerationDraftField, type ReferenceDraft } from "./appState";
 import type { InpaintDraft } from "./maskTypes";
 import { defaultInpaintDraft, normalizeInpaintDraft } from "./maskDraft";
 import type { PoseDraft } from "./poseTypes";
@@ -31,10 +31,45 @@ export function persistProjectDraft(projectId: string) {
 }
 
 /**
- * Book: アクティブページの参照画像/スタイル LoRA ドラフトを per-page マップへ書き戻す(書き込みスルー)。
- * 参照/LoRA はフォームレベルの1枚(state.referenceDraft / state.loraDraft)を編集する作りなので、
- * ページを離れる前・永続化の前にここで現ページのマップへ確定させる。activePageId が無い
- * (single / page grid)場合は何もしない。
+ * 新規ページに引き継ぐ生成設定フィールド。顔参照画像(reference)と seed 値、img2img の親アセットは
+ * 引き継がない(seed は毎回ランダム、参照は空スタート、新規ページは親なし=txt2img)。
+ */
+const CARRYOVER_FIELDS: GenerationDraftField[] = [
+  "templateId",
+  "img2imgTemplateId",
+  "prompt",
+  "negativePrompt",
+  "seedMode",
+  "batchSize",
+  "steps",
+  "cfg",
+  "sampler",
+  "scheduler",
+  "denoise",
+  "width",
+  "height"
+];
+
+/** GenerationDraft から引き継ぎ対象フィールドだけ抽出する(generationMode は txt2img に強制)。 */
+export function carryoverFields(draft: GenerationDraft | null | undefined): GenerationDraft {
+  const out: GenerationDraft = { generationMode: "txt2img", parentAssetId: "", seed: "", inpaint: null };
+  if (draft) {
+    for (const field of CARRYOVER_FIELDS) {
+      const value = draft[field];
+      if (typeof value === "string") {
+        out[field] = value;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Book: アクティブページの参照画像/スタイル LoRA/生成設定ドラフトを per-page マップへ書き戻す(書き込みスルー)。
+ * 参照/LoRA/生成設定はフォームレベルの1枚(state.referenceDraft / state.loraDraft / state.generationDraft)を
+ * 編集する作りなので、ページを離れる前・永続化の前にここで現ページのマップへ確定させる。生成設定は
+ * 次ページ引き継ぎのスナップショットとして carryoverFields で正規化して持つ。activePageId が無い
+ * (single / page grid / Book共通設定画面)場合は何もしない。
  */
 export function commitActivePageDrafts() {
   const pageId = state.activePageId;
@@ -43,6 +78,7 @@ export function commitActivePageDrafts() {
   }
   state.referenceDraftsByPage[pageId] = state.referenceDraft ?? { imageDataUrl: null };
   state.loraDraftsByPage[pageId] = state.loraDraft;
+  state.pageSettingsByPage[pageId] = carryoverFields(state.generationDraft);
 }
 
 /** 保留中の draft 永続化を即時に書き込む(unload / プロジェクト離脱時)。 */
@@ -68,7 +104,10 @@ export function flushProjectDraftPersist() {
         referenceDraft: state.referenceDraft,
         loraDraft: state.loraDraft,
         referenceDraftsByPage: state.referenceDraftsByPage,
-        loraDraftsByPage: state.loraDraftsByPage
+        loraDraftsByPage: state.loraDraftsByPage,
+        pageSettingsByPage: state.pageSettingsByPage,
+        bookCommonSettings: state.bookCommonSettings,
+        bookCommonLora: state.bookCommonLora
       })
     );
   } catch {
@@ -91,6 +130,9 @@ export function restoreProjectDraft(projectId: string): {
   loraDraft: StyleLoraSelection[];
   referenceDraftsByPage: Record<string, ReferenceDraft>;
   loraDraftsByPage: Record<string, StyleLoraSelection[]>;
+  pageSettingsByPage: Record<string, GenerationDraft>;
+  bookCommonSettings: GenerationDraft | null;
+  bookCommonLora: StyleLoraSelection[] | null;
 } | null {
   try {
     const raw = window.localStorage.getItem(draftStorageKey(projectId));
@@ -106,6 +148,9 @@ export function restoreProjectDraft(projectId: string): {
       loraDraft?: StyleLoraSelection[];
       referenceDraftsByPage?: Record<string, ReferenceDraft>;
       loraDraftsByPage?: Record<string, StyleLoraSelection[]>;
+      pageSettingsByPage?: Record<string, GenerationDraft>;
+      bookCommonSettings?: GenerationDraft | null;
+      bookCommonLora?: StyleLoraSelection[] | null;
     };
     return {
       generationDraft: parsed.generationDraft ?? null,
@@ -115,7 +160,10 @@ export function restoreProjectDraft(projectId: string): {
       referenceDraft: parsed.referenceDraft ?? null,
       loraDraft: parsed.loraDraft ?? [],
       referenceDraftsByPage: parsed.referenceDraftsByPage ?? {},
-      loraDraftsByPage: parsed.loraDraftsByPage ?? {}
+      loraDraftsByPage: parsed.loraDraftsByPage ?? {},
+      pageSettingsByPage: parsed.pageSettingsByPage ?? {},
+      bookCommonSettings: parsed.bookCommonSettings ?? null,
+      bookCommonLora: parsed.bookCommonLora ?? null
     };
   } catch {
     return null;
@@ -134,6 +182,9 @@ export function resetProjectDrafts() {
   state.loraDraft = [];
   state.referenceDraftsByPage = {};
   state.loraDraftsByPage = {};
+  state.pageSettingsByPage = {};
+  state.bookCommonSettings = null;
+  state.bookCommonLora = null;
 }
 
 /** Project を開く際、永続化済みの draft があれば復元し、なければリセットする。 */
@@ -150,6 +201,9 @@ export function restoreOrResetProjectDrafts(projectId: string) {
   state.loraDraft = restored?.loraDraft ?? [];
   state.referenceDraftsByPage = restored?.referenceDraftsByPage ?? {};
   state.loraDraftsByPage = restored?.loraDraftsByPage ?? {};
+  state.pageSettingsByPage = restored?.pageSettingsByPage ?? {};
+  state.bookCommonSettings = restored?.bookCommonSettings ?? null;
+  state.bookCommonLora = restored?.bookCommonLora ?? null;
 }
 
 export function inpaintDraftForAsset(assetId: string | null | undefined) {

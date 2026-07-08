@@ -114,10 +114,16 @@ export interface BookPages {
   pages: PageSummary[];
 }
 
-/** 「最近使った参照画像」1件(顔スタイル参照ピッカー用)。 */
+/**
+ * 「最近使った画像」1件(顔スタイル参照ピッカー用)。過去に使った顔参照画像(内容で重複排除)と
+ * 生成画像を新しい順で混在させる。クリックすると `url` の画像を顔参照に採用する。
+ */
 export interface RecentReferenceImage {
-  roundId: string;
+  kind: "reference" | "asset";
+  /** クリックで顔参照に採用する画像 URL(フル画像)。 */
   url: string;
+  /** 一覧表示用のサムネイル URL(参照画像は url と同一)。 */
+  thumbnailUrl: string;
   createdAt: string;
 }
 

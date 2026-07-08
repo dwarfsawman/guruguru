@@ -201,6 +201,40 @@
   font-size: 10.5px;
 }
 
+/* --- Book共通設定画面の本文(サイドバーは studio-shell を共有) --- */
+.book-settings-body {
+  padding: 20px;
+}
+
+.book-settings-card {
+  max-width: 560px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  padding: 16px 18px;
+}
+
+.book-settings-status {
+  margin-bottom: 10px;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.book-settings-notes {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.book-settings-notes b {
+  color: var(--ink);
+}
+
 /* --- 顔参照画像の「最近使った画像」ピッカー --- */
 .reference-recent {
   margin-top: 8px;

@@ -12,6 +12,7 @@ import { morph } from "./domMorph";
 import { renderModelInstallModal } from "./workflowUi";
 import { renderHome, type ConnectionState, type ConnectionSummary } from "./views/homeView";
 import { renderBookView } from "./views/bookView";
+import { renderBookSettingsView } from "./views/bookSettingsView";
 import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
@@ -135,6 +136,12 @@ import {
   uploadSourceAsset
 } from "./projectController";
 import { referenceFeatureAvailability, uploadReferenceImage } from "./referenceController";
+import {
+  handleSidebarResizePointerCancel,
+  handleSidebarResizePointerDown,
+  handleSidebarResizePointerMove,
+  handleSidebarResizePointerUp
+} from "./sidebarResizeController";
 import { refreshLoraChoices, updateStyleLoraFromControl } from "./styleLoraController";
 import { closeAssetDetail } from "./assetDetailController";
 import { closeShortcutsHelp, handleAssetActionShortcuts, renderShortcutsHelpModal, toggleShortcutsHelp } from "./shortcuts";
@@ -436,6 +443,9 @@ function bindEvents() {
 
   app.addEventListener("pointerdown", (event) => {
     const target = event.target as HTMLElement;
+    if (handleSidebarResizePointerDown(event)) {
+      return;
+    }
     if (handlePoseEditorPointerDown(event)) {
       return;
     }
@@ -455,6 +465,9 @@ function bindEvents() {
   });
 
   app.addEventListener("pointermove", (event) => {
+    if (handleSidebarResizePointerMove(event)) {
+      return;
+    }
     if (handleMaskEditorPointerMove(event)) {
       return;
     }
@@ -474,6 +487,9 @@ function bindEvents() {
   });
 
   app.addEventListener("pointerup", (event) => {
+    if (handleSidebarResizePointerUp(event)) {
+      return;
+    }
     if (handleMaskEditorPointerUp(event)) {
       return;
     }
@@ -493,6 +509,9 @@ function bindEvents() {
   });
 
   app.addEventListener("pointercancel", (event) => {
+    if (handleSidebarResizePointerCancel(event)) {
+      return;
+    }
     if (handleMaskEditorPointerCancel(event)) {
       return;
     }
@@ -565,9 +584,17 @@ function render(_options: RenderOptions = {}) {
     renderToastStack(),
     state.detail
       ? renderProjectDetailView(state.detail)
-      : state.book
-        ? renderBookView(state.book)
-        : renderHome(
+      : state.bookSettingsOpen && state.book
+        ? renderBookSettingsView(
+            state.book.project.name,
+            renderBookSettingsPanelView(),
+            state.sidebarCollapsed,
+            state.sidebarWidth,
+            state.bookCommonSettings !== null
+          )
+        : state.book
+          ? renderBookView(state.book)
+          : renderHome(
             state.projects,
             state.settings,
             state.templates,
@@ -734,7 +761,8 @@ function renderProjectDetailView(detail: ProjectDetail) {
     state.copiedSeedAssetId,
     state.sidebarCollapsed,
     state.roundProgress,
-    bookPage
+    bookPage,
+    state.sidebarWidth
   );
 }
 
@@ -767,6 +795,38 @@ function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | n
     state.loraDraft,
     state.loraChoices,
     state.recentReferenceImages
+  );
+}
+
+/**
+ * Book共通設定画面のサイドバー(生成パネル)を bookSettingsMode で render する。ラウンド/アセットの
+ * 無い synthetic な ProjectDetail(templates と project だけ本物)を渡し、親画像/顔参照セクションは隠す。
+ * 生成フォームの編集は既存ハンドラがそのまま state.generationDraft / state.loraDraft を更新する。
+ */
+function renderBookSettingsPanelView(): string {
+  const syntheticDetail: ProjectDetail = {
+    project: state.book!.project,
+    rounds: [],
+    assets: [],
+    assetParents: [],
+    templates: state.templates,
+    pasteAttachments: {}
+  };
+  const llmConfigured = Boolean(state.llmSettings?.baseUrl.trim() && state.llmSettings?.model.trim());
+  return renderGenerationPanel(
+    syntheticDetail,
+    null,
+    null,
+    state.generationDraft,
+    null,
+    llmConfigured,
+    state.llmImproving,
+    null,
+    referenceFeatureAvailability(),
+    state.loraDraft,
+    state.loraChoices,
+    [],
+    true
   );
 }
 

@@ -3,10 +3,14 @@
  * ページは1プロジェクト内の「順序付きの独立した1枚生成コンテキスト」で、`generation_rounds.page_id`
  * でラウンド/アセットが各ページに紐づく。並び順は `page_index` の昇順(= 読書順)。
  */
+import { createHash } from "node:crypto";
+import { open } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { BookPages, PageDetail, PageRow, PageSummary, ProjectRow, RecentReferenceImage } from "../shared/apiTypes";
 import type { GenerationRequest } from "../shared/types";
-import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
+import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
+import { isPathInside } from "./paths";
 import { getProjectDetail } from "./projects";
 import { deleteRoundTree, roundAttachmentPathFromRequest } from "./rounds";
 import { discardRoundTrashSnapshot } from "./roundTrash";
@@ -166,18 +170,68 @@ export function deletePage(projectId: string, pageId: string) {
   return { deleted: true, pageId };
 }
 
+/** 参照候補の走査上限(古い再試行が大量にあっても I/O を抑える)。 */
+const RECENT_REFERENCE_SCAN_LIMIT = 40;
+/** 重複排除後に採用する distinct 参照画像の上限(これ以上は古いので打ち切る)。 */
+const RECENT_REFERENCE_DISTINCT_LIMIT = 12;
+/** 混在させる生成画像の走査上限。 */
+const RECENT_ASSET_SCAN_LIMIT = 30;
+/** 内容シグネチャ計算で読む先頭バイト数(同一画像は完全一致、別画像は衝突しない)。 */
+const REFERENCE_SIGNATURE_PREFIX_BYTES = 64 * 1024;
+
 /**
- * 「最近使った参照画像」。プロジェクトの新しい順のラウンドから request_json に reference.imagePath を
- * 持つものを拾い、最大 `limit` 件返す。顔スタイル参照(PuLID)の再利用ピッカー用。
+ * 参照画像ファイルの内容シグネチャ(サイズ + 先頭数十KB の hash)。「最近使った画像」から
+ * 再利用したり同じ顔で再試行したラウンドは参照ファイルがバイト一致するため、これで重複排除できる。
+ * ファイルが読めない/dataRoot 外なら null(その候補はスキップ)。
  */
-export function listRecentReferenceImages(projectId: string, limit = 12): RecentReferenceImage[] {
-  const rows = getRows<{ id: string; request_json: string; created_at: string }>(
-    "SELECT id, request_json, created_at FROM generation_rounds WHERE project_id = ? ORDER BY created_at DESC LIMIT 60",
-    [projectId]
+async function referenceContentSignature(imagePath: string): Promise<string | null> {
+  const resolved = resolve(imagePath);
+  if (!isPathInside(resolved, resolve(dataRoot))) {
+    return null;
+  }
+  try {
+    const handle = await open(resolved, "r");
+    try {
+      const stat = await handle.stat();
+      const length = Math.min(stat.size, REFERENCE_SIGNATURE_PREFIX_BYTES);
+      const buffer = Buffer.alloc(length);
+      if (length > 0) {
+        await handle.read(buffer, 0, length, 0);
+      }
+      return `${stat.size}:${createHash("sha1").update(buffer).digest("hex")}`;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** createdAt 降順でマージし `limit` 件に切る純関数(重複排除は呼び出し側で済ませておく)。 */
+export function mergeRecentImages(
+  references: RecentReferenceImage[],
+  assets: RecentReferenceImage[],
+  limit: number
+): RecentReferenceImage[] {
+  return [...references, ...assets]
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+    .slice(0, Math.max(0, limit));
+}
+
+/**
+ * 「最近使った画像」。過去に使った顔参照画像(内容で重複排除)と生成画像を新しい順で混在させて返す。
+ * Book のページ間で同じキャラ顔や過去の生成物を1クリックで再利用する用途。
+ */
+export async function listRecentImages(projectId: string, limit = 24): Promise<RecentReferenceImage[]> {
+  // --- 参照画像: 新しい順ラウンドを走査し、内容シグネチャで重複排除して最新の1件だけ残す ---
+  const roundRows = getRows<{ id: string; request_json: string; created_at: string }>(
+    "SELECT id, request_json, created_at FROM generation_rounds WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+    [projectId, RECENT_REFERENCE_SCAN_LIMIT]
   );
-  const out: RecentReferenceImage[] = [];
-  for (const row of rows) {
-    if (out.length >= limit) {
+  const references: RecentReferenceImage[] = [];
+  const seenSignatures = new Set<string>();
+  for (const row of roundRows) {
+    if (references.length >= RECENT_REFERENCE_DISTINCT_LIMIT) {
       break;
     }
     let request: GenerationRequest;
@@ -186,14 +240,30 @@ export function listRecentReferenceImages(projectId: string, limit = 12): Recent
     } catch {
       continue;
     }
-    if (!roundAttachmentPathFromRequest(request, "reference")) {
+    const imagePath = roundAttachmentPathFromRequest(request, "reference");
+    if (!imagePath) {
       continue;
     }
-    out.push({
-      roundId: row.id,
-      url: `/api/rounds/${row.id}/attachments/reference`,
-      createdAt: String(row.created_at)
-    });
+    const signature = await referenceContentSignature(imagePath);
+    if (!signature || seenSignatures.has(signature)) {
+      continue;
+    }
+    seenSignatures.add(signature);
+    const url = `/api/rounds/${row.id}/attachments/reference`;
+    references.push({ kind: "reference", url, thumbnailUrl: url, createdAt: String(row.created_at) });
   }
-  return out;
+
+  // --- 生成画像: 却下以外の新しい順アセット(サムネ表示・クリックでフル画像を参照採用) ---
+  const assetRows = getRows<{ id: string; created_at: string }>(
+    "SELECT id, created_at FROM assets WHERE project_id = ? AND status != 'rejected' ORDER BY created_at DESC LIMIT ?",
+    [projectId, RECENT_ASSET_SCAN_LIMIT]
+  );
+  const assets: RecentReferenceImage[] = assetRows.map((row) => ({
+    kind: "asset",
+    url: `/api/assets/${row.id}/image`,
+    thumbnailUrl: `/api/assets/${row.id}/thumbnail?size=small`,
+    createdAt: String(row.created_at)
+  }));
+
+  return mergeRecentImages(references, assets, limit);
 }

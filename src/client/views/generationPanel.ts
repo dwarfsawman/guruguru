@@ -104,7 +104,9 @@ export function renderGenerationPanel(
   referenceAvailability: { pulid: boolean } = { pulid: false },
   loraDraft: StyleLoraSelection[] = [],
   loraChoices: { status: "idle" | "loading" | "ready" | "error"; names: string[] } = { status: "idle", names: [] },
-  recentReferenceImages: RecentReferenceImage[] = []
+  recentReferenceImages: RecentReferenceImage[] = [],
+  /** Book共通設定画面での再利用時は true。親画像/顔参照セクション(ページ固有)を隠す。 */
+  bookSettingsMode = false
 ) {
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
@@ -168,12 +170,14 @@ export function renderGenerationPanel(
         </div>
       </section>
 
-      <section class="sidebar-section">
+      ${bookSettingsMode
+        ? ""
+        : `<section class="sidebar-section">
         <p class="section-kicker">親画像</p>
         ${renderSourceUploadButton("source asset をアップロード")}
       </section>
 
-      ${renderReferenceImageSection(referenceDraft, referenceAvailability, recentReferenceImages)}
+      ${renderReferenceImageSection(referenceDraft, referenceAvailability, recentReferenceImages)}`}
 
       ${renderStyleLoraSection(loraDraft, loraChoices)}
 
@@ -281,7 +285,7 @@ function renderReferenceImageSection(
           ${recentReferenceImages
             .map(
               (image) =>
-                `<button class="reference-recent-item" type="button" data-action="use-recent-reference" data-url="${escapeAttr(image.url)}" aria-label="この参照画像を使う" title="この参照画像を使う"><img src="${escapeAttr(image.url)}" alt="" loading="lazy" draggable="false" /></button>`
+                `<button class="reference-recent-item" type="button" data-action="use-recent-reference" data-url="${escapeAttr(image.url)}" aria-label="この画像を顔参照に使う" title="この画像を顔参照に使う"><img src="${escapeAttr(image.thumbnailUrl)}" alt="" loading="lazy" draggable="false" /></button>`
             )
             .join("")}
         </div>

@@ -37,6 +37,26 @@ function generationModeLabel(mode: string) {
   return mode === "manual_upload" ? "source" : mode;
 }
 
+/**
+ * 生成サイドバー(`.studio-sidebar`)の共通 shell。折りたたみトグル + 生成パネル + 右端の
+ * ドラッグリサイザ。ProjectDetail と Book共通設定ビューの両方で使う(挙動を揃えるため共有)。
+ * 幅は inline の `--studio-sidebar-width` で反映し、リサイズ中は sidebarResizeController が
+ * この要素へ直接同変数を書き込む(render を通さない)。
+ */
+export function renderStudioSidebar(
+  generationPanelHtml: string,
+  sidebarOpen: boolean,
+  sidebarCollapsed: boolean,
+  sidebarWidth: number
+): string {
+  return `
+      <aside class="studio-sidebar ${sidebarOpen ? "open" : ""} ${sidebarCollapsed ? "collapsed" : ""}" style="--studio-sidebar-width:${sidebarWidth}px">
+        <button class="sidebar-collapse-toggle" type="button" data-action="toggle-sidebar-collapse" aria-label="${sidebarCollapsed ? "サイドバーを展開" : "サイドバーを折りたたむ"}" title="${sidebarCollapsed ? "サイドバーを展開" : "サイドバーを折りたたむ"}" aria-pressed="${sidebarCollapsed}">${iconChevronDouble()}</button>
+        <div class="studio-sidebar-content">${generationPanelHtml}</div>
+        <div class="sidebar-resizer" data-sidebar-resizer aria-hidden="true" title="ドラッグで幅を変更"></div>
+      </aside>`;
+}
+
 export function renderProjectDetail(
   detail: ProjectDetail,
   activeRound: Round | null,
@@ -56,7 +76,8 @@ export function renderProjectDetail(
   copiedSeedAssetId: string | null,
   sidebarCollapsed = false,
   roundProgress: RoundProgressMap = {},
-  bookPage: { title: string; number: number } | null = null
+  bookPage: { title: string; number: number } | null = null,
+  sidebarWidth = 360
 ) {
   const mode = activeRound?.generationMode ?? "txt2img";
   // 進捗サフィックスは実際に生成中の Round のみ(stale なエントリが残っていても表示しない)。
@@ -68,10 +89,7 @@ export function renderProjectDetail(
   return `
     <div class="studio-shell">
       <div class="sidebar-overlay ${sidebarOpen ? "active" : ""}" data-action="toggle-sidebar"></div>
-      <aside class="studio-sidebar ${sidebarOpen ? "open" : ""} ${sidebarCollapsed ? "collapsed" : ""}">
-        <button class="sidebar-collapse-toggle" type="button" data-action="toggle-sidebar-collapse" aria-label="${sidebarCollapsed ? "サイドバーを展開" : "サイドバーを折りたたむ"}" title="${sidebarCollapsed ? "サイドバーを展開" : "サイドバーを折りたたむ"}" aria-pressed="${sidebarCollapsed}">${iconChevronDouble()}</button>
-        <div class="studio-sidebar-content">${generationPanelHtml}</div>
-      </aside>
+      ${renderStudioSidebar(generationPanelHtml, sidebarOpen, sidebarCollapsed, sidebarWidth)}
       <main class="studio-main">
         <div class="round-toolbar">
           <div>

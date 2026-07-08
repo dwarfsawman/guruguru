@@ -8,10 +8,16 @@ import type { BookPages, PageDetail } from "../shared/apiTypes";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
-import { commitActivePageDrafts, flushProjectDraftPersist, restoreOrResetProjectDrafts } from "./draftStore";
+import {
+  carryoverFields,
+  commitActivePageDrafts,
+  flushProjectDraftPersist,
+  persistProjectDraft,
+  restoreOrResetProjectDrafts
+} from "./draftStore";
 import { clearPasteCaches } from "./pasteObjectController";
 import { resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
-import { rememberActiveRoundDraft, restoreGenerationDraftForRound } from "./generationDraft";
+import { captureGenerationDraft, rememberActiveRoundDraft, restoreGenerationDraftForRound } from "./generationDraft";
 import { refreshModelCheck } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
@@ -28,6 +34,7 @@ export async function openBook(projectId: string) {
   state.activePageId = null;
   state.activeRoundId = null;
   state.activeAssetId = null;
+  state.bookSettingsOpen = false;
   state.sidebarOpen = false;
   restoreOrResetProjectDrafts(projectId);
   clearPasteCaches();
@@ -63,9 +70,12 @@ export async function openPage(pageId: string) {
   state.referenceDraft = state.referenceDraftsByPage[pageId] ?? { imageDataUrl: null };
   state.loraDraft = state.loraDraftsByPage[pageId] ?? [];
   // アクティブラウンドの生成フォーム draft を復元(無ければラウンドの request 値へフォールバック)。
+  // ラウンドがまだ無い新規ページは、引き継いだ設定(前ページ/Book共通設定)を初期フォーム値にする。
   state.generationDraft = null;
   if (state.activeRoundId) {
     restoreGenerationDraftForRound(state.activeRoundId);
+  } else if (state.pageSettingsByPage[pageId]) {
+    state.generationDraft = { ...state.pageSettingsByPage[pageId] };
   }
   state.maskEditMode = false;
   state.paintEditMode = false;
@@ -103,6 +113,7 @@ export async function backToPages() {
 export function clearBookSession() {
   state.book = null;
   state.activePageId = null;
+  state.bookSettingsOpen = false;
   state.recentReferenceImages = [];
 }
 
@@ -117,9 +128,38 @@ async function addPage() {
   if (!state.currentProjectId) {
     return;
   }
+  // 引き継ぎ元は「追加前の末尾ページ」(Book共通設定が優先)。追加後の新ページも末尾に付く。
+  const previousLastPageId = state.book?.pages.at(-1)?.id ?? null;
   await api(`/api/projects/${state.currentProjectId}/pages`, { method: "POST", body: "{}" });
   await reloadPages();
+  const newPageId = state.book?.pages.at(-1)?.id ?? null;
+  if (newPageId) {
+    applyCarryoverToNewPage(newPageId, previousLastPageId);
+    persistProjectDraft(state.currentProjectId);
+  }
   requestRender();
+}
+
+/**
+ * 新規ページの初期設定を「Book共通設定(あれば) > 直前ページの設定」の順で引き継ぐ。
+ * 顔参照画像は引き継がず空スタート(referenceDraftsByPage に入れない)。
+ */
+function applyCarryoverToNewPage(newPageId: string, previousLastPageId: string | null) {
+  const useCommon = state.bookCommonSettings !== null;
+  const carried = useCommon
+    ? state.bookCommonSettings
+    : previousLastPageId
+      ? state.pageSettingsByPage[previousLastPageId] ?? null
+      : null;
+  const lora = useCommon
+    ? state.bookCommonLora ?? []
+    : previousLastPageId
+      ? state.loraDraftsByPage[previousLastPageId] ?? []
+      : [];
+  if (carried) {
+    state.pageSettingsByPage[newPageId] = carryoverFields(carried);
+  }
+  state.loraDraftsByPage[newPageId] = [...lora];
 }
 
 async function deletePage(pageId: string) {
@@ -157,6 +197,68 @@ async function renamePage(pageId: string) {
     body: JSON.stringify({ title: next.trim() })
   });
   await reloadPages();
+  requestRender();
+}
+
+// --- Book共通設定(新規ページの既定値)。生成サイドバーを編集バッファとして再利用する ---
+
+/** Book共通設定画面を開く。生成フォームを共通設定の編集バッファとして使う(既存の共通設定があれば復元)。 */
+function openBookSettings() {
+  if (!state.currentProjectId || !state.book) {
+    return;
+  }
+  state.detail = null;
+  state.activePageId = null;
+  state.activeRoundId = null;
+  state.activeAssetId = null;
+  state.bookSettingsOpen = true;
+  state.generationDraft = state.bookCommonSettings ? { ...state.bookCommonSettings } : null;
+  state.loraDraft = state.bookCommonLora ? [...state.bookCommonLora] : [];
+  state.referenceDraft = { imageDataUrl: null };
+  state.sidebarOpen = false;
+  state.maskEditMode = false;
+  state.paintEditMode = false;
+  requestRender();
+  // 顔参照は使わないが、LoRA 候補とモデルチェックは設定 UI で必要。
+  void refreshModelCheck("chroma");
+  void refreshLoraChoices();
+}
+
+/** 共通設定を保存する(以後の新規ページの既定になる)。 */
+function saveBookSettings() {
+  if (!state.currentProjectId) {
+    return;
+  }
+  captureGenerationDraft();
+  state.bookCommonSettings = carryoverFields(state.generationDraft);
+  state.bookCommonLora = [...state.loraDraft];
+  persistProjectDraft(state.currentProjectId);
+  flushProjectDraftPersist();
+  backFromBookSettings();
+  pushToast("Book共通設定を保存しました。新規ページの初期値に使われます。", "info");
+}
+
+/** 共通設定をクリアする(新規ページは直前ページからの引き継ぎに戻る)。画面には留まる。 */
+function clearBookSettings() {
+  if (!state.currentProjectId) {
+    return;
+  }
+  state.bookCommonSettings = null;
+  state.bookCommonLora = null;
+  state.generationDraft = null;
+  state.loraDraft = [];
+  persistProjectDraft(state.currentProjectId);
+  flushProjectDraftPersist();
+  pushToast("Book共通設定をクリアしました。新規ページは直前ページから引き継ぎます。", "info");
+  requestRender();
+}
+
+/** 共通設定画面からページ一覧へ戻る(編集バッファは破棄。保存済みの共通設定はそのまま)。 */
+function backFromBookSettings() {
+  state.bookSettingsOpen = false;
+  state.generationDraft = null;
+  state.loraDraft = [];
+  state.referenceDraft = null;
   requestRender();
 }
 
@@ -267,7 +369,11 @@ registerActions({
   "add-page": () => addPage(),
   "delete-page": (id) => deletePage(id),
   "rename-page": (id) => renamePage(id),
-  "back-to-pages": () => backToPages()
+  "back-to-pages": () => backToPages(),
+  "open-book-settings": () => openBookSettings(),
+  "save-book-settings": () => saveBookSettings(),
+  "clear-book-settings": () => clearBookSettings(),
+  "back-from-book-settings": () => backFromBookSettings()
 });
 
 registerEventBinder(bindPageDragEvents);
