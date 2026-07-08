@@ -22,7 +22,7 @@
 .page-grid {
   margin-top: 4px;
   gap: 10px 14px;
-  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
 }
 
 .page-card {
