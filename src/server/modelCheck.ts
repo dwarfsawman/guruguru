@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { fetchComfyNodeInfo, getComfySettings } from "./comfy";
 import { extractModelRequirements, MODEL_TARGET_DIRS, type FeatureKey, type WorkflowModelRequirement } from "../shared/workflowModels";
-import { FEATURE_LABELS, FEATURE_MODEL_REQUIREMENTS, FEATURE_NODE_PACKS } from "./workflowFeatureFragments";
+import { FEATURE_LABELS, FEATURE_MODEL_REQUIREMENTS, FEATURE_NODE_PACKS, type FeatureNodePack } from "./workflowFeatureFragments";
 import type { ModelCheckEntry, ModelCheckFeatureStatus, ModelCheckResult } from "../shared/apiTypes";
 
 const REQUIRED_CORE_NODES = ["ComfySwitchNode", "PrimitiveBoolean"] as const;
@@ -109,7 +109,7 @@ async function runRawCheck(): Promise<RawCheck> {
 
 function isFeatureAvailable(raw: RawCheck, feature: FeatureKey): boolean {
   const nodePacksOk = FEATURE_NODE_PACKS[feature].every((pack) =>
-    isNodePresent(raw.objectInfoByClass.get(pack.representativeClass), pack.representativeClass)
+    isNodePackPresent(raw.objectInfoByClass.get(pack.representativeClass), pack)
   );
   const modelsOk = raw.requirements
     .filter((requirement) => requirement.feature === feature)
@@ -158,7 +158,7 @@ export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
   const features: ModelCheckFeatureStatus[] = TOGGLABLE_FEATURES.map((key) => {
     const available = raw.comfyOk ? isFeatureAvailable(raw, key) : null;
     const missingNodePacks = FEATURE_NODE_PACKS[key].filter(
-      (pack) => !isNodePresent(raw.objectInfoByClass.get(pack.representativeClass), pack.representativeClass)
+      (pack) => !isNodePackPresent(raw.objectInfoByClass.get(pack.representativeClass), pack)
     );
     return {
       key,
@@ -279,6 +279,48 @@ function isNodePresent(info: unknown, classType: string): boolean {
     return false;
   }
   return classType in (info as Record<string, unknown>);
+}
+
+/**
+ * ノードパックが「正しく」導入されているか。代表クラスの存在(`isNodePresent`)に加えて、
+ * `pack.requiredInputs` が指定されていれば、その入力名が全て `/object_info` の input スキーマ
+ * (required ∪ optional)に存在することも要求する。同名クラスを登録する別フォークの取り違え
+ * (例: PuLID の Chroma fork と簡易 Flux fork。後者は guruguru が送る `prior_image` を持たず、
+ * クラス名チェックだけだと通ってしまい実行時に落ちる)を、生成前の可用性判定で弾くための関数。
+ */
+export function isNodePackPresent(info: unknown, pack: FeatureNodePack): boolean {
+  if (!isNodePresent(info, pack.representativeClass)) {
+    return false;
+  }
+  if (!pack.requiredInputs || pack.requiredInputs.length === 0) {
+    return true;
+  }
+  const inputNames = nodeInputNames(info, pack.representativeClass);
+  return pack.requiredInputs.every((name) => inputNames.has(name));
+}
+
+/** `/object_info/{class}` の `input.required` と `input.optional` に現れる入力名の集合。 */
+function nodeInputNames(info: unknown, classType: string): Set<string> {
+  const names = new Set<string>();
+  if (!info || typeof info !== "object") {
+    return names;
+  }
+  const nodeInfo = (info as Record<string, unknown>)[classType];
+  if (!nodeInfo || typeof nodeInfo !== "object") {
+    return names;
+  }
+  const input = (nodeInfo as { input?: unknown }).input;
+  if (!input || typeof input !== "object") {
+    return names;
+  }
+  for (const section of [(input as { required?: unknown }).required, (input as { optional?: unknown }).optional]) {
+    if (section && typeof section === "object") {
+      for (const key of Object.keys(section as Record<string, unknown>)) {
+        names.add(key);
+      }
+    }
+  }
+  return names;
 }
 
 function errorMessage(error: unknown): string {

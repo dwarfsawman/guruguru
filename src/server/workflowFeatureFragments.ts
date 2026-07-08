@@ -30,6 +30,20 @@ export const FEATURE_MODEL_REQUIREMENTS: WorkflowModelRequirement[] = [
 export interface FeatureNodePack {
   label: string;
   representativeClass: string;
+  /**
+   * 代表クラス名の存在だけでなく、これらの入力名が `/object_info` の input スキーマ
+   * (required ∪ optional)に全て存在することも要求する。同じクラス名を登録する別フォークの
+   * 取り違えを生成前に弾くための判別キー。例: `ApplyPulidFlux` は Chroma 対応 fork
+   * (PaoloC68/ComfyUI-PuLID-Flux-Chroma)と簡易 Flux fork(lldacing/ComfyUI_PuLID_Flux_ll)が
+   * 同名クラスを登録するが、guruguru が送る `prior_image`/`fusion`/`train_step`/`use_gray`
+   * (assembleFeatureFragments の ApplyPulidFlux inputs)は Chroma fork にしか無い。簡易版が
+   * 入っている(またはクラス名衝突でロード順の後勝ちにより簡易版が優先された)場合、クラス名は
+   * 通っても実行時に `unexpected keyword argument 'prior_image'` で落ちる。`prior_image` の
+   * 有無で判別する。未指定なら従来どおりクラス名の存在のみで判定。
+   */
+  requiredInputs?: string[];
+  /** 未導入(または別フォーク取り違え)を検知したとき UI で案内するインストール手順 URL。 */
+  installUrl?: string;
 }
 
 /**
@@ -40,7 +54,14 @@ export interface FeatureNodePack {
 export const FEATURE_NODE_PACKS: Record<FeatureKey, FeatureNodePack[]> = {
   base: [],
   controlnet: [],
-  pulid: [{ label: "PuLID-Flux (Chroma対応fork, 例: PaoloC68/ComfyUI-PuLID-Flux-Chroma)", representativeClass: "ApplyPulidFlux" }]
+  pulid: [
+    {
+      label: "PuLID-Flux (Chroma対応fork, 例: PaoloC68/ComfyUI-PuLID-Flux-Chroma)",
+      representativeClass: "ApplyPulidFlux",
+      requiredInputs: ["prior_image"],
+      installUrl: "https://comfy.icu/extension/PaoloC68__ComfyUI-PuLID-Flux-Chroma"
+    }
+  ]
 };
 
 export const FEATURE_LABELS: Record<FeatureKey, string> = {

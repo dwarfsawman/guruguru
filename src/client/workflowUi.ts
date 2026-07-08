@@ -79,7 +79,11 @@ function renderFeatureCards(result: ModelCheckResult | null) {
   }
   return `
     <div class="model-feature-cards">
-      ${features.map((feature) => `
+      ${features.map((feature) => {
+        // 案内は「ComfyUI に接続できて、かつ実際に未導入と確認できた」パックのみ。未接続時は
+        // missingNodePacks が requiredNodePacks と同一(=未確認)になるため出さない。
+        const guidedPacks = (result?.comfy.ok ? feature.missingNodePacks : []).filter((pack) => pack.installUrl);
+        return `
         <div class="model-feature-card">
           <div class="model-feature-card-header">
             <strong>${escapeHtml(feature.label)}</strong>
@@ -93,9 +97,11 @@ function renderFeatureCards(result: ModelCheckResult | null) {
                 }).join("")}
               </ul>`
             : ""}
+          ${guidedPacks.map((pack) => renderNodePackInstallGuide(pack.label, pack.installUrl!)).join("")}
           ${renderModelInstallTable(result?.models.filter((model) => model.feature === feature.key) ?? null, true)}
         </div>
-      `).join("")}
+      `;
+      }).join("")}
     </div>
   `;
 }
@@ -112,6 +118,20 @@ function renderModelInstallComfyStatus(modelCheck: ModelCheckState) {
     return `<div class="model-install-comfy-status model-check-ok">ComfyUI 接続済み(${escapeHtml(comfy.baseUrl)})</div>`;
   }
   return `<div class="model-install-comfy-status model-check-missing">ComfyUI 未接続(${escapeHtml(comfy.baseUrl)})${comfy.error ? `: ${escapeHtml(comfy.error)}` : ""}</div>`;
+}
+
+/**
+ * ノードパックが未導入、または同名クラスを登録する別フォークの取り違え(クラス名は在るが
+ * 必須入力を欠く)と検知されたときに、Chroma 対応版の導入手順 URL を案内する。既存の警告ボックス
+ * スタイル(.workflow-diagram-warning)を再利用する。
+ */
+function renderNodePackInstallGuide(label: string, installUrl: string) {
+  return `
+    <div class="workflow-diagram-warning">
+      「${escapeHtml(label)}」が未導入、または同名クラスを登録する別フォークが読み込まれている可能性があります。
+      Chroma 対応版の導入手順: <a href="${escapeAttr(installUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(installUrl)}</a>
+    </div>
+  `;
 }
 
 function renderModelInstallNodeWarning(result: ModelCheckResult | null) {

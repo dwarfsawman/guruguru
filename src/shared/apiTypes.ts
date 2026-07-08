@@ -38,9 +38,12 @@ export interface ModelCheckFeatureStatus {
   label: string;
   available: boolean | null;
   /** そのfeatureが必要とする全ノードパック(順序は宣言順、0件=コアノードのみで完結)。 */
-  requiredNodePacks: Array<{ label: string; representativeClass: string }>;
-  /** `requiredNodePacks` のうち未導入のもの。ComfyUI未接続時は requiredNodePacks と同一。 */
-  missingNodePacks: Array<{ label: string; representativeClass: string }>;
+  requiredNodePacks: Array<{ label: string; representativeClass: string; installUrl?: string }>;
+  /**
+   * `requiredNodePacks` のうち未導入のもの。ComfyUI未接続時は requiredNodePacks と同一。
+   * 「クラス名は在るが必須入力を欠く(=同名の別フォーク取り違え)」もここに含まれる。
+   */
+  missingNodePacks: Array<{ label: string; representativeClass: string; installUrl?: string }>;
 }
 
 /** `GET /api/comfy/model-check` のレスポンス全体。 */

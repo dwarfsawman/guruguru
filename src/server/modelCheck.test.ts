@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { matchRequirements } from "./modelCheck.ts";
+import { isNodePackPresent, matchRequirements } from "./modelCheck.ts";
 import type { WorkflowModelRequirement } from "../shared/workflowModels.ts";
+import type { FeatureNodePack } from "./workflowFeatureFragments.ts";
 
 function requirement(overrides: Partial<WorkflowModelRequirement> = {}): WorkflowModelRequirement {
   return {
@@ -92,4 +93,45 @@ test("matchRequirements: two requirements sharing a loaderClass but different in
 
   assert.equal(result[0].available, true);
   assert.equal(result[1].available, false);
+});
+
+const PULID_PACK: FeatureNodePack = {
+  label: "PuLID-Flux (Chroma対応fork)",
+  representativeClass: "ApplyPulidFlux",
+  requiredInputs: ["prior_image"]
+};
+
+/** `/object_info/ApplyPulidFlux` の疑似レスポンス(required/optional に任意の入力名を並べる)。 */
+function applyPulidInfo(required: string[], optional: string[] = []): unknown {
+  const section = (names: string[]) => Object.fromEntries(names.map((name) => [name, [["IMAGE"]]]));
+  return { ApplyPulidFlux: { input: { required: section(required), optional: section(optional) } } };
+}
+
+test("isNodePackPresent: Chroma fork (prior_image あり) は導入済みと判定", () => {
+  const info = applyPulidInfo(["model", "pulid_flux", "image", "prior_image"]);
+  assert.equal(isNodePackPresent(info, PULID_PACK), true);
+});
+
+test("isNodePackPresent: 簡易 Flux fork (同名クラスだが prior_image なし) は未導入と判定", () => {
+  const info = applyPulidInfo(["model", "pulid_flux", "image"]);
+  assert.equal(isNodePackPresent(info, PULID_PACK), false);
+});
+
+test("isNodePackPresent: requiredInputs は optional セクションにあっても満たす", () => {
+  const info = applyPulidInfo(["model"], ["prior_image"]);
+  assert.equal(isNodePackPresent(info, PULID_PACK), true);
+});
+
+test("isNodePackPresent: クラス自体が存在しなければ未導入", () => {
+  assert.equal(isNodePackPresent({}, PULID_PACK), false);
+});
+
+test("isNodePackPresent: ComfyUI 未接続(info=null)は未導入扱い", () => {
+  assert.equal(isNodePackPresent(null, PULID_PACK), false);
+});
+
+test("isNodePackPresent: requiredInputs 未指定ならクラス名の存在のみで判定(従来動作)", () => {
+  const pack: FeatureNodePack = { label: "core", representativeClass: "ApplyPulidFlux" };
+  assert.equal(isNodePackPresent(applyPulidInfo(["model"]), pack), true);
+  assert.equal(isNodePackPresent({}, pack), false);
 });
