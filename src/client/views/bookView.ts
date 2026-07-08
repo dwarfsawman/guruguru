@@ -25,7 +25,8 @@ export function renderBookView(book: BookPages): string {
           </div>
         </div>
         <div class="image-grid page-grid">
-          ${pages.length ? pages.map((page, index) => renderPageCard(page, index)).join("") : renderEmptyPages()}
+          ${pages.map((page, index) => renderPageCard(page, index)).join("")}
+          ${renderAddPageCard()}
         </div>
       </section>
     </main>
@@ -42,7 +43,7 @@ function renderPageCard(page: PageSummary, index: number): string {
         <span class="page-card-thumb">
           ${page.representativeThumbnailUrl
             ? `<img class="page-thumb-img" src="${escapeAttr(page.representativeThumbnailUrl)}" alt="" loading="lazy" draggable="false" />`
-            : `<span class="page-thumb-empty">No image</span>`}
+            : ""}
         </span>
         <span class="page-card-index">${number}</span>
       </button>
@@ -54,6 +55,10 @@ function renderPageCard(page: PageSummary, index: number): string {
   `;
 }
 
-function renderEmptyPages(): string {
-  return `<div class="empty wide">ページがありません。「ページ追加」で最初のページを作成してください。</div>`;
+function renderAddPageCard(): string {
+  return `
+    <button class="page-add-card" type="button" data-action="add-page" aria-label="ページを追加">
+      <span class="page-add-icon">${iconPlus()}</span>
+    </button>
+  `;
 }
