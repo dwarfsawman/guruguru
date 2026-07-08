@@ -1,5 +1,5 @@
 import type { ComfySettings, LlmSettings } from "../shared/types";
-import type { ModelCheckResult, ProjectDetail, ProjectSummary } from "../shared/apiTypes";
+import type { BookPages, ModelCheckResult, ProjectDetail, ProjectSummary, RecentReferenceImage } from "../shared/apiTypes";
 import type { ConnectionState } from "./views/homeView";
 import type { MaskPanelTab } from "./views/assetModal";
 import type { WorkflowTemplate } from "./workflowTypes";
@@ -169,10 +169,16 @@ export interface AppState {
   templates: WorkflowTemplate[];
   detail: ProjectDetail | null;
   currentProjectId: string | null;
+  /** Book: 開いている book のプロジェクト+ページ一覧(page grid 表示用)。single/home では null。 */
+  book: BookPages | null;
+  /** Book: 開いているページ id。null=page grid 表示中(または single)。set=そのページの1枚生成 UI。 */
+  activePageId: string | null;
   activeRoundId: string | null;
   activeAssetId: string | null;
   filter: "all" | "selected" | "rejected" | "favorite" | "unmarked";
   gridCols: 2 | 3 | 4;
+  /** Home の新規作成フォームで選択中のモード(Single/Book セグメントトグル)。 */
+  createProjectMode: "single" | "book";
   sidebarOpen: boolean;
   sidebarCollapsed: boolean;
   comfyConnection: ConnectionState;
@@ -193,6 +199,12 @@ export interface AppState {
   generationDraftsByRound: Record<string, GenerationDraft>;
   inpaintDrafts: Record<string, InpaintDraft>;
   referenceDraft: ReferenceDraft | null;
+  /** Book: ページ別の顔スタイル参照画像ドラフト(page id → draft)。single では未使用。 */
+  referenceDraftsByPage: Record<string, ReferenceDraft>;
+  /** Book: ページ別のスタイル LoRA 選択(page id → list)。single では未使用。 */
+  loraDraftsByPage: Record<string, StyleLoraSelection[]>;
+  /** 「最近使った参照画像」ピッカーの候補(現在のプロジェクトのラウンドから収集)。 */
+  recentReferenceImages: RecentReferenceImage[];
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
   iterationScrollReset: boolean;
   maskEditMode: boolean;
@@ -231,10 +243,13 @@ export const state: AppState = {
   templates: [],
   detail: null,
   currentProjectId: null,
+  book: null,
+  activePageId: null,
   activeRoundId: null,
   activeAssetId: null,
   filter: "all",
   gridCols: 4,
+  createProjectMode: "single",
   sidebarOpen: false,
   sidebarCollapsed: loadSidebarCollapsedPreference(),
   comfyConnection: "unknown",
@@ -259,6 +274,9 @@ export const state: AppState = {
   generationDraftsByRound: {},
   inpaintDrafts: {},
   referenceDraft: null,
+  referenceDraftsByPage: {},
+  loraDraftsByPage: {},
+  recentReferenceImages: [],
   iterationScrollReset: false,
   maskEditMode: false,
   maskToolbarMinimized: false,

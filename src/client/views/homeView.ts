@@ -26,9 +26,11 @@ export function renderHome(
   templates: WorkflowTemplate[],
   llmSettings: LlmSettings | null = null,
   comfyStatus: ConnectionSummary = unknownConnectionSummary,
-  llmStatus: ConnectionSummary = unknownConnectionSummary
+  llmStatus: ConnectionSummary = unknownConnectionSummary,
+  createMode: "single" | "book" = "single"
 ) {
   const totalAssets = projects.reduce((sum, project) => sum + (project.assetCount ?? 0), 0);
+  const isBook = createMode === "book";
   return `
     <main class="home-layout">
       <section class="panel">
@@ -40,6 +42,13 @@ export function renderHome(
           <span class="panel-count"><b>${projects.length}</b> projects · <b>${totalAssets}</b> assets</span>
         </div>
         <form id="project-form" class="form-stack">
+          <div class="form-span create-mode-row">
+            <span class="create-mode-label">モード</span>
+            <div class="segment-group create-mode-group">
+              <button class="${isBook ? "button-secondary" : "button-primary"} compact" type="button" data-action="set-create-mode" data-mode="single" aria-pressed="${!isBook}">Single（1枚生成）</button>
+              <button class="${isBook ? "button-primary" : "button-secondary"} compact" type="button" data-action="set-create-mode" data-mode="book" aria-pressed="${isBook}">Book（複数ページ）</button>
+            </div>
+          </div>
           <label>Project名<input name="name" placeholder="未入力の場合は自動採番されます" /></label>
           <label>デフォルトWorkflowTemplate
             <select name="defaultTemplateId">
@@ -49,7 +58,7 @@ export function renderHome(
           </label>
           <label class="form-span">説明<textarea name="description" rows="2"></textarea></label>
           <div class="form-submit-row">
-            <button class="button-primary" type="button" data-action="create-project">${iconPlus()}新規Project作成</button>
+            <button class="button-primary" type="button" data-action="create-project">${iconPlus()}${isBook ? "Bookプロジェクトを作成" : "新規Project作成"}</button>
           </div>
         </form>
         <div class="project-list">
@@ -71,9 +80,9 @@ export function renderProjectCard(project: ProjectSummary) {
         ${project.representativeThumbnailUrl ? `<img src="${project.representativeThumbnailUrl}" alt="" />` : `<span>No image</span>`}
       </button>
       <div class="project-copy">
-        <h2>${escapeHtml(project.name)}</h2>
+        <h2>${escapeHtml(project.name)}${project.mode === "book" ? ` <span class="tag project-mode-tag">BOOK</span>` : ""}</h2>
         <p class="${project.description ? "" : "desc-empty"}">${escapeHtml(project.description || "説明なし")}</p>
-        <div class="meta-line">Rounds <b>${project.roundCount ?? 0}</b> · Assets <b>${project.assetCount ?? 0}</b> · Updated <b>${formatDate(project.updatedAt)}</b></div>
+        <div class="meta-line">${project.mode === "book" ? `Pages <b>${project.pageCount ?? 0}</b>` : `Rounds <b>${project.roundCount ?? 0}</b>`} · Assets <b>${project.assetCount ?? 0}</b> · Updated <b>${formatDate(project.updatedAt)}</b></div>
       </div>
       <div class="project-actions">
         <button class="button-secondary" type="button" data-action="open-project" data-id="${project.id}">開く</button>

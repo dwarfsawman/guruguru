@@ -10,6 +10,15 @@ import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
 import { createTemplate, deleteTemplate, listTemplates } from "./templates";
 import { serveAssetFile, updateAssetStatus } from "./assets";
 import { createProject, deleteProject, getProjectDetail, listProjects } from "./projects";
+import {
+  createPage,
+  deletePage,
+  getPageDetail,
+  listPagesWithProject,
+  listRecentReferenceImages,
+  reorderPages,
+  updatePage
+} from "./pages";
 import { createSourceAsset } from "./sourceAssets";
 import { createPasteSource, getPasteAttachments, purgeOrphanPasteSources, putPasteAttachments, servePasteSource } from "./pasteAttachments";
 import {
@@ -225,9 +234,48 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
+  // --- Book のページ操作。/pages/reorder は /pages/:pageId より前に判定する。 ---
+  const pagesCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/pages$/);
+  if (method === "GET" && pagesCollectionMatch) {
+    sendJson(res, 200, listPagesWithProject(pagesCollectionMatch[1]!));
+    return;
+  }
+  if (method === "POST" && pagesCollectionMatch) {
+    sendJson(res, 201, { page: createPage(pagesCollectionMatch[1]!) });
+    return;
+  }
+
+  const pagesReorderMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/reorder$/);
+  if (method === "POST" && pagesReorderMatch) {
+    sendJson(res, 200, reorderPages(pagesReorderMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const referenceImagesMatch = path.match(/^\/api\/projects\/([^/]+)\/reference-images$/);
+  if (method === "GET" && referenceImagesMatch) {
+    const limit = Number(url.searchParams.get("limit")) || 12;
+    sendJson(res, 200, { images: listRecentReferenceImages(referenceImagesMatch[1]!, limit) });
+    return;
+  }
+
+  const pageDetailMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)$/);
+  if (method === "GET" && pageDetailMatch) {
+    sendJson(res, 200, getPageDetail(pageDetailMatch[1]!, pageDetailMatch[2]!, { ensureRoundMonitor }));
+    return;
+  }
+  if (method === "PATCH" && pageDetailMatch) {
+    sendJson(res, 200, { page: updatePage(pageDetailMatch[1]!, pageDetailMatch[2]!, await readJson(req)) });
+    return;
+  }
+  if (method === "DELETE" && pageDetailMatch) {
+    sendJson(res, 200, deletePage(pageDetailMatch[1]!, pageDetailMatch[2]!));
+    return;
+  }
+
   const generateMatch = path.match(/^\/api\/projects\/([^/]+)\/rounds$/);
   if (method === "POST" && generateMatch) {
-    sendJson(res, 201, await createGenerationRound(generateMatch[1]!, await readJson<GenerationRequest>(req)));
+    const roundBody = await readJson<GenerationRequest & { pageId?: string | null }>(req);
+    sendJson(res, 201, await createGenerationRound(generateMatch[1]!, roundBody, roundBody.pageId ?? null));
     return;
   }
 

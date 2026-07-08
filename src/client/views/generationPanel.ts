@@ -8,7 +8,7 @@ import {
   normalizeDenoiseForMode,
   requiresFullDenoise
 } from "../../shared/generationMode";
-import type { Asset, ProjectDetail, Round } from "../../shared/apiTypes";
+import type { Asset, ProjectDetail, RecentReferenceImage, Round } from "../../shared/apiTypes";
 import type { StyleLoraSelection } from "../../shared/types";
 import { escapeAttr, escapeHtml, formatNumber } from "../format";
 import {
@@ -103,7 +103,8 @@ export function renderGenerationPanel(
   referenceDraft: ReferenceDraft | null = null,
   referenceAvailability: { pulid: boolean } = { pulid: false },
   loraDraft: StyleLoraSelection[] = [],
-  loraChoices: { status: "idle" | "loading" | "ready" | "error"; names: string[] } = { status: "idle", names: [] }
+  loraChoices: { status: "idle" | "loading" | "ready" | "error"; names: string[] } = { status: "idle", names: [] },
+  recentReferenceImages: RecentReferenceImage[] = []
 ) {
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
@@ -172,7 +173,7 @@ export function renderGenerationPanel(
         ${renderSourceUploadButton("source asset をアップロード")}
       </section>
 
-      ${renderReferenceImageSection(referenceDraft, referenceAvailability)}
+      ${renderReferenceImageSection(referenceDraft, referenceAvailability, recentReferenceImages)}
 
       ${renderStyleLoraSection(loraDraft, loraChoices)}
 
@@ -263,12 +264,29 @@ export function renderGenerationPanel(
  */
 function renderReferenceImageSection(
   draft: ReferenceDraft | null,
-  availability: { pulid: boolean }
+  availability: { pulid: boolean },
+  recentReferenceImages: RecentReferenceImage[] = []
 ) {
   const imageDataUrl = draft?.imageDataUrl ?? null;
   const unavailableHint = availability.pulid
     ? ""
     : `<p class="section-hint">PuLID が未導入のため顔参照は適用されません(モデル選択→Chroma で確認してください)。</p>`;
+  // 「最近使った画像」ピッカー: 過去の生成で使った参照画像を1クリックで再利用できる
+  // (Book のページ間で同じキャラ顔を使い回す用途)。
+  const recentPicker = recentReferenceImages.length
+    ? `
+      <div class="reference-recent">
+        <p class="reference-recent-label">最近使った画像</p>
+        <div class="reference-recent-strip">
+          ${recentReferenceImages
+            .map(
+              (image) =>
+                `<button class="reference-recent-item" type="button" data-action="use-recent-reference" data-url="${escapeAttr(image.url)}" aria-label="この参照画像を使う" title="この参照画像を使う"><img src="${escapeAttr(image.url)}" alt="" loading="lazy" draggable="false" /></button>`
+            )
+            .join("")}
+        </div>
+      </div>`
+    : "";
   return `
     <section class="sidebar-section reference-image-section">
       <p class="section-kicker">顔スタイル参照画像（PuLID）</p>
@@ -283,6 +301,7 @@ function renderReferenceImageSection(
             ${iconImage()}顔参照画像をアップロード
             <input data-reference-upload="1" type="file" accept="image/png,image/jpeg,image/webp" />
           </label>`}
+      ${recentPicker}
       ${unavailableHint}
     </section>
   `;

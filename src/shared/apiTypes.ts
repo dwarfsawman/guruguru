@@ -61,10 +61,14 @@ export interface LlmStatus {
   error?: string;
 }
 
+/** プロジェクトの種別。'single'=従来の1枚生成、'book'=複数ページ(Book モード)。 */
+export type ProjectMode = "single" | "book";
+
 export interface ProjectRow {
   id: string;
   name: string;
   description: string;
+  mode: ProjectMode;
   updatedAt: string;
   defaultTemplateId?: string | null;
   representativeThumbnailUrl?: string;
@@ -74,11 +78,44 @@ export interface ProjectRow {
  * `listProjects()` の一覧行。`ProjectRow` に加えて round_count / asset_count
  * サブクエリで実際に付与される集計フィールドを持つ。`createProject()` /
  * `getProjectDetail()` が返す行にはこれらのフィールドは存在しない
- * (`ProjectRow` を使うこと)。
+ * (`ProjectRow` を使うこと)。`pageCount` は book のみ意味を持つ。
  */
 export interface ProjectSummary extends ProjectRow {
   roundCount: number;
   assetCount: number;
+  pageCount?: number;
+}
+
+/** Book のページ1件。`page_index` の昇順が読書順。 */
+export interface PageRow {
+  id: string;
+  projectId: string;
+  pageIndex: number;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * ページ一覧行。`PageRow` に代表サムネ(そのページの selected/favorite → 無ければ最新 generated)と
+ * アセット枚数を付与する。グリッド表示用。
+ */
+export interface PageSummary extends PageRow {
+  representativeThumbnailUrl?: string;
+  assetCount: number;
+}
+
+/** `GET /api/projects/:id/pages` のレスポンス。 */
+export interface BookPages {
+  project: ProjectRow;
+  pages: PageSummary[];
+}
+
+/** 「最近使った参照画像」1件(顔スタイル参照ピッカー用)。 */
+export interface RecentReferenceImage {
+  roundId: string;
+  url: string;
+  createdAt: string;
 }
 
 export interface Round {
@@ -163,6 +200,15 @@ export interface ProjectDetail {
    * OFF でもオブジェクトのデータ自体は保持される)。添付が 1 件以上あるアセットのみキーを持つ。
    */
   pasteAttachments: Record<string, { objects: PastedObject[]; enabled: boolean }>;
+}
+
+/**
+ * `GET /api/projects/:id/pages/:pageId` のレスポンス。`ProjectDetail` を当該ページの
+ * rounds/assets に絞ったもの + ページのメタ情報 `page`。クライアントは `ProjectDetail` 部分を
+ * そのまま `state.detail` に載せて既存の1枚生成 UI を再利用する。
+ */
+export interface PageDetail extends ProjectDetail {
+  page: PageRow;
 }
 
 export interface CollectRoundResponse {

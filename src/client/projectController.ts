@@ -13,6 +13,8 @@ import { refreshProject, resetRoundDeletionHistory, resumeAutoCollectForActiveRo
 import { refreshComfyStatus, refreshLlmStatus } from "./settingsController";
 import { refreshModelCheck } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
+import { refreshRecentReferenceImages } from "./referenceController";
+import { clearBookSession, openBook } from "./bookController";
 
 export async function loadHome() {
   state.currentProjectId = null;
@@ -21,6 +23,7 @@ export async function loadHome() {
   state.activeAssetId = null;
   state.sidebarOpen = false;
   resetProjectDrafts();
+  clearBookSession();
   clearPasteCaches();
   state.maskEditMode = false;
   state.paintEditMode = false;
@@ -40,6 +43,9 @@ export async function loadHome() {
 
 async function openProject(projectId: string) {
   state.currentProjectId = projectId;
+  // single プロジェクトは book 状態を持たない(book から戻ってきた場合の取り残しを防ぐ)。
+  state.book = null;
+  state.activePageId = null;
   state.detail = await api<ProjectDetail>(`/api/projects/${projectId}`);
   state.templates = state.detail.templates;
   state.activeRoundId = state.detail.rounds[0]?.id ?? null;
@@ -60,6 +66,7 @@ async function openProject(projectId: string) {
   // モーダルを開かなくても機能可用性を先取りしておく(Docs/Feature-ConsistentCharacter.md)。
   void refreshModelCheck("chroma");
   void refreshLoraChoices();
+  void refreshRecentReferenceImages();
 }
 
 export function closeWorkflowModals() {
@@ -111,7 +118,8 @@ export async function uploadSourceAsset(input: HTMLInputElement) {
     scheduler: draft.scheduler || "normal",
     denoise,
     width: Number(draft.width || 1024),
-    height: Number(draft.height || 1024)
+    height: Number(draft.height || 1024),
+    pageId: state.activePageId
   };
 
   state.busy = true;
@@ -166,19 +174,38 @@ function nextDefaultProjectName(existingNames: string[]) {
 async function createProject() {
   const form = readForm("project-form");
   const name = form.name.trim() || nextDefaultProjectName(state.projects.map((project) => project.name));
+  const mode = state.createProjectMode;
   const result = await api<{ project: ProjectRow }>("/api/projects", {
     method: "POST",
     body: JSON.stringify({
       name,
       description: form.description,
-      defaultTemplateId: form.defaultTemplateId || null
+      defaultTemplateId: form.defaultTemplateId || null,
+      mode
     })
   });
   // NOTE: POST /api/projects は round_count / asset_count を含まない ProjectRow を
   // 返す (新規Projectは常に0件のため)。一覧表示用に roundCount / assetCount を
-  // 0 で補って ProjectSummary 形にする。
-  state.projects = [{ ...result.project, roundCount: 0, assetCount: 0 }, ...state.projects];
-  await openProject(result.project.id);
+  // 0 で補って ProjectSummary 形にする。book は作成時に初期ページ1枚を持つ。
+  state.projects = [
+    { ...result.project, roundCount: 0, assetCount: 0, pageCount: result.project.mode === "book" ? 1 : 0 },
+    ...state.projects
+  ];
+  if (result.project.mode === "book") {
+    await openBook(result.project.id);
+  } else {
+    await openProject(result.project.id);
+  }
+}
+
+/** 一覧カードの「開く」。Book はページグリッドへ、single は従来の1枚生成 UI へ。 */
+async function openProjectByMode(projectId: string) {
+  const summary = state.projects.find((project) => project.id === projectId);
+  if (summary?.mode === "book") {
+    await openBook(projectId);
+    return;
+  }
+  await openProject(projectId);
 }
 
 async function deleteProject(projectId: string) {
@@ -221,6 +248,10 @@ async function deleteProject(projectId: string) {
 registerActions({
   "home": () => loadHome(),
   "create-project": () => createProject(),
-  "open-project": (id) => openProject(id),
-  "delete-project": (id) => deleteProject(id)
+  "open-project": (id) => openProjectByMode(id),
+  "delete-project": (id) => deleteProject(id),
+  "set-create-mode": (_id, target) => {
+    state.createProjectMode = target.dataset.mode === "book" ? "book" : "single";
+    requestRender();
+  }
 });

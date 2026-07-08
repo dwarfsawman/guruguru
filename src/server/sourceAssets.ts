@@ -22,6 +22,13 @@ export async function createSourceAsset(projectId: string, body: unknown) {
     throw new HttpError(400, "WorkflowTemplate was not found. Select a template before uploading a source image.");
   }
 
+  // Book のページに属するアップロードなら page_id を検証して保存する(single は null)。
+  const rawPageId = input.pageId ?? input.page_id;
+  const resolvedPageId = typeof rawPageId === "string" && rawPageId.trim() ? rawPageId : null;
+  if (resolvedPageId && !getRow("SELECT id FROM pages WHERE id = ? AND project_id = ?", [resolvedPageId, projectId])) {
+    throw new HttpError(400, "Page was not found in this Project");
+  }
+
   const image = decodeImageDataUrl(input.dataUrl ?? input.data_url);
   const filename = normalizedUploadFileName(stringOr(input.filename, "source"), image.mimeType);
   const roundIndex = nextRoundIndex(projectId);
@@ -51,8 +58,8 @@ export async function createSourceAsset(projectId: string, body: unknown) {
   runSql(
     `INSERT INTO generation_rounds
       (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
-       branch_color_index, branch_reason, branch_key, request_json, completed_at)
-     VALUES (?, ?, ?, NULL, ?, 'completed', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+       branch_color_index, branch_reason, branch_key, page_id, request_json, completed_at)
+     VALUES (?, ?, ?, NULL, ?, 'completed', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
     [
       roundId,
       projectId,
@@ -62,6 +69,7 @@ export async function createSourceAsset(projectId: string, body: unknown) {
       branch.colorIndex,
       branch.reason,
       `asset:${assetId}`,
+      resolvedPageId,
       JSON.stringify(request)
     ]
   );

@@ -209,7 +209,18 @@ export function initializeDb() {
       FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS pages (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      page_index INTEGER NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_paste_sources_project ON paste_sources(project_id);
+    CREATE INDEX IF NOT EXISTS idx_pages_project ON pages(project_id, page_index);
     CREATE INDEX IF NOT EXISTS idx_rounds_project ON generation_rounds(project_id, round_index);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_generation_jobs_round_batch ON generation_jobs(round_id, batch_index);
     CREATE INDEX IF NOT EXISTS idx_generation_jobs_prompt ON generation_jobs(prompt_id);
@@ -222,7 +233,10 @@ export function initializeDb() {
   ensureColumn("generation_rounds", "branch_color_index", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("generation_rounds", "branch_reason", "TEXT");
   ensureColumn("generation_rounds", "branch_key", "TEXT");
+  ensureColumn("generation_rounds", "page_id", "TEXT");
   ensureColumn("asset_paste_attachments", "enabled", "INTEGER NOT NULL DEFAULT 1");
+  // Book モード: 'single'（既定・従来の1枚生成）/ 'book'（複数ページ）。
+  ensureColumn("projects", "mode", "TEXT NOT NULL DEFAULT 'single'");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {

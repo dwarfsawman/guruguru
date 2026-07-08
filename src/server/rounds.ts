@@ -132,10 +132,20 @@ function getRoundForApi(roundId: string): Round | null {
   ) as unknown as Round | null;
 }
 
-export async function createGenerationRound(projectId: string, requestBody: GenerationRequest) {
+export async function createGenerationRound(
+  projectId: string,
+  requestBody: GenerationRequest,
+  pageId?: string | null
+) {
   const project = getRow<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!project) {
     throw new HttpError(404, "Project was not found");
+  }
+
+  // Book のページに属する生成なら page_id を検証して保存する(single は null)。
+  const resolvedPageId = typeof pageId === "string" && pageId.trim() ? pageId : null;
+  if (resolvedPageId && !getRow("SELECT id FROM pages WHERE id = ? AND project_id = ?", [resolvedPageId, projectId])) {
+    throw new HttpError(400, "Page was not found in this Project");
   }
 
   const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [requestBody.templateId]);
@@ -170,8 +180,8 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
   runSql(
     `INSERT INTO generation_rounds
       (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
-       branch_color_index, branch_reason, branch_key, request_json)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+       branch_color_index, branch_reason, branch_key, page_id, request_json)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
     [
       roundId,
       projectId,
@@ -182,6 +192,7 @@ export async function createGenerationRound(projectId: string, requestBody: Gene
       branch.colorIndex,
       branch.reason,
       branch.key,
+      resolvedPageId,
       JSON.stringify(request)
     ]
   );

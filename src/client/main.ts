@@ -11,6 +11,7 @@ import { escapeAttr, escapeHtml, formatNumber, formatSliderValue } from "./forma
 import { morph } from "./domMorph";
 import { renderModelInstallModal } from "./workflowUi";
 import { renderHome, type ConnectionState, type ConnectionSummary } from "./views/homeView";
+import { renderBookView } from "./views/bookView";
 import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
@@ -80,6 +81,7 @@ import { setFormValue } from "./formUtils";
 import "./edgePopoutController";
 import "./imageLightboxController";
 import "./modelCheckController";
+import "./bookController";
 import {
   deselectPasteObjectIfAny,
   handlePasteKeydown,
@@ -561,14 +563,19 @@ function render(_options: RenderOptions = {}) {
   const regions = [
     renderHeader(),
     renderToastStack(),
-    state.detail ? renderProjectDetailView(state.detail) : renderHome(
-      state.projects,
-      state.settings,
-      state.templates,
-      state.llmSettings,
-      { state: state.comfyConnection, text: state.comfyStatusText } satisfies ConnectionSummary,
-      { state: state.llmConnection, text: state.llmStatusText } satisfies ConnectionSummary
-    ),
+    state.detail
+      ? renderProjectDetailView(state.detail)
+      : state.book
+        ? renderBookView(state.book)
+        : renderHome(
+            state.projects,
+            state.settings,
+            state.templates,
+            state.llmSettings,
+            { state: state.comfyConnection, text: state.comfyStatusText } satisfies ConnectionSummary,
+            { state: state.llmConnection, text: state.llmStatusText } satisfies ConnectionSummary,
+            state.createProjectMode
+          ),
     renderAssetModalView(),
     renderShortcutsHelpModal(state.showShortcutsHelp),
     renderModelInstallModal(state.modelInstallFamily, state.modelCheck)
@@ -705,6 +712,8 @@ function renderProjectDetailView(detail: ProjectDetail) {
   const selectedAssets = getActiveRoundAssets().filter((asset) => asset.status === "selected").slice(0, 1);
   const activeAsset = state.activeAssetId ? findAsset(state.activeAssetId) : null;
   const roundActive = isRoundActive(activeRound);
+  // Book のページを開いている時だけ、ラウンドツールバーに「← ページ一覧」パンくずを出す。
+  const bookPage = getActiveBookPageContext();
 
   return renderProjectDetail(
     detail,
@@ -724,8 +733,18 @@ function renderProjectDetailView(detail: ProjectDetail) {
     (assetId: string) => pasteEnabledForGridAsset(assetId),
     state.copiedSeedAssetId,
     state.sidebarCollapsed,
-    state.roundProgress
+    state.roundProgress,
+    bookPage
   );
+}
+
+function getActiveBookPageContext(): { title: string; number: number } | null {
+  if (!state.activePageId || !state.book) {
+    return null;
+  }
+  const index = state.book.pages.findIndex((page) => page.id === state.activePageId);
+  const page = index >= 0 ? state.book.pages[index] : null;
+  return page ? { title: page.title, number: index + 1 } : null;
 }
 
 function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | null) {
@@ -746,7 +765,8 @@ function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | n
     state.referenceDraft,
     referenceFeatureAvailability(),
     state.loraDraft,
-    state.loraChoices
+    state.loraChoices,
+    state.recentReferenceImages
   );
 }
 

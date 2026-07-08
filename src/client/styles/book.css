@@ -1,0 +1,245 @@
+/* Book（複数ページ）モードのページグリッド・作成トグル・パンくず・最近画像ピッカー。
+   既存トークン/クラス（.panel / .image-grid / .segment-group / .tag / var(--...)）を流用し、
+   book 固有の最小限のスタイルだけをここに置く。色は全て var() を使う。 */
+
+.book-layout > .panel {
+  margin: 16px;
+}
+
+.book-subtitle {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.book-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* --- ページグリッド --- */
+.page-grid {
+  margin-top: 4px;
+}
+
+.page-card {
+  position: relative;
+  border-radius: 2px;
+  background: var(--panel-strong);
+  cursor: grab;
+}
+
+.page-card.page-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.page-card.page-drop-active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.page-card-open {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ink);
+  cursor: inherit;
+  overflow: hidden;
+  text-align: left;
+}
+
+.page-card-open:hover {
+  border-color: var(--accent-line);
+}
+
+.page-card-thumb {
+  position: relative;
+  display: block;
+  aspect-ratio: 3 / 4;
+  background: var(--input);
+  overflow: hidden;
+}
+
+.page-thumb-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.page-thumb-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.page-card-number {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 3px 6px;
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.page-card-caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+.page-card-title {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-card-title.untitled {
+  color: var(--faint);
+}
+
+.page-card-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+
+.page-card-actions {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.page-card:hover .page-card-actions,
+.page-card:focus-within .page-card-actions {
+  opacity: 1;
+}
+
+.page-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.page-card-icon:hover {
+  border-color: var(--accent-line);
+  background: var(--panel-soft);
+}
+
+.page-card-icon.danger:hover {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.page-card-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* --- Home の Single / Book 作成トグル --- */
+.create-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.create-mode-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.project-mode-tag {
+  vertical-align: middle;
+}
+
+/* --- 1枚生成 UI 上部の「← ページ一覧」パンくず --- */
+.book-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.book-page-label {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+/* --- 顔参照画像の「最近使った画像」ピッカー --- */
+.reference-recent {
+  margin-top: 8px;
+}
+
+.reference-recent-label {
+  margin-bottom: 4px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+}
+
+.reference-recent-strip {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.reference-recent-item {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--input);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.reference-recent-item:hover {
+  border-color: var(--accent);
+}
+
+.reference-recent-item img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}

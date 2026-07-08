@@ -17,6 +17,7 @@ export function listProjects(): ProjectSummary[] {
        p.*,
        (SELECT COUNT(*) FROM generation_rounds r WHERE r.project_id = p.id) AS round_count,
        (SELECT COUNT(*) FROM assets a WHERE a.project_id = p.id) AS asset_count,
+       (SELECT COUNT(*) FROM pages pg WHERE pg.project_id = p.id) AS page_count,
        (SELECT a.id FROM assets a WHERE a.project_id = p.id AND a.status IN ('selected', 'favorite') ORDER BY a.created_at DESC LIMIT 1) AS representative_asset_id
      FROM projects p
      ORDER BY p.updated_at DESC`
@@ -36,6 +37,7 @@ export function createProject(body: unknown): ProjectRow | null {
   const id = createId("project");
   const name = requiredString(input.name, "name");
   const description = stringOr(input.description, "");
+  const mode = input.mode === "book" ? "book" : "single";
   const defaultTemplateId = stringOrNull(input.defaultTemplateId ?? input.default_template_id);
   if (defaultTemplateId) {
     const template = getRow("SELECT id FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [defaultTemplateId]);
@@ -46,10 +48,18 @@ export function createProject(body: unknown): ProjectRow | null {
   const storage = ensureProjectStorage(id);
 
   runSql(
-    `INSERT INTO projects (id, name, description, default_template_id, storage_dir)
-     VALUES (?, ?, ?, ?, ?)`,
-    [id, name, description, defaultTemplateId, storage.projectRoot]
+    `INSERT INTO projects (id, name, description, mode, default_template_id, storage_dir)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, name, description, mode, defaultTemplateId, storage.projectRoot]
   );
+
+  // Book はページを1件以上持つ前提。作成直後から使えるよう初期ページ(#01)を1枚用意する。
+  if (mode === "book") {
+    runSql(
+      "INSERT INTO pages (id, project_id, page_index, title) VALUES (?, ?, 0, '')",
+      [createId("page"), id]
+    );
+  }
 
   return toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [id])) as unknown as ProjectRow | null;
 }
@@ -82,11 +92,28 @@ export async function deleteProject(projectId: string) {
   };
 }
 
-export function getProjectDetail(projectId: string, options: ProjectDetailOptions = {}): ProjectDetail {
+/**
+ * `pageId` を渡すとそのページの rounds/assets だけに絞り込む(Book モード)。渡さない(single)
+ * 場合は page_id が NULL のラウンド = 従来の1枚生成分だけを返す。round/asset id は全体一意なので
+ * クライアントの reconciliation はページ絞りでもそのまま機能する(監査済み)。
+ */
+export function getProjectDetail(
+  projectId: string,
+  options: ProjectDetailOptions = {},
+  pageId?: string | null
+): ProjectDetail {
   const project = toApiRow(getRow("SELECT * FROM projects WHERE id = ?", [projectId])) as unknown as ProjectRow | null;
   if (!project) {
     throw new HttpError(404, "Project was not found");
   }
+
+  // ページ絞り込み句。pageId 有り=そのページ、無し=page_id IS NULL(single 相当)。
+  const pageFilterAliased = pageId ? "r.page_id = ?" : "r.page_id IS NULL";
+  const roundParams = pageId ? [projectId, pageId] : [projectId];
+  // assets/parents/pasteAttachments は round 経由でページに絞る(assets に page_id 列は無い)。
+  const pageFilterBare = pageId ? "page_id = ?" : "page_id IS NULL";
+  const scopeParams = pageId ? [projectId, projectId, pageId] : [projectId, projectId];
+  const roundScopeSubquery = `round_id IN (SELECT id FROM generation_rounds WHERE project_id = ? AND ${pageFilterBare})`;
 
   const rounds = toApiRows(
     getRows(
@@ -95,14 +122,17 @@ export function getProjectDetail(projectId: string, options: ProjectDetailOption
         (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id AND a.status = 'selected') AS selected_count,
         (SELECT COUNT(*) FROM assets a WHERE a.round_id = r.id AND a.status = 'rejected') AS rejected_count
        FROM generation_rounds r
-       WHERE r.project_id = ?
+       WHERE r.project_id = ? AND ${pageFilterAliased}
        ORDER BY r.round_index DESC`,
-      [projectId]
+      roundParams
     )
   ) as unknown as Round[];
 
   const assets = toApiRows(
-    getRows("SELECT * FROM assets WHERE project_id = ? ORDER BY round_id ASC, batch_index ASC", [projectId])
+    getRows(
+      `SELECT * FROM assets WHERE project_id = ? AND ${roundScopeSubquery} ORDER BY round_id ASC, batch_index ASC`,
+      scopeParams
+    )
   ).map(decorateAsset);
 
   const parents = toApiRows(
@@ -110,9 +140,9 @@ export function getProjectDetail(projectId: string, options: ProjectDetailOption
       `SELECT ap.*
        FROM asset_parents ap
        JOIN assets child ON child.id = ap.child_asset_id
-       WHERE child.project_id = ?
+       WHERE child.project_id = ? AND child.${roundScopeSubquery}
        ORDER BY ap.created_at ASC`,
-      [projectId]
+      scopeParams
     )
   ) as unknown as AssetParent[];
 
@@ -128,8 +158,8 @@ export function getProjectDetail(projectId: string, options: ProjectDetailOption
     `SELECT apa.asset_id, apa.objects_json, apa.enabled
      FROM asset_paste_attachments apa
      JOIN assets a ON a.id = apa.asset_id
-     WHERE a.project_id = ?`,
-    [projectId]
+     WHERE a.project_id = ? AND a.${roundScopeSubquery}`,
+    scopeParams
   );
   for (const row of attachmentRows) {
     let parsed: unknown = [];

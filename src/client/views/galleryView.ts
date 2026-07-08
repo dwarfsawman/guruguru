@@ -55,7 +55,8 @@ export function renderProjectDetail(
   getPasteEnabled: (assetId: string) => boolean,
   copiedSeedAssetId: string | null,
   sidebarCollapsed = false,
-  roundProgress: RoundProgressMap = {}
+  roundProgress: RoundProgressMap = {},
+  bookPage: { title: string; number: number } | null = null
 ) {
   const mode = activeRound?.generationMode ?? "txt2img";
   // 進捗サフィックスは実際に生成中の Round のみ(stale なエントリが残っていても表示しない)。
@@ -74,6 +75,7 @@ export function renderProjectDetail(
       <main class="studio-main">
         <div class="round-toolbar">
           <div>
+            ${bookPage ? `<div class="book-breadcrumb"><button class="button-secondary compact book-back-button" type="button" data-action="back-to-pages">← ページ一覧</button><span class="book-page-label">Page ${String(bookPage.number).padStart(2, "0")}${bookPage.title.trim() ? ` · ${escapeHtml(bookPage.title.trim())}` : ""}</span></div>` : ""}
             <h1>イテレーション ${activeRound ? `#${activeRound.roundIndex}` : ""}<span class="tag">${iconDot()}${escapeHtml(generationModeLabel(mode))}</span></h1>
             <p>${activeRound ? `<b>${activeRound.assetCount ?? 0}</b>枚生成 · 親画像 <b>${selectedAssets.length ? "#".concat(String(selectedAssets[0]!.batchIndex + 1)) : "-"}</b> · ${escapeHtml(activeRound.status)}${escapeHtml(progressSuffix)}` : "新規Roundを生成してください。"}</p>
           </div>

@@ -30,6 +30,21 @@ export function persistProjectDraft(projectId: string) {
   }, PERSIST_DRAFT_DEBOUNCE_MS);
 }
 
+/**
+ * Book: アクティブページの参照画像/スタイル LoRA ドラフトを per-page マップへ書き戻す(書き込みスルー)。
+ * 参照/LoRA はフォームレベルの1枚(state.referenceDraft / state.loraDraft)を編集する作りなので、
+ * ページを離れる前・永続化の前にここで現ページのマップへ確定させる。activePageId が無い
+ * (single / page grid)場合は何もしない。
+ */
+export function commitActivePageDrafts() {
+  const pageId = state.activePageId;
+  if (!pageId) {
+    return;
+  }
+  state.referenceDraftsByPage[pageId] = state.referenceDraft ?? { imageDataUrl: null };
+  state.loraDraftsByPage[pageId] = state.loraDraft;
+}
+
 /** 保留中の draft 永続化を即時に書き込む(unload / プロジェクト離脱時)。 */
 export function flushProjectDraftPersist() {
   if (persistDraftTimer !== null) {
@@ -41,6 +56,7 @@ export function flushProjectDraftPersist() {
   if (!projectId) {
     return;
   }
+  commitActivePageDrafts();
   try {
     window.localStorage.setItem(
       draftStorageKey(projectId),
@@ -50,7 +66,9 @@ export function flushProjectDraftPersist() {
         inpaintDrafts: state.inpaintDrafts,
         poseDrafts: state.poseDrafts,
         referenceDraft: state.referenceDraft,
-        loraDraft: state.loraDraft
+        loraDraft: state.loraDraft,
+        referenceDraftsByPage: state.referenceDraftsByPage,
+        loraDraftsByPage: state.loraDraftsByPage
       })
     );
   } catch {
@@ -71,6 +89,8 @@ export function restoreProjectDraft(projectId: string): {
   poseDrafts: Record<string, PoseDraft>;
   referenceDraft: ReferenceDraft | null;
   loraDraft: StyleLoraSelection[];
+  referenceDraftsByPage: Record<string, ReferenceDraft>;
+  loraDraftsByPage: Record<string, StyleLoraSelection[]>;
 } | null {
   try {
     const raw = window.localStorage.getItem(draftStorageKey(projectId));
@@ -84,6 +104,8 @@ export function restoreProjectDraft(projectId: string): {
       poseDrafts?: Record<string, PoseDraft>;
       referenceDraft?: ReferenceDraft | null;
       loraDraft?: StyleLoraSelection[];
+      referenceDraftsByPage?: Record<string, ReferenceDraft>;
+      loraDraftsByPage?: Record<string, StyleLoraSelection[]>;
     };
     return {
       generationDraft: parsed.generationDraft ?? null,
@@ -91,7 +113,9 @@ export function restoreProjectDraft(projectId: string): {
       inpaintDrafts: parsed.inpaintDrafts ?? {},
       poseDrafts: parsed.poseDrafts ?? {},
       referenceDraft: parsed.referenceDraft ?? null,
-      loraDraft: parsed.loraDraft ?? []
+      loraDraft: parsed.loraDraft ?? [],
+      referenceDraftsByPage: parsed.referenceDraftsByPage ?? {},
+      loraDraftsByPage: parsed.loraDraftsByPage ?? {}
     };
   } catch {
     return null;
@@ -108,6 +132,8 @@ export function resetProjectDrafts() {
   state.poseDrafts = {};
   state.referenceDraft = null;
   state.loraDraft = [];
+  state.referenceDraftsByPage = {};
+  state.loraDraftsByPage = {};
 }
 
 /** Project を開く際、永続化済みの draft があれば復元し、なければリセットする。 */
@@ -122,6 +148,8 @@ export function restoreOrResetProjectDrafts(projectId: string) {
   state.poseDrafts = restored?.poseDrafts ?? {};
   state.referenceDraft = restored?.referenceDraft ?? null;
   state.loraDraft = restored?.loraDraft ?? [];
+  state.referenceDraftsByPage = restored?.referenceDraftsByPage ?? {};
+  state.loraDraftsByPage = restored?.loraDraftsByPage ?? {};
 }
 
 export function inpaintDraftForAsset(assetId: string | null | undefined) {

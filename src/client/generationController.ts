@@ -129,7 +129,7 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   requestRender();
   const response = await api<{ promptId: string; round: Round }>(`/api/projects/${state.currentProjectId}/rounds`, {
     method: "POST",
-    body: JSON.stringify(request)
+    body: JSON.stringify({ ...request, pageId: state.activePageId })
   });
   const roundId = response.round.id;
   const previousInpaint = parentAssetId ? inpaintDraftForAsset(parentAssetId) : null;
@@ -282,11 +282,15 @@ export async function pollCollectRound(roundId: string, projectId: string | null
     return;
   }
   pendingAutoCollectRoundIds.add(roundId);
+  // Book: poll 開始時のページを捕捉する。別ページへ移動したら refreshProject が別ページの
+  // detail を取ってきてしまうため、このループは自ページでない間は何もしない(既存の
+  // currentProjectId ガードと同型 -- 監査が指摘した必須ガード)。
+  const capturedPageId = state.activePageId;
 
   try {
     while (true) {
       await delay(autoCollectIntervalMs);
-      if (state.currentProjectId !== projectId) {
+      if (state.currentProjectId !== projectId || state.activePageId !== capturedPageId) {
         return;
       }
       if (recentlyDeletedRoundIds.has(roundId)) {
@@ -300,6 +304,13 @@ export async function pollCollectRound(roundId: string, projectId: string | null
         method: "POST",
         body: "{}"
       });
+
+      // collect の await 中にページ/プロジェクトを離れていたら、ここで refreshProject を呼ぶと
+      // 別スコープの detail で上書きしてしまう(グリッドが誤った詳細ビューに化ける)。ループ冒頭と
+      // 同じガードを await 後にも置く。
+      if (state.currentProjectId !== projectId || state.activePageId !== capturedPageId) {
+        return;
+      }
 
       const progressChanged = applyRoundProgress(roundId, result.progress ?? null);
 
@@ -370,7 +381,12 @@ export async function refreshProject(keepRoundId = state.activeRoundId, keepAsse
   if (!state.currentProjectId) {
     return;
   }
-  state.detail = await api<ProjectDetail>(`/api/projects/${state.currentProjectId}`);
+  // Book のページを開いている時は、そのページに絞った詳細を再取得する(round/asset id は全体一意なので
+  // 下の keepRoundId/keepAssetId reconciliation はそのまま機能する)。
+  const detailUrl = state.activePageId
+    ? `/api/projects/${state.currentProjectId}/pages/${state.activePageId}`
+    : `/api/projects/${state.currentProjectId}`;
+  state.detail = await api<ProjectDetail>(detailUrl);
   state.templates = state.detail.templates;
   state.activeRoundId = state.detail.rounds.some((round) => round.id === keepRoundId)
     ? keepRoundId
@@ -818,7 +834,8 @@ async function savePaintResultAsSourceAsset() {
       scheduler: draft?.scheduler || "normal",
       denoise,
       width: canvas.width,
-      height: canvas.height
+      height: canvas.height,
+      pageId: state.activePageId
     })
   });
 
