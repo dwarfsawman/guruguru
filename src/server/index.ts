@@ -15,7 +15,7 @@ import {
   deletePage,
   getPageDetail,
   listPagesWithProject,
-  listRecentReferenceImages,
+  listRecentImages,
   reorderPages,
   updatePage
 } from "./pages";
@@ -253,8 +253,8 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   const referenceImagesMatch = path.match(/^\/api\/projects\/([^/]+)\/reference-images$/);
   if (method === "GET" && referenceImagesMatch) {
-    const limit = Number(url.searchParams.get("limit")) || 12;
-    sendJson(res, 200, { images: listRecentReferenceImages(referenceImagesMatch[1]!, limit) });
+    const limit = Number(url.searchParams.get("limit")) || 24;
+    sendJson(res, 200, { images: await listRecentImages(referenceImagesMatch[1]!, limit) });
     return;
   }
 

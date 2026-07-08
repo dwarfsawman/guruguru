@@ -357,13 +357,48 @@
 
 .studio-sidebar {
   position: relative;
-  width: 324px;
-  min-width: 324px;
+  width: var(--studio-sidebar-width, 360px);
+  min-width: var(--studio-sidebar-width, 360px);
   height: calc(100vh - 44px);
-  overflow-y: auto;
+  /* スクロールは内側の .studio-sidebar-content に移し、サイドバー自身は非スクロールにする。
+     こうすると折りたたみトグルと右端リサイザをスクロールに追従させず固定できる。 */
+  overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--panel);
+}
+
+.studio-sidebar-content {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px 13px;
+}
+
+/* 右端のドラッグリサイザ。ドラッグ中は sidebarResizeController が --studio-sidebar-width を
+   親(.studio-sidebar)へ直接書き込む(render を通さない)。 */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 6;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer.resizing::after {
+  background: var(--accent-line);
 }
 
 .sidebar-collapse-toggle {
@@ -413,6 +448,10 @@
   }
 
   &.collapsed .studio-sidebar-content {
+    display: none;
+  }
+
+  &.collapsed .sidebar-resizer {
     display: none;
   }
 }

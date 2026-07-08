@@ -163,6 +163,37 @@ export function toggleSidebarCollapsed() {
   }
 }
 
+const SIDEBAR_WIDTH_STORAGE_KEY = "guruguru:sidebarWidth";
+/** 生成サイドバーのドラッグ変更幅の範囲と既定値(既定はスタイル LoRA 欄が見切れない幅)。 */
+export const SIDEBAR_MIN_WIDTH = 300;
+export const SIDEBAR_MAX_WIDTH = 640;
+export const SIDEBAR_DEFAULT_WIDTH = 360;
+
+export function clampSidebarWidth(px: number) {
+  if (!Number.isFinite(px)) {
+    return SIDEBAR_DEFAULT_WIDTH;
+  }
+  return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(px)));
+}
+
+function loadSidebarWidthPreference() {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    return raw === null ? SIDEBAR_DEFAULT_WIDTH : clampSidebarWidth(Number(raw));
+  } catch {
+    return SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
+export function setSidebarWidth(px: number) {
+  state.sidebarWidth = clampSidebarWidth(px);
+  try {
+    window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(state.sidebarWidth));
+  } catch {
+    // localStorage が使えない環境では次回起動時に既定値へ戻る。
+  }
+}
+
 export interface AppState {
   settings: ComfySettings | null;
   projects: ProjectSummary[];
@@ -181,6 +212,8 @@ export interface AppState {
   createProjectMode: "single" | "book";
   sidebarOpen: boolean;
   sidebarCollapsed: boolean;
+  /** 生成サイドバーのドラッグ変更後の幅(px)。localStorage に永続化。 */
+  sidebarWidth: number;
   comfyConnection: ConnectionState;
   comfyStatusText: string;
   llmSettings: LlmSettings | null;
@@ -203,6 +236,17 @@ export interface AppState {
   referenceDraftsByPage: Record<string, ReferenceDraft>;
   /** Book: ページ別のスタイル LoRA 選択(page id → list)。single では未使用。 */
   loraDraftsByPage: Record<string, StyleLoraSelection[]>;
+  /**
+   * Book: ページ別の引き継ぎ用生成設定スナップショット(page id → 生成パラメータ。顔参照/seed値は除く)。
+   * ページ離脱時に現ページ分を書き戻し、新規ページ追加時の初期値ソースにする。
+   */
+  pageSettingsByPage: Record<string, GenerationDraft>;
+  /** Book: 「Book共通設定」画面を開いているか(book grid の上に重ねて表示)。 */
+  bookSettingsOpen: boolean;
+  /** Book: 新規ページの既定にする Book 共通の生成設定。未設定(null)なら直前ページから引き継ぐ。 */
+  bookCommonSettings: GenerationDraft | null;
+  /** Book: Book 共通のスタイル LoRA(bookCommonSettings とセットで使う)。 */
+  bookCommonLora: StyleLoraSelection[] | null;
   /** 「最近使った参照画像」ピッカーの候補(現在のプロジェクトのラウンドから収集)。 */
   recentReferenceImages: RecentReferenceImage[];
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
@@ -252,6 +296,7 @@ export const state: AppState = {
   createProjectMode: "single",
   sidebarOpen: false,
   sidebarCollapsed: loadSidebarCollapsedPreference(),
+  sidebarWidth: loadSidebarWidthPreference(),
   comfyConnection: "unknown",
   comfyStatusText: "未確認",
   llmSettings: null,
@@ -276,6 +321,10 @@ export const state: AppState = {
   referenceDraft: null,
   referenceDraftsByPage: {},
   loraDraftsByPage: {},
+  pageSettingsByPage: {},
+  bookSettingsOpen: false,
+  bookCommonSettings: null,
+  bookCommonLora: null,
   recentReferenceImages: [],
   iterationScrollReset: false,
   maskEditMode: false,

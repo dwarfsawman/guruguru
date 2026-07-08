@@ -188,6 +188,11 @@
     left: 0;
   }
 
+  /* ドロワー表示時は幅ドラッグを無効化する。 */
+  .sidebar-resizer {
+    display: none;
+  }
+
   .sidebar-overlay {
     position: fixed;
     inset: 64px 0 0;

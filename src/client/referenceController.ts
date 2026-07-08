@@ -24,7 +24,7 @@ export async function refreshRecentReferenceImages() {
   }
   try {
     const result = await api<{ images: RecentReferenceImage[] }>(
-      `/api/projects/${state.currentProjectId}/reference-images?limit=12`
+      `/api/projects/${state.currentProjectId}/reference-images?limit=24`
     );
     state.recentReferenceImages = result.images;
   } catch {

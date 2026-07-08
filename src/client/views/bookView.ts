@@ -20,6 +20,7 @@ export function renderBookView(book: BookPages): string {
           </div>
           <div class="book-heading-actions">
             <span class="panel-count"><b>${pages.length}</b> pages</span>
+            <button class="button-secondary compact" type="button" data-action="open-book-settings" title="新規ページの既定設定(LoRA/プロンプト/生成パラメータ)を設定">${iconSettings()}Book共通設定</button>
             <button class="button-primary" type="button" data-action="add-page">${iconPlus()}ページ追加</button>
           </div>
         </div>
