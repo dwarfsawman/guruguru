@@ -103,7 +103,7 @@ async function copyFonts() {
   await mkdir(join(root, "dist", "public", "fonts"), { recursive: true });
   const entries = await readdir(sourceDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".woff2")) {
+    if (!entry.isFile() || !/\.(woff2|txt)$/i.test(entry.name)) {
       continue;
     }
     await copyFile(join(sourceDir, entry.name), join(root, "dist", "public", "fonts", entry.name));
