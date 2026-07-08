@@ -64,7 +64,7 @@
   aspect-ratio: 1 / 1;
   border: 1px solid var(--line-strong);
   border-radius: 2px;
-  background: var(--input);
+  background: transparent;
   padding: 14px;
   overflow: hidden;
 }
