@@ -55,12 +55,14 @@ export function renderModelInstallModal(family: "chroma" | null, modelCheck: Mod
           </div>
           <button class="icon-button" type="button" data-action="close-model-install" aria-label="閉じる" title="閉じる">${iconClose()}</button>
         </header>
-        ${renderModelInstallComfyStatus(modelCheck)}
-        ${renderModelInstallNodeWarning(result)}
-        <h3 class="model-install-section-title">ベース(常時必須)</h3>
-        ${renderModelInstallTable(result?.models.filter((model) => model.feature === "base") ?? null)}
-        <h3 class="model-install-section-title">任意機能(導入済みモデル/ノードパックに応じて自動 ON/OFF)</h3>
-        ${renderFeatureCards(result)}
+        <div class="model-install-body">
+          ${renderModelInstallComfyStatus(modelCheck)}
+          ${renderModelInstallNodeWarning(result)}
+          <h3 class="model-install-section-title">ベース(常時必須)</h3>
+          ${renderModelInstallTable(result?.models.filter((model) => model.feature === "base") ?? null)}
+          <h3 class="model-install-section-title">任意機能(導入済みモデル/ノードパックに応じて自動 ON/OFF)</h3>
+          ${renderFeatureCards(result)}
+        </div>
         <div class="workflow-import-modal-actions">
           <button class="button-secondary" type="button" data-action="recheck-models">再チェック</button>
           <button class="button-primary" type="button" data-action="close-model-install">${iconClose()}閉じる</button>

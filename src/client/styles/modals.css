@@ -187,6 +187,12 @@
 
 .model-install-dialog {
   width: min(720px, calc(100vw - 48px));
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.model-install-body {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .model-install-comfy-status {
@@ -196,6 +202,7 @@
   color: var(--muted);
   padding: 10px 12px;
   font-size: 12px;
+  margin-bottom: 10px;
 }
 
 .model-check-table {
