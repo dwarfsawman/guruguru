@@ -21,7 +21,7 @@
 /* --- ページグリッド --- */
 .page-grid {
   margin-top: 4px;
-  gap: 10px 14px;
+  gap: 32px 36px;
   grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
 }
 
@@ -61,10 +61,11 @@
 .page-card-thumb {
   position: relative;
   display: block;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 1 / 1;
   border: 1px solid var(--line-strong);
   border-radius: 2px;
   background: var(--input);
+  padding: 14px;
   overflow: hidden;
 }
 
