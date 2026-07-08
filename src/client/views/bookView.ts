@@ -24,7 +24,7 @@ export function renderBookView(book: BookPages): string {
             <button class="button-primary" type="button" data-action="add-page">${iconPlus()}ページ追加</button>
           </div>
         </div>
-        <div class="image-grid cols-4 page-grid">
+        <div class="image-grid page-grid">
           ${pages.length ? pages.map((page, index) => renderPageCard(page, index)).join("") : renderEmptyPages()}
         </div>
       </section>
@@ -33,22 +33,18 @@ export function renderBookView(book: BookPages): string {
 }
 
 function renderPageCard(page: PageSummary, index: number): string {
-  const number = String(index + 1).padStart(2, "0");
+  const number = index + 1;
   const title = page.title.trim();
-  const label = title || `ページ ${number}`;
+  const label = title || `ページ${number}`;
   return `
     <article class="page-card" data-key="page-${page.id}" data-page-id="${page.id}" draggable="true">
-      <button class="page-card-open" type="button" data-action="open-page" data-id="${page.id}" aria-label="${escapeAttr(label)}を開く">
+      <button class="page-card-open" type="button" data-action="open-page" data-id="${page.id}" aria-label="${escapeAttr(label)}を開く" title="${escapeAttr(label)}">
         <span class="page-card-thumb">
           ${page.representativeThumbnailUrl
             ? `<img class="page-thumb-img" src="${escapeAttr(page.representativeThumbnailUrl)}" alt="" loading="lazy" draggable="false" />`
             : `<span class="page-thumb-empty">No image</span>`}
-          <span class="page-card-number">#${number}</span>
         </span>
-        <span class="page-card-caption">
-          <span class="page-card-title ${title ? "" : "untitled"}">${escapeHtml(title || "無題")}</span>
-          <span class="page-card-count">${page.assetCount}枚</span>
-        </span>
+        <span class="page-card-index">${number}</span>
       </button>
       <div class="page-card-actions">
         <button class="page-card-icon" type="button" data-action="rename-page" data-id="${page.id}" aria-label="ページ名を変更" title="ページ名を変更">${iconSettings()}</button>
