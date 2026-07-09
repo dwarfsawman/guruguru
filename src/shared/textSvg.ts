@@ -15,8 +15,17 @@ function escapeAttr(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * 数値の SVG 属性向け文字列化。**有効数字8桁ベース**(絶対丸めではない)。
+ * `scale(${fmt(glyph.emScale)})` の emScale は `style.size / unitsPerEm` で、unitsPerEm=2048 の
+ * フォント(Yu Gothic 等の日本語 TTC に多い)だと size=0.03 のとき ≈1.4648e-5 -- これを小数第5位への
+ * 絶対丸めにすると 1e-5 に潰れてグリフが約32%縮み、unitsPerEm=1000 のフォントと実効サイズがずれる。
+ * translate 座標(page 単位)は絶対精度で足りるが scale 値は相対精度が要るため、全属性を
+ * `toPrecision(8)` で統一する。`toPrecision` の返す指数表記("1.4648438e-5" 等)も SVG transform
+ * では有効だが、表記を正規化するため `Number()` を一度通す。
+ */
 function fmt(value: number): string {
-  return Number.isFinite(value) ? String(Math.round(value * 100000) / 100000) : "0";
+  return Number.isFinite(value) ? Number(value.toPrecision(8)).toString() : "0";
 }
 
 /**
