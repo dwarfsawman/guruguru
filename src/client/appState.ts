@@ -1,6 +1,7 @@
 import type { ComfySettings, LlmSettings } from "../shared/types";
 import type {
   BookPages,
+  FontSummary,
   LayoutTemplateSummary,
   ModelCheckResult,
   PagePanelAssignment,
@@ -332,6 +333,11 @@ export interface AppState {
   pageObjectsDraft: PageObject[];
   /** ページオブジェクト編集: 選択中オブジェクト id。null=未選択。 */
   selectedPageObjectId: string | null;
+  /**
+   * テキストオブジェクト編集(Docs/Feature-CGCollectionSuite.md P2): `GET /api/fonts` の取得状態+結果。
+   * 初回オブジェクトモード表示時に取得しキャッシュする(`ensureFontsLoaded`)。
+   */
+  pageObjectFonts: { status: "idle" | "loading" | "ready" | "error"; fonts: FontSummary[] };
   /** コマ内生成: 生成フォームが対象にしているコマ。null なら通常の(コマ非対象)生成。 */
   activePanelTarget: PanelGenerationTarget | null;
   /** 独自確認ダイアログ。null=閉。 */
@@ -426,6 +432,7 @@ export const state: AppState = {
   pagePanelAssignments: [],
   pageObjectsDraft: [],
   selectedPageObjectId: null,
+  pageObjectFonts: { status: "idle", fonts: [] },
   activePanelTarget: null,
   confirmDialog: null,
   iterationScrollReset: false,

@@ -8,7 +8,8 @@ import type { Json } from "./json";
 import type { GenerationRequest } from "./types";
 import type { PastedObject } from "./pasteAttachments";
 import type { PageLayout, PanelCrop } from "./pageLayout";
-import type { PageObject } from "./pageObjects";
+import type { PageObject, TextContent } from "./pageObjects";
+import type { TextLayoutResult } from "./textLayout";
 import type { FeatureKey, ModelKind } from "./workflowModels";
 
 export interface ComfyStatus {
@@ -169,6 +170,38 @@ export interface LayoutTemplateSummary {
 /** `GET /api/layout-templates` のレスポンス(内蔵 + 取り込みをマージ)。 */
 export interface LayoutTemplatesResponse {
   templates: LayoutTemplateSummary[];
+}
+
+/**
+ * フォント一覧1件(Docs/Feature-CGCollectionSuite.md P2)。`id` はサーバがパス+TTC内インデックスから
+ * 安定生成する不透明な文字列(`TextStyle.fontId` にそのまま入る)。
+ */
+export interface FontSummary {
+  id: string;
+  familyName: string;
+  subfamilyName: string;
+  source: "system" | "user";
+}
+
+/** `GET /api/fonts` のレスポンス。 */
+export interface FontsResponse {
+  fonts: FontSummary[];
+}
+
+/** `POST /api/text-layout` のリクエストボディ。 */
+export interface TextLayoutRequest {
+  content: TextContent;
+  /** 折り返し幅(page 単位)。横書き=行の最大幅、縦書き=列の最大高さ。省略/0以下は折り返し無し。 */
+  maxWidth?: number;
+}
+
+/**
+ * `POST /api/text-layout` のレスポンス。`resolvedFontId` は `content.style.fontId` が解決できなかった時に
+ * フォールバック先の実際の fontId を返す(未解決のまま "default" 等を使い続けないよう、クライアントは
+ * これを次回以降の fontId として採用できる)。
+ */
+export interface TextLayoutResponse extends TextLayoutResult {
+  resolvedFontId: string;
 }
 
 /**

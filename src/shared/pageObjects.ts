@@ -96,9 +96,22 @@ export const DEFAULT_BOX_STROKE_COLOR = "#000000";
 export const DEFAULT_BOX_STROKE_WIDTH = 0.004;
 export const DEFAULT_BOX_SIZE: PageVec = { x: 0.3, y: 0.15 };
 
+/** テキストオブジェクトの既定スタイル(P2: 「テキスト追加」ボタン)。 */
+export const DEFAULT_TEXT_STYLE: TextStyle = {
+  fontId: "default",
+  size: 0.04,
+  direction: "vertical",
+  color: "#000000"
+};
+export const DEFAULT_TEXT_STRING = "テキスト";
+
 /** オブジェクトの幅・高さの取り得る範囲(page-width 単位)。ギズモの拡縮クランプにも使う。 */
 export const PAGE_OBJECT_MIN_SIZE = 0.01;
 export const PAGE_OBJECT_MAX_SIZE = 5;
+
+/** テキストサイズ(size)の取り得る範囲。text ギズモの拡縮クランプに使う(normalizeTextStyle の clamp と同じ範囲)。 */
+export const TEXT_SIZE_MIN = 0.005;
+export const TEXT_SIZE_MAX = 1;
 
 /** 1ページに保存できるオブジェクト数の上限(暴走 PATCH へのガード)。 */
 export const PAGE_OBJECTS_MAX_COUNT = 300;
@@ -153,7 +166,8 @@ function normalizeTextStyle(raw: unknown): TextStyle | null {
   return style;
 }
 
-function normalizeTextContent(raw: unknown): TextContent | null {
+/** テキストコンテンツの正規化(P2: text-layout API のリクエスト検証・box/balloon content 検証にも使う)。 */
+export function normalizeTextContent(raw: unknown): TextContent | null {
   if (!isJsonObject(raw) || typeof raw.text !== "string") {
     return null;
   }
@@ -336,6 +350,25 @@ export function createBoxObject(id: string, center: PageVec, size: PageVec = DEF
     strokeColor: DEFAULT_BOX_STROKE_COLOR,
     strokeWidth: DEFAULT_BOX_STROKE_WIDTH
   };
+}
+
+/** 新規テキストオブジェクトを作る(既定スタイル)。位置は呼び出し側(page 座標)が決める。 */
+export function createTextObject(id: string, center: PageVec, text: string = DEFAULT_TEXT_STRING): TextObject {
+  return {
+    id,
+    kind: "text",
+    position: { ...center },
+    rotation: 0,
+    content: { text, style: { ...DEFAULT_TEXT_STYLE } }
+  };
+}
+
+/** box/balloon 内包テキストの折り返し幅(page 単位)。パディング分だけ形状のサイズより小さくする。 */
+const CONTENT_PADDING_RATIO = 0.12;
+
+export function contentMaxWidth(size: PageVec, direction: TextDirection): number {
+  const extent = direction === "vertical" ? size.y : size.x;
+  return Math.max(PAGE_OBJECT_MIN_SIZE, extent * (1 - CONTENT_PADDING_RATIO));
 }
 
 /** メタデータの deep copy(undo スナップショット・複製で使う)。プレーンな JSON データのみなので JSON 往復で十分。 */

@@ -108,7 +108,8 @@ import {
   handlePageObjectsPointerMove,
   handlePageObjectsPointerUp,
   syncPageObjectsGizmo,
-  updatePageObjectFieldFromControl
+  updatePageObjectFieldFromControl,
+  updatePageObjectTextFromInput
 } from "./pageObjectsController";
 import { handleBookReaderKeydown } from "./bookReaderController";
 import {
@@ -308,7 +309,7 @@ function bindEvents() {
       setPaintColor(target.value);
       return;
     }
-    if (target instanceof HTMLInputElement && target.dataset.pageObjectField) {
+    if (target.dataset.pageObjectField || target.dataset.pageObjectContentField) {
       updatePageObjectFieldFromControl(target);
       return;
     }
@@ -329,6 +330,10 @@ function bindEvents() {
   app.addEventListener("input", (event) => {
     const target = event.target as HTMLInputElement | HTMLTextAreaElement;
     const valueId = target instanceof HTMLInputElement ? target.dataset.valueTarget : undefined;
+    if (target instanceof HTMLTextAreaElement && target.dataset.pageObjectText) {
+      updatePageObjectTextFromInput(target);
+      return;
+    }
     if (target.dataset.loraField && target instanceof HTMLInputElement) {
       updateStyleLoraFromControl(target);
     }
@@ -925,7 +930,14 @@ function renderPagePanelLightboxView(): string {
   if (!page) {
     return "";
   }
-  return renderPagePanelLightbox(page, lightbox, state.pagePanelAssignments, state.pageObjectsDraft, state.selectedPageObjectId);
+  return renderPagePanelLightbox(
+    page,
+    lightbox,
+    state.pagePanelAssignments,
+    state.pageObjectsDraft,
+    state.selectedPageObjectId,
+    state.pageObjectFonts.fonts
+  );
 }
 
 /** コマ内生成: 生成フォームが対象にしているコマの表示用ラベル({ページ番号, パネルの読み順}）。 */

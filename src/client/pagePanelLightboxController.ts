@@ -23,7 +23,13 @@ import { openPage, reloadBookPages } from "./bookController";
 import { restoreGenerationDraftForRound, setGenerationDraftValue } from "./generationDraft";
 import { roundToStep } from "./generationController";
 import { cropRotateHandlePoint } from "./views/pagePanelLightboxView";
-import { consumePageObjectsDirtyFlag, flushPageObjectsSave, resetPageObjectsSession } from "./pageObjectsController";
+import {
+  consumePageObjectsDirtyFlag,
+  ensureAllPageObjectTextLayouts,
+  ensureFontsLoaded,
+  flushPageObjectsSave,
+  resetPageObjectsSession
+} from "./pageObjectsController";
 
 /** レイアウト/代表アセットどちらからも解決できない時のページ高さフォールバック(A4 縦比に近い値。pageLayout.ts の resolveHeight と同じ値)。 */
 const FALLBACK_PAGE_HEIGHT = 1.4142;
@@ -69,6 +75,9 @@ export async function openPagePanelLightbox(pageId: string) {
   state.pageObjectsDraft = [];
   state.selectedPageObjectId = null;
   resetPageObjectsSession();
+  if (state.pagePanelLightbox.mode === "objects") {
+    ensureFontsLoaded();
+  }
   requestRender();
   try {
     const detail = await api<PageDetail>(`/api/projects/${state.currentProjectId}/pages/${pageId}`);
@@ -79,6 +88,7 @@ export async function openPagePanelLightbox(pageId: string) {
     state.pagePanelAssignments = detail.panelAssignments;
     state.pageObjectsDraft = detail.page.objects ?? [];
     state.pagePanelLightbox.pageHeight = resolveLightboxPageHeight(detail, page);
+    ensureAllPageObjectTextLayouts(state.pageObjectsDraft);
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
   } finally {
@@ -134,6 +144,10 @@ function setPagePanelMode(mode: string) {
     return;
   }
   lightbox.mode = mode;
+  if (mode === "objects") {
+    ensureFontsLoaded();
+    ensureAllPageObjectTextLayouts(state.pageObjectsDraft);
+  }
   requestRender();
 }
 

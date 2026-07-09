@@ -12,9 +12,11 @@ import {
   type PanelFrame,
   type PanelShape
 } from "../shared/pageLayout";
-import type { BoxObject, PageObject } from "../shared/pageObjects";
+import { contentMaxWidth, type BoxObject, type PageObject, type PageVec, type TextContent, type TextObject } from "../shared/pageObjects";
+import { renderTextSvg } from "../shared/textSvg";
 import { getRow, getRows, toApiRow } from "./db";
 import { HttpError } from "./http";
+import { computeTextLayoutForContent } from "./textLayoutApi";
 import { objectBody } from "./validate";
 
 const OPENRASTER_MIME = "image/openraster";
@@ -259,19 +261,85 @@ function resolveObjectsPageHeight(page: PageRow): number {
   return FALLBACK_OBJECTS_PAGE_HEIGHT;
 }
 
-/** box オブジェクトを SVG でラスタライズしたレイヤー。box が無ければ null(パネル枠と同じ「無ければ null」規約)。 */
+/**
+ * ページオブジェクトを SVG でラスタライズしたレイヤー。何も描く物が無ければ null
+ * (パネル枠と同じ「無ければ null」規約)。box は P1 から、text/box・balloon の content は P2 で追加。
+ * balloon 自体の形状描画(P3)はまだ無いので、balloon は content テキストのみ出す。
+ */
 async function renderObjectsLayer(
   objects: PageObject[] | null | undefined,
   pageHeight: number,
   canvas: ExportCanvas
 ): Promise<Buffer | null> {
-  const boxes = (objects ?? []).filter((object): object is BoxObject => object.kind === "box");
-  if (boxes.length === 0) {
+  const list = objects ?? [];
+  if (list.length === 0) {
     return null;
   }
-  const elements = boxes.map((box) => renderBoxObjectElement(box, pageHeight, canvas)).join("");
+  const elements = list.map((object) => renderPageObjectElement(object, pageHeight, canvas)).filter(Boolean).join("");
+  if (!elements) {
+    return null;
+  }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}" viewBox="0 0 ${canvas.width} ${canvas.height}">${elements}</svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+function renderPageObjectElement(object: PageObject, pageHeight: number, canvas: ExportCanvas): string {
+  if (object.kind === "box") {
+    return renderBoxObjectElement(object, pageHeight, canvas) + renderContentElement(object.content, object.position, object.rotation, object.size, pageHeight, canvas);
+  }
+  if (object.kind === "text") {
+    return renderTextObjectElement(object, pageHeight, canvas);
+  }
+  return renderContentElement(object.content, object.position, object.rotation, object.size, pageHeight, canvas);
+}
+
+function renderContentElement(
+  content: TextContent | null | undefined,
+  position: PageVec,
+  rotation: number,
+  size: PageVec,
+  pageHeight: number,
+  canvas: ExportCanvas
+): string {
+  if (!content) {
+    return "";
+  }
+  const maxWidth = contentMaxWidth(size, content.style.direction);
+  return renderTextBlockElement(content, position, rotation, maxWidth, pageHeight, canvas);
+}
+
+function renderTextObjectElement(object: TextObject, pageHeight: number, canvas: ExportCanvas): string {
+  return renderTextBlockElement(object.content, object.position, object.rotation, object.maxWidth, pageHeight, canvas);
+}
+
+/**
+ * テキストブロック1件(TextObject 本体、または box/balloon の内包テキスト)。`textLayout.ts`/`textSvg.ts`
+ * はクライアントのプレビュー(`pagePanelLightboxView.ts`)と全く同じ関数 -- ここではその出力を canvas
+ * ピクセル空間へ配置するだけ。box の回転(`renderBoxObjectElement`)と同じ規約に合わせ、位置は x/y
+ * 独立スケールで pixel へマップした上で、回転は「マップ後の pixel 空間での剛体回転」として掛ける
+ * (`transform="translate(pixelAnchor) rotate(deg) scale(scaleX scaleY)"` の適用順は
+ * scale→rotate→translate なので、回転はスケール後=pixel 空間で効く)。
+ */
+function renderTextBlockElement(
+  content: TextContent,
+  position: PageVec,
+  rotation: number,
+  maxWidth: number | undefined,
+  pageHeight: number,
+  canvas: ExportCanvas
+): string {
+  const layout = computeTextLayoutForContent(content, maxWidth);
+  if (layout.glyphs.length === 0) {
+    return "";
+  }
+  const [anchorX, anchorY] = mapPoint([position.x, position.y], pageHeight, canvas);
+  const deg = (rotation * 180) / Math.PI;
+  const scaleX = canvas.width;
+  const scaleY = canvas.height / pageHeight;
+  // renderTextSvg は「ブロック中心=原点」の page 単位で自己完結するので、anchor(0,0)/rotation(0)で
+  // 呼び、平行移動・回転・非等方スケールは外側の <g> でまとめて掛ける。
+  const glyphs = renderTextSvg(layout, { x: 0, y: 0 }, 0, content.style);
+  return `<g transform="translate(${fmt(anchorX)} ${fmt(anchorY)})${deg ? ` rotate(${fmt(deg)})` : ""} scale(${fmt(scaleX)} ${fmt(scaleY)})">${glyphs}</g>`;
 }
 
 /** box 1件の SVG `<rect>`。回転は中心まわりの rotate transform(ライブ編集の SVG と同じ見た目)。 */

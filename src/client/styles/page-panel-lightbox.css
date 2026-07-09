@@ -277,3 +277,62 @@
 .page-object-property-field input[type="number"] {
   width: 72px;
 }
+
+.page-object-property-field select {
+  font-size: 12px;
+  padding: 2px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface, #fff);
+  color: inherit;
+}
+
+.page-object-property-field-wide {
+  min-width: 160px;
+}
+
+.page-object-checkbox-field {
+  gap: 4px;
+}
+
+/* --- text オブジェクト(Docs/Feature-CGCollectionSuite.md P2) --- */
+
+.page-object-hit-area {
+  cursor: pointer;
+  touch-action: none;
+}
+
+.page-object-hit-area.is-selected {
+  outline: none;
+}
+
+.page-object-text-glyphs {
+  pointer-events: none;
+}
+
+.page-object-text-placeholder {
+  stroke: var(--muted);
+  stroke-width: 1px;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.page-object-textarea {
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font-family: inherit;
+}
+
+.page-object-font-license-note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
