@@ -12,6 +12,7 @@ import type { Asset } from "../shared/apiTypes";
 import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
 import { resolveLayoutTemplate } from "./layoutTemplates";
+import { listPanelAssignments, upsertPanelAssignment } from "./panelAssignments";
 import { isPathInside } from "./paths";
 import { getProjectDetail } from "./projects";
 import { deleteRoundTree, roundAttachmentPathFromRequest } from "./rounds";
@@ -213,11 +214,18 @@ export function reorderPages(projectId: string, body: unknown): BookPages {
   return listPagesWithProject(projectId);
 }
 
-/** そのページの rounds/assets に絞った ProjectDetail + ページのメタ。 */
+/** そのページの rounds/assets に絞った ProjectDetail + ページのメタ + コマ割り当て。 */
 export function getPageDetail(projectId: string, pageId: string, options: PageDetailOptions = {}): PageDetail {
   const page = requirePage(projectId, pageId);
   const detail = getProjectDetail(projectId, options, pageId);
-  return { ...detail, page };
+  const panelAssignments = page.layout ? listPanelAssignments(pageId) : [];
+  return { ...detail, page, panelAssignments };
+}
+
+/** コマ内生成(Docs/Feature-PanelGeneration.md): コマへの画像割り当て/クロップを更新する。 */
+export function updatePagePanelAssignment(projectId: string, pageId: string, panelId: string, body: unknown) {
+  const page = requirePage(projectId, pageId);
+  return upsertPanelAssignment(page, panelId, body);
 }
 
 /**

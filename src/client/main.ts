@@ -15,6 +15,7 @@ import { renderBookView } from "./views/bookView";
 import { renderBookSettingsView } from "./views/bookSettingsView";
 import { renderBookReaderView } from "./views/bookReaderView";
 import { renderLayoutTemplatePicker } from "./views/layoutTemplateModal";
+import { renderPagePanelLightbox } from "./views/pagePanelLightboxView";
 import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
@@ -86,6 +87,16 @@ import "./imageLightboxController";
 import "./modelCheckController";
 import { importImagesAsPages } from "./bookController";
 import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
+import {
+  closePagePanelLightbox,
+  handlePagePanelClick,
+  handlePagePanelCropPointerCancel,
+  handlePagePanelCropPointerDown,
+  handlePagePanelCropPointerMove,
+  handlePagePanelCropPointerUp,
+  handlePagePanelDblClick,
+  handlePagePanelLightboxKeydown
+} from "./pagePanelLightboxController";
 import { handleBookReaderKeydown } from "./bookReaderController";
 import {
   deselectPasteObjectIfAny,
@@ -172,9 +183,13 @@ function bindEvents() {
       closeShortcutsHelp();
       return;
     }
-    // layout-template-modal は workflow-modal クラスも持つため、こちらを先に判定する。
+    // layout-template-modal / page-panel-lightbox は workflow-modal クラスも持つため、先に判定する。
     if (target.classList.contains("layout-template-modal")) {
       closeLayoutPicker();
+      return;
+    }
+    if (target.classList.contains("page-panel-lightbox")) {
+      closePagePanelLightbox();
       return;
     }
     if (target.classList.contains("workflow-modal")) {
@@ -186,6 +201,9 @@ function bindEvents() {
       return;
     }
     if (handleAssetCardClick(event)) {
+      return;
+    }
+    if (handlePagePanelClick(event)) {
       return;
     }
 
@@ -204,6 +222,9 @@ function bindEvents() {
 
   app.addEventListener("dblclick", (event) => {
     if (handleAssetCardDblClick(event)) {
+      return;
+    }
+    if (handlePagePanelDblClick(event)) {
       return;
     }
     handleIterationDotDblClick(event);
@@ -391,6 +412,10 @@ function bindEvents() {
     if (handleBookReaderKeydown(event)) {
       return;
     }
+    // コマ選択 lightbox も detail とは排他(book grid の上に開く)なので同様に早期処理する。
+    if (handlePagePanelLightboxKeydown(event)) {
+      return;
+    }
 
     if (!state.detail) {
       if (event.key === "Escape" && state.sidebarOpen) {
@@ -475,6 +500,9 @@ function bindEvents() {
     if (handleSidebarResizePointerDown(event)) {
       return;
     }
+    if (handlePagePanelCropPointerDown(event)) {
+      return;
+    }
     if (handlePoseEditorPointerDown(event)) {
       return;
     }
@@ -495,6 +523,9 @@ function bindEvents() {
 
   app.addEventListener("pointermove", (event) => {
     if (handleSidebarResizePointerMove(event)) {
+      return;
+    }
+    if (handlePagePanelCropPointerMove(event)) {
       return;
     }
     if (handleMaskEditorPointerMove(event)) {
@@ -519,6 +550,9 @@ function bindEvents() {
     if (handleSidebarResizePointerUp(event)) {
       return;
     }
+    if (handlePagePanelCropPointerUp(event)) {
+      return;
+    }
     if (handleMaskEditorPointerUp(event)) {
       return;
     }
@@ -539,6 +573,9 @@ function bindEvents() {
 
   app.addEventListener("pointercancel", (event) => {
     if (handleSidebarResizePointerCancel(event)) {
+      return;
+    }
+    if (handlePagePanelCropPointerCancel(event)) {
       return;
     }
     if (handleMaskEditorPointerCancel(event)) {
@@ -644,7 +681,8 @@ function render(_options: RenderOptions = {}) {
     renderModelInstallModal(state.modelInstallFamily, state.modelCheck),
     state.layoutPickerOpen && state.book && !state.detail
       ? renderLayoutTemplatePicker(state.layoutTemplates, state.layoutTemplatesLoading)
-      : ""
+      : "",
+    renderPagePanelLightboxView()
   ];
   const changed = !lastRegionHtml || regions.some((html, i) => html !== lastRegionHtml![i]);
   if (changed) {
@@ -656,6 +694,7 @@ function render(_options: RenderOptions = {}) {
     ${regions[4]}
     ${regions[5]}
     ${regions[6]}
+    ${regions[7]}
   `);
     lastRegionHtml = regions;
   }
@@ -815,6 +854,34 @@ function getActiveBookPageContext(): { title: string; number: number } | null {
   return page ? { title: page.title, number: index + 1 } : null;
 }
 
+/** コマ内生成: book grid の上に開いているコマ選択/クロップ編集 lightbox。 */
+function renderPagePanelLightboxView(): string {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || !state.book) {
+    return "";
+  }
+  const page = state.book.pages.find((item) => item.id === lightbox.pageId);
+  if (!page) {
+    return "";
+  }
+  return renderPagePanelLightbox(page, lightbox, state.pagePanelAssignments);
+}
+
+/** コマ内生成: 生成フォームが対象にしているコマの表示用ラベル({ページ番号, パネルの読み順}）。 */
+function activePanelTargetBadge(): { pageNumber: number; panelOrder: number } | null {
+  const target = state.activePanelTarget;
+  if (!target || !state.book) {
+    return null;
+  }
+  const pageIndex = state.book.pages.findIndex((page) => page.id === target.pageId);
+  const page = pageIndex >= 0 ? state.book.pages[pageIndex] : null;
+  const panel = page?.layout?.panels.find((item) => item.id === target.panelId);
+  if (!page || !panel) {
+    return null;
+  }
+  return { pageNumber: pageIndex + 1, panelOrder: panel.order };
+}
+
 function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | null) {
   const activeRound = getActiveRound(detail);
   const draft = state.generationDraft;
@@ -834,7 +901,9 @@ function renderGenerationPanelView(detail: ProjectDetail, activeAsset: Asset | n
     referenceFeatureAvailability(),
     state.loraDraft,
     state.loraChoices,
-    state.recentReferenceImages
+    state.recentReferenceImages,
+    false,
+    activePanelTargetBadge()
   );
 }
 
@@ -866,7 +935,8 @@ function renderBookSettingsPanelView(): string {
     state.loraDraft,
     state.loraChoices,
     [],
-    true
+    true,
+    null
   );
 }
 

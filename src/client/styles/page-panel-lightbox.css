@@ -1,0 +1,114 @@
+/*
+ * コマ内生成(Docs/Feature-PanelGeneration.md)。ページのコマ選択/クロップ編集 lightbox。
+ * `.workflow-modal`/`.workflow-dialog`(modals.css)を土台にし、page-panel-* で上書き・追加する。
+ * コマ枠の紙面色(--layout-paper/--layout-koma)は layout-templates.css の root 定義を共有する。
+ */
+
+.page-panel-dialog {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(760px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+}
+
+.page-panel-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--panel-strong);
+}
+
+.page-panel-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.page-panel-paper {
+  fill: var(--layout-paper, #efece6);
+}
+
+/* 各コマの <g>。パネル形状(outline)・割り当て画像・空コマヒントをまとめて持つクリック単位。 */
+.page-panel-group {
+  cursor: pointer;
+}
+
+.page-panel-outline {
+  stroke: color-mix(in srgb, var(--layout-koma, #17140f) 55%, transparent);
+  transition: stroke 0.15s ease;
+}
+
+.page-panel-group:hover .page-panel-outline {
+  stroke: var(--accent-strong);
+}
+
+.page-panel-group.is-selected .page-panel-outline,
+.page-panel-group.is-crop-target .page-panel-outline {
+  stroke: var(--accent);
+}
+
+.page-panel-group.is-dimmed {
+  cursor: default;
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.page-panel-group.is-dimmed .page-panel-outline {
+  stroke: color-mix(in srgb, var(--layout-koma, #17140f) 35%, transparent);
+}
+
+.page-panel-image {
+  pointer-events: none;
+}
+
+/* クロップ編集モードの対象コマだけドラッグできる(誤操作防止。他コマは is-dimmed で非活性)。 */
+.page-panel-image.is-draggable {
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+
+.page-panel-image.is-draggable:active {
+  cursor: grabbing;
+}
+
+.page-panel-hint-dot {
+  fill: color-mix(in srgb, var(--accent) 55%, transparent);
+  pointer-events: none;
+}
+
+.page-panel-group:hover .page-panel-hint-dot {
+  fill: var(--accent);
+}
+
+.page-panel-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.page-panel-hint-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.page-panel-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.page-panel-generate-button {
+  flex: none;
+}

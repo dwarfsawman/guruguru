@@ -412,3 +412,32 @@ input[type="range"]::-webkit-slider-thumb {
   background: color-mix(in srgb, var(--ink) 4%, transparent);
 }
 
+/* コマ内生成(Docs/Feature-PanelGeneration.md): 生成フォームが対象にしているコマのバッジ。
+   .sidebar-section の grid を打ち消して横並びにする(同クラス併用なので後勝ち)。 */
+.panel-target-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: 3px;
+  background: var(--accent-soft);
+  padding: 8px 10px;
+}
+
+.panel-target-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.panel-target-label svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  stroke: currentColor;
+}
+

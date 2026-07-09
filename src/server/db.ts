@@ -26,7 +26,8 @@ const jsonColumnNames = new Map<string, string>([
   ["patched_workflow_json", "patchedWorkflow"],
   ["params_json", "params"],
   ["last_error_json", "lastError"],
-  ["layout_json", "layout"]
+  ["layout_json", "layout"],
+  ["crop_json", "crop"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -232,6 +233,18 @@ export function initializeDb() {
       deleted_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS page_panel_assignments (
+      id TEXT PRIMARY KEY,
+      page_id TEXT NOT NULL,
+      panel_id TEXT NOT NULL,
+      asset_id TEXT NOT NULL,
+      crop_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE,
+      FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_paste_sources_project ON paste_sources(project_id);
     CREATE INDEX IF NOT EXISTS idx_pages_project ON pages(project_id, page_index);
     CREATE INDEX IF NOT EXISTS idx_rounds_project ON generation_rounds(project_id, round_index);
@@ -241,6 +254,8 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_assets_project_round ON assets(project_id, round_id, batch_index);
     CREATE INDEX IF NOT EXISTS idx_asset_parents_parent ON asset_parents(parent_asset_id);
     CREATE INDEX IF NOT EXISTS idx_asset_parents_child ON asset_parents(child_asset_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_page_panel_assignments_page_panel ON page_panel_assignments(page_id, panel_id);
+    CREATE INDEX IF NOT EXISTS idx_page_panel_assignments_asset ON page_panel_assignments(asset_id);
   `);
   ensureColumn("workflow_templates", "deleted_at", "TEXT");
   ensureColumn("generation_rounds", "branch_color_index", "INTEGER NOT NULL DEFAULT 0");
@@ -252,6 +267,9 @@ export function initializeDb() {
   ensureColumn("projects", "mode", "TEXT NOT NULL DEFAULT 'single'");
   // コマ割りテンプレから追加したページの `PageLayout`(JSON)。通常ページは NULL。
   ensureColumn("pages", "layout_json", "TEXT");
+  // コマ内生成(Docs/Feature-PanelGeneration.md): この Round がどのコマ向けの生成かを示す。
+  // 通常の(コマを対象としない)生成/single モードでは NULL。
+  ensureColumn("generation_rounds", "target_panel_id", "TEXT");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {

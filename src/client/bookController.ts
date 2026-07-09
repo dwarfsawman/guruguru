@@ -35,6 +35,9 @@ export async function openBook(projectId: string) {
   state.bookReaderOpen = false;
   state.bookReaderSettingsOpen = false;
   state.sidebarOpen = false;
+  state.pagePanelLightbox = null;
+  state.pagePanelAssignments = [];
+  state.activePanelTarget = null;
   restoreOrResetProjectDrafts(projectId);
   clearPasteCaches();
   state.maskEditMode = false;
@@ -65,6 +68,11 @@ export async function openPage(pageId: string) {
   state.activeRoundId = detail.rounds[0]?.id ?? null;
   state.activeAssetId = null;
   state.sidebarOpen = false;
+  // コマ内生成(Docs/Feature-PanelGeneration.md): lightbox は閉じ、そのページの割り当てを読み込む。
+  // 対象コマは一旦リセットする(`generateForPanel` はこの後で明示的にセットし直す)。
+  state.pagePanelLightbox = null;
+  state.pagePanelAssignments = detail.panelAssignments;
+  state.activePanelTarget = null;
   // ページ別の参照画像 / スタイル LoRA を復元する。
   state.referenceDraft = state.referenceDraftsByPage[pageId] ?? { imageDataUrl: null };
   state.loraDraft = state.loraDraftsByPage[pageId] ?? [];
@@ -104,6 +112,8 @@ export async function backToPages() {
   state.deletePreviewRoundId = null;
   state.maskEditMode = false;
   state.paintEditMode = false;
+  state.pagePanelAssignments = [];
+  state.activePanelTarget = null;
   await reloadPages();
   requestRender();
 }
@@ -116,6 +126,9 @@ export function clearBookSession() {
   state.bookReaderOpen = false;
   state.bookReaderSettingsOpen = false;
   state.recentReferenceImages = [];
+  state.pagePanelLightbox = null;
+  state.pagePanelAssignments = [];
+  state.activePanelTarget = null;
 }
 
 async function reloadPages() {

@@ -17,7 +17,7 @@ export function renderBookView(book: BookPages): string {
           <div class="book-heading-copy">
             <p class="section-kicker">Book · ページ一覧</p>
             <h1>${escapeHtml(project.name)}</h1>
-            <p class="book-subtitle">画像をクリックすると拡大表示します。拡大画面の「画像生成」またはカード右上の✨から1枚生成画面へ移動できます。ドラッグで並び替えできます。</p>
+            <p class="book-subtitle">画像をクリックすると拡大表示します(コマ割りのページはコマ選択画面)。拡大画面の「画像生成」またはカード右上の✨から1枚生成画面へ移動できます。ドラッグで並び替えできます。</p>
           </div>
           <div class="book-heading-actions-shell">
             <div class="book-heading-actions">
@@ -50,19 +50,22 @@ function renderPageCard(page: PageSummary, index: number): string {
   const number = index + 1;
   const title = page.title.trim();
   const label = title || `ページ${number}`;
-  // 代表画像があればクリックで lightbox 拡大(フル画像優先、無ければサムネ)。無ければズーム不可。
-  // lightbox 内の「画像生成」ボタンから生成画面へ遷移する(data-image-zoom-action=open-page)。
-  // 将来はこの拡大表示上で漫画のコマを選んで生成する想定。カード右上の✨は同遷移の直行ショートカット。
+  // コマ割りページはクリックでコマ選択 lightbox(pagePanelLightboxController)を開く
+  // (data-action="open-page-panels"。代表画像の有無に関係なく、コマが無割り当てでも選べる)。
+  // それ以外のページは従来どおり代表画像の汎用 zoom lightbox(無ければズーム不可)。
   const zoomSrc = page.representativeImageUrl || page.representativeThumbnailUrl;
-  const zoomAttrs = zoomSrc
-    ? ` data-image-zoom-src="${escapeAttr(zoomSrc)}" data-image-zoom-label="${escapeAttr(label)}"` +
-      ` data-image-zoom-action="open-page" data-image-zoom-action-id="${page.id}" data-image-zoom-action-label="画像生成"` +
-      ` title="クリックで拡大"`
-    : "";
+  const panelAttrs = page.layout
+    ? ` data-action="open-page-panels" data-id="${escapeAttr(page.id)}" title="クリックでコマを選択"`
+    : zoomSrc
+      ? ` data-image-zoom-src="${escapeAttr(zoomSrc)}" data-image-zoom-label="${escapeAttr(label)}"` +
+        ` data-image-zoom-action="open-page" data-image-zoom-action-id="${page.id}" data-image-zoom-action-label="画像生成"` +
+        ` title="クリックで拡大"`
+      : "";
+  const isZoomable = Boolean(page.layout || zoomSrc);
   return `
     <article class="page-card" data-key="page-${page.id}" data-page-id="${page.id}">
       <div class="page-card-body">
-        <span class="page-card-thumb${zoomSrc ? " is-zoomable" : ""}"${zoomAttrs}>
+        <span class="page-card-thumb${isZoomable ? " is-zoomable" : ""}"${panelAttrs}>
           ${renderPageThumb(page, label)}
         </span>
         <span class="page-card-index">${number}</span>

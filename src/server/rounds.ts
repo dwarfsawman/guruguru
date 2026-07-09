@@ -38,7 +38,7 @@ import {
 import { nodeIdFromRolePath } from "../shared/workflowRolePath";
 import { isPathInside } from "./paths";
 import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ReferenceImageOptions } from "../shared/types";
-import type { Asset, Round } from "../shared/apiTypes";
+import type { Asset, PageRow, Round } from "../shared/apiTypes";
 
 type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
 type GenerationJobStatus = "pending" | "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled";
@@ -135,7 +135,8 @@ function getRoundForApi(roundId: string): Round | null {
 export async function createGenerationRound(
   projectId: string,
   requestBody: GenerationRequest,
-  pageId?: string | null
+  pageId?: string | null,
+  targetPanelId?: string | null
 ) {
   const project = getRow<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!project) {
@@ -146,6 +147,19 @@ export async function createGenerationRound(
   const resolvedPageId = typeof pageId === "string" && pageId.trim() ? pageId : null;
   if (resolvedPageId && !getRow("SELECT id FROM pages WHERE id = ? AND project_id = ?", [resolvedPageId, projectId])) {
     throw new HttpError(400, "Page was not found in this Project");
+  }
+
+  // コマ内生成(Docs/Feature-PanelGeneration.md): targetPanelId はそのページの layout.panels に
+  // 実在するコマ id だけを許す(ページを跨いだ/レイアウト変更後の古い id 等を弾く)。
+  const resolvedTargetPanelId = typeof targetPanelId === "string" && targetPanelId.trim() ? targetPanelId : null;
+  if (resolvedTargetPanelId) {
+    if (!resolvedPageId) {
+      throw new HttpError(400, "targetPanelId requires pageId");
+    }
+    const page = toApiRow(getRow("SELECT * FROM pages WHERE id = ?", [resolvedPageId])) as unknown as PageRow;
+    if (!page.layout?.panels.some((panel) => panel.id === resolvedTargetPanelId)) {
+      throw new HttpError(400, "targetPanelId was not found in this Page's layout");
+    }
   }
 
   const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [requestBody.templateId]);
@@ -180,8 +194,8 @@ export async function createGenerationRound(
   runSql(
     `INSERT INTO generation_rounds
       (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
-       branch_color_index, branch_reason, branch_key, page_id, request_json)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
+       branch_color_index, branch_reason, branch_key, page_id, target_panel_id, request_json)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
     [
       roundId,
       projectId,
@@ -193,6 +207,7 @@ export async function createGenerationRound(
       branch.reason,
       branch.key,
       resolvedPageId,
+      resolvedTargetPanelId,
       JSON.stringify(request)
     ]
   );

@@ -18,7 +18,8 @@ import {
   listPagesWithProject,
   listRecentImages,
   reorderPages,
-  updatePage
+  updatePage,
+  updatePagePanelAssignment
 } from "./pages";
 import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
 import { createSourceAsset } from "./sourceAssets";
@@ -296,10 +297,25 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
+  // コマ内生成(Docs/Feature-PanelGeneration.md): コマへの画像割り当て/クロップの更新。
+  const panelAssignmentMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/panels\/([^/]+)\/assignment$/);
+  if (method === "PATCH" && panelAssignmentMatch) {
+    sendJson(
+      res,
+      200,
+      updatePagePanelAssignment(panelAssignmentMatch[1]!, panelAssignmentMatch[2]!, panelAssignmentMatch[3]!, await readJson(req))
+    );
+    return;
+  }
+
   const generateMatch = path.match(/^\/api\/projects\/([^/]+)\/rounds$/);
   if (method === "POST" && generateMatch) {
-    const roundBody = await readJson<GenerationRequest & { pageId?: string | null }>(req);
-    sendJson(res, 201, await createGenerationRound(generateMatch[1]!, roundBody, roundBody.pageId ?? null));
+    const roundBody = await readJson<GenerationRequest & { pageId?: string | null; targetPanelId?: string | null }>(req);
+    sendJson(
+      res,
+      201,
+      await createGenerationRound(generateMatch[1]!, roundBody, roundBody.pageId ?? null, roundBody.targetPanelId ?? null)
+    );
     return;
   }
 
