@@ -7,7 +7,7 @@ export function iconMenu() {
 }
 
 export function iconSettings() {
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" shape-rendering="geometricPrecision"><path d="M12 2.75c.55 0 1.09.05 1.6.15l.47 2.07c.08.36.34.66.68.8.32.14.63.32.91.53.29.23.68.28 1.02.13l1.92-.87a9.06 9.06 0 0 1 1.6 2.77l-1.46 1.24c-.28.24-.42.61-.37.98.03.24.05.48.05.72s-.02.48-.05.72c-.05.37.09.74.37.98l1.46 1.24a9.06 9.06 0 0 1-1.6 2.77l-1.92-.87c-.34-.15-.73-.1-1.02.13-.28.21-.59.39-.91.53-.34.14-.6.44-.68.8l-.47 2.07c-.51.1-1.05.15-1.6.15s-1.09-.05-1.6-.15l-.47-2.07c-.08-.36-.34-.66-.68-.8a5.5 5.5 0 0 1-.91-.53 1.23 1.23 0 0 0-1.02-.13l-1.92.87a9.06 9.06 0 0 1-1.6-2.77l1.46-1.24c.28-.24.42-.61.37-.98a5.65 5.65 0 0 1 0-1.44c.05-.37-.09-.74-.37-.98L3.8 8.33a9.06 9.06 0 0 1 1.6-2.77l1.92.87c.34.15.73.1 1.02-.13.28-.21.59-.39.91-.53.34-.14.6-.44.68-.8l.47-2.07c.51-.1 1.05-.15 1.6-.15Z" stroke="currentColor" stroke-width="10.0" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path><circle cx="12" cy="12" r="3.05" stroke="currentColor" stroke-width="10.0" vector-effect="non-scaling-stroke"></circle></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true" shape-rendering="geometricPrecision"><path d="M12 2.75c.55 0 1.09.05 1.6.15l.47 2.07c.08.36.34.66.68.8.32.14.63.32.91.53.29.23.68.28 1.02.13l1.92-.87a9.06 9.06 0 0 1 1.6 2.77l-1.46 1.24c-.28.24-.42.61-.37.98.03.24.05.48.05.72s-.02.48-.05.72c-.05.37.09.74.37.98l1.46 1.24a9.06 9.06 0 0 1-1.6 2.77l-1.92-.87c-.34-.15-.73-.1-1.02.13-.28.21-.59.39-.91.53-.34.14-.6.44-.68.8l-.47 2.07c-.51.1-1.05.15-1.6.15s-1.09-.05-1.6-.15l-.47-2.07c-.08-.36-.34-.66-.68-.8a5.5 5.5 0 0 1-.91-.53 1.23 1.23 0 0 0-1.02-.13l-1.92.87a9.06 9.06 0 0 1-1.6-2.77l1.46-1.24c.28-.24.42-.61.37-.98a5.65 5.65 0 0 1 0-1.44c.05-.37-.09-.74-.37-.98L3.8 8.33a9.06 9.06 0 0 1 1.6-2.77l1.92.87c.34.15.73.1 1.02-.13.28-.21.59-.39.91-.53.34-.14.6-.44.68-.8l.47-2.07c.51-.1 1.05-.15 1.6-.15Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path><circle cx="12" cy="12" r="3.05" stroke="currentColor" stroke-width="2"></circle></svg>`;
 }
 
 export function iconCheck(filled = false) {
@@ -28,6 +28,14 @@ export function iconClose() {
 
 export function iconPlus() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>`;
+}
+
+export function iconMangaPanelImport() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true"><g stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3.2" y="2.6" width="14.1" height="18.8" rx="0.5"></rect><path d="M4.5 4.1h7.9l-.9 4.1h-7Z"></path><path d="M13.3 4.1h2.6v4.1h-3.6Z"></path><path d="M4.5 9.8h7.3v10.3H4.5Z"></path><path d="M12.8 9.8h3.1v10.3h-3.1Z"></path></g></svg>`;
+}
+
+export function iconOpenBook() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 5.25C5.55 4.1 8.15 4.15 11.2 5.45V19.15C8.2 17.95 5.75 18.05 3.5 19V5.25Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path><path d="M20.5 5.25C18.45 4.1 15.85 4.15 12.8 5.45V19.15C15.8 17.95 18.25 18.05 20.5 19V5.25Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path><path d="M12 5.65V19.55" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"></path></svg>`;
 }
 
 export function iconSave() {

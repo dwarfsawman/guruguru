@@ -5,7 +5,7 @@
  */
 import type { BookPages, PageSummary } from "../../shared/apiTypes";
 import { escapeAttr, escapeHtml } from "../format";
-import { iconImage, iconPlus, iconSettings, iconSparkle, iconTrash } from "../icons";
+import { iconImage, iconMangaPanelImport, iconOpenBook, iconPlus, iconSettings, iconSparkle, iconTrash } from "../icons";
 import { renderPageLayoutSvg } from "./pageLayoutSvg";
 
 export function renderBookView(book: BookPages): string {
@@ -23,13 +23,13 @@ export function renderBookView(book: BookPages): string {
             <div class="book-heading-actions">
               <span class="panel-count"><b>${pages.length}</b> pages</span>
               <button class="button-secondary compact book-action-button" type="button" data-action="open-book-settings" aria-label="Book共通設定" title="新規ページの既定設定(LoRA/プロンプト/生成パラメータ)を設定">${iconSettings()}${renderBookActionLabel("Book共通", "設定")}</button>
-              <button class="button-secondary compact book-action-button" type="button" data-action="open-layout-picker" aria-label="テンプレから追加" title="コマ割りテンプレートを選んでページ追加">${iconPlus()}${renderBookActionLabel("テンプレから", "追加")}</button>
+              <button class="button-secondary compact book-action-button" type="button" data-action="open-layout-picker" aria-label="テンプレから追加" title="コマ割りテンプレートを選んでページ追加">${iconMangaPanelImport()}${renderBookActionLabel("テンプレから", "追加")}</button>
               <label class="button-secondary compact source-upload-button book-action-button" aria-label="画像をインポート" title="画像を新規ページとして取り込む(複数選択可)">
                 ${iconImage()}${renderBookActionLabel("画像を", "インポート")}
                 <input data-image-import="1" type="file" accept="image/png,image/jpeg,image/webp" multiple />
               </label>
               <button class="button-secondary compact book-action-button" type="button" data-action="add-page" aria-label="ページを追加" title="空のページを追加">${iconPlus()}${renderBookActionLabel("ページを", "追加")}</button>
-              <button class="button-primary book-action-button book-reader-button" type="button" data-action="open-book-reader" aria-label="読む" title="漫画ビューアで読む" ${pages.length === 0 ? "disabled" : ""}>${iconImage()}<span class="book-action-text book-action-text-single">読む</span></button>
+              <button class="button-primary book-action-button book-reader-button" type="button" data-action="open-book-reader" aria-label="読む" title="漫画ビューアで読む" ${pages.length === 0 ? "disabled" : ""}>${iconOpenBook()}<span class="book-action-text book-action-text-single">読む</span></button>
             </div>
           </div>
         </div>

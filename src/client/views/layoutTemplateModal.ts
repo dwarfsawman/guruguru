@@ -6,7 +6,7 @@
  */
 import type { LayoutTemplateSummary } from "../../shared/apiTypes";
 import { escapeAttr, escapeHtml } from "../format";
-import { iconClose, iconImage, iconPlus, iconTrash } from "../icons";
+import { iconClose, iconMangaPanelImport, iconPlus, iconTrash } from "../icons";
 import { renderPageLayoutSvg } from "./pageLayoutSvg";
 
 export function renderLayoutTemplatePicker(templates: LayoutTemplateSummary[] | null, loading: boolean): string {
@@ -20,7 +20,7 @@ export function renderLayoutTemplatePicker(templates: LayoutTemplateSummary[] | 
           </div>
           <div class="layout-template-header-actions">
             <label class="button-secondary compact source-upload-button" title=".guruguru-layout.json5 を取り込んで登録">
-              ${iconImage()}レイアウトを読み込む
+              ${iconMangaPanelImport()}レイアウトを読み込む
               <input data-layout-import="1" type="file" accept=".json5,.json,application/json,text/plain" />
             </label>
             <button class="icon-button" type="button" data-action="close-layout-picker" aria-label="閉じる" title="閉じる">${iconClose()}</button>
