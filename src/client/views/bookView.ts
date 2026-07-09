@@ -14,21 +14,23 @@ export function renderBookView(book: BookPages): string {
     <main class="book-layout">
       <section class="panel">
         <div class="panel-heading">
-          <div>
+          <div class="book-heading-copy">
             <p class="section-kicker">Book · ページ一覧</p>
             <h1>${escapeHtml(project.name)}</h1>
             <p class="book-subtitle">画像をクリックすると拡大表示します。拡大画面の「画像生成」またはカード右上の✨から1枚生成画面へ移動できます。ドラッグで並び替えできます。</p>
           </div>
-          <div class="book-heading-actions">
-            <span class="panel-count"><b>${pages.length}</b> pages</span>
-            <button class="button-secondary compact" type="button" data-action="open-book-settings" title="新規ページの既定設定(LoRA/プロンプト/生成パラメータ)を設定">${iconSettings()}Book共通設定</button>
-            <button class="button-secondary compact" type="button" data-action="open-layout-picker" title="コマ割りテンプレートを選んでページ追加">${iconPlus()}テンプレから追加</button>
-            <label class="button-secondary compact source-upload-button" title="画像を新規ページとして取り込む(複数選択可)">
-              ${iconImage()}画像をインポート
-              <input data-image-import="1" type="file" accept="image/png,image/jpeg,image/webp" multiple />
-            </label>
-            <button class="button-secondary compact" type="button" data-action="add-page" title="空のページを追加">${iconPlus()}ページ追加</button>
-            <button class="button-primary" type="button" data-action="open-book-reader" title="漫画ビューアで読む" ${pages.length === 0 ? "disabled" : ""}>${iconImage()}読む</button>
+          <div class="book-heading-actions-shell">
+            <div class="book-heading-actions">
+              <span class="panel-count"><b>${pages.length}</b> pages</span>
+              <button class="button-secondary compact book-action-button" type="button" data-action="open-book-settings" aria-label="Book共通設定" title="新規ページの既定設定(LoRA/プロンプト/生成パラメータ)を設定">${iconSettings()}${renderBookActionLabel("Book共通", "設定")}</button>
+              <button class="button-secondary compact book-action-button" type="button" data-action="open-layout-picker" aria-label="テンプレから追加" title="コマ割りテンプレートを選んでページ追加">${iconPlus()}${renderBookActionLabel("テンプレから", "追加")}</button>
+              <label class="button-secondary compact source-upload-button book-action-button" aria-label="画像をインポート" title="画像を新規ページとして取り込む(複数選択可)">
+                ${iconImage()}${renderBookActionLabel("画像を", "インポート")}
+                <input data-image-import="1" type="file" accept="image/png,image/jpeg,image/webp" multiple />
+              </label>
+              <button class="button-secondary compact book-action-button" type="button" data-action="add-page" aria-label="ページを追加" title="空のページを追加">${iconPlus()}${renderBookActionLabel("ページを", "追加")}</button>
+              <button class="button-primary book-action-button book-reader-button" type="button" data-action="open-book-reader" aria-label="読む" title="漫画ビューアで読む" ${pages.length === 0 ? "disabled" : ""}>${iconImage()}<span class="book-action-text book-action-text-single">読む</span></button>
+            </div>
           </div>
         </div>
         <div class="image-grid page-grid">
@@ -38,6 +40,10 @@ export function renderBookView(book: BookPages): string {
       </section>
     </main>
   `;
+}
+
+function renderBookActionLabel(line1: string, line2: string): string {
+  return `<span class="book-action-text"><span>${escapeHtml(line1)}</span><span>${escapeHtml(line2)}</span></span>`;
 }
 
 function renderPageCard(page: PageSummary, index: number): string {

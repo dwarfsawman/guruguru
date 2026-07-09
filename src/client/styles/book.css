@@ -6,16 +6,135 @@
   margin: 16px;
 }
 
+.book-layout .panel-heading {
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.book-heading-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .book-subtitle {
   margin-top: 4px;
   color: var(--muted);
   font-size: 11.5px;
 }
 
+.book-heading-actions-shell {
+  container: book-actions / inline-size;
+  flex: 0 1 920px;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .book-heading-actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 12px;
+  min-width: 0;
+}
+
+.book-heading-actions .book-action-button {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 46px;
+  gap: 8px;
+  padding: 0 12px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.book-heading-actions .source-upload-button.book-action-button {
+  justify-content: center;
+  width: auto;
+}
+
+.book-heading-actions .book-action-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.book-action-text {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+.book-action-text-single {
+  flex-direction: row;
+  line-height: 1;
+}
+
+.book-reader-button {
+  min-width: 60px;
+}
+
+@container book-actions (max-width: 680px) {
+  .book-heading-actions {
+    gap: 8px;
+  }
+
+  .book-heading-actions .book-action-button {
+    width: 36px;
+    min-width: 36px;
+    height: 34px;
+    min-height: 34px;
+    gap: 0;
+    padding: 0;
+  }
+
+  .book-heading-actions .source-upload-button.book-action-button {
+    width: 36px;
+  }
+
+  .book-action-text {
+    display: none;
+  }
+}
+
+@media (orientation: portrait) {
+  .book-heading-actions {
+    gap: 8px;
+  }
+
+  .book-heading-actions .book-action-button {
+    width: 36px;
+    min-width: 36px;
+    height: 34px;
+    min-height: 34px;
+    gap: 0;
+    padding: 0;
+  }
+
+  .book-heading-actions .source-upload-button.book-action-button {
+    width: 36px;
+  }
+
+  .book-action-text {
+    display: none;
+  }
+}
+
+@media (max-width: 820px) {
+  .book-layout .panel-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .book-heading-actions-shell {
+    flex-basis: auto;
+    width: 100%;
+  }
+
+  .book-heading-actions {
+    justify-content: flex-start;
+  }
 }
 
 /* --- ページグリッド --- */
