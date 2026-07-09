@@ -55,7 +55,11 @@ export function listPagesWithProject(projectId: string): BookPages {
            WHERE r.page_id = pg.id AND a.status IN ('selected', 'favorite') ORDER BY a.created_at DESC LIMIT 1),
          (SELECT a.id FROM assets a JOIN generation_rounds r ON r.id = a.round_id
            WHERE r.page_id = pg.id ORDER BY a.created_at DESC LIMIT 1)
-       ) AS representative_asset_id
+       ) AS representative_asset_id,
+       COALESCE(
+         (SELECT MAX(ppa.updated_at) FROM page_panel_assignments ppa WHERE ppa.page_id = pg.id),
+         pg.updated_at
+       ) AS panel_preview_version
      FROM pages pg
      WHERE pg.project_id = ?
      ORDER BY pg.page_index ASC`,
@@ -65,7 +69,12 @@ export function listPagesWithProject(projectId: string): BookPages {
   // `pg.*` に含まれる layout_json は toApiRow が `layout`(parse 済み)へ変換する(db.ts の jsonColumnNames)。
   const pages = rows.map((row) => {
     const item = toApiRow(row)!;
-    if (typeof item.representativeAssetId === "string") {
+    if (item.layout) {
+      const version = encodeURIComponent(String(item.panelPreviewVersion ?? item.updatedAt ?? ""));
+      const previewUrl = `/api/projects/${projectId}/pages/${item.id}/preview.png?v=${version}`;
+      item.representativeThumbnailUrl = `${previewUrl}&size=320`;
+      item.representativeImageUrl = previewUrl;
+    } else if (typeof item.representativeAssetId === "string") {
       const id = item.representativeAssetId;
       item.representativeThumbnailUrl = `/api/assets/${id}/thumbnail?size=small`;
       item.representativeImageUrl = `/api/assets/${id}/image`;

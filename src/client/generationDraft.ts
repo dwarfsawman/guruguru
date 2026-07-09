@@ -386,7 +386,13 @@ export function currentSchedulerValue() {
 }
 
 export function getActiveRound(detail: ProjectDetail) {
-  return detail.rounds.find((round) => round.id === state.activeRoundId) ?? detail.rounds[0] ?? null;
+  const rounds = roundsForActivePanelTarget(detail.rounds);
+  return rounds.find((round) => round.id === state.activeRoundId) ?? rounds[0] ?? null;
+}
+
+export function roundsForActivePanelTarget<T extends { targetPanelId?: string | null }>(rounds: T[]): T[] {
+  const panelId = state.activePanelTarget?.panelId ?? null;
+  return panelId ? rounds.filter((round) => round.targetPanelId === panelId) : rounds;
 }
 
 export function findRound(roundId: string | null) {

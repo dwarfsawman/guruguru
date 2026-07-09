@@ -17,6 +17,7 @@ Book ページを OpenRaster (`.ora`) として書き出すサーバー機能の
 - `data/layer-*.png` に全レイヤ PNG を入れる。
 - `mergedimage.png` と `Thumbnails/thumbnail.png` も生成する。
 - OpenRaster の layer stack は先頭要素が最前面なので、`Panels` レイヤを `stack.xml` の先頭へ置く。
+- 紙地は `Paper` レイヤとして最背面に入れる。Krita で開いたときに透明チェッカーではなくページ地が見える。
 
 ## レイヤ
 
@@ -27,4 +28,5 @@ Book ページを OpenRaster (`.ora`) として書き出すサーバー機能の
 
 ## 変更履歴
 
+- 2026-07-09: `Paper` レイヤを最背面に追加し、Krita 読み込み時も紙地が見えるようにした。
 - 2026-07-09: 初版。Book 全体/選択ページ/単体ページの OpenRaster export と見開き方針を記録。

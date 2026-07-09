@@ -22,7 +22,7 @@ import {
   updatePagePanelAssignment
 } from "./pages";
 import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
-import { createOpenRasterExport } from "./openRasterExport";
+import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport";
 import { createSourceAsset } from "./sourceAssets";
 import { createPasteSource, getPasteAttachments, purgeOrphanPasteSources, putPasteAttachments, servePasteSource } from "./pasteAttachments";
 import {
@@ -293,6 +293,19 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (method === "GET" && referenceImagesMatch) {
     const limit = Number(url.searchParams.get("limit")) || 24;
     sendJson(res, 200, { images: await listRecentImages(referenceImagesMatch[1]!, limit) });
+    return;
+  }
+
+  const pagePreviewMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/preview\.png$/);
+  if (method === "GET" && pagePreviewMatch) {
+    const size = Number(url.searchParams.get("size")) || 512;
+    const buffer = await createPagePreviewPng(pagePreviewMatch[1]!, pagePreviewMatch[2]!, { size });
+    res.writeHead(200, {
+      "content-type": "image/png",
+      "content-length": String(buffer.byteLength),
+      "cache-control": "private, max-age=60"
+    });
+    res.end(buffer);
     return;
   }
 

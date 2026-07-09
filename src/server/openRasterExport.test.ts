@@ -44,10 +44,12 @@ test("createOpenRasterExport: single layout page produces a baseline ORA with pa
   assert.equal(await zip.file("mimetype")?.async("string"), "image/openraster");
   assert.ok(zip.file("stack.xml"));
   assert.ok(zip.file("data/layer-001.png"));
+  assert.ok(zip.file("data/layer-002.png"));
   assert.ok(zip.file("mergedimage.png"));
   assert.ok(zip.file("Thumbnails/thumbnail.png"));
 
   const stackXml = await zip.file("stack.xml")!.async("string");
   assert.match(stackXml, /<image version="0\.0\.3" w="256" h="256"/);
-  assert.match(stackXml, /<layer name="Panels" src="data\/layer-001\.png"/);
+  assert.match(stackXml, /<layer name="Panels" src="data\/layer-002\.png"/);
+  assert.match(stackXml, /<layer name="Paper" src="data\/layer-001\.png"/);
 });

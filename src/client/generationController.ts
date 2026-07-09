@@ -32,6 +32,7 @@ import {
   rememberActiveRoundDraft,
   resolveTemplateForGeneration,
   restoreGenerationDraftForRound,
+  roundsForActivePanelTarget,
   setGenerationDraftValue
 } from "./generationDraft";
 import { openAssetDetail } from "./assetDetailController";
@@ -395,10 +396,15 @@ export async function refreshProject(keepRoundId = state.activeRoundId, keepAsse
     state.detail = await api<ProjectDetail>(`/api/projects/${state.currentProjectId}`);
   }
   state.templates = state.detail.templates;
-  state.activeRoundId = state.detail.rounds.some((round) => round.id === keepRoundId)
+  const visibleRounds = roundsForActivePanelTarget(state.detail.rounds);
+  const visibleRoundIds = new Set(visibleRounds.map((round) => round.id));
+  const visibleAssets = state.activePanelTarget
+    ? state.detail.assets.filter((asset) => visibleRoundIds.has(asset.roundId))
+    : state.detail.assets;
+  state.activeRoundId = visibleRounds.some((round) => round.id === keepRoundId)
     ? keepRoundId
-    : state.detail.rounds[0]?.id ?? null;
-  state.activeAssetId = state.detail.assets.some((asset) => asset.id === keepAssetId) ? keepAssetId : null;
+    : visibleRounds[0]?.id ?? null;
+  state.activeAssetId = visibleAssets.some((asset) => asset.id === keepAssetId) ? keepAssetId : null;
   if (!state.activeAssetId) {
     state.maskEditMode = false;
     state.paintEditMode = false;

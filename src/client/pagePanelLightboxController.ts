@@ -13,7 +13,7 @@ import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { openPage } from "./bookController";
-import { setGenerationDraftValue } from "./generationDraft";
+import { restoreGenerationDraftForRound, setGenerationDraftValue } from "./generationDraft";
 import { roundToStep } from "./generationController";
 
 /** コマ生成の目標解像度(この面積になるよう、コマの外接矩形アスペクト比から幅/高さを決める)。 */
@@ -217,6 +217,11 @@ async function generateForPanel(pageId: string, panelId: string) {
     await openPage(pageId);
   }
   state.activePanelTarget = { pageId, panelId };
+  state.activeRoundId = state.detail?.rounds.find((round) => round.targetPanelId === panelId)?.id ?? null;
+  state.activeAssetId = null;
+  if (state.activeRoundId) {
+    restoreGenerationDraftForRound(state.activeRoundId);
+  }
   if (panel) {
     applyPanelAspectToGenerationDraft(panel);
   }

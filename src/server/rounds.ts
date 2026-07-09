@@ -182,7 +182,16 @@ export async function createGenerationRound(
 
   const roundIndex = nextRoundIndex(projectId);
   const roundId = createId("round");
-  const parentRoundId = typeof parentAsset?.round_id === "string" ? parentAsset.round_id : null;
+  let parentRoundId = typeof parentAsset?.round_id === "string" ? parentAsset.round_id : null;
+  if (resolvedTargetPanelId && parentRoundId) {
+    const parentRound = getRow<{ target_panel_id: string | null }>(
+      "SELECT target_panel_id FROM generation_rounds WHERE id = ? AND project_id = ?",
+      [parentRoundId, projectId]
+    );
+    if (parentRound?.target_panel_id !== resolvedTargetPanelId) {
+      parentRoundId = null;
+    }
+  }
   const seed = resolveSeed(requestBody, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
   let request: GenerationRequest = normalizeGenerationRequest({ ...requestBody, generationMode, parentAssetId: requestedParentAssetId, seed });
   request = await prepareInpaintRequest(projectId, roundId, parentAsset, requestBody, request);

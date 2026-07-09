@@ -817,7 +817,8 @@ function getConnectionView() {
 }
 
 function renderProjectDetailView(detail: ProjectDetail) {
-  const activeRound = getActiveRound(detail);
+  const viewDetail = projectDetailForActivePanelTarget(detail);
+  const activeRound = getActiveRound(viewDetail);
   const assets = getActiveRoundAssets().filter(assetPassesFilter);
   const selectedAssets = getActiveRoundAssets().filter((asset) => asset.status === "selected").slice(0, 1);
   const activeAsset = state.activeAssetId ? findAsset(state.activeAssetId) : null;
@@ -826,7 +827,7 @@ function renderProjectDetailView(detail: ProjectDetail) {
   const bookPage = getActiveBookPageContext();
 
   return renderProjectDetail(
-    detail,
+    viewDetail,
     activeRound,
     assets,
     selectedAssets,
@@ -847,6 +848,25 @@ function renderProjectDetailView(detail: ProjectDetail) {
     bookPage,
     state.sidebarWidth
   );
+}
+
+function projectDetailForActivePanelTarget(detail: ProjectDetail): ProjectDetail {
+  const panelId = state.activePanelTarget?.panelId ?? null;
+  if (!panelId) {
+    return detail;
+  }
+  const roundIds = new Set(detail.rounds.filter((round) => round.targetPanelId === panelId).map((round) => round.id));
+  const assets = detail.assets.filter((asset) => roundIds.has(asset.roundId));
+  const assetIds = new Set(assets.map((asset) => asset.id));
+  return {
+    ...detail,
+    rounds: detail.rounds.filter((round) => roundIds.has(round.id)),
+    assets,
+    assetParents: detail.assetParents.filter((parent) => assetIds.has(parent.parentAssetId) && assetIds.has(parent.childAssetId)),
+    pasteAttachments: Object.fromEntries(
+      Object.entries(detail.pasteAttachments).filter(([assetId]) => assetIds.has(assetId))
+    )
+  };
 }
 
 function getActiveBookPageContext(): { title: string; number: number } | null {

@@ -162,11 +162,35 @@ async function createPageOra(page: PageRow, canvas: ExportCanvas): Promise<Buffe
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
+export async function createPagePreviewPng(
+  projectId: string,
+  pageId: string,
+  options: { size?: number } = {}
+): Promise<Buffer> {
+  const project = requireProject(projectId);
+  const page = toApiRow(
+    getRow("SELECT * FROM pages WHERE id = ? AND project_id = ?", [pageId, projectId])
+  ) as unknown as PageRow | null;
+  if (!page) {
+    throw new HttpError(404, "Page was not found");
+  }
+  const canvas = projectCanvas(project);
+  const layers = await createPageLayers(page, canvas);
+  const merged = await renderMergedImage(layers, canvas);
+  const size = safeDimension(options.size, 512);
+  return sharp(merged)
+    .resize({ width: size, height: size, fit: "inside", withoutEnlargement: true })
+    .png()
+    .toBuffer();
+}
+
 async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<RasterLayer[]> {
+  const paperLayer: RasterLayer = { name: "Paper", src: "", png: await paperPng(canvas) };
   const layout = page.layout ?? null;
   if (!layout) {
     const representative = representativeAsset(page.id);
     return [
+      paperLayer,
       {
         name: "Page image",
         src: "",
@@ -175,7 +199,7 @@ async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<Ra
     ];
   }
 
-  const layers: RasterLayer[] = [];
+  const layers: RasterLayer[] = [paperLayer];
   const assignments = new Map(panelAssignmentAssets(page.id).map((assignment) => [assignment.panel_id, assignment]));
   const panels = [...layout.panels].sort((a, b) => a.order - b.order);
   for (const panel of panels) {
@@ -426,6 +450,17 @@ function blankInput(canvas: ExportCanvas) {
 
 async function transparentPng(canvas: ExportCanvas): Promise<Buffer> {
   return sharp(blankInput(canvas)).png().toBuffer();
+}
+
+async function paperPng(canvas: ExportCanvas): Promise<Buffer> {
+  return sharp({
+    create: {
+      width: canvas.width,
+      height: canvas.height,
+      channels: 4 as const,
+      background: { r: 245, g: 242, b: 234, alpha: 1 }
+    }
+  }).png().toBuffer();
 }
 
 function pageFileBase(page: PageRow): string {
