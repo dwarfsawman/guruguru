@@ -27,7 +27,8 @@ const jsonColumnNames = new Map<string, string>([
   ["params_json", "params"],
   ["last_error_json", "lastError"],
   ["layout_json", "layout"],
-  ["crop_json", "crop"]
+  ["crop_json", "crop"],
+  ["objects_json", "objects"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -272,6 +273,9 @@ export function initializeDb() {
   ensureColumn("projects", "canvas_height", "INTEGER NOT NULL DEFAULT 1446");
   // コマ割りテンプレから追加したページの `PageLayout`(JSON)。通常ページは NULL。
   ensureColumn("pages", "layout_json", "TEXT");
+  // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1): テキスト/吹き出し/ボックスの配列(JSON)。
+  // 未設定は NULL(toApiRow は `objects: null` を返す。normalizePageObjects(null) は空配列)。
+  ensureColumn("pages", "objects_json", "TEXT");
   // コマ内生成(Docs/Feature-PanelGeneration.md): この Round がどのコマ向けの生成かを示す。
   // 通常の(コマを対象としない)生成/single モードでは NULL。
   ensureColumn("generation_rounds", "target_panel_id", "TEXT");

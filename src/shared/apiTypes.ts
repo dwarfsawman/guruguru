@@ -8,6 +8,7 @@ import type { Json } from "./json";
 import type { GenerationRequest } from "./types";
 import type { PastedObject } from "./pasteAttachments";
 import type { PageLayout, PanelCrop } from "./pageLayout";
+import type { PageObject } from "./pageObjects";
 import type { FeatureKey, ModelKind } from "./workflowModels";
 
 export interface ComfyStatus {
@@ -105,6 +106,11 @@ export interface PageRow {
    * 将来のコマ内生成・形状編集・吹き出しはこの構造を土台にする(今回は描画のみ)。
    */
   layout?: PageLayout | null;
+  /**
+   * ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1): テキスト/吹き出し/ボックスの配列。
+   * 未設定(objects_json が NULL)は null。クライアントは `normalizePageObjects(page.objects)` を通して使う。
+   */
+  objects?: PageObject[] | null;
   createdAt: string;
   updatedAt: string;
 }
