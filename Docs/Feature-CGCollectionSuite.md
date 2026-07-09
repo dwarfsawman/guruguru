@@ -8,7 +8,7 @@ guruguru を「AI生成画像を素材に、商用CG集（DLsite/FANZA 等で頒
 | フェーズ | 内容 | 状態 |
 |---|---|---|
 | P1 | ページオブジェクト基盤（データモデル・API・編集UI・ギズモ共通化・undo/redo） | 完了(2026-07-10) |
-| P2 | テキスト（縦書き/横書き・フォント選択・自前レイアウト・グリフパス描画） | 未着手 |
+| P2 | テキスト（縦書き/横書き・フォント選択・自前レイアウト・グリフパス描画） | 完了(2026-07-10) |
 | P3 | 吹き出し＋ボックス（形状ライブラリ・しっぽ・テキスト内包） | 未着手 |
 | P4 | 完成品書き出し（全ページ PNG/JPEG 連番一括・ORA レイヤ反映） | 未着手 |
 | P5 | コマ形状編集（頂点ドラッグ・分割・ガター） | 未着手 |
@@ -213,3 +213,16 @@ debounce PATCH（1s）＋クローズ時 flush。
     修正、可視域 0..1×0..pageHeight に統一）、PATCH 応答によるドラフト巻き戻し防止（タイマー/ドラッグ非活動時
     のみ反映）、入力欄フォーカス中の Ctrl+Z ガード、flush を Promise 化しクローズ時は完了後に dirty 判定→
     `reloadBookPages()`（in-flight PATCH も待つ）。
+- 2026-07-10: P2 完了・main マージ（merge d9d0e42）。設計からの差分:
+  - `FontMetricsProvider` に `ascent`/`descent` を追加（ベースライン配置・回転軸計算に必要）。
+  - fontkit は型定義が無いため `src/server/fontkit.d.ts` を手書き。TTC は `openSync().fonts[i]`、
+    `vert` は `font.layout(char, ["vert"])` でグリフ id が変わった場合のみ採用（実フォントで動作確認済み。
+    名前テーブルが Uint8Array を返す壊れフォント対策の `toDisplayString` ガードあり）。
+  - box/balloon content の折り返しパディングは `CONTENT_PADDING_RATIO = 0.12`（新定数）。
+  - サーバ export のオブジェクト回転は P1 box と同じピクセル空間回転（キャンバスとページのアスペクト比が
+    ズレる場合のみプレビューと微差。P1 由来の既知の割り切り）。
+  - balloon.content のエクスポート描画は先行実装済み（P3 で編集 UI が付くまで実質不活性）。
+  - レビュー修正2件: `textSvg.ts` の数値整形を有効数字8桁へ（絶対丸めだと unitsPerEm=2048 フォントの
+    emScale が潰れグリフが約30%縮む実バグ。ピクセル実測で修正確認）、フォント select 先頭に「既定フォント」
+    オプション追加（fontId="default" の表示化け対策）。
+  - 監督ブラウザ検証済み: 縦書き列送り・横書き切替・白フチ・フォント切替・textarea 編集・保存。
