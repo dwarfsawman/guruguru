@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 
 const root = resolve(".");
 
-async function main() {
+export async function buildAll() {
   await rm(join(root, "dist"), { recursive: true, force: true });
   await mkdir(join(root, "dist", "server"), { recursive: true });
   await mkdir(join(root, "dist", "public"), { recursive: true });
@@ -142,7 +142,9 @@ async function bundle(options) {
   await Bun.write(join(root, options.outfile), result.outputs[0]);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (import.meta.main) {
+  buildAll().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
