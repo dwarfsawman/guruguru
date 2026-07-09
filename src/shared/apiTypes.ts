@@ -7,6 +7,7 @@
 import type { Json } from "./json";
 import type { GenerationRequest } from "./types";
 import type { PastedObject } from "./pasteAttachments";
+import type { PageLayout } from "./pageLayout";
 import type { FeatureKey, ModelKind } from "./workflowModels";
 
 export interface ComfyStatus {
@@ -95,6 +96,11 @@ export interface PageRow {
   projectId: string;
   pageIndex: number;
   title: string;
+  /**
+   * コマ割りレイアウト(テンプレから追加した場合)。通常ページ/画像取り込みページは null。
+   * 将来のコマ内生成・形状編集・吹き出しはこの構造を土台にする(今回は描画のみ)。
+   */
+  layout?: PageLayout | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -116,6 +122,23 @@ export interface PageSummary extends PageRow {
 export interface BookPages {
   project: ProjectRow;
   pages: PageSummary[];
+}
+
+/**
+ * コマ割りテンプレート1件。`source: 'builtin'` はコード側の内蔵プリセット、`'imported'` は
+ * ユーザーが取り込んで登録した `.guruguru-layout.json5`。`layout` は正規化済みの `PageLayout`。
+ */
+export interface LayoutTemplateSummary {
+  id: string;
+  name: string;
+  source: "builtin" | "imported";
+  layout: PageLayout;
+  createdAt?: string;
+}
+
+/** `GET /api/layout-templates` のレスポンス(内蔵 + 取り込みをマージ)。 */
+export interface LayoutTemplatesResponse {
+  templates: LayoutTemplateSummary[];
 }
 
 /**

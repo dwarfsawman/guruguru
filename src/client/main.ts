@@ -14,6 +14,7 @@ import { renderHome, type ConnectionState, type ConnectionSummary } from "./view
 import { renderBookView } from "./views/bookView";
 import { renderBookSettingsView } from "./views/bookSettingsView";
 import { renderBookReaderView } from "./views/bookReaderView";
+import { renderLayoutTemplatePicker } from "./views/layoutTemplateModal";
 import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
@@ -83,7 +84,8 @@ import { setFormValue } from "./formUtils";
 import "./edgePopoutController";
 import "./imageLightboxController";
 import "./modelCheckController";
-import "./bookController";
+import { importImagesAsPages } from "./bookController";
+import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
 import { handleBookReaderKeydown } from "./bookReaderController";
 import {
   deselectPasteObjectIfAny,
@@ -170,6 +172,11 @@ function bindEvents() {
       closeShortcutsHelp();
       return;
     }
+    // layout-template-modal は workflow-modal クラスも持つため、こちらを先に判定する。
+    if (target.classList.contains("layout-template-modal")) {
+      closeLayoutPicker();
+      return;
+    }
     if (target.classList.contains("workflow-modal")) {
       closeWorkflowModals();
       return;
@@ -214,6 +221,21 @@ function bindEvents() {
     }
     if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.referenceUpload) {
       void uploadReferenceImage(target).catch((error) => {
+        pushToast(error instanceof Error ? error.message : String(error), "error");
+        render();
+      });
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.layoutImport) {
+      void importLayoutFile(target).catch((error) => {
+        pushToast(error instanceof Error ? error.message : String(error), "error");
+        render();
+      });
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.imageImport) {
+      void importImagesAsPages(target).catch((error) => {
+        state.busy = false;
         pushToast(error instanceof Error ? error.message : String(error), "error");
         render();
       });
@@ -619,7 +641,10 @@ function render(_options: RenderOptions = {}) {
           ),
     renderAssetModalView(),
     renderShortcutsHelpModal(state.showShortcutsHelp),
-    renderModelInstallModal(state.modelInstallFamily, state.modelCheck)
+    renderModelInstallModal(state.modelInstallFamily, state.modelCheck),
+    state.layoutPickerOpen && state.book && !state.detail
+      ? renderLayoutTemplatePicker(state.layoutTemplates, state.layoutTemplatesLoading)
+      : ""
   ];
   const changed = !lastRegionHtml || regions.some((html, i) => html !== lastRegionHtml![i]);
   if (changed) {
@@ -630,6 +655,7 @@ function render(_options: RenderOptions = {}) {
     ${regions[3]}
     ${regions[4]}
     ${regions[5]}
+    ${regions[6]}
   `);
     lastRegionHtml = regions;
   }

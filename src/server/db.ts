@@ -24,7 +24,8 @@ const jsonColumnNames = new Map<string, string>([
   ["request_json", "request"],
   ["patched_workflow_json", "patchedWorkflow"],
   ["params_json", "params"],
-  ["last_error_json", "lastError"]
+  ["last_error_json", "lastError"],
+  ["layout_json", "layout"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -219,6 +220,17 @@ export function initializeDb() {
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS layout_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'imported',
+      layout_json TEXT NOT NULL,
+      source_json5 TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      deleted_at TEXT
+    );
+
     CREATE INDEX IF NOT EXISTS idx_paste_sources_project ON paste_sources(project_id);
     CREATE INDEX IF NOT EXISTS idx_pages_project ON pages(project_id, page_index);
     CREATE INDEX IF NOT EXISTS idx_rounds_project ON generation_rounds(project_id, round_index);
@@ -237,6 +249,8 @@ export function initializeDb() {
   ensureColumn("asset_paste_attachments", "enabled", "INTEGER NOT NULL DEFAULT 1");
   // Book モード: 'single'（既定・従来の1枚生成）/ 'book'（複数ページ）。
   ensureColumn("projects", "mode", "TEXT NOT NULL DEFAULT 'single'");
+  // コマ割りテンプレから追加したページの `PageLayout`(JSON)。通常ページは NULL。
+  ensureColumn("pages", "layout_json", "TEXT");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {

@@ -1,0 +1,127 @@
+/*
+ * コマ割りテンプレート(漫画レイアウト)のスタイル。
+ * - SVG のコマ枠プレビューで使う「紙面/コマ枠」色を root スコープの名前付き変数に集約
+ *   (book-reader の背景色と同様、機能固有の固定色。ダーク UI 上でも漫画ページとして読める)。
+ * - ページカードのコマ枠サムネ、テンプレピッカー(model-install モーダル踏襲)のギャラリー。
+ */
+:root {
+  --layout-paper: #ece8e0;
+  --layout-koma: #17140f;
+}
+
+/* --- ページカードのコマ枠サムネ(代表画像が無いレイアウトページ) --- */
+.page-thumb-layout {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.page-thumb-layout svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.45));
+}
+
+/* ファイル取り込みボタン(.json5 / 画像)は既存の .source-upload-button を流用(nowrap + input 非表示)。 */
+
+/* --- テンプレピッカー・モーダル --- */
+.layout-template-dialog {
+  width: min(1080px, 100vw - 48px);
+  max-height: min(860px, 100vh - 48px);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.layout-template-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.layout-template-body {
+  overflow-y: auto;
+  padding: 16px;
+}
+.layout-template-empty {
+  color: var(--muted);
+  padding: 24px 4px;
+  text-align: center;
+}
+.layout-template-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 16px;
+}
+.layout-template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-strong);
+}
+.layout-template-preview {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: transparent;
+  cursor: pointer;
+  overflow: hidden;
+  aspect-ratio: 182 / 257;
+}
+.layout-template-preview:hover {
+  border-color: var(--accent-line);
+}
+.layout-template-preview svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.layout-template-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.layout-template-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink);
+}
+.layout-template-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.layout-template-tag {
+  flex: none;
+}
+.layout-template-tag.builtin {
+  border-color: var(--line-strong);
+  background: var(--panel-soft);
+  color: var(--muted);
+}
+.layout-template-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.layout-template-count {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+}
+.layout-template-add {
+  width: 100%;
+  justify-content: center;
+}
+
+/* コマ番号(showOrder 使用時) */
+.page-layout-order {
+  fill: var(--layout-koma);
+  font-family: var(--mono);
+}

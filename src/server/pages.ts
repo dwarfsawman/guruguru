@@ -8,12 +8,15 @@ import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { BookPages, PageDetail, PageRow, PageSummary, ProjectRow, RecentReferenceImage } from "../shared/apiTypes";
 import type { GenerationRequest } from "../shared/types";
+import type { Asset } from "../shared/apiTypes";
 import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
+import { resolveLayoutTemplate } from "./layoutTemplates";
 import { isPathInside } from "./paths";
 import { getProjectDetail } from "./projects";
 import { deleteRoundTree, roundAttachmentPathFromRequest } from "./rounds";
 import { discardRoundTrashSnapshot } from "./roundTrash";
+import { createSourceAsset } from "./sourceAssets";
 import { objectBody, stringOr } from "./validate";
 
 type PageDetailOptions = {
@@ -58,6 +61,7 @@ export function listPagesWithProject(projectId: string): BookPages {
     [projectId]
   );
 
+  // `pg.*` に含まれる layout_json は toApiRow が `layout`(parse 済み)へ変換する(db.ts の jsonColumnNames)。
   const pages = rows.map((row) => {
     const item = toApiRow(row)!;
     if (typeof item.representativeAssetId === "string") {
@@ -71,18 +75,92 @@ export function listPagesWithProject(projectId: string): BookPages {
   return { project, pages };
 }
 
-/** 末尾に新規ページを追加する。 */
-export function createPage(projectId: string): PageRow {
+/**
+ * 末尾に新規ページを追加する。`body.layoutTemplateId` があればコマ割りテンプレを解決して
+ * `layout_json` に保存する(通常の空ページは NULL)。
+ */
+export function createPage(projectId: string, body?: unknown): PageRow {
   requireProject(projectId);
+  const layoutJson = resolveLayoutJsonFromBody(body);
   const nextIndex =
     getRow<{ next_index: number }>(
       "SELECT COALESCE(MAX(page_index), -1) + 1 AS next_index FROM pages WHERE project_id = ?",
       [projectId]
     )?.next_index ?? 0;
   const id = createId("page");
-  runSql("INSERT INTO pages (id, project_id, page_index, title) VALUES (?, ?, ?, '')", [id, projectId, nextIndex]);
+  runSql("INSERT INTO pages (id, project_id, page_index, title, layout_json) VALUES (?, ?, ?, '', ?)", [
+    id,
+    projectId,
+    nextIndex,
+    layoutJson
+  ]);
   runSql("UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", [projectId]);
   return toApiRow(getRow("SELECT * FROM pages WHERE id = ?", [id])) as unknown as PageRow;
+}
+
+/** body から layoutTemplateId を解決し、保存する layout_json(未指定/未解決は null)を返す。 */
+function resolveLayoutJsonFromBody(body: unknown): string | null {
+  if (body === undefined || body === null) {
+    return null;
+  }
+  const input = objectBody(body);
+  const templateId = stringOr(input.layoutTemplateId ?? input.layout_template_id, "");
+  if (!templateId) {
+    return null;
+  }
+  const layout = resolveLayoutTemplate(templateId);
+  if (!layout) {
+    throw new HttpError(400, "指定されたコマ割りテンプレートが見つかりません。");
+  }
+  return JSON.stringify(layout);
+}
+
+/**
+ * 画像を新規ページとして取り込む(複数インポートの1枚分)。空ページを作り、既存の source-asset
+ * 経路(ファイルコピー、ComfyUI 不要)でその画像を代表アセットにする。ワークフローテンプレは
+ * project の default、無ければ最初の非削除テンプレを流用する(生成はしないのでパラメータは既定値)。
+ */
+export async function importImageAsPage(projectId: string, body: unknown): Promise<{ page: PageRow; asset: Asset }> {
+  requireProject(projectId);
+  const input = objectBody(body);
+  const templateId = pickImportTemplateId(projectId);
+  const page = createPage(projectId);
+  try {
+    const result = await createSourceAsset(projectId, {
+      templateId,
+      dataUrl: input.dataUrl ?? input.data_url,
+      filename: stringOr(input.filename, "imported"),
+      pageId: page.id
+    });
+    return { page, asset: result.asset };
+  } catch (error) {
+    // 画像取り込みに失敗したら、作ったばかりの空ページを片付ける。
+    runSql("DELETE FROM pages WHERE id = ? AND project_id = ?", [page.id, projectId]);
+    throw error;
+  }
+}
+
+/** 画像取り込みに使うワークフローテンプレ id(project default → 最初の非削除)。無ければ 400。 */
+function pickImportTemplateId(projectId: string): string {
+  const project = getRow<{ default_template_id: string | null }>(
+    "SELECT default_template_id FROM projects WHERE id = ?",
+    [projectId]
+  );
+  if (project?.default_template_id) {
+    const ok = getRow("SELECT id FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [
+      project.default_template_id
+    ]);
+    if (ok) {
+      return project.default_template_id;
+    }
+  }
+  const first = getRow<{ id: string }>(
+    "SELECT id FROM workflow_templates WHERE deleted_at IS NULL ORDER BY created_at ASC LIMIT 1"
+  );
+  if (first) {
+    return first.id;
+  }
+  throw new HttpError(400, "画像を取り込むにはワークフローテンプレートが必要です。先にテンプレートを登録してください。");
 }
 
 /** ページのタイトルを更新する。 */

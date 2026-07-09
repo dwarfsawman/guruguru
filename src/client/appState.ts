@@ -1,5 +1,12 @@
 import type { ComfySettings, LlmSettings } from "../shared/types";
-import type { BookPages, ModelCheckResult, ProjectDetail, ProjectSummary, RecentReferenceImage } from "../shared/apiTypes";
+import type {
+  BookPages,
+  LayoutTemplateSummary,
+  ModelCheckResult,
+  ProjectDetail,
+  ProjectSummary,
+  RecentReferenceImage
+} from "../shared/apiTypes";
 import type { ConnectionState } from "./views/homeView";
 import type { MaskPanelTab } from "./views/assetModal";
 import type { WorkflowTemplate } from "./workflowTypes";
@@ -245,6 +252,12 @@ export interface AppState {
   pageSettingsByPage: Record<string, GenerationDraft>;
   /** Book: 「Book共通設定」画面を開いているか(book grid の上に重ねて表示)。 */
   bookSettingsOpen: boolean;
+  /** コマ割りテンプレート選択モーダルを開いているか(book grid の上に重ねて表示)。 */
+  layoutPickerOpen: boolean;
+  /** コマ割りテンプレート一覧(内蔵+取り込み)。未取得は null。ピッカーを開くときに取得する。 */
+  layoutTemplates: LayoutTemplateSummary[] | null;
+  /** テンプレート一覧を取得中か。null(未取得/失敗)とローディングを区別してピッカー表示を出し分ける。 */
+  layoutTemplatesLoading: boolean;
   /** Book: 新規ページの既定にする Book 共通の生成設定。未設定(null)なら直前ページから引き継ぐ。 */
   bookCommonSettings: GenerationDraft | null;
   /** Book: Book 共通のスタイル LoRA(bookCommonSettings とセットで使う)。 */
@@ -333,6 +346,9 @@ export const state: AppState = {
   loraDraftsByPage: {},
   pageSettingsByPage: {},
   bookSettingsOpen: false,
+  layoutPickerOpen: false,
+  layoutTemplates: null,
+  layoutTemplatesLoading: false,
   bookCommonSettings: null,
   bookCommonLora: null,
   bookReaderOpen: false,

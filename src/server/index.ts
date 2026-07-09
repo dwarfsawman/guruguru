@@ -14,11 +14,13 @@ import {
   createPage,
   deletePage,
   getPageDetail,
+  importImageAsPage,
   listPagesWithProject,
   listRecentImages,
   reorderPages,
   updatePage
 } from "./pages";
+import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
 import { createSourceAsset } from "./sourceAssets";
 import { createPasteSource, getPasteAttachments, purgeOrphanPasteSources, putPasteAttachments, servePasteSource } from "./pasteAttachments";
 import {
@@ -213,6 +215,21 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
+  // --- コマ割りテンプレート(漫画レイアウト)。グローバル(全Book共通)。 ---
+  if (method === "GET" && path === "/api/layout-templates") {
+    sendJson(res, 200, { templates: listLayoutTemplates() });
+    return;
+  }
+  if (method === "POST" && path === "/api/layout-templates") {
+    sendJson(res, 201, { template: importLayoutTemplate(await readJson(req)) });
+    return;
+  }
+  const layoutTemplateDeleteMatch = path.match(/^\/api\/layout-templates\/([^/]+)$/);
+  if (method === "DELETE" && layoutTemplateDeleteMatch) {
+    sendJson(res, 200, deleteLayoutTemplate(layoutTemplateDeleteMatch[1]!));
+    return;
+  }
+
   if (method === "GET" && path === "/api/projects") {
     sendJson(res, 200, { projects: listProjects() });
     return;
@@ -241,13 +258,20 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
   if (method === "POST" && pagesCollectionMatch) {
-    sendJson(res, 201, { page: createPage(pagesCollectionMatch[1]!) });
+    sendJson(res, 201, { page: createPage(pagesCollectionMatch[1]!, await readJson(req)) });
     return;
   }
 
   const pagesReorderMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/reorder$/);
   if (method === "POST" && pagesReorderMatch) {
     sendJson(res, 200, reorderPages(pagesReorderMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  // 画像を新規ページとして取り込む(複数インポートの1枚分)。/pages/:pageId より前に判定する。
+  const pageImportImageMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/import-image$/);
+  if (method === "POST" && pageImportImageMatch) {
+    sendJson(res, 201, await importImageAsPage(pageImportImageMatch[1]!, await readJson(req)));
     return;
   }
 
