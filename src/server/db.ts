@@ -1,13 +1,14 @@
 import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { Database } from "bun:sqlite";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { ComfySettings, LlmSettings } from "../shared/types";
 import { isPathInsideOrEqual } from "./paths";
 
 const isTestDataMode = process.env.GURUGURU_TEST_DB === "1" || process.env.NODE_ENV === "test";
+type SqlValue = string | number | bigint | boolean | null | Uint8Array;
 
 export const dataRoot = resolveDataRoot();
 assertDataRootIsNotProjectLocal(dataRoot);
@@ -16,7 +17,7 @@ mkdirSync(dataRoot, { recursive: true });
 export const dbPath = join(dataRoot, "app.db");
 mkdirSync(dirname(dbPath), { recursive: true });
 
-export const db = new DatabaseSync(dbPath);
+export const db = new Database(dbPath);
 
 const jsonColumnNames = new Map<string, string>([
   ["workflow_json", "workflowJson"],
@@ -299,17 +300,17 @@ export function setSetting(key: string, value: unknown) {
 
 export function runSql(sql: string, params: unknown[] = []) {
   const statement = db.prepare(sql);
-  return statement.run(...(params as SQLInputValue[]));
+  return statement.run(...(params as SqlValue[]));
 }
 
 export function getRow<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | null {
   const statement = db.prepare(sql);
-  return (statement.get(...(params as SQLInputValue[])) as T | undefined) ?? null;
+  return (statement.get(...(params as SqlValue[])) as T | undefined) ?? null;
 }
 
 export function getRows<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
   const statement = db.prepare(sql);
-  return statement.all(...(params as SQLInputValue[])) as T[];
+  return statement.all(...(params as SqlValue[])) as T[];
 }
 
 export function toApiRow<T extends Record<string, unknown>>(row: T | null): Record<string, unknown> | null {

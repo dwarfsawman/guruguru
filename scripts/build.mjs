@@ -1,17 +1,8 @@
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 
 const root = resolve(".");
-const esbuild = process.platform === "win32"
-  ? join(root, "node_modules", "@esbuild", "win32-x64", "esbuild.exe")
-  : join(root, "node_modules", "@esbuild", "linux-x64", "bin", "esbuild");
-
-if (!existsSync(esbuild)) {
-  console.error(`esbuild binary was not found at ${esbuild}`);
-  process.exit(1);
-}
 
 async function main() {
   await rm(join(root, "dist"), { recursive: true, force: true });
@@ -20,55 +11,40 @@ async function main() {
   await mkdir(join(root, "dist", "public", "ort"), { recursive: true });
   await mkdir(join(root, "dist", "public", "mediapipe-wasm"), { recursive: true });
 
-  run([
-    "src/server/index.ts",
-    "--bundle",
-    "--platform=node",
-    "--format=esm",
-    "--target=node24",
-    "--outfile=dist/server/index.js",
-    "--log-level=warning"
-  ]);
+  await bundle({
+    entrypoint: "src/server/index.ts",
+    outfile: "dist/server/index.js",
+    target: "bun",
+    format: "esm"
+  });
 
-  run([
-    "src/client/main.ts",
-    "--bundle",
-    "--platform=browser",
-    "--format=esm",
-    "--target=es2022",
-    "--outfile=dist/public/app.js",
-    "--log-level=warning"
-  ]);
+  await bundle({
+    entrypoint: "src/client/main.ts",
+    outfile: "dist/public/app.js",
+    target: "browser",
+    format: "esm"
+  });
 
-  run([
-    "src/client/websam/worker.ts",
-    "--bundle",
-    "--platform=browser",
-    "--format=esm",
-    "--target=es2022",
-    "--outfile=dist/public/websam-worker.js",
-    "--log-level=warning"
-  ]);
+  await bundle({
+    entrypoint: "src/client/websam/worker.ts",
+    outfile: "dist/public/websam-worker.js",
+    target: "browser",
+    format: "esm"
+  });
 
-  run([
-    "src/client/pose/worker.ts",
-    "--bundle",
-    "--platform=browser",
-    "--format=iife",
-    "--target=es2022",
-    "--outfile=dist/public/pose-worker.js",
-    "--log-level=warning"
-  ]);
+  await bundle({
+    entrypoint: "src/client/pose/worker.ts",
+    outfile: "dist/public/pose-worker.js",
+    target: "browser",
+    format: "iife"
+  });
 
-  run([
-    "src/client/pose/cigposeWorker.ts",
-    "--bundle",
-    "--platform=browser",
-    "--format=esm",
-    "--target=es2022",
-    "--outfile=dist/public/pose-cigpose-worker.js",
-    "--log-level=warning"
-  ]);
+  await bundle({
+    entrypoint: "src/client/pose/cigposeWorker.ts",
+    outfile: "dist/public/pose-cigpose-worker.js",
+    target: "browser",
+    format: "esm"
+  });
 
   await copyFile(join(root, "src", "client", "index.html"), join(root, "dist", "public", "index.html"));
   await bundleCss();
@@ -80,7 +56,7 @@ async function main() {
 
 /**
  * src/client/styles/index.css の @import 行の順に各ファイルを素朴に連結して
- * dist/public/styles.css を出力する。esbuild の CSS バンドルを使わないのは、
+ * dist/public/styles.css を出力する。Bun の CSS バンドルを使わないのは、
  * パース→再出力による書き換え（等価だが差分の出る整形変更）を避け、
  * ソースとの対応を 1:1 に保つため。カスケード順は index.css の記載順そのもの。
  */
@@ -144,15 +120,26 @@ async function copyMediapipeWasmAssets() {
   }
 }
 
-function run(args) {
-  const result = spawnSync(esbuild, args, {
-    cwd: root,
-    stdio: "inherit"
+async function bundle(options) {
+  const result = await Bun.build({
+    entrypoints: [options.entrypoint],
+    target: options.target,
+    format: options.format,
+    logLevel: "warning"
   });
 
-  if (result.status !== 0) {
-    process.exit(result.status ?? 1);
+  if (!result.success) {
+    for (const log of result.logs) {
+      console.error(log);
+    }
+    process.exit(1);
   }
+
+  if (result.outputs.length !== 1) {
+    throw new Error(`Expected one build output for ${options.entrypoint}, got ${result.outputs.length}`);
+  }
+
+  await Bun.write(join(root, options.outfile), result.outputs[0]);
 }
 
 main().catch((error) => {
