@@ -11,7 +11,7 @@ guruguru を「AI生成画像を素材に、商用CG集（DLsite/FANZA 等で頒
 | P2 | テキスト（縦書き/横書き・フォント選択・自前レイアウト・グリフパス描画） | 完了(2026-07-10) |
 | P3 | 吹き出し＋ボックス（形状ライブラリ・しっぽ・テキスト内包） | 完了(2026-07-10) |
 | P4 | 完成品書き出し（全ページ PNG/JPEG 連番一括・ORA レイヤ反映） | 完了(2026-07-10) |
-| P5 | コマ形状編集（頂点ドラッグ・分割・ガター） | 実装完了・レビュー待ち(2026-07-10) |
+| P5 | コマ形状編集（頂点ドラッグ・分割・ガター） | 完了(2026-07-10) |
 | P6 | モザイクツール（非破壊リージョン・販路規定準拠粒度） | 未着手 |
 
 実装は各フェーズ = 1 worktree ブランチ → レビュー → main マージ。実装者は Sonnet 5 executor、
@@ -275,7 +275,7 @@ debounce PATCH（1s）＋クローズ時 flush。
     (`guruguru-preview-p4-export-images` エントリ追加済み)でのブラウザ動作確認も実施
     (全ページ/選択ページ導線・PNG⇄JPEG切替・解像度プリセット・書き出し→トースト→モーダル自動close)。
     監督による最終レビューは別途。
-- 2026-07-10: P5 実装完了(ブランチ `p5-panel-shape`、main マージは監督が行う)。設計からの差分・補足:
+- 2026-07-10: P5 完了・main マージ（merge 598a871、監督レビュー済み）。設計からの差分・補足:
   - **共有純ロジック `src/shared/panelShapeEdit.ts`**(新規): `panelShapeToPolygon`(rect は4頂点+cornerRadius
     破棄、ellipse は16頂点近似、polygon はコピー、path は null)/ `movePolygonVertex`(x∈[0,maxX]・
     y∈[0,maxY] へ clamp、NaN は元の値を維持)/ `insertPolygonVertex`(辺中点挿入)/
