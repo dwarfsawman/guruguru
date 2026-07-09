@@ -5,7 +5,7 @@
  * （リポジトリ規約として `操作メモ.md` にも記載）
  */
 
-/* フォントは自己ホスト（オフラインでも見た目が変わらないように）。日本語グリフは NotoSansJP を優先し、英数字などは従来の IBM Plex Sans を使う。 */
+/* 英数字は自己ホストの IBM Plex Sans（latin サブセット, 軽量）を使う。日本語グリフは自己ホストせず、ローカルに Noto Sans JP があればそれを、無ければ OS 標準の日本語フォント（Windows: Yu Gothic UI / Meiryo, macOS: Hiragino など）をブラウザに選ばせる。 */
 
 @font-face {
   font-family: "IBM Plex Sans";
@@ -62,7 +62,7 @@
   --danger: #f87171;
   --danger-soft: color-mix(in srgb, var(--danger) 10%, transparent);
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.72);
-  --font: "NotoSansJP", "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font: "IBM Plex Sans", "Noto Sans JP", ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Yu Gothic UI", "Hiragino Sans", Meiryo, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
