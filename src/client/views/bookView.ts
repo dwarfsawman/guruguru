@@ -5,11 +5,23 @@
  */
 import type { BookPages, PageSummary } from "../../shared/apiTypes";
 import { escapeAttr, escapeHtml } from "../format";
-import { iconImage, iconMangaPanelImport, iconOpenBook, iconPlus, iconSettings, iconSparkle, iconTrash } from "../icons";
+import {
+  iconCheck,
+  iconClose,
+  iconImage,
+  iconMangaPanelImport,
+  iconOpenBook,
+  iconPlus,
+  iconSettings,
+  iconSparkle,
+  iconTrash
+} from "../icons";
 import { renderPageLayoutSvg } from "./pageLayoutSvg";
 
-export function renderBookView(book: BookPages): string {
+export function renderBookView(book: BookPages, selectionMode = false, selectedPageIds: readonly string[] = []): string {
   const { project, pages } = book;
+  const selectedSet = new Set(selectedPageIds);
+  const selectedCount = pages.filter((page) => selectedSet.has(page.id)).length;
   return `
     <main class="book-layout">
       <section class="panel">
@@ -33,9 +45,10 @@ export function renderBookView(book: BookPages): string {
             </div>
           </div>
         </div>
+        ${renderSelectionToolbar(selectionMode, selectedCount, pages.length)}
         <div class="image-grid page-grid">
-          ${pages.map((page, index) => renderPageCard(page, index)).join("")}
-          ${renderAddPageCard()}
+          ${pages.map((page, index) => renderPageCard(page, index, selectionMode, selectedSet.has(page.id))).join("")}
+          ${selectionMode ? "" : renderAddPageCard()}
         </div>
       </section>
     </main>
@@ -46,7 +59,31 @@ function renderBookActionLabel(line1: string, line2: string): string {
   return `<span class="book-action-text"><span>${escapeHtml(line1)}</span><span>${escapeHtml(line2)}</span></span>`;
 }
 
-function renderPageCard(page: PageSummary, index: number): string {
+function renderSelectionToolbar(selectionMode: boolean, selectedCount: number, pageCount: number): string {
+  if (!selectionMode) {
+    return `
+      <div class="book-selection-bar">
+        <button class="button-secondary compact" type="button" data-action="toggle-page-selection-mode" ${pageCount === 0 ? "disabled" : ""}>
+          ${iconCheck()}ページを選択
+        </button>
+      </div>
+    `;
+  }
+  return `
+    <div class="book-selection-bar is-active">
+      <div class="book-selection-status">
+        <b>${selectedCount}</b><span>/ ${pageCount} pages selected</span>
+      </div>
+      <div class="book-selection-actions">
+        <button class="button-secondary compact" type="button" data-action="select-all-book-pages" ${pageCount === 0 ? "disabled" : ""}>すべて選択</button>
+        <button class="button-danger compact" type="button" data-action="delete-selected-pages" ${selectedCount === 0 ? "disabled" : ""}>${iconTrash()}選択ページを削除</button>
+        <button class="button-secondary compact" type="button" data-action="clear-book-page-selection">${iconClose()}終了</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPageCard(page: PageSummary, index: number, selectionMode: boolean, selected: boolean): string {
   const number = index + 1;
   const title = page.title.trim();
   const label = title || `ページ${number}`;
@@ -54,23 +91,29 @@ function renderPageCard(page: PageSummary, index: number): string {
   // (data-action="open-page-panels"。代表画像の有無に関係なく、コマが無割り当てでも選べる)。
   // それ以外のページは従来どおり代表画像の汎用 zoom lightbox(無ければズーム不可)。
   const zoomSrc = page.representativeImageUrl || page.representativeThumbnailUrl;
-  const panelAttrs = page.layout
-    ? ` data-action="open-page-panels" data-id="${escapeAttr(page.id)}" title="クリックでコマを選択"`
-    : zoomSrc
-      ? ` data-image-zoom-src="${escapeAttr(zoomSrc)}" data-image-zoom-label="${escapeAttr(label)}"` +
-        ` data-image-zoom-action="open-page" data-image-zoom-action-id="${page.id}" data-image-zoom-action-label="画像生成"` +
-        ` title="クリックで拡大"`
-      : "";
+  const panelAttrs = selectionMode
+    ? ""
+    : page.layout
+      ? ` data-action="open-page-panels" data-id="${escapeAttr(page.id)}" title="クリックでコマを選択"`
+      : zoomSrc
+        ? ` data-image-zoom-src="${escapeAttr(zoomSrc)}" data-image-zoom-label="${escapeAttr(label)}"` +
+          ` data-image-zoom-action="open-page" data-image-zoom-action-id="${page.id}" data-image-zoom-action-label="画像生成"` +
+          ` title="クリックで拡大"`
+        : "";
   const isZoomable = Boolean(page.layout || zoomSrc);
+  const selectionAttrs = selectionMode
+    ? ` data-action="toggle-book-page-selection" data-id="${escapeAttr(page.id)}" aria-selected="${selected ? "true" : "false"}"`
+    : "";
   return `
-    <article class="page-card" data-key="page-${page.id}" data-page-id="${page.id}">
+    <article class="page-card${selectionMode ? " is-selectable" : ""}${selected ? " is-selected" : ""}" data-key="page-${page.id}" data-page-id="${page.id}"${selectionAttrs}>
+      ${selectionMode ? `<span class="page-selection-check" aria-hidden="true">${selected ? iconCheck() : ""}</span>` : ""}
       <div class="page-card-body">
-        <span class="page-card-thumb${isZoomable ? " is-zoomable" : ""}"${panelAttrs}>
+        <span class="page-card-thumb${!selectionMode && isZoomable ? " is-zoomable" : ""}"${panelAttrs}>
           ${renderPageThumb(page, label)}
         </span>
         <span class="page-card-index">${number}</span>
       </div>
-      <div class="page-card-actions">
+      <div class="page-card-actions${selectionMode ? " is-hidden" : ""}">
         <button class="page-card-icon generate" type="button" data-action="open-page" data-id="${page.id}" aria-label="${escapeAttr(label)}の生成画面を開く" title="画像生成画面へ">${iconSparkle()}</button>
         <button class="page-card-icon danger" type="button" data-action="delete-page" data-id="${page.id}" aria-label="ページを削除" title="ページを削除">${iconTrash()}</button>
       </div>

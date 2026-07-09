@@ -8,6 +8,7 @@ import type { LayoutTemplateSummary, LayoutTemplatesResponse } from "../shared/a
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
+import { confirmDialog } from "./confirmDialogController";
 
 /** テンプレ一覧を取得して state に載せる。失敗時は layoutTemplates を null のままにして呼び出し側が通知する。 */
 export async function refreshLayoutTemplates() {
@@ -63,7 +64,13 @@ export async function importLayoutFile(input: HTMLInputElement) {
 async function deleteLayoutTemplate(id: string) {
   const template = state.layoutTemplates?.find((item) => item.id === id);
   const label = template?.name?.trim() || "このテンプレート";
-  if (!window.confirm(`テンプレート「${label}」を削除しますか？`)) {
+  const confirmed = await confirmDialog({
+    title: "テンプレートを削除",
+    message: `テンプレート「${label}」を削除しますか？`,
+    confirmLabel: "削除",
+    tone: "danger"
+  });
+  if (!confirmed) {
     return;
   }
   await api(`/api/layout-templates/${id}`, { method: "DELETE" });

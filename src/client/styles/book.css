@@ -75,6 +75,45 @@
   min-width: 60px;
 }
 
+.book-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-height: 34px;
+  margin: 6px 0 12px;
+}
+
+.book-selection-bar.is-active {
+  justify-content: space-between;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  padding: 8px 10px;
+}
+
+.book-selection-status {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.book-selection-status b {
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 16px;
+}
+
+.book-selection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 @container book-actions (max-width: 680px) {
   .book-heading-actions {
     gap: 8px;
@@ -157,6 +196,41 @@
   cursor: grabbing;
 }
 
+.page-card.is-selectable {
+  cursor: pointer;
+}
+
+.page-card.is-selected::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border: 2px solid var(--accent);
+  border-radius: 3px;
+  pointer-events: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.page-selection-check {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.66);
+  color: var(--accent);
+}
+
+.page-selection-check svg {
+  width: 15px;
+  height: 15px;
+}
+
 /* 並び替えドラッグ中の挿入位置プレビュー（カード間ギャップに立つ縦バー）。 */
 .page-drop-indicator {
   position: absolute;
@@ -221,6 +295,10 @@
 .page-card:hover .page-card-actions,
 .page-card:focus-within .page-card-actions {
   opacity: 1;
+}
+
+.page-card-actions.is-hidden {
+  display: none;
 }
 
 .page-card-icon {

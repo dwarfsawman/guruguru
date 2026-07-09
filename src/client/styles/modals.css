@@ -107,6 +107,61 @@
   padding: 18px;
 }
 
+.confirm-dialog-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(8px);
+  padding: 24px;
+}
+
+.confirm-dialog {
+  display: grid;
+  gap: 16px;
+  width: min(460px, calc(100vw - 48px));
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.confirm-dialog-header,
+.confirm-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.confirm-dialog-header {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+
+.confirm-dialog-header h2 {
+  margin: 2px 0 0;
+  font-size: 18px;
+}
+
+.confirm-dialog-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.confirm-dialog-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
 .workflow-dialog-header,
 .workflow-diagram-heading,
 .workflow-import-modal-actions {
@@ -385,4 +440,3 @@
   max-width: none;
   padding-right: 58px;
 }
-

@@ -48,6 +48,15 @@ export interface PanelGenerationTarget {
   panelId: string;
 }
 
+export interface ConfirmDialogState {
+  id: string;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  tone: "default" | "danger";
+}
+
 export const generationDraftFields = [
   "templateId",
   "img2imgTemplateId",
@@ -235,6 +244,10 @@ export interface AppState {
   book: BookPages | null;
   /** Book: 開いているページ id。null=page grid 表示中(または single)。set=そのページの1枚生成 UI。 */
   activePageId: string | null;
+  /** Book: ページ一覧で複数ページを選ぶモード。 */
+  bookSelectionMode: boolean;
+  /** Book: ページ一覧の選択モードで選択中の page id。 */
+  selectedBookPageIds: string[];
   activeRoundId: string | null;
   activeAssetId: string | null;
   filter: "all" | "selected" | "rejected" | "favorite" | "unmarked";
@@ -300,6 +313,8 @@ export interface AppState {
   pagePanelAssignments: PagePanelAssignment[];
   /** コマ内生成: 生成フォームが対象にしているコマ。null なら通常の(コマ非対象)生成。 */
   activePanelTarget: PanelGenerationTarget | null;
+  /** 独自確認ダイアログ。null=閉。 */
+  confirmDialog: ConfirmDialogState | null;
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
   iterationScrollReset: boolean;
   maskEditMode: boolean;
@@ -340,6 +355,8 @@ export const state: AppState = {
   currentProjectId: null,
   book: null,
   activePageId: null,
+  bookSelectionMode: false,
+  selectedBookPageIds: [],
   activeRoundId: null,
   activeAssetId: null,
   filter: "all",
@@ -387,6 +404,7 @@ export const state: AppState = {
   pagePanelLightbox: null,
   pagePanelAssignments: [],
   activePanelTarget: null,
+  confirmDialog: null,
   iterationScrollReset: false,
   maskEditMode: false,
   maskToolbarMinimized: false,

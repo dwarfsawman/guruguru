@@ -21,6 +21,7 @@ import { captureGenerationDraft, rememberActiveRoundDraft, restoreGenerationDraf
 import { refreshModelCheck } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
+import { confirmDialog } from "./confirmDialogController";
 
 /** Book を開く（グリッド表示）。単一プロジェクトの openProject に相当するプロジェクトセッション初期化 + ページ一覧取得。 */
 export async function openBook(projectId: string) {
@@ -29,6 +30,8 @@ export async function openBook(projectId: string) {
   state.book = data;
   state.detail = null;
   state.activePageId = null;
+  state.bookSelectionMode = false;
+  state.selectedBookPageIds = [];
   state.activeRoundId = null;
   state.activeAssetId = null;
   state.bookSettingsOpen = false;
@@ -107,6 +110,8 @@ export async function backToPages() {
   flushProjectDraftPersist();
   state.detail = null;
   state.activePageId = null;
+  state.bookSelectionMode = false;
+  state.selectedBookPageIds = [];
   state.activeRoundId = null;
   state.activeAssetId = null;
   state.deletePreviewRoundId = null;
@@ -122,6 +127,8 @@ export async function backToPages() {
 export function clearBookSession() {
   state.book = null;
   state.activePageId = null;
+  state.bookSelectionMode = false;
+  state.selectedBookPageIds = [];
   state.bookSettingsOpen = false;
   state.bookReaderOpen = false;
   state.bookReaderSettingsOpen = false;
@@ -136,6 +143,7 @@ async function reloadPages() {
     return;
   }
   state.book = await api<BookPages>(`/api/projects/${state.currentProjectId}/pages`);
+  pruneBookPageSelection();
 }
 
 async function addPage(layoutTemplateId?: string) {
@@ -242,24 +250,77 @@ function applyCarryoverToNewPage(newPageId: string, previousLastPageId: string |
   state.loraDraftsByPage[newPageId] = [...lora];
 }
 
+function pruneBookPageSelection() {
+  const pageIds = new Set((state.book?.pages ?? []).map((page) => page.id));
+  state.selectedBookPageIds = state.selectedBookPageIds.filter((id) => pageIds.has(id));
+  if (state.bookSelectionMode && pageIds.size === 0) {
+    state.bookSelectionMode = false;
+  }
+}
+
+function setBookSelectionMode(enabled: boolean) {
+  state.bookSelectionMode = enabled;
+  state.selectedBookPageIds = [];
+  requestRender();
+}
+
+function toggleBookPageSelection(pageId: string) {
+  if (!state.bookSelectionMode) {
+    return;
+  }
+  const selected = new Set(state.selectedBookPageIds);
+  if (selected.has(pageId)) {
+    selected.delete(pageId);
+  } else {
+    selected.add(pageId);
+  }
+  state.selectedBookPageIds = (state.book?.pages ?? []).map((page) => page.id).filter((id) => selected.has(id));
+  requestRender();
+}
+
+function selectAllBookPages() {
+  state.selectedBookPageIds = (state.book?.pages ?? []).map((page) => page.id);
+  requestRender();
+}
+
 async function deletePage(pageId: string) {
+  await deletePages([pageId]);
+}
+
+async function deletePages(pageIds: string[]) {
   if (!state.currentProjectId) {
     return;
   }
-  const page = state.book?.pages.find((item) => item.id === pageId);
-  const label = page?.title.trim() || "このページ";
-  if (!window.confirm(`ページ「${label}」を削除します。このページの生成画像も削除されます。よろしいですか？`)) {
+  const pages = (state.book?.pages ?? []).filter((page) => pageIds.includes(page.id));
+  if (pages.length === 0) {
     return;
   }
-  await api(`/api/projects/${state.currentProjectId}/pages/${pageId}`, { method: "DELETE" });
-  delete state.referenceDraftsByPage[pageId];
-  delete state.loraDraftsByPage[pageId];
-  if (state.activePageId === pageId) {
-    state.detail = null;
-    state.activePageId = null;
+  const label = pages.length === 1
+    ? `ページ「${pages[0]!.title.trim() || "このページ"}」`
+    : `${pages.length}ページ`;
+  const confirmed = await confirmDialog({
+    title: "ページを削除",
+    message: `${label}を削除します。対象ページの生成画像も削除されます。よろしいですか？`,
+    confirmLabel: "削除",
+    tone: "danger"
+  });
+  if (!confirmed) {
+    return;
+  }
+  for (const page of pages) {
+    await api(`/api/projects/${state.currentProjectId}/pages/${page.id}`, { method: "DELETE" });
+    delete state.referenceDraftsByPage[page.id];
+    delete state.loraDraftsByPage[page.id];
+    delete state.pageSettingsByPage[page.id];
+    if (state.activePageId === page.id) {
+      state.detail = null;
+      state.activePageId = null;
+    }
   }
   await reloadPages();
-  pushToast("ページを削除しました。", "info");
+  state.bookSelectionMode = false;
+  state.selectedBookPageIds = [];
+  pushToast(pages.length === 1 ? "ページを削除しました。" : `${pages.length}ページを削除しました。`, "info");
   requestRender();
 }
 
@@ -455,6 +516,9 @@ function slotToOrderedIds(draggedId: string, slot: PageDropSlot): string[] | nul
 
 function bindPageDragEvents(app: HTMLElement) {
   app.addEventListener("pointerdown", (event) => {
+    if (state.bookSelectionMode) {
+      return;
+    }
     if (event.button !== 0) {
       return;
     }
@@ -559,6 +623,11 @@ registerActions({
   "add-page": () => addPage(),
   "add-page-from-template": (id) => addPage(id),
   "delete-page": (id) => deletePage(id),
+  "toggle-page-selection-mode": () => setBookSelectionMode(!state.bookSelectionMode),
+  "toggle-book-page-selection": (id) => toggleBookPageSelection(id),
+  "select-all-book-pages": () => selectAllBookPages(),
+  "clear-book-page-selection": () => setBookSelectionMode(false),
+  "delete-selected-pages": () => deletePages(state.selectedBookPageIds),
   "back-to-pages": () => backToPages(),
   "open-book-settings": () => openBookSettings(),
   "save-book-settings": () => saveBookSettings(),

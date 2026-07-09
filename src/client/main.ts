@@ -16,6 +16,7 @@ import { renderBookSettingsView } from "./views/bookSettingsView";
 import { renderBookReaderView } from "./views/bookReaderView";
 import { renderLayoutTemplatePicker } from "./views/layoutTemplateModal";
 import { renderPagePanelLightbox } from "./views/pagePanelLightboxView";
+import { renderConfirmDialog } from "./views/confirmDialog";
 import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
@@ -85,6 +86,7 @@ import { setFormValue } from "./formUtils";
 import "./edgePopoutController";
 import "./imageLightboxController";
 import "./modelCheckController";
+import "./confirmDialogController";
 import { importImagesAsPages } from "./bookController";
 import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
 import {
@@ -666,7 +668,7 @@ function render(_options: RenderOptions = {}) {
             state.bookCommonSettings !== null
           )
         : state.book
-          ? renderBookView(state.book)
+          ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds)
           : renderHome(
             state.projects,
             state.settings,
@@ -682,7 +684,8 @@ function render(_options: RenderOptions = {}) {
     state.layoutPickerOpen && state.book && !state.detail
       ? renderLayoutTemplatePicker(state.layoutTemplates, state.layoutTemplatesLoading)
       : "",
-    renderPagePanelLightboxView()
+    renderPagePanelLightboxView(),
+    renderConfirmDialog(state.confirmDialog)
   ];
   const changed = !lastRegionHtml || regions.some((html, i) => html !== lastRegionHtml![i]);
   if (changed) {
@@ -695,6 +698,7 @@ function render(_options: RenderOptions = {}) {
     ${regions[5]}
     ${regions[6]}
     ${regions[7]}
+    ${regions[8]}
   `);
     lastRegionHtml = regions;
   }

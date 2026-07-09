@@ -15,6 +15,7 @@ import { refreshModelCheck } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
 import { clearBookSession, openBook } from "./bookController";
+import { confirmDialog } from "./confirmDialogController";
 
 export async function loadHome() {
   state.currentProjectId = null;
@@ -211,7 +212,13 @@ async function openProjectByMode(projectId: string) {
 async function deleteProject(projectId: string) {
   const project = state.projects.find((item) => item.id === projectId) ?? state.detail?.project ?? null;
   const projectName = project?.name ?? "このProject";
-  if (!window.confirm(`Project "${projectName}" を削除します。生成画像とイテレーションも削除しますか？`)) {
+  const confirmed = await confirmDialog({
+    title: "Projectを削除",
+    message: `Project "${projectName}" を削除します。生成画像とイテレーションも削除しますか？`,
+    confirmLabel: "削除",
+    tone: "danger"
+  });
+  if (!confirmed) {
     return;
   }
 
