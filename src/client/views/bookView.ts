@@ -5,7 +5,7 @@
  */
 import type { BookPages, PageSummary } from "../../shared/apiTypes";
 import { escapeAttr, escapeHtml } from "../format";
-import { iconImage, iconPlus, iconSettings, iconTrash } from "../icons";
+import { iconImage, iconPlus, iconSettings, iconSparkle, iconTrash } from "../icons";
 import { renderPageLayoutSvg } from "./pageLayoutSvg";
 
 export function renderBookView(book: BookPages): string {
@@ -17,7 +17,7 @@ export function renderBookView(book: BookPages): string {
           <div>
             <p class="section-kicker">Book · ページ一覧</p>
             <h1>${escapeHtml(project.name)}</h1>
-            <p class="book-subtitle">ページをクリックすると1枚生成画面へ移動します。ドラッグで並び替えできます。</p>
+            <p class="book-subtitle">画像をクリックすると拡大表示します。拡大画面の「画像生成」またはカード右上の✨から1枚生成画面へ移動できます。ドラッグで並び替えできます。</p>
           </div>
           <div class="book-heading-actions">
             <span class="panel-count"><b>${pages.length}</b> pages</span>
@@ -44,16 +44,25 @@ function renderPageCard(page: PageSummary, index: number): string {
   const number = index + 1;
   const title = page.title.trim();
   const label = title || `ページ${number}`;
+  // 代表画像があればクリックで lightbox 拡大(フル画像優先、無ければサムネ)。無ければズーム不可。
+  // lightbox 内の「画像生成」ボタンから生成画面へ遷移する(data-image-zoom-action=open-page)。
+  // 将来はこの拡大表示上で漫画のコマを選んで生成する想定。カード右上の✨は同遷移の直行ショートカット。
+  const zoomSrc = page.representativeImageUrl || page.representativeThumbnailUrl;
+  const zoomAttrs = zoomSrc
+    ? ` data-image-zoom-src="${escapeAttr(zoomSrc)}" data-image-zoom-label="${escapeAttr(label)}"` +
+      ` data-image-zoom-action="open-page" data-image-zoom-action-id="${page.id}" data-image-zoom-action-label="画像生成"` +
+      ` title="クリックで拡大"`
+    : "";
   return `
     <article class="page-card" data-key="page-${page.id}" data-page-id="${page.id}">
-      <button class="page-card-open" type="button" data-action="open-page" data-id="${page.id}" aria-label="${escapeAttr(label)}を開く" title="${escapeAttr(label)}">
-        <span class="page-card-thumb">
-          ${renderPageThumb(page)}
+      <div class="page-card-body">
+        <span class="page-card-thumb${zoomSrc ? " is-zoomable" : ""}"${zoomAttrs}>
+          ${renderPageThumb(page, label)}
         </span>
         <span class="page-card-index">${number}</span>
-      </button>
+      </div>
       <div class="page-card-actions">
-        <button class="page-card-icon" type="button" data-action="rename-page" data-id="${page.id}" aria-label="ページ名を変更" title="ページ名を変更">${iconSettings()}</button>
+        <button class="page-card-icon generate" type="button" data-action="open-page" data-id="${page.id}" aria-label="${escapeAttr(label)}の生成画面を開く" title="画像生成画面へ">${iconSparkle()}</button>
         <button class="page-card-icon danger" type="button" data-action="delete-page" data-id="${page.id}" aria-label="ページを削除" title="ページを削除">${iconTrash()}</button>
       </div>
     </article>
@@ -64,9 +73,9 @@ function renderPageCard(page: PageSummary, index: number): string {
  * ページのサムネ。代表画像があれば画像、無ければコマ割りレイアウトの枠サムネ、
  * どちらも無ければ空。レイアウト枠サムネにより一覧がコマ割り表示になる。
  */
-function renderPageThumb(page: PageSummary): string {
+function renderPageThumb(page: PageSummary, label: string): string {
   if (page.representativeThumbnailUrl) {
-    return `<img class="page-thumb-img" src="${escapeAttr(page.representativeThumbnailUrl)}" alt="" loading="lazy" draggable="false" />`;
+    return `<img class="page-thumb-img" src="${escapeAttr(page.representativeThumbnailUrl)}" alt="${escapeAttr(label)}" loading="lazy" draggable="false" />`;
   }
   if (page.layout) {
     return `<span class="page-thumb-layout">${renderPageLayoutSvg(page.layout, { ariaLabel: "コマ割りプレビュー" })}</span>`;

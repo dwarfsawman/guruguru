@@ -250,23 +250,6 @@ async function deletePage(pageId: string) {
   requestRender();
 }
 
-async function renamePage(pageId: string) {
-  if (!state.currentProjectId) {
-    return;
-  }
-  const page = state.book?.pages.find((item) => item.id === pageId);
-  const next = window.prompt("ページ名を入力してください。", page?.title ?? "");
-  if (next === null) {
-    return;
-  }
-  await api(`/api/projects/${state.currentProjectId}/pages/${pageId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ title: next.trim() })
-  });
-  await reloadPages();
-  requestRender();
-}
-
 // --- Book共通設定(新規ページの既定値)。生成サイドバーを編集バッファとして再利用する ---
 
 /** Book共通設定画面を開く。生成フォームを共通設定の編集バッファとして使う(既存の共通設定があれば復元)。 */
@@ -463,7 +446,7 @@ function bindPageDragEvents(app: HTMLElement) {
       return;
     }
     const target = event.target as HTMLElement;
-    // リネーム/削除アイコンや「追加」タイルの上では並び替えを開始しない。
+    // リネーム/削除/生成アイコン(.page-card-actions)や「追加」タイルの上では並び替えを開始しない。
     if (target.closest(".page-card-actions") || target.closest(".page-add-card")) {
       return;
     }
@@ -563,7 +546,6 @@ registerActions({
   "add-page": () => addPage(),
   "add-page-from-template": (id) => addPage(id),
   "delete-page": (id) => deletePage(id),
-  "rename-page": (id) => renamePage(id),
   "back-to-pages": () => backToPages(),
   "open-book-settings": () => openBookSettings(),
   "save-book-settings": () => saveBookSettings(),

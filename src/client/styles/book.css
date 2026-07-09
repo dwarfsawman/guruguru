@@ -50,16 +50,12 @@
   pointer-events: none;
 }
 
-.page-card-open {
+.page-card-body {
   display: flex;
   flex-direction: column;
   gap: 4px;
   width: 100%;
-  padding: 0;
-  border: none;
-  background: transparent;
   color: var(--ink);
-  cursor: inherit;
   text-align: center;
 }
 
@@ -71,6 +67,11 @@
   background: transparent;
   padding: 14px;
   overflow: hidden;
+}
+
+/* 代表画像がある時のみクリックで lightbox 拡大できることを示す。 */
+.page-card-thumb.is-zoomable {
+  cursor: zoom-in;
 }
 
 .page-thumb-img {
@@ -131,6 +132,16 @@
 .page-card-icon svg {
   width: 13px;
   height: 13px;
+}
+
+/* 生成ショートカット(✨)。同じ action-icon クラスだが、生成の直行導線としてアクセント色で区別する。 */
+.page-card-icon.generate {
+  color: var(--accent);
+}
+
+.page-card-icon.generate:hover {
+  border-color: var(--accent-line);
+  background: var(--panel-soft);
 }
 
 .page-add-card {

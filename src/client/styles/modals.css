@@ -35,6 +35,33 @@
   box-shadow: 0 16px 60px rgba(0, 0, 0, 0.55);
 }
 
+/* 拡大画面のアクション(例: 生成画面へ遷移する「画像生成」)。画像下の右寄りの余白に浮かせる。
+   将来は漫画のコマ選択もここに並べる想定。 */
+.image-lightbox-actions {
+  position: fixed;
+  left: 78%;
+  top: 86%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  display: flex;
+  gap: 12px;
+  cursor: auto;
+}
+
+.image-lightbox-action {
+  min-height: 44px;
+  padding: 0 30px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+/* ホバーでアクセント色に(枠線・文字)。button-secondary:hover を上回るよう2クラスで指定。 */
+.image-lightbox .image-lightbox-action:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
 .image-lightbox-close {
   position: fixed;
   top: 2vmin;
