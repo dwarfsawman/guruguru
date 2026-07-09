@@ -488,6 +488,10 @@ function fontOptionsHtml(fonts: FontSummary[], currentFontId: string): string {
   if (currentFontId && !fonts.some((font) => font.id === currentFontId) && currentFontId !== "default") {
     options.unshift(`<option value="${escapeAttr(currentFontId)}" selected>${escapeHtml(currentFontId)}</option>`);
   }
+  // 新規テキストの既定は fontId="default"(サーバが Noto Sans JP → 游ゴシック → メイリオへ解決する)。
+  // value="default" のオプションが無いとブラウザが一覧先頭のフォントを表示してしまい、
+  // 実際に使われる既定フォントと select の表示が食い違う。常に先頭へ置く。
+  options.unshift(`<option value="default"${currentFontId === "default" ? " selected" : ""}>既定フォント</option>`);
   return options.join("");
 }
 
