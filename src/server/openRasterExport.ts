@@ -12,7 +12,16 @@ import {
   type PanelFrame,
   type PanelShape
 } from "../shared/pageLayout";
-import { contentMaxWidth, type BoxObject, type PageObject, type PageVec, type TextContent, type TextObject } from "../shared/pageObjects";
+import {
+  contentMaxWidth,
+  type BalloonObject,
+  type BoxObject,
+  type PageObject,
+  type PageVec,
+  type TextContent,
+  type TextObject
+} from "../shared/pageObjects";
+import { balloonContentMaxWidth, renderBalloonSvg } from "../shared/balloonShape";
 import { renderTextSvg } from "../shared/textSvg";
 import { getRow, getRows, toApiRow } from "./db";
 import { HttpError } from "./http";
@@ -263,8 +272,7 @@ function resolveObjectsPageHeight(page: PageRow): number {
 
 /**
  * ページオブジェクトを SVG でラスタライズしたレイヤー。何も描く物が無ければ null
- * (パネル枠と同じ「無ければ null」規約)。box は P1 から、text/box・balloon の content は P2 で追加。
- * balloon 自体の形状描画(P3)はまだ無いので、balloon は content テキストのみ出す。
+ * (パネル枠と同じ「無ければ null」規約)。box は P1、text は P2、balloon(本体+しっぽ+content)は P3。
  */
 async function renderObjectsLayer(
   objects: PageObject[] | null | undefined,
@@ -290,7 +298,27 @@ function renderPageObjectElement(object: PageObject, pageHeight: number, canvas:
   if (object.kind === "text") {
     return renderTextObjectElement(object, pageHeight, canvas);
   }
-  return renderContentElement(object.content, object.position, object.rotation, object.size, pageHeight, canvas);
+  return renderBalloonObjectElement(object, pageHeight, canvas);
+}
+
+/**
+ * 吹き出し1件(本体+しっぽ+content)。本体+しっぽは `renderBalloonSvg`(クライアント/サーバ共用の
+ * 純ロジック)にローカル単位(anchor=0,0/rotation=0)で描かせ、外側の `<g>` で pixel 空間へ
+ * translate→rotate→scale する -- `renderTextBlockElement` と全く同じパターン(box の回転と同じ
+ * 「キャンバスとページのアスペクト比がズレる場合のみプレビューと微差」という既知の割り切りを踏襲)。
+ */
+function renderBalloonObjectElement(object: BalloonObject, pageHeight: number, canvas: ExportCanvas): string {
+  const [anchorX, anchorY] = mapPoint([object.position.x, object.position.y], pageHeight, canvas);
+  const deg = (object.rotation * 180) / Math.PI;
+  const scaleX = canvas.width;
+  const scaleY = canvas.height / pageHeight;
+  const shape = renderBalloonSvg(object, { x: 0, y: 0 }, 0);
+  const wrapped = `<g transform="translate(${fmt(anchorX)} ${fmt(anchorY)})${deg ? ` rotate(${fmt(deg)})` : ""} scale(${fmt(scaleX)} ${fmt(scaleY)})">${shape}</g>`;
+  if (!object.content) {
+    return wrapped;
+  }
+  const maxWidth = balloonContentMaxWidth(object.shape, object.size, object.content.style.direction);
+  return wrapped + renderTextBlockElement(object.content, object.position, object.rotation, maxWidth, pageHeight, canvas);
 }
 
 function renderContentElement(
