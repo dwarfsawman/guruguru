@@ -113,6 +113,15 @@ import {
   updatePageObjectFieldFromControl,
   updatePageObjectTextFromInput
 } from "./pageObjectsController";
+import {
+  handlePanelShapeDblClick,
+  handlePanelShapeKeydown,
+  handlePanelShapePointerCancel,
+  handlePanelShapePointerDown,
+  handlePanelShapePointerMove,
+  handlePanelShapePointerUp,
+  updateShapeSplitGutterFromControl
+} from "./panelShapeController";
 import { handleBookReaderKeydown } from "./bookReaderController";
 import {
   deselectPasteObjectIfAny,
@@ -245,6 +254,9 @@ function bindEvents() {
     if (handleAssetCardDblClick(event)) {
       return;
     }
+    if (handlePanelShapeDblClick(event)) {
+      return;
+    }
     if (handlePagePanelDblClick(event)) {
       return;
     }
@@ -318,6 +330,10 @@ function bindEvents() {
     }
     if (target.dataset.pageObjectField || target.dataset.pageObjectContentField) {
       updatePageObjectFieldFromControl(target);
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.shapeGutterField) {
+      updateShapeSplitGutterFromControl(target);
       return;
     }
     if (target.dataset.generationField && target.dataset.generationField !== "prompt" && target.dataset.generationField !== "batchSize") {
@@ -453,6 +469,10 @@ function bindEvents() {
     if (handlePageObjectsKeydown(event)) {
       return;
     }
+    // コマ形状編集(コマ枠モード)の選択中頂点の Delete/Backspace。
+    if (handlePanelShapeKeydown(event)) {
+      return;
+    }
 
     if (!state.detail) {
       if (event.key === "Escape" && state.sidebarOpen) {
@@ -543,6 +563,9 @@ function bindEvents() {
     if (handlePageObjectsPointerDown(event)) {
       return;
     }
+    if (handlePanelShapePointerDown(event)) {
+      return;
+    }
     if (handlePoseEditorPointerDown(event)) {
       return;
     }
@@ -569,6 +592,9 @@ function bindEvents() {
       return;
     }
     if (handlePageObjectsPointerMove(event)) {
+      return;
+    }
+    if (handlePanelShapePointerMove(event)) {
       return;
     }
     if (handleMaskEditorPointerMove(event)) {
@@ -599,6 +625,9 @@ function bindEvents() {
     if (handlePageObjectsPointerUp(event)) {
       return;
     }
+    if (handlePanelShapePointerUp(event)) {
+      return;
+    }
     if (handleMaskEditorPointerUp(event)) {
       return;
     }
@@ -625,6 +654,9 @@ function bindEvents() {
       return;
     }
     if (handlePageObjectsPointerCancel(event)) {
+      return;
+    }
+    if (handlePanelShapePointerCancel(event)) {
       return;
     }
     if (handleMaskEditorPointerCancel(event)) {
@@ -947,7 +979,15 @@ function renderPagePanelLightboxView(): string {
     state.pagePanelAssignments,
     state.pageObjectsDraft,
     state.selectedPageObjectId,
-    state.pageObjectFonts.fonts
+    state.pageObjectFonts.fonts,
+    {
+      layout: state.pageLayoutDraft,
+      selectedPanelId: state.shapeSelectedPanelId,
+      selectedVertexIndex: state.shapeSelectedVertexIndex,
+      splitMode: state.shapeSplitMode,
+      splitDraft: state.shapeSplitDraft,
+      gutter: state.shapeSplitGutter
+    }
   );
 }
 

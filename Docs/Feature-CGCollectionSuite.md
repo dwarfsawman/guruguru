@@ -11,7 +11,7 @@ guruguru を「AI生成画像を素材に、商用CG集（DLsite/FANZA 等で頒
 | P2 | テキスト（縦書き/横書き・フォント選択・自前レイアウト・グリフパス描画） | 完了(2026-07-10) |
 | P3 | 吹き出し＋ボックス（形状ライブラリ・しっぽ・テキスト内包） | 完了(2026-07-10) |
 | P4 | 完成品書き出し（全ページ PNG/JPEG 連番一括・ORA レイヤ反映） | 完了(2026-07-10) |
-| P5 | コマ形状編集（頂点ドラッグ・分割・ガター） | 未着手 |
+| P5 | コマ形状編集（頂点ドラッグ・分割・ガター） | 実装完了・レビュー待ち(2026-07-10) |
 | P6 | モザイクツール（非破壊リージョン・販路規定準拠粒度） | 未着手 |
 
 実装は各フェーズ = 1 worktree ブランチ → レビュー → main マージ。実装者は Sonnet 5 executor、
@@ -275,3 +275,51 @@ debounce PATCH（1s）＋クローズ時 flush。
     (`guruguru-preview-p4-export-images` エントリ追加済み)でのブラウザ動作確認も実施
     (全ページ/選択ページ導線・PNG⇄JPEG切替・解像度プリセット・書き出し→トースト→モーダル自動close)。
     監督による最終レビューは別途。
+- 2026-07-10: P5 実装完了(ブランチ `p5-panel-shape`、main マージは監督が行う)。設計からの差分・補足:
+  - **共有純ロジック `src/shared/panelShapeEdit.ts`**(新規): `panelShapeToPolygon`(rect は4頂点+cornerRadius
+    破棄、ellipse は16頂点近似、polygon はコピー、path は null)/ `movePolygonVertex`(x∈[0,maxX]・
+    y∈[0,maxY] へ clamp、NaN は元の値を維持)/ `insertPolygonVertex`(辺中点挿入)/
+    `removePolygonVertex`(3頂点未満になる削除は null で拒否)/ `polygonArea`(shoelace)/
+    `splitPanelByLine`。分割は「頂点上に交点が乗る」「片方が頂点hitでもう片方が辺hit」等の退化ケースに
+    対応するため、頂点hit/辺hitを統一した拡張点列(`ExtPoint[]`)を作ってから2箇所の hit index で
+    分割するアプローチにした(交点がちょうど2つでない/分割後3頂点未満/退化直線は null)。ガターは
+    直線の法線方向へ両チェーンをそれぞれ自分の内側点の平均符号方向に半分ずつオフセット。
+    ユニットテスト20件(rect/ellipse→polygon、頂点操作の境界値、分割の交点/ガター/頂点上交点/面積、
+    退化ケース)。
+  - **`pageLayout.ts` に軽量な再検証 `normalizeEditedPageLayout`**(新規、`normalizeGuruguruLayout` とは別)
+    を追加: page.aspectRatio/height の存在チェック、panels 各要素の shape 型/数値検証(既存
+    `normalizePanelShape`/`normalizeFrame` を再利用)、panel id 一意性(衝突時は連番サフィックスで
+    回避。黙って破棄すると編集中パネルが消えるため)。panels が1つも残らなければ null(サーバ側で400)。
+    balloons/texts/source は素通しで保持。あわせて `clonePageLayout`(JSON 経由のディープコピー)も追加。
+  - **サーバ `PATCH /api/projects/:id/pages/:pageId/layout`**(`src/server/pages.ts` の `updatePageLayout`)。
+    `normalizeEditedPageLayout` で検証(null なら400)、消えた panel id の `page_panel_assignments` を
+    削除(残った id の割り当て/crop は行を触らないのでそのまま温存)、`pages.updated_at` 更新。
+  - **クライアント「コマ枠」モードタブ**(P1 のモードタブ機構に追加、`mode: "panels"|"objects"|"shapes"`):
+    - 新規 `src/client/panelShapeController.ts`: 選択/多角形変換/頂点ドラッグ・辺クリックでの頂点追加・
+      ダブルクリック(または選択+Delete)での頂点削除/分割モードのトグル・ドラッグ・確定を扱う。
+      保存は 1s debounce PATCH + lightbox クローズ時 flush(`pageObjectsController.ts` と同型の
+      `resetShapeEditSession`/`flushShapeEditSave`/`consumeShapeEditDirtyFlag`)。**分割だけは debounce
+      を待たず即時 PATCH**する -- 新パネル id(`panel_N` 採番)はサーバに保存されて初めて存在するため、
+      既存割り当ての移行(`PATCH .../panels/:id/assignment`)より前に layout PATCH の完了を await する
+      必要がある(ヘッドレス検証でこの順序要件が実際に効くこと -- 保存前は新 id への assignment PATCH が
+      400、保存後は 200 になること -- を確認済み)。移行先は面積の大きい側(`polygonArea` で比較)。
+    - 頂点ドラッグの座標変換は `svgGizmo.ts` に追加した `getInverseStageTransform`(画面px→ステージ座標の
+      逆変換。既存のギズモは中心固定のデルタ計算だけで済んでいたため、分割線ドラッグの絶対位置取得で
+      初めて逆変換が必要になった)を使う。
+    - 表示(`views/pagePanelLightboxView.ts` に追加): 選択パネルが polygon なら頂点ハンドル+辺中点
+      マーカーを表示(分割モード中は非表示)、rect/ellipse なら「多角形に変換して編集」ボタン、path なら
+      「このコマ形状は編集できません」。分割モードはドラッグ中の直線プレビュー(`<line>`)を表示。
+    - **既知の割り切り**: 「コマ」モードは `page.layout`(state.book 側)をそのまま読むため、コマ枠編集の
+      debounce 保存が完了するまでの間にタブを切り替えると一時的に旧形状が見える(保存完了後は
+      `state.book` 側にも反映して同期する)。実用上は保存完了(1秒以内)を待てば一致する。
+    - **undo/redo は P5 のスコープ外**(オブジェクトモードの `pageObjectHistory.ts` とは独立に持たない
+      仕様どおり)。
+  - ヘッドレス API 検証(隔離 `GURUGURU_TEST_DATA_DIR`、bun で `src/server/index.ts` を直接起動):
+    layout PATCH の正常置換・0パネルで400・消えたパネルの割り当て削除・残ったパネルの crop 温存・
+    分割後の新パネル id への割り当て移行の順序要件(保存前400→保存後200)・不正 layout(page情報欠落)で
+    400・編集後も preview.png が描画できること、の27アサーション全通過。
+  - ブラウザ検証(実施者、`guruguru-preview-p5-panel-shape` エントリ追加): four-grid テンプレでページ作成
+    → コマ枠タブ切替 → コマ選択 → 多角形に変換 → 頂点ドラッグ(斜めカットを確認・再オープンで永続化確認・
+    「コマ」タブでも同じ形状に追従することを確認)→ 辺クリックで頂点追加 → ダブルクリックで頂点削除 →
+    分割モードでドラッグ → 2コマに分割されガター込みで反映(ページ一覧のプレビューにも反映)されることを
+    確認。コンソールエラーなし。監督による最終レビュー・ブラウザ確認は別途。

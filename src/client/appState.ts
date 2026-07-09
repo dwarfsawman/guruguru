@@ -9,7 +9,7 @@ import type {
   ProjectSummary,
   RecentReferenceImage
 } from "../shared/apiTypes";
-import type { PanelCrop } from "../shared/pageLayout";
+import type { PageLayout, PanelCrop } from "../shared/pageLayout";
 import type { PageObject } from "../shared/pageObjects";
 import type { ConnectionState } from "./views/homeView";
 import type { MaskPanelTab } from "./views/assetModal";
@@ -38,11 +38,11 @@ export interface ReferenceDraft {
 export interface PagePanelLightboxState {
   pageId: string;
   /**
-   * ページ編集モードタブ(Docs/Feature-CGCollectionSuite.md P1)。"panels" = 既存のコマ選択/クロップ編集、
-   * "objects" = テキスト/吹き出し/ボックスの編集。`page.layout` が無いページは常に "objects" 扱い
-   * (呼び出し側が open 時に決める。タブ自体は表示しない)。
+   * ページ編集モードタブ(Docs/Feature-CGCollectionSuite.md P1/P5)。"panels" = 既存のコマ選択/クロップ編集、
+   * "objects" = テキスト/吹き出し/ボックスの編集、"shapes" = コマ形状編集(P5: 頂点ドラッグ・分割)。
+   * `page.layout` が無いページは常に "objects" 扱い(呼び出し側が open 時に決める。タブ自体は表示しない)。
    */
-  mode: "panels" | "objects";
+  mode: "panels" | "objects" | "shapes";
   selectedPanelId: string | null;
   /** クロップ編集モードの対象コマ id。null なら通常の選択モード。 */
   cropPanelId: string | null;
@@ -344,6 +344,22 @@ export interface AppState {
    * 初回オブジェクトモード表示時に取得しキャッシュする(`ensureFontsLoaded`)。
    */
   pageObjectFonts: { status: "idle" | "loading" | "ready" | "error"; fonts: FontSummary[] };
+  /**
+   * コマ形状編集(Docs/Feature-CGCollectionSuite.md P5): 開いている lightbox のページのレイアウト・ドラフト。
+   * lightbox を開いた時に `page.layout` のディープコピーを持ち、頂点編集/分割はこれを直接書き換えて
+   * `panelShapeController.ts` が 1s debounce(分割は即時)で PATCH する。レイアウト無しページは null。
+   */
+  pageLayoutDraft: PageLayout | null;
+  /** コマ形状編集: 選択中パネル id。null=未選択。 */
+  shapeSelectedPanelId: string | null;
+  /** コマ形状編集: 選択中頂点 index(Delete キーでの削除用)。null=頂点未選択。 */
+  shapeSelectedVertexIndex: number | null;
+  /** コマ形状編集: 分割モード(コマ上ドラッグで直線を引いて2分割)が有効か。 */
+  shapeSplitMode: boolean;
+  /** コマ形状編集: 分割モードでドラッグ中の直線(pointerdown〜pointerup の作業用プレビュー)。null=非ドラッグ中。 */
+  shapeSplitDraft: { start: [number, number]; current: [number, number] } | null;
+  /** コマ形状編集: 分割時のガター幅(page 単位、既定はページ幅の1.5%)。 */
+  shapeSplitGutter: number;
   /** コマ内生成: 生成フォームが対象にしているコマ。null なら通常の(コマ非対象)生成。 */
   activePanelTarget: PanelGenerationTarget | null;
   /** 独自確認ダイアログ。null=閉。 */
@@ -442,6 +458,12 @@ export const state: AppState = {
   pageObjectsDraft: [],
   selectedPageObjectId: null,
   pageObjectFonts: { status: "idle", fonts: [] },
+  pageLayoutDraft: null,
+  shapeSelectedPanelId: null,
+  shapeSelectedVertexIndex: null,
+  shapeSplitMode: false,
+  shapeSplitDraft: null,
+  shapeSplitGutter: 0.015,
   activePanelTarget: null,
   confirmDialog: null,
   iterationScrollReset: false,

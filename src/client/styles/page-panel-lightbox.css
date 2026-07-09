@@ -191,6 +191,64 @@
   font-weight: 600;
 }
 
+/* --- 「コマ枠」モード(Docs/Feature-CGCollectionSuite.md P5: 頂点編集・分割) --- */
+
+.page-shape-outline {
+  stroke: color-mix(in srgb, var(--layout-koma, #17140f) 55%, transparent);
+  cursor: pointer;
+  transition: stroke 0.15s ease;
+}
+
+.page-shape-outline:hover {
+  stroke: var(--accent-strong);
+}
+
+.page-shape-outline.is-selected {
+  stroke: var(--accent);
+}
+
+.page-shape-handles {
+  touch-action: none;
+}
+
+.page-shape-vertex-handle {
+  fill: var(--accent);
+  stroke: #fff;
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.page-shape-vertex-handle:active {
+  cursor: grabbing;
+}
+
+.page-shape-vertex-handle.is-selected {
+  fill: var(--accent-strong, var(--accent));
+}
+
+.page-shape-edge-handle {
+  fill: color-mix(in srgb, var(--accent) 45%, transparent);
+  stroke: #fff;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  cursor: copy;
+  pointer-events: auto;
+}
+
+.page-shape-edge-handle:hover {
+  fill: var(--accent);
+}
+
+.page-shape-split-line {
+  stroke: var(--warn, #d97706);
+  stroke-width: 2px;
+  stroke-dasharray: 5 3;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
 /* --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1) --- */
 
 .page-object-shape {
