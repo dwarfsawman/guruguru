@@ -10,7 +10,7 @@ guruguru を「AI生成画像を素材に、商用CG集（DLsite/FANZA 等で頒
 | P1 | ページオブジェクト基盤（データモデル・API・編集UI・ギズモ共通化・undo/redo） | 完了(2026-07-10) |
 | P2 | テキスト（縦書き/横書き・フォント選択・自前レイアウト・グリフパス描画） | 完了(2026-07-10) |
 | P3 | 吹き出し＋ボックス（形状ライブラリ・しっぽ・テキスト内包） | 完了(2026-07-10) |
-| P4 | 完成品書き出し（全ページ PNG/JPEG 連番一括・ORA レイヤ反映） | 未着手 |
+| P4 | 完成品書き出し（全ページ PNG/JPEG 連番一括・ORA レイヤ反映） | 完了(2026-07-10) |
 | P5 | コマ形状編集（頂点ドラッグ・分割・ガター） | 未着手 |
 | P6 | モザイクツール（非破壊リージョン・販路規定準拠粒度） | 未着手 |
 
@@ -239,3 +239,39 @@ debounce PATCH（1s）＋クローズ時 flush。
     （エクスポート/プレビューのみだった）のを `renderInlineContentGlyphs` 抽出で解消。
   - 監督ブラウザ検証済み: 吹き出し追加・5形状切替・しっぽトグル+tip ドラッグ（ローカル座標保存）・
     content テキスト編集・保存復元。
+- 2026-07-10: P4 完了（ブランチ p4-export-images、main 未マージ・監督レビュー待ち）。設計からの差分:
+  - `POST /api/projects/:id/export-images`(`src/server/imageExport.ts` 新規)。既存の
+    `openRasterExport.ts` の `createPageLayers`/`renderMergedImage`/`requireProject`/`loadExportPages`/
+    `safeAsciiName` を `export` して再利用し、新規に `resolvePageHeight(page, layout)`(既存の
+    `appendObjectsLayer` 内インライン計算を抽出。ORA/preview.png の挙動は不変)を追加した。
+    `createPageLayers` は元々 `canvas: {width,height}` を引数に取る設計だったため、P4 は
+    「pixelWidth × ページ高さ比(`resolvePageHeight`)」で計算した専用解像度の `canvas` を渡すだけで、
+    ORA 用のコード変更なしに任意解像度の書き出しに対応できた。
+  - JPEG は `sharp().flatten({background:{r:255,g:255,b:255}}).jpeg({quality})` でフラット化。ただし
+    既存の Paper レイヤー(不透明・ベージュ `#f5f2ea` 相当)が常に全面を覆うため、実際に白背景が
+    透けて見えるケースは無い(四隅は透過なし・Paper色で統一。preview.png/ORA と見た目を揃えるための
+    意図的な据え置き。将来 Paper 無しの合成が生まれた場合の保険として flatten は維持)。
+  - ファイル名は `page_index+1` の3桁ゼロ詰め(`001.png`/`002.jpg`、タイトルなし。ORA の
+    `pageFileBase`とは別関数 `pageImageFileBase` を用意し、ORA 側の命名は無変更)。zip 名は
+    `<プロジェクト名サニタイズ>_images.zip`。
+  - UI: Book 見出しに「画像書き出し」ボタン(全ページ対象)、既存のページ選択モードのツールバーに
+    「選択ページを画像書き出し」ボタンを追加(選択モードは P1 以前から存在、流用)。ダイアログは
+    `.workflow-modal`/`.workflow-dialog`(レイアウトテンプレピッカー踏襲、幅だけ
+    `shortcuts-help-dialog` 同様に上書き)。形式(PNG/JPEG ラジオ)・JPEG品質(1-100 スライダー、
+    JPEG選択時のみ表示)・解像度(プリセット1280/1600/2048 + 自由入力)は `#image-export-form` から
+    `readForm`(FormData)で読み、state との双方向同期は持たない(プロジェクト作成フォームの
+    既存パターンを踏襲)。ダウンロードは openraster-export と同型の fetch→blob→`<a download>`。
+    循環 import を避けるため、共有ヘルパ(`responseErrorMessage`/`filenameFromContentDisposition`/
+    `downloadBlob`)は `bookController.ts` から `src/client/downloadUtils.ts` へ切り出し、
+    両 controller から参照する形にリファクタした(ORA 側の挙動は不変)。
+  - オブジェクト/モザイクの合成順コメントは `imageExport.ts` の `renderPageImage` に記載済み(P6 未実装、
+    `createPageLayers` にレイヤを足すだけで平坦化ロジック側の変更は不要になる設計)。
+  - **既知のバグ修正1件(実装中に発見)**: JPEG品質スライダー行に付けた `hidden` 属性が
+    `.range-control{display:grid}` に(同 specificity・カスケード順で)上書きされ、PNG選択時にも
+    常時表示されてしまっていた。`.image-export-quality-row[hidden]{display:none}` を追加して解消
+    (ブラウザ検証で発覚)。
+  - ORA へのオブジェクトレイヤ追加は P1〜P3 で実施済みのため、P4 では変更なし(設計書の記載どおり)。
+  - 実施者によるヘッドレス API 検証(zip連番・解像度・quality・4xx)に加え、preview_start
+    (`guruguru-preview-p4-export-images` エントリ追加済み)でのブラウザ動作確認も実施
+    (全ページ/選択ページ導線・PNG⇄JPEG切替・解像度プリセット・書き出し→トースト→モーダル自動close)。
+    監督による最終レビューは別途。

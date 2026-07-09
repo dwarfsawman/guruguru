@@ -38,6 +38,7 @@ export function renderBookView(book: BookPages, selectionMode = false, selectedP
               <span class="panel-count"><b>${pages.length}</b> pages</span>
               <button class="button-secondary compact book-action-button" type="button" data-action="open-book-settings" aria-label="Book共通設定" title="新規ページの既定設定(LoRA/プロンプト/生成パラメータ)を設定">${iconSettings()}${renderBookActionLabel("Book共通", "設定")}</button>
               <button class="button-secondary compact book-action-button" type="button" data-action="export-book-openraster" aria-label="Book全体をOpenRasterでエクスポート" title="Book全体をOpenRasterでエクスポート" ${pages.length === 0 ? "disabled" : ""}>${iconDownload()}${renderBookActionLabel("Book全体", "ORA")}</button>
+              <button class="button-secondary compact book-action-button" type="button" data-action="export-book-images" aria-label="全ページを画像として書き出し" title="全ページを画像(PNG/JPEG)として書き出し" ${pages.length === 0 ? "disabled" : ""}>${iconImage()}${renderBookActionLabel("画像", "書き出し")}</button>
               <button class="button-secondary compact book-action-button" type="button" data-action="open-layout-picker" aria-label="テンプレから追加" title="コマ割りテンプレートを選んでページ追加">${iconMangaPanelImport()}${renderBookActionLabel("テンプレから", "追加")}</button>
               <label class="button-secondary compact source-upload-button book-action-button" aria-label="画像をインポート" title="画像を新規ページとして取り込む(複数選択可)">
                 ${iconImage()}${renderBookActionLabel("画像を", "インポート")}
@@ -80,6 +81,7 @@ function renderSelectionToolbar(selectionMode: boolean, selectedCount: number, p
       <div class="book-selection-actions">
         <button class="button-secondary compact" type="button" data-action="select-all-book-pages" ${pageCount === 0 ? "disabled" : ""}>すべて選択</button>
         <button class="button-secondary compact" type="button" data-action="export-selected-pages-openraster" ${selectedCount === 0 ? "disabled" : ""}>${iconDownload()}選択ページをORA</button>
+        <button class="button-secondary compact" type="button" data-action="export-selected-pages-images" ${selectedCount === 0 ? "disabled" : ""}>${iconImage()}選択ページを画像書き出し</button>
         <button class="button-danger compact" type="button" data-action="delete-selected-pages" ${selectedCount === 0 ? "disabled" : ""}>${iconTrash()}選択ページを削除</button>
         <button class="button-secondary compact" type="button" data-action="clear-book-page-selection">${iconClose()}終了</button>
       </div>

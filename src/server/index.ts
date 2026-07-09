@@ -24,6 +24,7 @@ import {
 } from "./pages";
 import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
 import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport";
+import { createImageExport } from "./imageExport";
 import { listFonts } from "./fonts";
 import { computeTextLayout } from "./textLayoutApi";
 import { createSourceAsset } from "./sourceAssets";
@@ -259,6 +260,19 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const openRasterExportMatch = path.match(/^\/api\/projects\/([^/]+)\/openraster-export$/);
   if (method === "POST" && openRasterExportMatch) {
     const result = await createOpenRasterExport(openRasterExportMatch[1]!, await readJson(req));
+    res.writeHead(200, {
+      "content-type": result.contentType,
+      "content-length": String(result.buffer.byteLength),
+      "content-disposition": `attachment; filename="${result.filename}"`
+    });
+    res.end(result.buffer);
+    return;
+  }
+
+  // 完成品の画像一括書き出し(Docs/Feature-CGCollectionSuite.md P4)。PNG/JPEG 連番(単ページは画像単体)。
+  const imageExportMatch = path.match(/^\/api\/projects\/([^/]+)\/export-images$/);
+  if (method === "POST" && imageExportMatch) {
+    const result = await createImageExport(imageExportMatch[1]!, await readJson(req));
     res.writeHead(200, {
       "content-type": result.contentType,
       "content-length": String(result.buffer.byteLength),

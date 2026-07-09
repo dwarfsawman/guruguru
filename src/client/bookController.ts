@@ -22,6 +22,8 @@ import { refreshModelCheck } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
 import { confirmDialog } from "./confirmDialogController";
+import { openImageExport } from "./imageExportController";
+import { downloadBlob, filenameFromContentDisposition, responseErrorMessage } from "./downloadUtils";
 
 /** Book を開く（グリッド表示）。単一プロジェクトの openProject に相当するプロジェクトセッション初期化 + ページ一覧取得。 */
 export async function openBook(projectId: string) {
@@ -35,6 +37,9 @@ export async function openBook(projectId: string) {
   state.activeRoundId = null;
   state.activeAssetId = null;
   state.bookSettingsOpen = false;
+  state.imageExportOpen = false;
+  state.imageExportPageIds = null;
+  state.imageExportBusy = false;
   state.bookReaderOpen = false;
   state.bookReaderSettingsOpen = false;
   state.sidebarOpen = false;
@@ -130,6 +135,9 @@ export function clearBookSession() {
   state.bookSelectionMode = false;
   state.selectedBookPageIds = [];
   state.bookSettingsOpen = false;
+  state.imageExportOpen = false;
+  state.imageExportPageIds = null;
+  state.imageExportBusy = false;
   state.bookReaderOpen = false;
   state.bookReaderSettingsOpen = false;
   state.recentReferenceImages = [];
@@ -370,30 +378,6 @@ async function exportOpenRaster(pageIds: string[] | null) {
   }
 }
 
-async function responseErrorMessage(response: Response): Promise<string> {
-  try {
-    const parsed = await response.json() as { error?: string };
-    return parsed.error || `${response.status} ${response.statusText}`.trim();
-  } catch {
-    return `${response.status} ${response.statusText}`.trim();
-  }
-}
-
-function filenameFromContentDisposition(value: string | null): string | null {
-  const match = value?.match(/filename="([^"]+)"/);
-  return match?.[1] ?? null;
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
 
 // --- Book共通設定(新規ページの既定値)。生成サイドバーを編集バッファとして再利用する ---
 
@@ -702,6 +686,8 @@ registerActions({
   "export-book-openraster": () => exportOpenRaster(null),
   "export-selected-pages-openraster": () => exportOpenRaster(state.selectedBookPageIds),
   "export-page-openraster": (id) => exportOpenRaster([id]),
+  "export-book-images": () => openImageExport(null),
+  "export-selected-pages-images": () => openImageExport(state.selectedBookPageIds),
   "back-to-pages": () => backToPages(),
   "open-book-settings": () => openBookSettings(),
   "save-book-settings": () => saveBookSettings(),

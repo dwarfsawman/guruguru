@@ -35,14 +35,14 @@ const DEFAULT_RESOLUTION = 300;
 /** レイアウト/代表アセットどちらからも解決できない時のページ高さフォールバック(pageLayout.ts の resolveHeight と同じ値)。 */
 const FALLBACK_OBJECTS_PAGE_HEIGHT = 1.4142;
 
-interface ExportProjectRow {
+export interface ExportProjectRow {
   id: string;
   name: string;
   canvas_width: number | null;
   canvas_height: number | null;
 }
 
-interface ExportCanvas {
+export interface ExportCanvas {
   width: number;
   height: number;
 }
@@ -59,7 +59,7 @@ interface PanelAssignmentAssetRow extends ExportAssetRow {
   crop_json: string;
 }
 
-interface RasterLayer {
+export interface RasterLayer {
   name: string;
   src: string;
   png: Buffer;
@@ -114,7 +114,7 @@ export async function createOpenRasterExport(projectId: string, body: unknown): 
   };
 }
 
-function requireProject(projectId: string): ExportProjectRow {
+export function requireProject(projectId: string): ExportProjectRow {
   const project = getRow<ExportProjectRow>(
     "SELECT id, name, canvas_width, canvas_height FROM projects WHERE id = ?",
     [projectId]
@@ -125,7 +125,7 @@ function requireProject(projectId: string): ExportProjectRow {
   return project;
 }
 
-function loadExportPages(projectId: string, pageIds: string[] | null): PageRow[] {
+export function loadExportPages(projectId: string, pageIds: string[] | null): PageRow[] {
   const rows = getRows<Record<string, unknown>>(
     "SELECT * FROM pages WHERE project_id = ? ORDER BY page_index ASC",
     [projectId]
@@ -198,7 +198,13 @@ export async function createPagePreviewPng(
     .toBuffer();
 }
 
-async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<RasterLayer[]> {
+/**
+ * ページ1件分のレイヤー配列を、指定した `canvas` 解像度でラスタライズする。ORA 出力・preview.png・
+ * 画像一括書き出し(P4)がすべてこの関数を通る -- `canvas` は呼び出し側が渡す任意の解像度でよく
+ * (project の canvas_width/height である必要はない)、mapPoint 等はすべて canvas.width/height 基準で
+ * スケールするため、そのまま高解像度書き出しに転用できる。
+ */
+export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<RasterLayer[]> {
   const paperLayer: RasterLayer = { name: "Paper", src: "", png: await paperPng(canvas) };
   const layout = page.layout ?? null;
   if (!layout) {
@@ -254,11 +260,20 @@ async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<Ra
  * (空の透明レイヤーを作って合成コストをかけない)。
  */
 async function appendObjectsLayer(layers: RasterLayer[], page: PageRow, layout: PageLayout | null, canvas: ExportCanvas): Promise<void> {
-  const pageHeight = layout ? layoutHeight(layout) : resolveObjectsPageHeight(page);
+  const pageHeight = resolvePageHeight(page, layout);
   const png = await renderObjectsLayer(page.objects, pageHeight, canvas);
   if (png) {
     layers.push({ name: "Objects", src: "", png });
   }
+}
+
+/**
+ * ページオブジェクト座標系での「ページの高さ」(page-width=1 単位)。レイアウトが有ればコマ座標系の
+ * 高さ(layoutHeight)、無ければ代表アセットのアスペクト比 → フォールバック順。
+ * 画像一括書き出し(P4)がページごとの解像度(pixelWidth × この値)を計算する時にも使う。
+ */
+export function resolvePageHeight(page: PageRow, layout: PageLayout | null): number {
+  return layout ? layoutHeight(layout) : resolveObjectsPageHeight(page);
 }
 
 /** レイアウトの無いページのオブジェクト座標系の高さ。代表アセットのアスペクト比 → フォールバック順。 */
@@ -625,7 +640,8 @@ function layoutHeight(layout: PageLayout): number {
   return Number.isFinite(height) && height > 0 ? height : layout.page.aspectRatio[1] / layout.page.aspectRatio[0];
 }
 
-async function renderMergedImage(layers: RasterLayer[], canvas: ExportCanvas): Promise<Buffer> {
+/** レイヤー配列を1枚に平坦化した PNG(RGBA)。ORA の mergedimage.png・preview.png・画像一括書き出し(P4)で共用。 */
+export async function renderMergedImage(layers: RasterLayer[], canvas: ExportCanvas): Promise<Buffer> {
   return sharp(blankInput(canvas))
     .composite(layers.map((layer) => ({ input: layer.png, left: 0, top: 0 })))
     .png()
@@ -675,7 +691,7 @@ function pageFileBase(page: PageRow): string {
   return `${number}-${title}`;
 }
 
-function safeAsciiName(value: string, fallback: string): string {
+export function safeAsciiName(value: string, fallback: string): string {
   const safe = value
     .trim()
     .replace(/[^\w.-]+/g, "-")

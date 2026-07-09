@@ -311,6 +311,12 @@ export interface AppState {
   bookCommonSettings: GenerationDraft | null;
   /** Book: Book 共通のスタイル LoRA(bookCommonSettings とセットで使う)。 */
   bookCommonLora: StyleLoraSelection[] | null;
+  /** 画像書き出し(Docs/Feature-CGCollectionSuite.md P4): ダイアログを開いているか(book grid の上に重ねて表示)。 */
+  imageExportOpen: boolean;
+  /** 画像書き出し: 対象ページ id。null=全ページ、配列=選択ページ(選択モードから開いた場合)。 */
+  imageExportPageIds: string[] | null;
+  /** 画像書き出し: 書き出しリクエスト送信中か(ボタン disabled + スピナー表示に使う)。 */
+  imageExportBusy: boolean;
   /** Book Reader(漫画ビューア): ページ一覧の上に重ねて開いているか。state.detail とは独立。 */
   bookReaderOpen: boolean;
   /** Book Reader: 現在表示中の論理ページ index(0-based。見開き時は表示の先頭ページ index)。 */
@@ -423,6 +429,9 @@ export const state: AppState = {
   layoutTemplatesLoading: false,
   bookCommonSettings: null,
   bookCommonLora: null,
+  imageExportOpen: false,
+  imageExportPageIds: null,
+  imageExportBusy: false,
   bookReaderOpen: false,
   bookReaderPageIndex: 0,
   bookReaderSettings: DEFAULT_BOOK_READER_SETTINGS,
