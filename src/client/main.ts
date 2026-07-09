@@ -15,6 +15,7 @@ import { renderBookView } from "./views/bookView";
 import { renderBookSettingsView } from "./views/bookSettingsView";
 import { renderBookReaderView } from "./views/bookReaderView";
 import { renderLayoutTemplatePicker } from "./views/layoutTemplateModal";
+import { renderImageExportModal } from "./views/imageExportModal";
 import { renderPagePanelLightbox } from "./views/pagePanelLightboxView";
 import { renderConfirmDialog } from "./views/confirmDialog";
 import { renderIterationTracker } from "./views/iterationTree";
@@ -89,6 +90,7 @@ import "./modelCheckController";
 import "./confirmDialogController";
 import { importImagesAsPages } from "./bookController";
 import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
+import { closeImageExport } from "./imageExportController";
 import {
   closePagePanelLightbox,
   handlePagePanelClick,
@@ -197,9 +199,14 @@ function bindEvents() {
       closeShortcutsHelp();
       return;
     }
-    // layout-template-modal / page-panel-lightbox は workflow-modal クラスも持つため、先に判定する。
+    // layout-template-modal / image-export-modal / page-panel-lightbox は workflow-modal クラスも
+    // 持つため、先に判定する。
     if (target.classList.contains("layout-template-modal")) {
       closeLayoutPicker();
+      return;
+    }
+    if (target.classList.contains("image-export-modal")) {
+      closeImageExport();
       return;
     }
     if (target.classList.contains("page-panel-lightbox")) {
@@ -724,6 +731,9 @@ function render(_options: RenderOptions = {}) {
     state.layoutPickerOpen && state.book && !state.detail
       ? renderLayoutTemplatePicker(state.layoutTemplates, state.layoutTemplatesLoading)
       : "",
+    state.imageExportOpen && state.book && !state.detail
+      ? renderImageExportModal(state.imageExportPageIds, state.book.pages.length, state.imageExportBusy)
+      : "",
     renderPagePanelLightboxView(),
     renderConfirmDialog(state.confirmDialog)
   ];
@@ -739,6 +749,7 @@ function render(_options: RenderOptions = {}) {
     ${regions[6]}
     ${regions[7]}
     ${regions[8]}
+    ${regions[9]}
   `);
     lastRegionHtml = regions;
   }
