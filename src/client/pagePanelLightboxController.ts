@@ -19,9 +19,10 @@ import {
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
-import { openPage } from "./bookController";
+import { openPage, reloadBookPages } from "./bookController";
 import { restoreGenerationDraftForRound, setGenerationDraftValue } from "./generationDraft";
 import { roundToStep } from "./generationController";
+import { cropRotateHandlePoint } from "./views/pagePanelLightboxView";
 
 /** コマ生成の目標解像度(この面積になるよう、コマの外接矩形アスペクト比から幅/高さを決める)。 */
 const PANEL_TARGET_PIXEL_AREA = 1024 * 1024;
@@ -65,10 +66,19 @@ export async function openPagePanelLightbox(pageId: string) {
   }
 }
 
+/** クロップを編集(commit)した後 true。lightbox を閉じる時にページ一覧プレビューを最新化する目印。 */
+let panelPreviewDirty = false;
+
 export function closePagePanelLightbox() {
+  const wasDirty = panelPreviewDirty;
+  panelPreviewDirty = false;
   state.pagePanelLightbox = null;
   state.pagePanelAssignments = [];
   requestRender();
+  // クロップ編集があった場合だけ、ページ一覧の preview.png?v=... を最新化するため再取得する。
+  if (wasDirty) {
+    void reloadBookPages();
+  }
 }
 
 function closeCropEditor() {
@@ -169,7 +179,21 @@ export function handlePagePanelClick(event: MouseEvent): boolean {
 
 /** main.ts の dblclick ハンドラから呼ばれる。未生成コマ→生成 UI、生成済みコマ→クロップ編集モード。 */
 export function handlePagePanelDblClick(event: MouseEvent): boolean {
-  if (!state.pagePanelLightbox || state.pagePanelLightbox.cropPanelId) {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox) {
+    return false;
+  }
+  if (lightbox.cropPanelId) {
+    // クロップ編集中: 枠外(画像・ギズモハンドル以外)のダブルクリックで編集を抜ける(「選択に戻る」相当)。
+    const target = event.target;
+    const onInteractive =
+      target instanceof Element && target.closest("[data-crop-drag-panel], [data-crop-handle]");
+    if (!onInteractive) {
+      event.preventDefault();
+      clearPendingPanelSelect();
+      closeCropEditor();
+      return true;
+    }
     return false;
   }
   const panelId = panelIdFromEventTarget(event.target);
@@ -267,6 +291,8 @@ async function commitCropDraft(panelId: string) {
     if (result.assignment) {
       state.pagePanelAssignments = state.pagePanelAssignments.map((item) => (item.panelId === panelId ? result.assignment! : item));
     }
+    // 保存できたので、閉じる時にページ一覧のコマ割りプレビューを最新化する。
+    panelPreviewDirty = true;
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
     requestRender();
@@ -506,19 +532,19 @@ export function syncPagePanelCropGizmo(): void {
   const unitPerPx = 1 / ctm.a;
   const radius = GIZMO_HANDLE_SCREEN_RADIUS_PX * unitPerPx;
   const stick = GIZMO_ROTATE_STICK_SCREEN_PX * unitPerPx;
-  const centerY = Number(gizmo.dataset.cy);
   const topMidX = Number(gizmo.dataset.tmx);
   const topMidY = Number(gizmo.dataset.tmy);
   const upX = Number(gizmo.dataset.upx);
   const upY = Number(gizmo.dataset.upy);
+  const pageHeight = Number(gizmo.dataset.ph);
   for (let i = 0; i < 4; i += 1) {
     gizmo.querySelector<SVGCircleElement>(`#pagePanelGizmoCorner${i}`)?.setAttribute("r", String(radius));
   }
   const rotateHandle = gizmo.querySelector<SVGCircleElement>("#pagePanelGizmoRotate");
   const stickLine = gizmo.querySelector<SVGLineElement>("#pagePanelGizmoStick");
-  if (Number.isFinite(topMidX) && Number.isFinite(topMidY) && Number.isFinite(upX) && Number.isFinite(upY) && Number.isFinite(centerY)) {
-    const handleX = topMidX + upX * stick;
-    const handleY = topMidY + upY * stick;
+  if ([topMidX, topMidY, upX, upY, pageHeight].every(Number.isFinite)) {
+    // render と同じ反転ロジックで、画面基準の柄長を使ってハンドル位置を確定する(最上段コマでも掴める)。
+    const [handleX, handleY] = cropRotateHandlePoint([topMidX, topMidY], [upX, upY], stick, pageHeight);
     rotateHandle?.setAttribute("cx", String(handleX));
     rotateHandle?.setAttribute("cy", String(handleY));
     rotateHandle?.setAttribute("r", String(radius));

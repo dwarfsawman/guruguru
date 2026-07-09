@@ -146,6 +146,21 @@ async function reloadPages() {
   pruneBookPageSelection();
 }
 
+/**
+ * ページ一覧を再取得して再描画する(コマ内生成でクロップ編集した後などに、ページ一覧の
+ * コマ割りプレビュー `preview.png?v=...`(v=割り当ての最終更新時刻)を最新化するために呼ぶ)。
+ */
+export async function reloadBookPages() {
+  if (!state.book) {
+    return;
+  }
+  try {
+    await reloadPages();
+  } finally {
+    requestRender();
+  }
+}
+
 async function addPage(layoutTemplateId?: string) {
   if (!state.currentProjectId) {
     return;
