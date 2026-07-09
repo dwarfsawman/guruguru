@@ -281,8 +281,11 @@ async function renderPanelImageLayer(
   canvas: ExportCanvas
 ): Promise<Buffer> {
   const crop = parseCrop(assignment.crop_json);
-  const source = sharp(assignment.image_path, { failOn: "none" }).rotate();
-  const metadata = await source.metadata();
+  // 回転ありは、コマ内生成プレビュー(pagePanelLightboxView)と同じ SVG transform で描き、見た目を一致させる。
+  if (crop.rotation && Math.abs(crop.rotation) > 1e-6) {
+    return renderRotatedPanelImageLayer(assignment, panel, layout, canvas, crop);
+  }
+  const metadata = await sharp(assignment.image_path, { failOn: "none" }).rotate().metadata();
   const sourceWidth = assignment.width ?? metadata.width ?? 1;
   const sourceHeight = assignment.height ?? metadata.height ?? 1;
   const extract = cropToExtract(crop, sourceWidth, sourceHeight);
@@ -302,6 +305,51 @@ async function renderPanelImageLayer(
     .composite([{ input: Buffer.from(renderShapeMaskSvg(panel.shape, layout, canvas)), blend: "dest-in" }])
     .png()
     .toBuffer();
+}
+
+/** cover 窓(正規化)をコマ外接矩形へマップした `<image>` の x/y/width/height(pagePanelLightboxView と同式)。 */
+function imageRectForCropNorm(bounds: [number, number, number, number], crop: PanelCrop) {
+  const boxWidth = Math.max(1e-9, bounds[2] - bounds[0]);
+  const boxHeight = Math.max(1e-9, bounds[3] - bounds[1]);
+  const width = boxWidth / crop.width;
+  const height = boxHeight / crop.height;
+  return { x: bounds[0] - crop.x * width, y: bounds[1] - crop.y * height, width, height };
+}
+
+/**
+ * 回転あり crop のパネルレイヤー。プレビューと同型に「clip を持つ外側 `<g>` + 回転する内側 `<image>`」
+ * の SVG を canvas 解像度でラスタライズする。ソース画像は auto-orient 済み PNG を data URI で埋め込む。
+ */
+async function renderRotatedPanelImageLayer(
+  assignment: PanelAssignmentAssetRow,
+  panel: LayoutPanel,
+  layout: PageLayout,
+  canvas: ExportCanvas,
+  crop: PanelCrop
+): Promise<Buffer> {
+  const oriented = await sharp(assignment.image_path, { failOn: "none" }).rotate().png().toBuffer();
+  const dataUri = `data:image/png;base64,${oriented.toString("base64")}`;
+  const bounds = panelBounds(panel.shape);
+  const rect = imageRectForCropNorm(bounds, crop);
+  const h = layoutHeight(layout);
+  const toPxX = (nx: number) => nx * canvas.width;
+  const toPxY = (ny: number) => (ny / h) * canvas.height;
+  const centerX = toPxX((bounds[0] + bounds[2]) / 2);
+  const centerY = toPxY((bounds[1] + bounds[3]) / 2);
+  const deg = ((crop.rotation ?? 0) * 180) / Math.PI;
+  const clipId = `panel-clip-${panel.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const image = `<image href="${dataUri}" x="${fmt(toPxX(rect.x))}" y="${fmt(toPxY(rect.y))}" width="${fmt(
+    toPxX(rect.width)
+  )}" height="${fmt(toPxY(rect.height))}" preserveAspectRatio="none" transform="rotate(${fmt(deg)} ${fmt(
+    centerX
+  )} ${fmt(centerY)})" />`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}" viewBox="0 0 ${canvas.width} ${canvas.height}"><defs><clipPath id="${clipId}">${renderShapeElement(
+    panel.shape,
+    layout,
+    canvas,
+    `fill="#fff"`
+  )}</clipPath></defs><g clip-path="url(#${clipId})">${image}</g></svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
 function parseCrop(raw: string): PanelCrop {

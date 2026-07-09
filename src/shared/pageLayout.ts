@@ -218,17 +218,38 @@ export function panelBoundsSize(bounds: [number, number, number, number]): [numb
 
 /**
  * コマへ割り当てた画像の表示範囲。asset 画像座標系で正規化(x,y,width,height ∈ [0,1])した
- * 「見えている矩形」。`renderPagePanelLightboxSvg` はこれを panel の外接矩形へ cover フィットで
- * マップする。ドラッグはこの x/y(オフセット)だけを動かす(width/height はアスペクト比で決まり固定)。
+ * 「見えている矩形(窓)」。`renderPagePanelLightbox` はこれを panel の外接矩形へ cover フィットで
+ * マップする。パン=x/y、拡大縮小=width/height(小さいほどズームイン)、`rotation`=窓の中心
+ * まわりの画像回転(ラジアン、省略/0 で無回転=従来と完全に同一)。
  */
 export interface PanelCrop {
   x: number;
   y: number;
   width: number;
   height: number;
+  /** 窓の中心まわりの画像回転(ラジアン, (-π, π])。省略/0 で無回転。 */
+  rotation?: number;
 }
 
-export const FULL_PANEL_CROP: PanelCrop = { x: 0, y: 0, width: 1, height: 1 };
+export const FULL_PANEL_CROP: PanelCrop = { x: 0, y: 0, width: 1, height: 1, rotation: 0 };
+
+/** 拡大縮小(ズーム)の最小窓サイズ。これより小さい窓=より強いズームインは許さない。 */
+export const MIN_CROP_ZOOM_SIZE = 0.05;
+
+/** 角度を (-π, π] へ正規化(非数は 0)。 */
+export function normalizeRotation(value: unknown): number {
+  if (!isFiniteNumber(value)) {
+    return 0;
+  }
+  const twoPi = Math.PI * 2;
+  let r = value % twoPi;
+  if (r <= -Math.PI) {
+    r += twoPi;
+  } else if (r > Math.PI) {
+    r -= twoPi;
+  }
+  return r;
+}
 
 /**
  * asset 画像をパネル外接矩形へ「cover」フィットさせた時の既定 crop(中央寄せ)。
@@ -242,22 +263,37 @@ export function defaultCoverCrop(assetWidth: number, assetHeight: number, boxWid
   const boxAspect = boxWidth / boxHeight;
   if (imageAspect > boxAspect + EPSILON) {
     const width = boxAspect / imageAspect;
-    return { x: (1 - width) / 2, y: 0, width, height: 1 };
+    return { x: (1 - width) / 2, y: 0, width, height: 1, rotation: 0 };
   }
   if (imageAspect < boxAspect - EPSILON) {
     const height = imageAspect / boxAspect;
-    return { x: 0, y: (1 - height) / 2, width: 1, height };
+    return { x: 0, y: (1 - height) / 2, width: 1, height, rotation: 0 };
   }
   return { ...FULL_PANEL_CROP };
 }
 
-/** crop を有効範囲([0,1] かつ x+width<=1 等)へ丸める。width/height はドラッグでは変えない前提で下限のみ敷く。 */
+/** crop を有効範囲([0,1] かつ x+width<=1 等)へ丸める。回転は保持し (-π, π] へ正規化する。 */
 export function clampPanelCrop(crop: PanelCrop): PanelCrop {
   const width = Math.min(1, Math.max(0.01, isFiniteNumber(crop.width) ? crop.width : 1));
   const height = Math.min(1, Math.max(0.01, isFiniteNumber(crop.height) ? crop.height : 1));
   const x = Math.min(1 - width, Math.max(0, isFiniteNumber(crop.x) ? crop.x : 0));
   const y = Math.min(1 - height, Math.max(0, isFiniteNumber(crop.y) ? crop.y : 0));
-  return { x, y, width, height };
+  return { x, y, width, height, rotation: normalizeRotation(crop.rotation) };
+}
+
+/** width/height を中心固定で `factor` 倍にズームする(回転は保持)。factor<1=ズームイン。 */
+export function scaleCropAboutCenter(crop: PanelCrop, factor: number): PanelCrop {
+  const centerX = crop.x + crop.width / 2;
+  const centerY = crop.y + crop.height / 2;
+  const width = Math.min(1, Math.max(MIN_CROP_ZOOM_SIZE, crop.width * factor));
+  const height = Math.min(1, Math.max(MIN_CROP_ZOOM_SIZE, crop.height * factor));
+  return clampPanelCrop({
+    x: centerX - width / 2,
+    y: centerY - height / 2,
+    width,
+    height,
+    rotation: crop.rotation
+  });
 }
 
 /** 任意値を厳密な `PanelCrop` へ正規化する(不正なら null)。取り込み(DB/API 入力)の検証に使う。 */
@@ -269,7 +305,13 @@ export function normalizePanelCrop(raw: unknown): PanelCrop | null {
   if (![x, y, width, height].every(isFiniteNumber)) {
     return null;
   }
-  return clampPanelCrop({ x: x as number, y: y as number, width: width as number, height: height as number });
+  return clampPanelCrop({
+    x: x as number,
+    y: y as number,
+    width: width as number,
+    height: height as number,
+    rotation: normalizeRotation(raw.rotation)
+  });
 }
 
 /**
