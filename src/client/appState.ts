@@ -7,6 +7,8 @@ import type { InpaintDraft } from "./maskTypes";
 import type { PaintDraft } from "./paintTypes";
 import type { PoseDraft } from "./poseTypes";
 import type { StyleLoraSelection } from "../shared/types";
+import type { BookReaderSettings } from "./bookReader";
+import { DEFAULT_BOOK_READER_SETTINGS } from "./bookReader";
 
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。フォームレベルの
@@ -247,6 +249,14 @@ export interface AppState {
   bookCommonSettings: GenerationDraft | null;
   /** Book: Book 共通のスタイル LoRA(bookCommonSettings とセットで使う)。 */
   bookCommonLora: StyleLoraSelection[] | null;
+  /** Book Reader(漫画ビューア): ページ一覧の上に重ねて開いているか。state.detail とは独立。 */
+  bookReaderOpen: boolean;
+  /** Book Reader: 現在表示中の論理ページ index(0-based。見開き時は表示の先頭ページ index)。 */
+  bookReaderPageIndex: number;
+  /** Book Reader: 表示設定(方向/レイアウト/見開き開始/フィット/背景/番号表示)。プロジェクト別に永続化。 */
+  bookReaderSettings: BookReaderSettings;
+  /** Book Reader: ビューア内の設定パネルを開いているか。 */
+  bookReaderSettingsOpen: boolean;
   /** 「最近使った参照画像」ピッカーの候補(現在のプロジェクトのラウンドから収集)。 */
   recentReferenceImages: RecentReferenceImage[];
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
@@ -325,6 +335,10 @@ export const state: AppState = {
   bookSettingsOpen: false,
   bookCommonSettings: null,
   bookCommonLora: null,
+  bookReaderOpen: false,
+  bookReaderPageIndex: 0,
+  bookReaderSettings: DEFAULT_BOOK_READER_SETTINGS,
+  bookReaderSettingsOpen: false,
   recentReferenceImages: [],
   iterationScrollReset: false,
   maskEditMode: false,

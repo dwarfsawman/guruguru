@@ -61,7 +61,9 @@ export function listPagesWithProject(projectId: string): BookPages {
   const pages = rows.map((row) => {
     const item = toApiRow(row)!;
     if (typeof item.representativeAssetId === "string") {
-      item.representativeThumbnailUrl = `/api/assets/${item.representativeAssetId}/thumbnail?size=small`;
+      const id = item.representativeAssetId;
+      item.representativeThumbnailUrl = `/api/assets/${id}/thumbnail?size=small`;
+      item.representativeImageUrl = `/api/assets/${id}/image`;
     }
     return item as unknown as PageSummary;
   });

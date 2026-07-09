@@ -1,0 +1,298 @@
+/* Book Reader（漫画ビューア）。全画面オーバーレイの閲覧 UI。既存トークン/クラス
+   （.panel / .button-primary / .segment-group / var(--...)）を流用し、reader 固有の
+   最小限のスタイルだけをここに置く。
+   背景色 black/gray/white は「ページのレターボックス色」という機能固有の選択肢なので、
+   root スコープの名前付きローカル変数として集約する（テーマ chrome の色ではない）。
+   topbar / settings / ページ番号ピルは常に暗い solid/半透明の面を持たせ、背景色に依らず可読。 */
+
+.book-reader {
+  --reader-bg-black: var(--bg);
+  --reader-bg-gray: #26262b; /* 読書時の目に優しい中間グレー（Reader 専用の背景色） */
+  --reader-bg-white: var(--ink);
+  --reader-stage-bg: var(--reader-bg-black);
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: var(--reader-stage-bg);
+  color: var(--ink);
+}
+
+.book-reader[data-bg="black"] {
+  --reader-stage-bg: var(--reader-bg-black);
+}
+
+.book-reader[data-bg="gray"] {
+  --reader-stage-bg: var(--reader-bg-gray);
+}
+
+.book-reader[data-bg="white"] {
+  --reader-stage-bg: var(--reader-bg-white);
+}
+
+/* --- topbar（常に暗い solid バー・背景色に依らず可読） --- */
+.book-reader-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-strong);
+}
+
+.book-reader-topbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.book-reader-title {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- stage（背景色を切替可能なレターボックス） --- */
+.book-reader-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 左右クリックゾーン（stage 全面を2分割・画像より上のレイヤ）。 */
+.book-reader-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  z-index: 2;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.book-reader-zone-left {
+  left: 0;
+}
+
+.book-reader-zone-right {
+  right: 0;
+}
+
+.book-reader-zone:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+/* --- ページ本体（クリックはゾーンが受けるので pointer-events は殺す） --- */
+.book-reader-canvas {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  pointer-events: none;
+}
+
+.book-reader-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+}
+
+.book-reader-canvas.spread .book-reader-page {
+  max-width: 50%;
+}
+
+.book-reader-image {
+  display: block;
+  object-fit: contain;
+}
+
+/* フィット: いずれも画面内に収まる（パンなし）。fit-width/height は該当軸を優先して拡大。 */
+.book-reader-canvas.fit-screen .book-reader-image {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.book-reader-canvas.fit-width .book-reader-image {
+  width: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  height: auto;
+}
+
+.book-reader-canvas.fit-height .book-reader-image {
+  height: 100%;
+  max-height: 100%;
+  max-width: 100%;
+  width: auto;
+}
+
+/* 見開き中央の細い gutter（黒・白どちらの背景でも見えるよう solid の中間色）。 */
+.book-reader-gutter {
+  align-self: stretch;
+  width: 1px;
+  margin: 0 3px;
+  background: var(--faint);
+}
+
+/* --- 画像なしページのプレースホルダ --- */
+.book-reader-page-empty {
+  padding: 12px;
+}
+
+.book-reader-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: min(60%, 320px);
+  max-height: 92%;
+  aspect-ratio: 3 / 4;
+  border: 1px dashed var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  text-align: center;
+  padding: 16px;
+}
+
+.book-reader-placeholder-num {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.book-reader-placeholder-text {
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.book-reader-empty {
+  padding: 10px 16px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* --- ページ番号ピル（下部中央・常に暗い面で可読） --- */
+.book-reader-page-label {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+/* --- 設定ドロワー（右上・solid 面） --- */
+.book-reader-settings {
+  position: absolute;
+  top: 52px;
+  right: 12px;
+  z-index: 4;
+  width: 264px;
+  max-height: calc(100% - 64px);
+  overflow-y: auto;
+  display: grid;
+  gap: 12px;
+  box-shadow: var(--shadow);
+}
+
+.book-reader-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.book-reader-settings-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  background: var(--panel-strong);
+  color: var(--muted);
+}
+
+.book-reader-settings-close:hover {
+  border-color: var(--accent-line);
+  color: var(--ink);
+}
+
+.book-reader-settings-close svg {
+  width: 13px;
+  height: 13px;
+}
+
+.book-reader-setting {
+  display: grid;
+  gap: 5px;
+}
+
+.book-reader-setting-label {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.book-reader-setting .segment-group {
+  width: 100%;
+}
+
+.book-reader-setting .segment-group > button {
+  flex: 1 1 0;
+}
+
+.book-reader-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.book-reader-stepper-value {
+  flex: 1 1 auto;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.book-reader-stepper-value b {
+  color: var(--ink);
+  font-family: var(--mono);
+}
+
+.book-reader-stepper button {
+  min-width: 34px;
+}

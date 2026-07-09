@@ -22,9 +22,6 @@ import { refreshModelCheck } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
 
-/** ドラッグ並び替えの MIME。paste 画像 DnD とは別枠にして相互干渉を防ぐ。 */
-const PAGE_DRAG_MIME = "application/x-guruguru-page-id";
-
 /** Book を開く（グリッド表示）。単一プロジェクトの openProject に相当するプロジェクトセッション初期化 + ページ一覧取得。 */
 export async function openBook(projectId: string) {
   state.currentProjectId = projectId;
@@ -35,6 +32,8 @@ export async function openBook(projectId: string) {
   state.activeRoundId = null;
   state.activeAssetId = null;
   state.bookSettingsOpen = false;
+  state.bookReaderOpen = false;
+  state.bookReaderSettingsOpen = false;
   state.sidebarOpen = false;
   restoreOrResetProjectDrafts(projectId);
   clearPasteCaches();
@@ -114,6 +113,8 @@ export function clearBookSession() {
   state.book = null;
   state.activePageId = null;
   state.bookSettingsOpen = false;
+  state.bookReaderOpen = false;
+  state.bookReaderSettingsOpen = false;
   state.recentReferenceImages = [];
 }
 
@@ -273,95 +274,222 @@ async function persistReorder(orderedIds: string[]) {
   requestRender();
 }
 
-// --- ドラッグ並び替え（ネイティブ HTML5 DnD） ---
-// ドラッグ中の一時状態はモジュール変数に持ち、ハイライトは classList を直接操作する(render を通さない)。
-// 確定(drop)時のみ reorder API → requestRender する。カードは data-key で morph に同一視され、
-// 並び替え後は既存 DOM ノードが移動する(サムネの再デコードなし)。
-let draggedPageId: string | null = null;
+// --- ドラッグ並び替え（Pointer Events で自前実装）+ 挿入位置プレビュー ---
+// ネイティブ HTML5 DnD は、カード全面を覆う <button> が実マウスのドラッグ開始を握り潰す
+// （form control 上では draggable な祖先のドラッグが始まらない）ため使わない。pointerdown →
+// 閾値超えで drag 開始 → カーソル近傍のカードから挿入位置を算出してインジケータ（縦バー）を表示 →
+// pointerup で確定、という流れを自前で持つ。ドラッグ中の一時状態はモジュール変数に持ち、確定時のみ
+// reorder API → requestRender する。カードは data-key で morph に同一視され、並び替え後も既存 DOM
+// ノードが移動する（サムネ再デコードなし）。マウス/タッチ/ペンを pointer で一括で扱える。
 
-function clearDropTargets(app: HTMLElement) {
-  app.querySelectorAll(".page-drop-active").forEach((el) => el.classList.remove("page-drop-active"));
+/** クリックとドラッグを分ける開始閾値（px）。これ未満の移動はクリック扱い。 */
+const PAGE_DRAG_THRESHOLD_PX = 6;
+/** 挿入インジケータをカード間ギャップの中央付近に置くオフセット（.page-grid の column-gap の約半分）。 */
+const PAGE_DROP_INDICATOR_OFFSET_PX = 18;
+
+/** 挿入先。refId のカードの前(before=true)/後ろ、または末尾(refId=null)。 */
+interface PageDropSlot {
+  refId: string | null;
+  before: boolean;
 }
 
-async function commitPageReorder(draggedId: string, targetId: string) {
-  const ids = (state.book?.pages ?? []).map((page) => page.id);
-  const from = ids.indexOf(draggedId);
-  const to = ids.indexOf(targetId);
-  if (from < 0 || to < 0 || from === to) {
+interface PageReorderState {
+  pointerId: number;
+  draggedId: string;
+  card: HTMLElement;
+  startX: number;
+  startY: number;
+  dragging: boolean;
+  slot: PageDropSlot | null;
+}
+
+let pageReorder: PageReorderState | null = null;
+/** ドラッグ確定直後に発火する click（=ページを開く）を1回だけ抑止するフラグ。 */
+let suppressPageCardClick = false;
+
+function pageGridEl(app: HTMLElement): HTMLElement | null {
+  return app.querySelector<HTMLElement>(".page-grid");
+}
+
+function realPageCards(grid: HTMLElement): HTMLElement[] {
+  return Array.from(grid.querySelectorAll<HTMLElement>(".page-card"));
+}
+
+/** カーソルに最も近い（ドラッグ中カード以外の）カードを基準に、その左右どちらへ挿入するかを決める。 */
+function pickInsertSlot(grid: HTMLElement, x: number, y: number, draggedId: string): PageDropSlot {
+  const cards = realPageCards(grid).filter((card) => card.dataset.pageId !== draggedId);
+  if (cards.length === 0) {
+    return { refId: null, before: false };
+  }
+  let nearest = cards[0];
+  let nearestDist = Infinity;
+  for (const card of cards) {
+    const rect = card.getBoundingClientRect();
+    const dx = x - (rect.left + rect.width / 2);
+    const dy = y - (rect.top + rect.height / 2);
+    const dist = dx * dx + dy * dy;
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearest = card;
+    }
+  }
+  const rect = nearest.getBoundingClientRect();
+  return { refId: nearest.dataset.pageId ?? null, before: x < rect.left + rect.width / 2 };
+}
+
+function updateDropIndicator(grid: HTMLElement, slot: PageDropSlot) {
+  const cards = realPageCards(grid);
+  let refCard = slot.refId ? cards.find((card) => card.dataset.pageId === slot.refId) ?? null : null;
+  let leftEdge: boolean;
+  if (refCard) {
+    leftEdge = slot.before;
+  } else {
+    // 末尾: 最後のカードの右端に置く。
+    refCard = cards[cards.length - 1] ?? null;
+    leftEdge = false;
+  }
+  if (!refCard) {
+    removeDropIndicator(grid);
     return;
   }
-  ids.splice(from, 1);
-  let insertAt = ids.indexOf(targetId);
-  if (from < to) {
-    // 前方（右）へのドラッグはターゲットの後ろへ落とす方が直感に合う。
-    insertAt += 1;
+  const gridRect = grid.getBoundingClientRect();
+  const rect = refCard.getBoundingClientRect();
+  const x = leftEdge
+    ? rect.left - gridRect.left - PAGE_DROP_INDICATOR_OFFSET_PX
+    : rect.right - gridRect.left + PAGE_DROP_INDICATOR_OFFSET_PX;
+  let indicator = grid.querySelector<HTMLElement>(".page-drop-indicator");
+  if (!indicator) {
+    indicator = document.createElement("div");
+    indicator.className = "page-drop-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    grid.appendChild(indicator);
   }
-  ids.splice(insertAt, 0, draggedId);
-  await persistReorder(ids);
+  indicator.style.left = `${x}px`;
+  indicator.style.top = `${rect.top - gridRect.top}px`;
+  indicator.style.height = `${rect.height}px`;
+}
+
+function removeDropIndicator(grid: HTMLElement) {
+  grid.querySelector(".page-drop-indicator")?.remove();
+}
+
+/** 現在のページ順に対し slot を反映した新しい id 順を返す。変化が無ければ null。 */
+function slotToOrderedIds(draggedId: string, slot: PageDropSlot): string[] | null {
+  const current = (state.book?.pages ?? []).map((page) => page.id);
+  const ids = current.filter((id) => id !== draggedId);
+  let insertAt: number;
+  if (!slot.refId || slot.refId === draggedId) {
+    insertAt = ids.length;
+  } else {
+    const idx = ids.indexOf(slot.refId);
+    insertAt = idx < 0 ? ids.length : slot.before ? idx : idx + 1;
+  }
+  ids.splice(Math.max(0, Math.min(ids.length, insertAt)), 0, draggedId);
+  if (ids.length === current.length && ids.every((id, index) => id === current[index])) {
+    return null;
+  }
+  return ids;
 }
 
 function bindPageDragEvents(app: HTMLElement) {
-  app.addEventListener("dragstart", (event) => {
-    const card = (event.target as HTMLElement).closest<HTMLElement>(".page-card");
+  app.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    const target = event.target as HTMLElement;
+    // リネーム/削除アイコンや「追加」タイルの上では並び替えを開始しない。
+    if (target.closest(".page-card-actions") || target.closest(".page-add-card")) {
+      return;
+    }
+    const card = target.closest<HTMLElement>(".page-card");
     if (!card?.dataset.pageId) {
       return;
     }
-    draggedPageId = card.dataset.pageId;
-    event.dataTransfer?.setData(PAGE_DRAG_MIME, draggedPageId);
-    if (event.dataTransfer) {
-      event.dataTransfer.effectAllowed = "move";
-    }
-    card.classList.add("page-dragging");
+    pageReorder = {
+      pointerId: event.pointerId,
+      draggedId: card.dataset.pageId,
+      card,
+      startX: event.clientX,
+      startY: event.clientY,
+      dragging: false,
+      slot: null
+    };
+    suppressPageCardClick = false;
   });
 
-  app.addEventListener("dragover", (event) => {
-    if (!draggedPageId) {
+  app.addEventListener("pointermove", (event) => {
+    const reorder = pageReorder;
+    if (!reorder || event.pointerId !== reorder.pointerId) {
       return;
     }
-    const card = (event.target as HTMLElement).closest<HTMLElement>(".page-card");
-    if (!card || card.dataset.pageId === draggedPageId) {
-      clearDropTargets(app);
+    if (!reorder.dragging) {
+      const dx = event.clientX - reorder.startX;
+      const dy = event.clientY - reorder.startY;
+      if (dx * dx + dy * dy < PAGE_DRAG_THRESHOLD_PX * PAGE_DRAG_THRESHOLD_PX) {
+        return;
+      }
+      reorder.dragging = true;
+      reorder.card.classList.add("page-dragging");
+      try {
+        reorder.card.setPointerCapture(reorder.pointerId);
+      } catch {
+        // capture に失敗しても pointermove/up は app への委譲で届く。
+      }
+    }
+    const grid = pageGridEl(app);
+    if (!grid) {
       return;
     }
-    // preventDefault しないと drop が発火しない。
+    // テキスト選択やスクロールを抑止してドラッグに専念させる。
     event.preventDefault();
-    if (event.dataTransfer) {
-      event.dataTransfer.dropEffect = "move";
-    }
-    clearDropTargets(app);
-    card.classList.add("page-drop-active");
+    reorder.slot = pickInsertSlot(grid, event.clientX, event.clientY, reorder.draggedId);
+    updateDropIndicator(grid, reorder.slot);
   });
 
-  app.addEventListener("dragleave", (event) => {
-    const card = (event.target as HTMLElement).closest<HTMLElement>(".page-card");
-    if (card && !card.contains(event.relatedTarget as Node | null)) {
-      card.classList.remove("page-drop-active");
-    }
-  });
-
-  app.addEventListener("drop", (event) => {
-    if (!draggedPageId) {
+  const finishDrag = (event: PointerEvent, commit: boolean) => {
+    const reorder = pageReorder;
+    if (!reorder || event.pointerId !== reorder.pointerId) {
       return;
     }
-    const card = (event.target as HTMLElement).closest<HTMLElement>(".page-card");
-    const targetId = card?.dataset.pageId;
-    const dragged = draggedPageId;
-    clearDropTargets(app);
-    if (!targetId) {
-      return;
+    const grid = pageGridEl(app);
+    if (grid) {
+      removeDropIndicator(grid);
     }
-    event.preventDefault();
-    event.stopPropagation();
-    if (targetId !== dragged) {
-      void commitPageReorder(dragged, targetId);
+    reorder.card.classList.remove("page-dragging");
+    try {
+      reorder.card.releasePointerCapture(reorder.pointerId);
+    } catch {
+      // capture していない場合は無視。
     }
-  });
+    if (commit && reorder.dragging && reorder.slot) {
+      // ドラッグが成立したら、その後に来る click（ページを開く）を抑止する。
+      suppressPageCardClick = true;
+      const ids = slotToOrderedIds(reorder.draggedId, reorder.slot);
+      if (ids) {
+        void persistReorder(ids);
+      }
+    }
+    pageReorder = null;
+  };
 
-  app.addEventListener("dragend", () => {
-    draggedPageId = null;
-    clearDropTargets(app);
-    app.querySelectorAll(".page-dragging").forEach((el) => el.classList.remove("page-dragging"));
-  });
+  app.addEventListener("pointerup", (event) => finishDrag(event, true));
+  app.addEventListener("pointercancel", (event) => finishDrag(event, false));
+
+  // ドラッグ直後の click（ページを開く）を capture phase で1回だけ握り潰す。
+  app.addEventListener(
+    "click",
+    (event) => {
+      if (!suppressPageCardClick) {
+        return;
+      }
+      suppressPageCardClick = false;
+      if ((event.target as HTMLElement).closest(".page-card")) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    },
+    true
+  );
 }
 
 registerActions({
