@@ -20,6 +20,7 @@
 
 /* --- ページグリッド --- */
 .page-grid {
+  position: relative; /* 挿入インジケータ(.page-drop-indicator)の絶対配置の基準。 */
   margin-top: 4px;
   gap: 32px 36px;
   grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
@@ -29,16 +30,24 @@
   position: relative;
   border-radius: 2px;
   cursor: grab;
+  touch-action: none; /* タッチ/ペンでも並び替えドラッグを開始できるようスクロールに奪わせない。 */
 }
 
 .page-card.page-dragging {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: grabbing;
 }
 
-.page-card.page-drop-active {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+/* 並び替えドラッグ中の挿入位置プレビュー（カード間ギャップに立つ縦バー）。 */
+.page-drop-indicator {
+  position: absolute;
+  z-index: 5;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-line);
+  pointer-events: none;
 }
 
 .page-card-open {

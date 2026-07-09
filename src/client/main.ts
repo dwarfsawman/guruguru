@@ -13,6 +13,7 @@ import { renderModelInstallModal } from "./workflowUi";
 import { renderHome, type ConnectionState, type ConnectionSummary } from "./views/homeView";
 import { renderBookView } from "./views/bookView";
 import { renderBookSettingsView } from "./views/bookSettingsView";
+import { renderBookReaderView } from "./views/bookReaderView";
 import { renderIterationTracker } from "./views/iterationTree";
 import { drawIterationEdges } from "./views/iterationTreeEdges";
 import { renderProjectDetail, renderSourceUploadButton } from "./views/galleryView";
@@ -83,6 +84,7 @@ import "./edgePopoutController";
 import "./imageLightboxController";
 import "./modelCheckController";
 import "./bookController";
+import { handleBookReaderKeydown } from "./bookReaderController";
 import {
   deselectPasteObjectIfAny,
   handlePasteKeydown,
@@ -363,6 +365,11 @@ function bindEvents() {
       return;
     }
 
+    // Book Reader が開いている間はページ送り/閉じるを最優先で処理する（detail とは排他）。
+    if (handleBookReaderKeydown(event)) {
+      return;
+    }
+
     if (!state.detail) {
       if (event.key === "Escape" && state.sidebarOpen) {
         state.sidebarOpen = false;
@@ -584,7 +591,14 @@ function render(_options: RenderOptions = {}) {
     renderToastStack(),
     state.detail
       ? renderProjectDetailView(state.detail)
-      : state.bookSettingsOpen && state.book
+      : state.bookReaderOpen && state.book
+        ? renderBookReaderView(
+            state.book,
+            state.bookReaderPageIndex,
+            state.bookReaderSettings,
+            state.bookReaderSettingsOpen
+          )
+        : state.bookSettingsOpen && state.book
         ? renderBookSettingsView(
             state.book.project.name,
             renderBookSettingsPanelView(),

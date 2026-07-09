@@ -100,11 +100,15 @@ export interface PageRow {
 }
 
 /**
- * ページ一覧行。`PageRow` に代表サムネ(そのページの selected/favorite → 無ければ最新 generated)と
- * アセット枚数を付与する。グリッド表示用。
+ * ページ一覧行。`PageRow` に代表アセット(そのページの selected/favorite → 無ければ最新 generated)の
+ * サムネ/フル画像 URL と id、アセット枚数を付与する。グリッドはサムネ、Book Reader はフル画像を使う。
  */
 export interface PageSummary extends PageRow {
   representativeThumbnailUrl?: string;
+  /** 代表アセットのフル画像 URL(Book Reader の高解像度表示用)。代表アセットが無ければ未設定。 */
+  representativeImageUrl?: string;
+  /** 代表アセットの id(代表アセットが無ければ未設定)。 */
+  representativeAssetId?: string;
   assetCount: number;
 }
 
