@@ -239,7 +239,7 @@ debounce PATCH（1s）＋クローズ時 flush。
     （エクスポート/プレビューのみだった）のを `renderInlineContentGlyphs` 抽出で解消。
   - 監督ブラウザ検証済み: 吹き出し追加・5形状切替・しっぽトグル+tip ドラッグ（ローカル座標保存）・
     content テキスト編集・保存復元。
-- 2026-07-10: P4 完了（ブランチ p4-export-images、main 未マージ・監督レビュー待ち）。設計からの差分:
+- 2026-07-10: P4 完了・main マージ（merge 981e742、監督レビュー済み）。設計からの差分:
   - `POST /api/projects/:id/export-images`(`src/server/imageExport.ts` 新規)。既存の
     `openRasterExport.ts` の `createPageLayers`/`renderMergedImage`/`requireProject`/`loadExportPages`/
     `safeAsciiName` を `export` して再利用し、新規に `resolvePageHeight(page, layout)`(既存の
