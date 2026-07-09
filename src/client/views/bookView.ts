@@ -10,6 +10,7 @@ import {
   iconClose,
   iconDownload,
   iconImage,
+  iconLayers,
   iconMangaPanelImport,
   iconOpenBook,
   iconPlus,
@@ -117,6 +118,7 @@ function renderPageCard(page: PageSummary, index: number, selectionMode: boolean
         <span class="page-card-index">${number}</span>
       </div>
       <div class="page-card-actions${selectionMode ? " is-hidden" : ""}">
+        <button class="page-card-icon" type="button" data-action="open-page-panels" data-id="${page.id}" aria-label="${escapeAttr(label)}のオブジェクト編集を開く" title="オブジェクト編集(テキスト・吹き出し・ボックス)">${iconLayers()}</button>
         <button class="page-card-icon" type="button" data-action="export-page-openraster" data-id="${page.id}" aria-label="${escapeAttr(label)}をOpenRasterでエクスポート" title="OpenRasterでエクスポート">${iconDownload()}</button>
         <button class="page-card-icon generate" type="button" data-action="open-page" data-id="${page.id}" aria-label="${escapeAttr(label)}の生成画面を開く" title="画像生成画面へ">${iconSparkle()}</button>
         <button class="page-card-icon danger" type="button" data-action="delete-page" data-id="${page.id}" aria-label="ページを削除" title="ページを削除">${iconTrash()}</button>

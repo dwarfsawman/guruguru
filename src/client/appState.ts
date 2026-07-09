@@ -9,6 +9,7 @@ import type {
   RecentReferenceImage
 } from "../shared/apiTypes";
 import type { PanelCrop } from "../shared/pageLayout";
+import type { PageObject } from "../shared/pageObjects";
 import type { ConnectionState } from "./views/homeView";
 import type { MaskPanelTab } from "./views/assetModal";
 import type { WorkflowTemplate } from "./workflowTypes";
@@ -35,11 +36,23 @@ export interface ReferenceDraft {
  */
 export interface PagePanelLightboxState {
   pageId: string;
+  /**
+   * ページ編集モードタブ(Docs/Feature-CGCollectionSuite.md P1)。"panels" = 既存のコマ選択/クロップ編集、
+   * "objects" = テキスト/吹き出し/ボックスの編集。`page.layout` が無いページは常に "objects" 扱い
+   * (呼び出し側が open 時に決める。タブ自体は表示しない)。
+   */
+  mode: "panels" | "objects";
   selectedPanelId: string | null;
   /** クロップ編集モードの対象コマ id。null なら通常の選択モード。 */
   cropPanelId: string | null;
   /** クロップ編集中のドラッグ作業用コピー(pointerup で確定 PATCH、閉じると破棄)。 */
   cropDraft: PanelCrop | null;
+  /**
+   * ページ座標系の高さ(width=1 正規化)。`page.layout` があればその `page.height`、無ければ
+   * 代表アセットのアスペクト比から求めた値(open 時に1回だけ解決してここへ保持する)。
+   * オブジェクトモードの SVG viewBox / ギズモ計算に使う。
+   */
+  pageHeight: number;
 }
 
 /** コマ内生成: 「選択コマを生成」等で生成フォームが対象にしているコマ(次の生成 round が targetPanelId を持つ)。 */
@@ -311,6 +324,14 @@ export interface AppState {
   pagePanelLightbox: PagePanelLightboxState | null;
   /** コマ内生成: 現在開いているページのコマ割り当て一覧(PageDetail 取得のたびに更新)。single/未取得時は空配列。 */
   pagePanelAssignments: PagePanelAssignment[];
+  /**
+   * ページオブジェクト編集(Docs/Feature-CGCollectionSuite.md P1): 開いている lightbox のページの
+   * オブジェクト配列ドラフト。全ての編集操作(追加/移動/拡縮/回転/削除/z順/プロパティ変更)は
+   * これを直接書き換え、`pageObjectsController.ts` が 1s debounce で PATCH する。lightbox 非開時は空配列。
+   */
+  pageObjectsDraft: PageObject[];
+  /** ページオブジェクト編集: 選択中オブジェクト id。null=未選択。 */
+  selectedPageObjectId: string | null;
   /** コマ内生成: 生成フォームが対象にしているコマ。null なら通常の(コマ非対象)生成。 */
   activePanelTarget: PanelGenerationTarget | null;
   /** 独自確認ダイアログ。null=閉。 */
@@ -403,6 +424,8 @@ export const state: AppState = {
   recentReferenceImages: [],
   pagePanelLightbox: null,
   pagePanelAssignments: [],
+  pageObjectsDraft: [],
+  selectedPageObjectId: null,
   activePanelTarget: null,
   confirmDialog: null,
   iterationScrollReset: false,

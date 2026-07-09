@@ -1,7 +1,8 @@
 /*
- * コマ内生成(Docs/Feature-PanelGeneration.md)。ページのコマ選択/クロップ編集 lightbox。
- * `.workflow-modal`/`.workflow-dialog`(modals.css)を土台にし、page-panel-* で上書き・追加する。
- * コマ枠の紙面色(--layout-paper/--layout-koma)は layout-templates.css の root 定義を共有する。
+ * ページ編集 lightbox。`.workflow-modal`/`.workflow-dialog`(modals.css)を土台にし、page-panel-* で
+ * 上書き・追加する。コマ枠の紙面色(--layout-paper/--layout-koma)は layout-templates.css の root 定義を共有する。
+ * 「コマ」モード(コマ内生成、Docs/Feature-PanelGeneration.md)は page-panel-* クラスのまま。
+ * 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1)は page-object-* クラスで追加した。
  */
 
 .page-panel-dialog {
@@ -158,4 +159,121 @@
 
 .page-panel-generate-button {
   flex: none;
+}
+
+/* --- モードタブ(コマ / オブジェクト) --- */
+
+.page-panel-mode-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.page-panel-mode-tab {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.page-panel-mode-tab:hover {
+  color: var(--text);
+}
+
+.page-panel-mode-tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+/* --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1) --- */
+
+.page-object-shape {
+  cursor: pointer;
+  touch-action: none;
+}
+
+.page-object-shape.is-selected {
+  outline: none;
+}
+
+.page-object-gizmo-outline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.page-object-gizmo-stick {
+  stroke: var(--accent);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.page-object-gizmo-handle {
+  fill: var(--accent);
+  stroke: #fff;
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: nwse-resize;
+}
+
+.page-object-gizmo-rotate {
+  fill: var(--accent-strong, var(--accent));
+}
+
+.page-object-gizmo-rotate:active {
+  cursor: grabbing;
+}
+
+.page-object-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.page-object-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.page-object-property-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.page-object-property-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.page-object-property-field input[type="color"] {
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+}
+
+.page-object-property-field input[type="number"] {
+  width: 72px;
 }
