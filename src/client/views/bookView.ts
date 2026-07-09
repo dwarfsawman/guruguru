@@ -8,6 +8,7 @@ import { escapeAttr, escapeHtml } from "../format";
 import {
   iconCheck,
   iconClose,
+  iconDownload,
   iconImage,
   iconMangaPanelImport,
   iconOpenBook,
@@ -35,6 +36,7 @@ export function renderBookView(book: BookPages, selectionMode = false, selectedP
             <div class="book-heading-actions">
               <span class="panel-count"><b>${pages.length}</b> pages</span>
               <button class="button-secondary compact book-action-button" type="button" data-action="open-book-settings" aria-label="Book共通設定" title="新規ページの既定設定(LoRA/プロンプト/生成パラメータ)を設定">${iconSettings()}${renderBookActionLabel("Book共通", "設定")}</button>
+              <button class="button-secondary compact book-action-button" type="button" data-action="export-book-openraster" aria-label="Book全体をOpenRasterでエクスポート" title="Book全体をOpenRasterでエクスポート" ${pages.length === 0 ? "disabled" : ""}>${iconDownload()}${renderBookActionLabel("Book全体", "ORA")}</button>
               <button class="button-secondary compact book-action-button" type="button" data-action="open-layout-picker" aria-label="テンプレから追加" title="コマ割りテンプレートを選んでページ追加">${iconMangaPanelImport()}${renderBookActionLabel("テンプレから", "追加")}</button>
               <label class="button-secondary compact source-upload-button book-action-button" aria-label="画像をインポート" title="画像を新規ページとして取り込む(複数選択可)">
                 ${iconImage()}${renderBookActionLabel("画像を", "インポート")}
@@ -76,6 +78,7 @@ function renderSelectionToolbar(selectionMode: boolean, selectedCount: number, p
       </div>
       <div class="book-selection-actions">
         <button class="button-secondary compact" type="button" data-action="select-all-book-pages" ${pageCount === 0 ? "disabled" : ""}>すべて選択</button>
+        <button class="button-secondary compact" type="button" data-action="export-selected-pages-openraster" ${selectedCount === 0 ? "disabled" : ""}>${iconDownload()}選択ページをORA</button>
         <button class="button-danger compact" type="button" data-action="delete-selected-pages" ${selectedCount === 0 ? "disabled" : ""}>${iconTrash()}選択ページを削除</button>
         <button class="button-secondary compact" type="button" data-action="clear-book-page-selection">${iconClose()}終了</button>
       </div>
@@ -114,6 +117,7 @@ function renderPageCard(page: PageSummary, index: number, selectionMode: boolean
         <span class="page-card-index">${number}</span>
       </div>
       <div class="page-card-actions${selectionMode ? " is-hidden" : ""}">
+        <button class="page-card-icon" type="button" data-action="export-page-openraster" data-id="${page.id}" aria-label="${escapeAttr(label)}をOpenRasterでエクスポート" title="OpenRasterでエクスポート">${iconDownload()}</button>
         <button class="page-card-icon generate" type="button" data-action="open-page" data-id="${page.id}" aria-label="${escapeAttr(label)}の生成画面を開く" title="画像生成画面へ">${iconSparkle()}</button>
         <button class="page-card-icon danger" type="button" data-action="delete-page" data-id="${page.id}" aria-label="ページを削除" title="ページを削除">${iconTrash()}</button>
       </div>

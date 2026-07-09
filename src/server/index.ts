@@ -22,6 +22,7 @@ import {
   updatePagePanelAssignment
 } from "./pages";
 import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
+import { createOpenRasterExport } from "./openRasterExport";
 import { createSourceAsset } from "./sourceAssets";
 import { createPasteSource, getPasteAttachments, purgeOrphanPasteSources, putPasteAttachments, servePasteSource } from "./pasteAttachments";
 import {
@@ -249,6 +250,18 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "DELETE" && projectDetailMatch) {
     sendJson(res, 200, await deleteProject(projectDetailMatch[1]!));
+    return;
+  }
+
+  const openRasterExportMatch = path.match(/^\/api\/projects\/([^/]+)\/openraster-export$/);
+  if (method === "POST" && openRasterExportMatch) {
+    const result = await createOpenRasterExport(openRasterExportMatch[1]!, await readJson(req));
+    res.writeHead(200, {
+      "content-type": result.contentType,
+      "content-length": String(result.buffer.byteLength),
+      "content-disposition": `attachment; filename="${result.filename}"`
+    });
+    res.end(result.buffer);
     return;
   }
 

@@ -324,6 +324,62 @@ async function deletePages(pageIds: string[]) {
   requestRender();
 }
 
+async function exportOpenRaster(pageIds: string[] | null) {
+  if (!state.currentProjectId) {
+    return;
+  }
+  const exportIds = pageIds ? (state.book?.pages ?? []).map((page) => page.id).filter((id) => pageIds.includes(id)) : null;
+  if (exportIds && exportIds.length === 0) {
+    pushToast("エクスポートするページを選択してください。", "error");
+    return;
+  }
+  state.busy = true;
+  requestRender();
+  try {
+    const response = await fetch(`/api/projects/${state.currentProjectId}/openraster-export`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(exportIds ? { pageIds: exportIds } : {})
+    });
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response));
+    }
+    const blob = await response.blob();
+    const filename = filenameFromContentDisposition(response.headers.get("content-disposition")) ??
+      (blob.type === "application/zip" ? "guruguru-openraster.zip" : "page.ora");
+    downloadBlob(blob, filename);
+    pushToast(exportIds && exportIds.length === 1 ? "ページをOpenRasterでエクスポートしました。" : "OpenRasterを書き出しました。", "info");
+  } finally {
+    state.busy = false;
+    requestRender();
+  }
+}
+
+async function responseErrorMessage(response: Response): Promise<string> {
+  try {
+    const parsed = await response.json() as { error?: string };
+    return parsed.error || `${response.status} ${response.statusText}`.trim();
+  } catch {
+    return `${response.status} ${response.statusText}`.trim();
+  }
+}
+
+function filenameFromContentDisposition(value: string | null): string | null {
+  const match = value?.match(/filename="([^"]+)"/);
+  return match?.[1] ?? null;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // --- Book共通設定(新規ページの既定値)。生成サイドバーを編集バッファとして再利用する ---
 
 /** Book共通設定画面を開く。生成フォームを共通設定の編集バッファとして使う(既存の共通設定があれば復元)。 */
@@ -628,6 +684,9 @@ registerActions({
   "select-all-book-pages": () => selectAllBookPages(),
   "clear-book-page-selection": () => setBookSelectionMode(false),
   "delete-selected-pages": () => deletePages(state.selectedBookPageIds),
+  "export-book-openraster": () => exportOpenRaster(null),
+  "export-selected-pages-openraster": () => exportOpenRaster(state.selectedBookPageIds),
+  "export-page-openraster": (id) => exportOpenRaster([id]),
   "back-to-pages": () => backToPages(),
   "open-book-settings": () => openBookSettings(),
   "save-book-settings": () => saveBookSettings(),

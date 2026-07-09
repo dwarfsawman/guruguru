@@ -64,6 +64,8 @@ export function initializeDb() {
       description TEXT NOT NULL DEFAULT '',
       default_template_id TEXT,
       storage_dir TEXT NOT NULL,
+      canvas_width INTEGER NOT NULL DEFAULT 1024,
+      canvas_height INTEGER NOT NULL DEFAULT 1446,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (default_template_id) REFERENCES workflow_templates(id)
@@ -265,6 +267,9 @@ export function initializeDb() {
   ensureColumn("asset_paste_attachments", "enabled", "INTEGER NOT NULL DEFAULT 1");
   // Book モード: 'single'（既定・従来の1枚生成）/ 'book'（複数ページ）。
   ensureColumn("projects", "mode", "TEXT NOT NULL DEFAULT 'single'");
+  // Book / OpenRaster export の既定キャンバスサイズ(px)。既存プロジェクトは B5 縦比率へ丸める。
+  ensureColumn("projects", "canvas_width", "INTEGER NOT NULL DEFAULT 1024");
+  ensureColumn("projects", "canvas_height", "INTEGER NOT NULL DEFAULT 1446");
   // コマ割りテンプレから追加したページの `PageLayout`(JSON)。通常ページは NULL。
   ensureColumn("pages", "layout_json", "TEXT");
   // コマ内生成(Docs/Feature-PanelGeneration.md): この Round がどのコマ向けの生成かを示す。

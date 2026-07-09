@@ -73,6 +73,10 @@ export interface ProjectRow {
   name: string;
   description: string;
   mode: ProjectMode;
+  /** OpenRaster export / Book pages の基準キャンバス幅(px)。 */
+  canvasWidth: number;
+  /** OpenRaster export / Book pages の基準キャンバス高さ(px)。 */
+  canvasHeight: number;
   updatedAt: string;
   defaultTemplateId?: string | null;
   representativeThumbnailUrl?: string;

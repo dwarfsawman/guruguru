@@ -1,0 +1,456 @@
+import JSZip from "jszip";
+import sharp from "sharp";
+import type { PageRow } from "../shared/apiTypes";
+import {
+  DEFAULT_PANEL_FRAME,
+  FULL_PANEL_CROP,
+  normalizePanelCrop,
+  panelBounds,
+  type LayoutPanel,
+  type PageLayout,
+  type PanelCrop,
+  type PanelFrame,
+  type PanelShape
+} from "../shared/pageLayout";
+import { getRow, getRows, toApiRow } from "./db";
+import { HttpError } from "./http";
+import { objectBody } from "./validate";
+
+const OPENRASTER_MIME = "image/openraster";
+const DEFAULT_CANVAS_WIDTH = 1024;
+const DEFAULT_CANVAS_HEIGHT = 1446;
+const DEFAULT_RESOLUTION = 300;
+
+interface ExportProjectRow {
+  id: string;
+  name: string;
+  canvas_width: number | null;
+  canvas_height: number | null;
+}
+
+interface ExportCanvas {
+  width: number;
+  height: number;
+}
+
+interface ExportAssetRow {
+  id: string;
+  image_path: string;
+  width: number | null;
+  height: number | null;
+}
+
+interface PanelAssignmentAssetRow extends ExportAssetRow {
+  panel_id: string;
+  crop_json: string;
+}
+
+interface RasterLayer {
+  name: string;
+  src: string;
+  png: Buffer;
+}
+
+export interface OpenRasterExportResult {
+  filename: string;
+  contentType: string;
+  buffer: Buffer;
+  pageCount: number;
+}
+
+export async function createOpenRasterExport(projectId: string, body: unknown): Promise<OpenRasterExportResult> {
+  const project = requireProject(projectId);
+  const input = objectBody(body);
+  const rawPageIds = input.pageIds ?? input.page_ids;
+  const requestedPageIds = Array.isArray(rawPageIds)
+    ? rawPageIds.filter((id): id is string => typeof id === "string")
+    : null;
+  const pages = loadExportPages(projectId, requestedPageIds);
+  if (pages.length === 0) {
+    throw new HttpError(400, "OpenRaster export target pages were not found.");
+  }
+
+  const canvas = projectCanvas(project);
+  const oras: Array<{ filename: string; buffer: Buffer }> = [];
+  for (const page of pages) {
+    oras.push({
+      filename: `${pageFileBase(page)}.ora`,
+      buffer: await createPageOra(page, canvas)
+    });
+  }
+
+  if (oras.length === 1) {
+    return {
+      filename: oras[0]!.filename,
+      contentType: OPENRASTER_MIME,
+      buffer: oras[0]!.buffer,
+      pageCount: 1
+    };
+  }
+
+  const zip = new JSZip();
+  for (const ora of oras) {
+    zip.file(ora.filename, ora.buffer, { compression: "DEFLATE" });
+  }
+  return {
+    filename: `${safeAsciiName(project.name, "guruguru-book")}-openraster.zip`,
+    contentType: "application/zip",
+    buffer: await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }),
+    pageCount: oras.length
+  };
+}
+
+function requireProject(projectId: string): ExportProjectRow {
+  const project = getRow<ExportProjectRow>(
+    "SELECT id, name, canvas_width, canvas_height FROM projects WHERE id = ?",
+    [projectId]
+  );
+  if (!project) {
+    throw new HttpError(404, "Project was not found");
+  }
+  return project;
+}
+
+function loadExportPages(projectId: string, pageIds: string[] | null): PageRow[] {
+  const rows = getRows<Record<string, unknown>>(
+    "SELECT * FROM pages WHERE project_id = ? ORDER BY page_index ASC",
+    [projectId]
+  );
+  const pages = rows.map((row) => toApiRow(row) as unknown as PageRow);
+  if (!pageIds) {
+    return pages;
+  }
+  const requested = new Set(pageIds);
+  const selected = pages.filter((page) => requested.has(page.id));
+  if (selected.length !== requested.size) {
+    throw new HttpError(400, "pageIds contains a page that does not belong to this project");
+  }
+  return selected;
+}
+
+function projectCanvas(project: ExportProjectRow): ExportCanvas {
+  const width = safeDimension(project.canvas_width, DEFAULT_CANVAS_WIDTH);
+  const height = safeDimension(project.canvas_height, DEFAULT_CANVAS_HEIGHT);
+  return { width, height };
+}
+
+function safeDimension(value: number | null | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.trunc(value) : fallback;
+}
+
+async function createPageOra(page: PageRow, canvas: ExportCanvas): Promise<Buffer> {
+  const layers = await createPageLayers(page, canvas);
+  const indexed = layers.map((layer, index) => ({
+    ...layer,
+    src: `data/layer-${String(index + 1).padStart(3, "0")}.png`
+  }));
+  const merged = await renderMergedImage(indexed, canvas);
+  const thumbnail = await sharp(merged)
+    .resize({ width: 256, height: 256, fit: "inside", withoutEnlargement: true })
+    .png()
+    .toBuffer();
+  const stackXml = renderStackXml(canvas, indexed);
+
+  const zip = new JSZip();
+  zip.file("mimetype", OPENRASTER_MIME, { compression: "STORE" });
+  zip.file("stack.xml", stackXml, { compression: "DEFLATE" });
+  for (const layer of indexed) {
+    zip.file(layer.src, layer.png, { compression: "DEFLATE" });
+  }
+  zip.file("mergedimage.png", merged, { compression: "DEFLATE" });
+  zip.file("Thumbnails/thumbnail.png", thumbnail, { compression: "DEFLATE" });
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
+async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<RasterLayer[]> {
+  const layout = page.layout ?? null;
+  if (!layout) {
+    const representative = representativeAsset(page.id);
+    return [
+      {
+        name: "Page image",
+        src: "",
+        png: representative ? await renderFullImageLayer(representative, canvas) : await transparentPng(canvas)
+      }
+    ];
+  }
+
+  const layers: RasterLayer[] = [];
+  const assignments = new Map(panelAssignmentAssets(page.id).map((assignment) => [assignment.panel_id, assignment]));
+  const panels = [...layout.panels].sort((a, b) => a.order - b.order);
+  for (const panel of panels) {
+    const assignment = assignments.get(panel.id);
+    if (!assignment) {
+      continue;
+    }
+    layers.push({
+      name: `Panel ${panel.order || layers.length + 1}`,
+      src: "",
+      png: await renderPanelImageLayer(assignment, panel, layout, canvas)
+    });
+  }
+
+  if (layers.length === 0) {
+    const representative = representativeAsset(page.id);
+    if (representative) {
+      layers.push({ name: "Page image", src: "", png: await renderFullImageLayer(representative, canvas) });
+    }
+  }
+
+  const frameLayer = await renderPanelFrameLayer(layout, canvas);
+  if (frameLayer) {
+    layers.push({ name: "Panels", src: "", png: frameLayer });
+  }
+  if (layers.length === 0) {
+    layers.push({ name: "Blank page", src: "", png: await transparentPng(canvas) });
+  }
+  return layers;
+}
+
+function representativeAsset(pageId: string): ExportAssetRow | null {
+  const selected = getRow<ExportAssetRow>(
+    `SELECT a.id, a.image_path, a.width, a.height
+     FROM assets a JOIN generation_rounds r ON r.id = a.round_id
+     WHERE r.page_id = ? AND a.status IN ('selected', 'favorite')
+     ORDER BY a.created_at DESC LIMIT 1`,
+    [pageId]
+  );
+  if (selected) {
+    return selected;
+  }
+  return getRow<ExportAssetRow>(
+    `SELECT a.id, a.image_path, a.width, a.height
+     FROM assets a JOIN generation_rounds r ON r.id = a.round_id
+     WHERE r.page_id = ?
+     ORDER BY a.created_at DESC LIMIT 1`,
+    [pageId]
+  );
+}
+
+function panelAssignmentAssets(pageId: string): PanelAssignmentAssetRow[] {
+  return getRows<PanelAssignmentAssetRow>(
+    `SELECT ppa.panel_id, ppa.crop_json, a.id, a.image_path, a.width, a.height
+     FROM page_panel_assignments ppa
+     JOIN assets a ON a.id = ppa.asset_id
+     WHERE ppa.page_id = ?
+     ORDER BY ppa.updated_at ASC`,
+    [pageId]
+  );
+}
+
+async function renderFullImageLayer(asset: ExportAssetRow, canvas: ExportCanvas): Promise<Buffer> {
+  return sharp(asset.image_path, { failOn: "none" })
+    .rotate()
+    .resize(canvas.width, canvas.height, {
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    })
+    .ensureAlpha()
+    .png()
+    .toBuffer();
+}
+
+async function renderPanelImageLayer(
+  assignment: PanelAssignmentAssetRow,
+  panel: LayoutPanel,
+  layout: PageLayout,
+  canvas: ExportCanvas
+): Promise<Buffer> {
+  const crop = parseCrop(assignment.crop_json);
+  const source = sharp(assignment.image_path, { failOn: "none" }).rotate();
+  const metadata = await source.metadata();
+  const sourceWidth = assignment.width ?? metadata.width ?? 1;
+  const sourceHeight = assignment.height ?? metadata.height ?? 1;
+  const extract = cropToExtract(crop, sourceWidth, sourceHeight);
+  const box = panelPixelBounds(panel, layout, canvas);
+  const panelImage = await sharp(assignment.image_path, { failOn: "none" })
+    .rotate()
+    .extract(extract)
+    .resize(box.width, box.height, { fit: "fill" })
+    .ensureAlpha()
+    .png()
+    .toBuffer();
+  const layer = await sharp(blankInput(canvas))
+    .composite([{ input: panelImage, left: box.left, top: box.top }])
+    .png()
+    .toBuffer();
+  return sharp(layer)
+    .composite([{ input: Buffer.from(renderShapeMaskSvg(panel.shape, layout, canvas)), blend: "dest-in" }])
+    .png()
+    .toBuffer();
+}
+
+function parseCrop(raw: string): PanelCrop {
+  try {
+    return normalizePanelCrop(JSON.parse(raw)) ?? { ...FULL_PANEL_CROP };
+  } catch {
+    return { ...FULL_PANEL_CROP };
+  }
+}
+
+function cropToExtract(crop: PanelCrop, sourceWidth: number, sourceHeight: number) {
+  const left = Math.min(sourceWidth - 1, Math.max(0, Math.floor(crop.x * sourceWidth)));
+  const top = Math.min(sourceHeight - 1, Math.max(0, Math.floor(crop.y * sourceHeight)));
+  const width = Math.max(1, Math.min(sourceWidth - left, Math.round(crop.width * sourceWidth)));
+  const height = Math.max(1, Math.min(sourceHeight - top, Math.round(crop.height * sourceHeight)));
+  return { left, top, width, height };
+}
+
+function panelPixelBounds(panel: LayoutPanel, layout: PageLayout, canvas: ExportCanvas) {
+  const [minX, minY, maxX, maxY] = panelBounds(panel.shape);
+  const h = layoutHeight(layout);
+  const left = Math.max(0, Math.floor(minX * canvas.width));
+  const top = Math.max(0, Math.floor((minY / h) * canvas.height));
+  const right = Math.min(canvas.width, Math.ceil(maxX * canvas.width));
+  const bottom = Math.min(canvas.height, Math.ceil((maxY / h) * canvas.height));
+  return {
+    left,
+    top,
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top)
+  };
+}
+
+async function renderPanelFrameLayer(layout: PageLayout, canvas: ExportCanvas): Promise<Buffer | null> {
+  const elements = layout.panels
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .map((panel) => renderFrameElement(panel, layout, canvas))
+    .filter(Boolean);
+  if (elements.length === 0) {
+    return null;
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}" viewBox="0 0 ${canvas.width} ${canvas.height}">${elements.join("")}</svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+function renderFrameElement(panel: LayoutPanel, layout: PageLayout, canvas: ExportCanvas): string {
+  const frame = resolveFrame(panel.frame);
+  if (!frame.visible || frame.style === "none") {
+    return "";
+  }
+  const strokeWidth = Math.max(1, frame.strokeWidth * canvas.width);
+  const attrs = [
+    `fill="none"`,
+    `stroke="${escapeXml(frame.strokeColor || DEFAULT_PANEL_FRAME.strokeColor)}"`,
+    `stroke-width="${fmt(strokeWidth)}"`,
+    `stroke-linecap="round"`,
+    `stroke-linejoin="round"`,
+    `vector-effect="non-scaling-stroke"`
+  ].join(" ");
+  return renderShapeElement(panel.shape, layout, canvas, attrs);
+}
+
+function resolveFrame(frame: PanelFrame | undefined): PanelFrame {
+  if (!frame) {
+    return DEFAULT_PANEL_FRAME;
+  }
+  return {
+    visible: frame.visible,
+    style: frame.style,
+    strokeWidth: Number.isFinite(frame.strokeWidth) ? frame.strokeWidth : DEFAULT_PANEL_FRAME.strokeWidth,
+    strokeColor: frame.strokeColor || DEFAULT_PANEL_FRAME.strokeColor
+  };
+}
+
+function renderShapeMaskSvg(shape: PanelShape, layout: PageLayout, canvas: ExportCanvas): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}" viewBox="0 0 ${canvas.width} ${canvas.height}">${renderShapeElement(shape, layout, canvas, `fill="#fff" stroke="none"`)}</svg>`;
+}
+
+function renderShapeElement(shape: PanelShape, layout: PageLayout, canvas: ExportCanvas, attrs: string): string {
+  const h = layoutHeight(layout);
+  if (shape.type === "polygon") {
+    const points = shape.points.map((point) => mapPoint(point, h, canvas).map(fmt).join(",")).join(" ");
+    return `<polygon points="${points}" ${attrs}/>`;
+  }
+  if (shape.type === "rect") {
+    const [p1x, p1y] = mapPoint([shape.bounds[0], shape.bounds[1]], h, canvas);
+    const [p2x, p2y] = mapPoint([shape.bounds[2], shape.bounds[3]], h, canvas);
+    const x = Math.min(p1x, p2x);
+    const y = Math.min(p1y, p2y);
+    const width = Math.abs(p2x - p1x);
+    const height = Math.abs(p2y - p1y);
+    const radius = typeof shape.cornerRadius === "number"
+      ? ` rx="${fmt(shape.cornerRadius * canvas.width)}" ry="${fmt((shape.cornerRadius / h) * canvas.height)}"`
+      : "";
+    return `<rect x="${fmt(x)}" y="${fmt(y)}" width="${fmt(width)}" height="${fmt(height)}"${radius} ${attrs}/>`;
+  }
+  if (shape.type === "ellipse") {
+    const [cx, cy] = mapPoint(shape.center, h, canvas);
+    const rx = shape.radius[0] * canvas.width;
+    const ry = (shape.radius[1] / h) * canvas.height;
+    return `<ellipse cx="${fmt(cx)}" cy="${fmt(cy)}" rx="${fmt(rx)}" ry="${fmt(ry)}" ${attrs}/>`;
+  }
+  const sx = canvas.width;
+  const sy = canvas.height / h;
+  return `<path d="${escapeXml(shape.d)}" transform="scale(${fmt(sx)} ${fmt(sy)})" ${attrs}/>`;
+}
+
+function mapPoint(point: [number, number], layoutH: number, canvas: ExportCanvas): [number, number] {
+  return [point[0] * canvas.width, (point[1] / layoutH) * canvas.height];
+}
+
+function layoutHeight(layout: PageLayout): number {
+  const height = layout.page.height;
+  return Number.isFinite(height) && height > 0 ? height : layout.page.aspectRatio[1] / layout.page.aspectRatio[0];
+}
+
+async function renderMergedImage(layers: RasterLayer[], canvas: ExportCanvas): Promise<Buffer> {
+  return sharp(blankInput(canvas))
+    .composite(layers.map((layer) => ({ input: layer.png, left: 0, top: 0 })))
+    .png()
+    .toBuffer();
+}
+
+function renderStackXml(canvas: ExportCanvas, layers: RasterLayer[]): string {
+  const stackLayers = [...layers].reverse();
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<image version="0.0.3" w="${canvas.width}" h="${canvas.height}" xres="${DEFAULT_RESOLUTION}" yres="${DEFAULT_RESOLUTION}">
+  <stack>
+${stackLayers.map((layer) => `    <layer name="${escapeXml(layer.name)}" src="${escapeXml(layer.src)}" x="0" y="0" opacity="1" visibility="visible" composite-op="svg:src-over"/>`).join("\n")}
+  </stack>
+</image>
+`;
+}
+
+function blankInput(canvas: ExportCanvas) {
+  return {
+    create: {
+      width: canvas.width,
+      height: canvas.height,
+      channels: 4 as const,
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    }
+  };
+}
+
+async function transparentPng(canvas: ExportCanvas): Promise<Buffer> {
+  return sharp(blankInput(canvas)).png().toBuffer();
+}
+
+function pageFileBase(page: PageRow): string {
+  const number = String(page.pageIndex + 1).padStart(3, "0");
+  const title = safeAsciiName(page.title, `page-${number}`);
+  return `${number}-${title}`;
+}
+
+function safeAsciiName(value: string, fallback: string): string {
+  const safe = value
+    .trim()
+    .replace(/[^\w.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return safe || fallback;
+}
+
+function escapeXml(value: unknown): string {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;");
+}
+
+function fmt(value: number): string {
+  return Number.isFinite(value) ? String(Math.round(value * 1000) / 1000) : "0";
+}

@@ -4,12 +4,21 @@ import { decorateAsset } from "./assets";
 import { HttpError } from "./http";
 import { deleteProjectStorage, ensureProjectStorage } from "./storage";
 import { listTemplates } from "./templates";
-import { objectBody, requiredString, stringOr, stringOrNull } from "./validate";
+import { objectBody, positiveIntegerOr, requiredString, stringOr, stringOrNull } from "./validate";
 import { sanitizePastedObjects, type PastedObject } from "../shared/pasteAttachments";
 
 type ProjectDetailOptions = {
   ensureRoundMonitor?: (roundId: string) => void;
 };
+
+const DEFAULT_CANVAS_WIDTH = 1024;
+const DEFAULT_CANVAS_HEIGHT = 1446;
+const MIN_CANVAS_DIMENSION = 64;
+const MAX_CANVAS_DIMENSION = 16384;
+
+function canvasDimension(value: unknown, fallback: number): number {
+  return Math.min(MAX_CANVAS_DIMENSION, Math.max(MIN_CANVAS_DIMENSION, positiveIntegerOr(value, fallback)));
+}
 
 export function listProjects(): ProjectSummary[] {
   const rows = getRows<Record<string, unknown>>(
@@ -38,6 +47,8 @@ export function createProject(body: unknown): ProjectRow | null {
   const name = requiredString(input.name, "name");
   const description = stringOr(input.description, "");
   const mode = input.mode === "book" ? "book" : "single";
+  const canvasWidth = canvasDimension(input.canvasWidth ?? input.canvas_width, DEFAULT_CANVAS_WIDTH);
+  const canvasHeight = canvasDimension(input.canvasHeight ?? input.canvas_height, DEFAULT_CANVAS_HEIGHT);
   const defaultTemplateId = stringOrNull(input.defaultTemplateId ?? input.default_template_id);
   if (defaultTemplateId) {
     const template = getRow("SELECT id FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [defaultTemplateId]);
@@ -48,9 +59,9 @@ export function createProject(body: unknown): ProjectRow | null {
   const storage = ensureProjectStorage(id);
 
   runSql(
-    `INSERT INTO projects (id, name, description, mode, default_template_id, storage_dir)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, name, description, mode, defaultTemplateId, storage.projectRoot]
+    `INSERT INTO projects (id, name, description, mode, default_template_id, storage_dir, canvas_width, canvas_height)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, name, description, mode, defaultTemplateId, storage.projectRoot, canvasWidth, canvasHeight]
   );
 
   // Book はページを1件以上持つ前提。作成直後から使えるよう初期ページ(#01)を1枚用意する。

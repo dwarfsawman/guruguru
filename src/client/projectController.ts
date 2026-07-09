@@ -4,7 +4,7 @@ import type { Asset, ProjectDetail, ProjectRow, ProjectSummary, Round } from "..
 import { api } from "./api";
 import type { WorkflowTemplate } from "./workflowTypes";
 import { pushToast, requestRender, state } from "./appState";
-import { registerActions } from "./actionRegistry";
+import { registerActions, registerEventBinder } from "./actionRegistry";
 import { draftStorageKey, resetProjectDrafts, restoreOrResetProjectDrafts } from "./draftStore";
 import { clearPasteCaches } from "./pasteObjectController";
 import { readForm } from "./formUtils";
@@ -156,6 +156,15 @@ function fileToDataUrl(file: File) {
 }
 
 const DEFAULT_PROJECT_NAME = "New Project";
+const DEFAULT_CANVAS_WIDTH = 1024;
+const DEFAULT_CANVAS_HEIGHT = 1446;
+const CANVAS_ASPECT_PRESETS = new Map<string, [number, number]>([
+  ["182:257", [182, 257]],
+  ["364:257", [364, 257]],
+  ["1:1", [1, 1]],
+  ["16:9", [16, 9]],
+  ["9:16", [9, 16]]
+]);
 
 function nextDefaultProjectName(existingNames: string[]) {
   let maxIndex = 0;
@@ -176,13 +185,17 @@ async function createProject() {
   const form = readForm("project-form");
   const name = form.name.trim() || nextDefaultProjectName(state.projects.map((project) => project.name));
   const mode = state.createProjectMode;
+  const canvasWidth = projectCanvasDimension(form.canvasWidth, DEFAULT_CANVAS_WIDTH);
+  const canvasHeight = projectCanvasDimension(form.canvasHeight, DEFAULT_CANVAS_HEIGHT);
   const result = await api<{ project: ProjectRow }>("/api/projects", {
     method: "POST",
     body: JSON.stringify({
       name,
       description: form.description,
       defaultTemplateId: form.defaultTemplateId || null,
-      mode
+      mode,
+      canvasWidth,
+      canvasHeight
     })
   });
   // NOTE: POST /api/projects は round_count / asset_count を含まない ProjectRow を
@@ -197,6 +210,64 @@ async function createProject() {
   } else {
     await openProject(result.project.id);
   }
+}
+
+function projectCanvasDimension(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(16384, Math.max(64, Math.trunc(parsed)));
+}
+
+function applyProjectAspectRatio(form: HTMLFormElement) {
+  const select = form.elements.namedItem("canvasAspectRatio") as HTMLSelectElement | null;
+  const widthInput = form.elements.namedItem("canvasWidth") as HTMLInputElement | null;
+  const heightInput = form.elements.namedItem("canvasHeight") as HTMLInputElement | null;
+  if (!select || !widthInput || !heightInput || select.value === "custom") {
+    return;
+  }
+  const ratio = CANVAS_ASPECT_PRESETS.get(select.value);
+  if (!ratio) {
+    return;
+  }
+  const width = projectCanvasDimension(widthInput.value, DEFAULT_CANVAS_WIDTH);
+  widthInput.value = String(width);
+  heightInput.value = String(Math.max(64, Math.min(16384, Math.round(width * ratio[1] / ratio[0]))));
+}
+
+function bindProjectCanvasEvents(app: HTMLElement) {
+  app.addEventListener("change", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement) || !target.dataset.projectAspectRatio) {
+      return;
+    }
+    const form = target.closest<HTMLFormElement>("#project-form");
+    if (form) {
+      applyProjectAspectRatio(form);
+    }
+  });
+
+  app.addEventListener("input", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) {
+      return;
+    }
+    const form = target.closest<HTMLFormElement>("#project-form");
+    if (!form) {
+      return;
+    }
+    if (target.dataset.projectCanvasWidth) {
+      applyProjectAspectRatio(form);
+      return;
+    }
+    if (target.dataset.projectCanvasHeight) {
+      const select = form.elements.namedItem("canvasAspectRatio") as HTMLSelectElement | null;
+      if (select) {
+        select.value = "custom";
+      }
+    }
+  });
 }
 
 /** 一覧カードの「開く」。Book はページグリッドへ、single は従来の1枚生成 UI へ。 */
@@ -262,3 +333,5 @@ registerActions({
     requestRender();
   }
 });
+
+registerEventBinder(bindProjectCanvasEvents);

@@ -50,6 +50,20 @@ export function renderHome(
             </div>
           </div>
           <label>Project名<input name="name" placeholder="未入力の場合は自動採番されます" /></label>
+          <div class="form-span project-canvas-row">
+            <label>アスペクト比
+              <select name="canvasAspectRatio" data-project-aspect-ratio>
+                <option value="182:257" selected>B5縦(182:257)</option>
+                <option value="364:257">見開きB5横(364:257)</option>
+                <option value="1:1">正方形(1:1)</option>
+                <option value="16:9">横長(16:9)</option>
+                <option value="9:16">縦長(9:16)</option>
+                <option value="custom">カスタム</option>
+              </select>
+            </label>
+            <label>幅(px)<input name="canvasWidth" data-project-canvas-width type="number" min="64" max="16384" step="1" value="1024" /></label>
+            <label>高さ(px)<input name="canvasHeight" data-project-canvas-height type="number" min="64" max="16384" step="1" value="1446" /></label>
+          </div>
           <label>デフォルトWorkflowTemplate
             <select name="defaultTemplateId">
               <option value="">未指定</option>
