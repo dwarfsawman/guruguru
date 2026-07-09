@@ -125,20 +125,86 @@ async function reloadPages() {
   state.book = await api<BookPages>(`/api/projects/${state.currentProjectId}/pages`);
 }
 
-async function addPage() {
+async function addPage(layoutTemplateId?: string) {
   if (!state.currentProjectId) {
     return;
   }
   // 引き継ぎ元は「追加前の末尾ページ」(Book共通設定が優先)。追加後の新ページも末尾に付く。
   const previousLastPageId = state.book?.pages.at(-1)?.id ?? null;
-  await api(`/api/projects/${state.currentProjectId}/pages`, { method: "POST", body: "{}" });
+  const body = layoutTemplateId ? JSON.stringify({ layoutTemplateId }) : "{}";
+  await api(`/api/projects/${state.currentProjectId}/pages`, { method: "POST", body });
   await reloadPages();
   const newPageId = state.book?.pages.at(-1)?.id ?? null;
   if (newPageId) {
     applyCarryoverToNewPage(newPageId, previousLastPageId);
     persistProjectDraft(state.currentProjectId);
   }
+  // テンプレから追加した場合はピッカーを閉じてページ一覧へ戻す。
+  if (layoutTemplateId) {
+    state.layoutPickerOpen = false;
+  }
   requestRender();
+}
+
+/** 画像インポートで受け付ける MIME(source-asset と同じ)。 */
+const IMPORT_IMAGE_MIME = ["image/png", "image/jpeg", "image/webp"];
+
+/**
+ * 複数画像を新規ページとして順に取り込む(各画像がそのページの代表アセットになる)。
+ * 1枚失敗しても残りは続行し、結果をトーストで要約する。ComfyUI は不要(ファイルコピー)。
+ */
+export async function importImagesAsPages(input: HTMLInputElement) {
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  if (files.length === 0 || !state.currentProjectId) {
+    return;
+  }
+  const images = files.filter((file) => IMPORT_IMAGE_MIME.includes(file.type));
+  const skipped = files.length - images.length;
+  if (images.length === 0) {
+    pushToast("PNG / JPEG / WebP 画像を選択してください。", "error");
+    return;
+  }
+
+  state.layoutPickerOpen = false;
+  pushToast(`${images.length}枚の画像をページとして取り込んでいます…`, "info");
+
+  let imported = 0;
+  let failed = 0;
+  let lastError = "";
+  for (const file of images) {
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      await api(`/api/projects/${state.currentProjectId}/pages/import-image`, {
+        method: "POST",
+        body: JSON.stringify({ filename: file.name, dataUrl })
+      });
+      imported += 1;
+    } catch (error) {
+      failed += 1;
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  await reloadPages();
+  if (imported === 0) {
+    pushToast(lastError || "画像の取り込みに失敗しました。", "error");
+  } else {
+    const notes = [skipped > 0 ? `${skipped}件は非対応形式` : "", failed > 0 ? `${failed}件は失敗` : ""]
+      .filter(Boolean)
+      .join(" / ");
+    pushToast(`${imported}枚の画像をページとして取り込みました。${notes ? `(${notes})` : ""}`, "info");
+  }
+  requestRender();
+}
+
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result ?? "")));
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("画像ファイルを読み込めませんでした。")));
+    reader.readAsDataURL(file);
+  });
 }
 
 /**
@@ -495,6 +561,7 @@ function bindPageDragEvents(app: HTMLElement) {
 registerActions({
   "open-page": (id) => openPage(id),
   "add-page": () => addPage(),
+  "add-page-from-template": (id) => addPage(id),
   "delete-page": (id) => deletePage(id),
   "rename-page": (id) => renamePage(id),
   "back-to-pages": () => backToPages(),

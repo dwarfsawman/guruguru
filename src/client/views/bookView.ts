@@ -6,6 +6,7 @@
 import type { BookPages, PageSummary } from "../../shared/apiTypes";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconImage, iconPlus, iconSettings, iconTrash } from "../icons";
+import { renderPageLayoutSvg } from "./pageLayoutSvg";
 
 export function renderBookView(book: BookPages): string {
   const { project, pages } = book;
@@ -21,7 +22,12 @@ export function renderBookView(book: BookPages): string {
           <div class="book-heading-actions">
             <span class="panel-count"><b>${pages.length}</b> pages</span>
             <button class="button-secondary compact" type="button" data-action="open-book-settings" title="新規ページの既定設定(LoRA/プロンプト/生成パラメータ)を設定">${iconSettings()}Book共通設定</button>
-            <button class="button-secondary compact" type="button" data-action="add-page">${iconPlus()}ページ追加</button>
+            <button class="button-secondary compact" type="button" data-action="open-layout-picker" title="コマ割りテンプレートを選んでページ追加">${iconPlus()}テンプレから追加</button>
+            <label class="button-secondary compact source-upload-button" title="画像を新規ページとして取り込む(複数選択可)">
+              ${iconImage()}画像をインポート
+              <input data-image-import="1" type="file" accept="image/png,image/jpeg,image/webp" multiple />
+            </label>
+            <button class="button-secondary compact" type="button" data-action="add-page" title="空のページを追加">${iconPlus()}ページ追加</button>
             <button class="button-primary" type="button" data-action="open-book-reader" title="漫画ビューアで読む" ${pages.length === 0 ? "disabled" : ""}>${iconImage()}読む</button>
           </div>
         </div>
@@ -42,9 +48,7 @@ function renderPageCard(page: PageSummary, index: number): string {
     <article class="page-card" data-key="page-${page.id}" data-page-id="${page.id}">
       <button class="page-card-open" type="button" data-action="open-page" data-id="${page.id}" aria-label="${escapeAttr(label)}を開く" title="${escapeAttr(label)}">
         <span class="page-card-thumb">
-          ${page.representativeThumbnailUrl
-            ? `<img class="page-thumb-img" src="${escapeAttr(page.representativeThumbnailUrl)}" alt="" loading="lazy" draggable="false" />`
-            : ""}
+          ${renderPageThumb(page)}
         </span>
         <span class="page-card-index">${number}</span>
       </button>
@@ -54,6 +58,20 @@ function renderPageCard(page: PageSummary, index: number): string {
       </div>
     </article>
   `;
+}
+
+/**
+ * ページのサムネ。代表画像があれば画像、無ければコマ割りレイアウトの枠サムネ、
+ * どちらも無ければ空。レイアウト枠サムネにより一覧がコマ割り表示になる。
+ */
+function renderPageThumb(page: PageSummary): string {
+  if (page.representativeThumbnailUrl) {
+    return `<img class="page-thumb-img" src="${escapeAttr(page.representativeThumbnailUrl)}" alt="" loading="lazy" draggable="false" />`;
+  }
+  if (page.layout) {
+    return `<span class="page-thumb-layout">${renderPageLayoutSvg(page.layout, { ariaLabel: "コマ割りプレビュー" })}</span>`;
+  }
+  return "";
 }
 
 function renderAddPageCard(): string {

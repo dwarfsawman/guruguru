@@ -1,0 +1,8 @@
+# codebase-memory-mcp ignore file (gitignore syntax, repo-root only).
+# Force-exclude binary font assets so the indexer never opens/parses them
+# (a .woff2 parse can crash index_repository). Matches at any depth.
+*.woff2
+*.woff
+*.ttf
+*.otf
+*.eot
