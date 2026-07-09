@@ -8,7 +8,14 @@
  */
 import type { PagePanelAssignment, PageDetail, PageSummary } from "../shared/apiTypes";
 import type { LayoutPanel, PanelCrop } from "../shared/pageLayout";
-import { clampPanelCrop, defaultCoverCrop, panelBounds, panelBoundsSize } from "../shared/pageLayout";
+import {
+  clampPanelCrop,
+  defaultCoverCrop,
+  normalizeRotation,
+  panelBounds,
+  panelBoundsSize,
+  scaleCropAboutCenter
+} from "../shared/pageLayout";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
@@ -282,56 +289,102 @@ function resetPanelCrop() {
   void commitCropDraft(lightbox.cropPanelId);
 }
 
-// --- クロップ編集のドラッグ(pointer events で自前実装。ページ並び替えの pageReorder と同型) ---
+// --- クロップ編集のジェスチャ(pointer events で自前実装。参照画像貼り付けと同型) ---
+// パン(本体ドラッグ)/ 拡縮(コーナーハンドル)/ 回転(上ハンドル)。座標は正規化ページ座標で扱い、
+// 画面px↔正規化は getScreenCTM に一本化する(CSS aspect-ratio 目算に頼らない)。
+
+type CropGestureKind = "pan" | "scale" | "rotate";
+
+/** 回転の Shift スナップ刻み(15°)。 */
+const ROTATE_SNAP_RAD = Math.PI / 12;
 
 interface CropDragState {
   pointerId: number;
   panelId: string;
+  kind: CropGestureKind;
   startX: number;
   startY: number;
   startCrop: PanelCrop;
   boxWidth: number;
   boxHeight: number;
-  /** 画面px → SVG正規化座標1単位あたりの px 数。getScreenCTM 由来なので、ダイアログの実際の
-   * 表示サイズや `preserveAspectRatio` によるレターボックスに関係なく常に正確(CSS の
-   * aspect-ratio 目算に頼らない)。 */
+  /** 画面px → SVG正規化座標1単位あたりの px 数(ctm.a)。 */
   pxPerUnit: number;
+  /** パネル外接矩形中心の画面px座標(拡縮/回転の基準)。 */
+  centerScreenX: number;
+  centerScreenY: number;
+  /** 拡縮開始時の「中心→ポインタ」距離(px)。 */
+  startDist: number;
+  /** 回転開始時の「中心→ポインタ」角度(rad)。 */
+  startAngle: number;
 }
 
 let cropDrag: CropDragState | null = null;
 
-/** main.ts の pointerdown 委譲から呼ばれる。クロップ編集モード中の対象画像レイヤーへの操作だけを扱う。 */
+/** クロップ編集中の対象画像レイヤー(getScreenCTM の取得元)。ハンドルでも本体でも同じ座標系。 */
+function cropCtmElement(): SVGGraphicsElement | null {
+  const el = document.querySelector<SVGGraphicsElement>("[data-crop-drag-panel]");
+  return el instanceof SVGGraphicsElement ? el : null;
+}
+
+/** main.ts の pointerdown 委譲から呼ばれる。ギズモハンドル(拡縮/回転)と本体(パン)を切り分ける。 */
 export function handlePagePanelCropPointerDown(event: PointerEvent): boolean {
   const lightbox = state.pagePanelLightbox;
   if (!lightbox?.cropPanelId || !lightbox.cropDraft) {
     return false;
   }
   const target = event.target;
-  const layer = target instanceof Element ? target.closest(`[data-crop-drag-panel="${lightbox.cropPanelId}"]`) : null;
-  const panel = findPanel(currentLightboxPage(), lightbox.cropPanelId);
-  if (!layer || !panel || !(layer instanceof SVGGraphicsElement)) {
+  const handle = target instanceof Element ? target.closest<SVGElement>("[data-crop-handle]") : null;
+  const onBody = target instanceof Element ? target.closest(`[data-crop-drag-panel="${lightbox.cropPanelId}"]`) : null;
+  if (!handle && !onBody) {
     return false;
   }
-  const ctm = layer.getScreenCTM();
-  if (!ctm || !ctm.a) {
+  const panel = findPanel(currentLightboxPage(), lightbox.cropPanelId);
+  const ctmEl = cropCtmElement();
+  const ctm = ctmEl?.getScreenCTM() ?? null;
+  if (!panel || !ctm || !ctm.a) {
     return false;
   }
   event.preventDefault();
-  const [boxWidth, boxHeight] = panelBoundsSize(panelBounds(panel.shape));
+  const kind: CropGestureKind = handle?.getAttribute("data-crop-handle") === "scale" ? "scale" : handle?.getAttribute("data-crop-handle") === "rotate" ? "rotate" : "pan";
+
+  // 回転ハンドルのダブルクリック = 0° リセット(paste の前例に倣う)。
+  if (kind === "rotate" && event.detail >= 2) {
+    lightbox.cropDraft = clampPanelCrop({ ...lightbox.cropDraft, rotation: 0 });
+    requestRender();
+    void commitCropDraft(lightbox.cropPanelId);
+    return true;
+  }
+
+  const bounds = panelBounds(panel.shape);
+  const [boxWidth, boxHeight] = panelBoundsSize(bounds);
+  const centerX = (bounds[0] + bounds[2]) / 2;
+  const centerY = (bounds[1] + bounds[3]) / 2;
+  const centerScreenX = ctm.a * centerX + ctm.c * centerY + ctm.e;
+  const centerScreenY = ctm.b * centerX + ctm.d * centerY + ctm.f;
+  const dx = event.clientX - centerScreenX;
+  const dy = event.clientY - centerScreenY;
   cropDrag = {
     pointerId: event.pointerId,
     panelId: lightbox.cropPanelId,
+    kind,
     startX: event.clientX,
     startY: event.clientY,
     startCrop: { ...lightbox.cropDraft },
     boxWidth,
     boxHeight,
-    pxPerUnit: ctm.a
+    pxPerUnit: ctm.a,
+    centerScreenX,
+    centerScreenY,
+    startDist: Math.hypot(dx, dy),
+    startAngle: Math.atan2(dy, dx)
   };
-  try {
-    layer.setPointerCapture(event.pointerId);
-  } catch {
-    // capture に失敗しても pointermove/up は app への委譲で届く。
+  const captureTarget = handle ?? (onBody instanceof Element ? onBody : null);
+  if (captureTarget && "setPointerCapture" in captureTarget) {
+    try {
+      (captureTarget as SVGElement).setPointerCapture(event.pointerId);
+    } catch {
+      // capture に失敗しても pointermove/up は app への委譲で届く。
+    }
   }
   return true;
 }
@@ -345,18 +398,44 @@ export function handlePagePanelCropPointerMove(event: PointerEvent): boolean {
     cropDrag = null;
     return false;
   }
-  const dxPage = (event.clientX - cropDrag.startX) / cropDrag.pxPerUnit;
-  const dyPage = (event.clientY - cropDrag.startY) / cropDrag.pxPerUnit;
-  const dxAsset = dxPage * (cropDrag.startCrop.width / cropDrag.boxWidth);
-  const dyAsset = dyPage * (cropDrag.startCrop.height / cropDrag.boxHeight);
-  lightbox.cropDraft = clampPanelCrop({
-    x: cropDrag.startCrop.x - dxAsset,
-    y: cropDrag.startCrop.y - dyAsset,
-    width: cropDrag.startCrop.width,
-    height: cropDrag.startCrop.height
-  });
+  if (cropDrag.kind === "pan") {
+    lightbox.cropDraft = panGestureCrop(cropDrag, event);
+  } else if (cropDrag.kind === "scale") {
+    const dist = Math.hypot(event.clientX - cropDrag.centerScreenX, event.clientY - cropDrag.centerScreenY);
+    // ポインタが中心から遠ざかる = ズームイン = 窓を小さく。factor = startDist / dist。
+    const factor = cropDrag.startDist / Math.max(1, dist);
+    lightbox.cropDraft = scaleCropAboutCenter(cropDrag.startCrop, factor);
+  } else {
+    const angle = Math.atan2(event.clientY - cropDrag.centerScreenY, event.clientX - cropDrag.centerScreenX);
+    let rotation = (cropDrag.startCrop.rotation ?? 0) + (angle - cropDrag.startAngle);
+    if (event.shiftKey) {
+      rotation = Math.round(rotation / ROTATE_SNAP_RAD) * ROTATE_SNAP_RAD;
+    }
+    lightbox.cropDraft = clampPanelCrop({ ...cropDrag.startCrop, rotation: normalizeRotation(rotation) });
+  }
   requestRender();
   return true;
+}
+
+/** パン: 画面デルタを画像の回転に合わせて image 軸へ回してから crop の x/y に反映する。 */
+function panGestureCrop(drag: CropDragState, event: PointerEvent): PanelCrop {
+  const dxPage = (event.clientX - drag.startX) / drag.pxPerUnit;
+  const dyPage = (event.clientY - drag.startY) / drag.pxPerUnit;
+  const rotation = drag.startCrop.rotation ?? 0;
+  // 画面デルタを -rotation 回転して image 軸のデルタにする(無回転なら恒等)。
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const imgDx = dxPage * cos + dyPage * sin;
+  const imgDy = -dxPage * sin + dyPage * cos;
+  const dxAsset = imgDx * (drag.startCrop.width / drag.boxWidth);
+  const dyAsset = imgDy * (drag.startCrop.height / drag.boxHeight);
+  return clampPanelCrop({
+    x: drag.startCrop.x - dxAsset,
+    y: drag.startCrop.y - dyAsset,
+    width: drag.startCrop.width,
+    height: drag.startCrop.height,
+    rotation
+  });
 }
 
 function finishCropDrag(event: PointerEvent, commit: boolean): boolean {
@@ -378,6 +457,79 @@ export function handlePagePanelCropPointerUp(event: PointerEvent): boolean {
 export function handlePagePanelCropPointerCancel(event: PointerEvent): boolean {
   return finishCropDrag(event, false);
 }
+
+/** main.ts の wheel 委譲から呼ばれる。クロップ編集中のホイールでズーム(拡大縮小)する。 */
+export function handlePagePanelCropWheel(event: WheelEvent): boolean {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox?.cropPanelId || !lightbox.cropDraft) {
+    return false;
+  }
+  const target = event.target;
+  const insideStage = target instanceof Element ? target.closest(".page-panel-stage") : null;
+  if (!insideStage) {
+    return false;
+  }
+  event.preventDefault();
+  // 上スクロール(deltaY<0)= ズームイン = 窓を小さく。
+  const factor = event.deltaY < 0 ? 0.92 : 1 / 0.92;
+  lightbox.cropDraft = scaleCropAboutCenter(lightbox.cropDraft, factor);
+  requestRender();
+  scheduleCropWheelCommit(lightbox.cropPanelId);
+  return true;
+}
+
+// ホイールズームは連続で来るので、止まってから 1 回だけ PATCH 保存する。
+let cropWheelCommitTimer: number | null = null;
+function scheduleCropWheelCommit(panelId: string) {
+  if (cropWheelCommitTimer !== null) {
+    window.clearTimeout(cropWheelCommitTimer);
+  }
+  cropWheelCommitTimer = window.setTimeout(() => {
+    cropWheelCommitTimer = null;
+    void commitCropDraft(panelId);
+  }, 400);
+}
+
+/**
+ * render ループ末尾から呼ばれ、ギズモのハンドル半径・回転ハンドルの柄長を画面基準の一定サイズへ直す
+ * (paste の `syncPasteGizmo` と同型)。ハンドル位置自体は render が crop draft から出すのでここでは触らない。
+ */
+export function syncPagePanelCropGizmo(): void {
+  const gizmo = document.querySelector<SVGGElement>("#pagePanelGizmo");
+  if (!gizmo) {
+    return;
+  }
+  const ctm = gizmo.getScreenCTM();
+  if (!ctm || !ctm.a) {
+    return;
+  }
+  const unitPerPx = 1 / ctm.a;
+  const radius = GIZMO_HANDLE_SCREEN_RADIUS_PX * unitPerPx;
+  const stick = GIZMO_ROTATE_STICK_SCREEN_PX * unitPerPx;
+  const centerY = Number(gizmo.dataset.cy);
+  const topMidX = Number(gizmo.dataset.tmx);
+  const topMidY = Number(gizmo.dataset.tmy);
+  const upX = Number(gizmo.dataset.upx);
+  const upY = Number(gizmo.dataset.upy);
+  for (let i = 0; i < 4; i += 1) {
+    gizmo.querySelector<SVGCircleElement>(`#pagePanelGizmoCorner${i}`)?.setAttribute("r", String(radius));
+  }
+  const rotateHandle = gizmo.querySelector<SVGCircleElement>("#pagePanelGizmoRotate");
+  const stickLine = gizmo.querySelector<SVGLineElement>("#pagePanelGizmoStick");
+  if (Number.isFinite(topMidX) && Number.isFinite(topMidY) && Number.isFinite(upX) && Number.isFinite(upY) && Number.isFinite(centerY)) {
+    const handleX = topMidX + upX * stick;
+    const handleY = topMidY + upY * stick;
+    rotateHandle?.setAttribute("cx", String(handleX));
+    rotateHandle?.setAttribute("cy", String(handleY));
+    rotateHandle?.setAttribute("r", String(radius));
+    stickLine?.setAttribute("x2", String(handleX));
+    stickLine?.setAttribute("y2", String(handleY));
+  }
+}
+
+/** ハンドルの画面基準サイズ(px)。paste の PASTE_HANDLE_SCREEN_RADIUS 相当。 */
+const GIZMO_HANDLE_SCREEN_RADIUS_PX = 7;
+const GIZMO_ROTATE_STICK_SCREEN_PX = 30;
 
 registerActions({
   "open-page-panels": (id) => openPagePanelLightbox(id),

@@ -20,14 +20,14 @@
 
 ### `PanelCrop`（`src/shared/pageLayout.ts`・純ロジック）
 
-割り当て済み asset 画像のうちコマへ表示する範囲を、**asset 画像座標系で正規化**（`x, y, width, height` ∈ [0,1]）した矩形として持つ。
+割り当て済み asset 画像のうちコマへ表示する範囲を、**asset 画像座標系で正規化**（`x, y, width, height` ∈ [0,1]）した「窓」＋ **`rotation`（ラジアン, 省略/0 で無回転）** として持つ。パン=`x`/`y`、拡大縮小（ズーム）=`width`/`height`（小さいほどズームイン）、回転=`rotation`（窓の中心まわりの画像回転）。`rotation` は後方互換のオプショナル追加で、無い/0 の既存レコードは従来と完全に同一の描画・エクスポートになる（DB マイグレーション不要）。
 
 - `panelBounds(shape)` — パネルの外接矩形 `[minX, minY, maxX, maxY]`。`path` 形状は d 内の数値を (x,y) ペアとして拾うベストエフォート（内蔵プリセット/取り込み仕様は polygon/rect/ellipse のみを使うため実害なし）。
 - `panelBoundsSize(bounds)` — 外接矩形の幅・高さ（0除算を避け最小値を敷く）。
-- `defaultCoverCrop(assetW, assetH, boxW, boxH)` — asset をコマの外接矩形へ「cover」フィットさせた時の既定 crop（アスペクト比が合わない方向を中央寄せでクロップ）。
-- `clampPanelCrop` / `normalizePanelCrop` — 範囲・型の正規化（サーバ側の入力検証にも使う）。
-
-ドラッグでの移動は `crop.x`/`crop.y`（オフセット）だけを動かし、`width`/`height`（≒ズーム量）は cover フィット時の値のまま固定する。
+- `defaultCoverCrop(assetW, assetH, boxW, boxH)` — asset をコマの外接矩形へ「cover」フィットさせた時の既定 crop（`rotation: 0`。アスペクト比が合わない方向を中央寄せでクロップ）。
+- `clampPanelCrop` / `normalizePanelCrop` — 範囲・型の正規化（`rotation` は `(-π, π]` へ折り返す。サーバ側の入力検証にも使う）。
+- `scaleCropAboutCenter(crop, factor)` — 窓を中心固定で `factor` 倍にズーム（`MIN_CROP_ZOOM_SIZE=0.05` で頭打ち）。コーナーハンドル/ホイールズームで使う。
+- `normalizeRotation(value)` — 角度を `(-π, π]` へ折り返す（非数は 0）。
 
 ## サーバ
 
@@ -46,7 +46,8 @@
   - シングルクリックはコマ選択のみ（`state.pagePanelLightbox.selectedPanelId` を更新）。asset カードの単/複クリック判定（`scheduleAssetCardSelect` 系）と同型に、click イベント側で遅延予約 + `dblclick` イベント側で実処理、という2イベント方式にしている（ブラウザ標準のダブルクリック判定に委ね、`event.detail` の連続性に頼らない）。
   - ダブルクリックは補助導線: 未生成コマなら生成 UI へ遷移、生成済みコマならクロップ編集モードへ。
   - 割り当て済みコマは `<clipPath>` + `<image>` でパネル形状にクリップ表示する。`pageLayoutSvg.ts` の形状ジオメトリ生成ロジックを `panelShapeElement`/`shapeCenter`/`num` として export し、clipPath の中身や枠線描画で再利用する。
-  - クロップドラッグは対象コマの画像レイヤーだけ許可し（`is-crop-target` 以外は `is-dimmed` + `pointer-events: none`）、`SVGGraphicsElement.getScreenCTM()` で「画面 px ↔ SVG 正規化座標 1 単位」の変換係数を得る。ダイアログの実表示サイズや `preserveAspectRatio="xMidYMid meet"` によるレターボックスに関係なく常に正確（CSS の `aspect-ratio` 目算に頼らない）。`pointerup` で1回だけ PATCH を送って確定する。
+  - クロップ編集は**参照画像貼り付け（Paste & Transform）と同型の UX**: パン（本体ドラッグ）/ 拡大縮小（コーナーハンドル + ホイール）/ 回転（上のハンドル、Shift で 15° スナップ、ダブルクリックで 0° リセット）。座標変換は `SVGGraphicsElement.getScreenCTM()` で「画面 px ↔ SVG 正規化座標 1 単位」の係数を得る（ダイアログの実表示サイズや `preserveAspectRatio="xMidYMid meet"` のレターボックスに関係なく正確。CSS の `aspect-ratio` 目算に頼らない）。パンは画像の `rotation` に合わせて画面デルタを image 軸へ回してから `x`/`y` に反映する。`pointerup`（ホイールは停止後 debounce）で1回だけ PATCH を送って確定する。
+  - 編集中は**スポットライト表示**: 対象コマの画像はオーバーレイ（最前面）で描き、元画像全体を薄く出す `page-panel-image-ghost` の上に、コマ形状でクリップした明画像を重ねて「コマ領域だけ濃く」見せる。回転は clip を持つ外側 `<g>` と別の内側 `<image>` に付ける（同一要素だと clip も回るため）。その上に paste 風ギズモ（回転した外接矩形の枠 + コーナー=拡縮 / 上=回転 ハンドル）を描く。ハンドル半径・回転柄の長さは render ループ末尾の `syncPagePanelCropGizmo()` が `getScreenCTM()` で画面基準の一定サイズへ直す（`syncPasteGizmo` と同型）。
   - 「選択コマを生成」ボタン（選択コマが無い間は disabled）で `generateForPanel(pageId, panelId)` を呼ぶ。未生成コマのダブルクリックも同じ関数を使う。lightbox を閉じ、必要なら該当ページを開き（`bookController.openPage`）、`state.activePanelTarget` をセットし、既存の同コマ向けラウンドがあればそのラウンドを active にする。コマの外接矩形アスペクト比から生成フォームの width/height 初期値を計算する（目標面積 1024×1024・8 刻み丸め、`generationController.roundToStep` を再利用）。
 - **状態（`appState.ts`）**
   - `pagePanelLightbox: PagePanelLightboxState | null` — lightbox の開閉・選択・クロップドラフト。
@@ -57,8 +58,14 @@
 - **`main.ts` / `generationDraft.ts`**: `activePanelTarget` がある間はギャラリー・イテレーションツリー・per-round draft の参照を対象コマの `targetPanelId` に絞る。ページ内の他コマのラウンドは同じ `PageDetail` に含まれていても表示上は混ぜない。
 - **`views/bookView.ts`**: `page.layout` を持つページカードは、代表画像の有無に関わらずクリックで `open-page-panels`（コマ選択 lightbox）を開く。持たないページは従来どおり汎用 zoom lightbox。
 
+## OpenRaster エクスポート（`openRasterExport.ts`）
+
+- `renderPanelImageLayer` は `crop.rotation` が 0/無しなら従来どおり `extract`（軸並行）→ `resize(fill)` → 形状マスク（回帰なし）。
+- `rotation` ありは `renderRotatedPanelImageLayer` が**プレビューと同じ SVG transform**（clip を持つ外側 `<g>` + 回転する内側 `<image>`、auto-orient 済みソースを data URI で埋め込み）を canvas 解像度でラスタライズし、見た目を一致させる。
+
 ## 変更履歴
 
+- 2026-07-09: `PanelCrop` に `rotation` を追加し、クロップ編集を参照画像貼り付けと同型のパン/拡大縮小/回転 UX + スポットライト表示へ拡張。透明 outline がドラッグ pointer を奪っていた不具合も修正（画像をオーバーレイの最前面に出す）。OpenRaster エクスポートも回転対応。
 - 2026-07-09: コマ対象中のギャラリー/イテレーションツリーを対象コマのラウンドに限定し、別コマ由来の親ラウンドを引き継がない方針を追記。
 
 ## 検証
@@ -71,4 +78,4 @@
 
 - コマ形状そのものの編集（「構成を編集」、`Docs/Feature-MangaTemplates.md` から引き続き対象外）。
 - 複数コマへの一括生成/バッチ操作。
-- クロップの拡大縮小（ズーム）UI — 現状は cover フィット時の width/height 固定でオフセット（ドラッグ）のみ調整可能。
+- 回転ありコマで、窓がソース外へはみ出た領域（ズーム不足の隙間）を自動で塞ぐ処理。プレビューでは隙間が見える（＝ユーザーがズームで埋める前提）ままにしている。

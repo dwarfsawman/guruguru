@@ -96,8 +96,10 @@ import {
   handlePagePanelCropPointerDown,
   handlePagePanelCropPointerMove,
   handlePagePanelCropPointerUp,
+  handlePagePanelCropWheel,
   handlePagePanelDblClick,
-  handlePagePanelLightboxKeydown
+  handlePagePanelLightboxKeydown,
+  syncPagePanelCropGizmo
 } from "./pagePanelLightboxController";
 import { handleBookReaderKeydown } from "./bookReaderController";
 import {
@@ -382,6 +384,10 @@ function bindEvents() {
   });
 
   app.addEventListener("wheel", (event) => {
+    // クロップ編集のホイールズーム(コマ内生成 lightbox)。preview-media とは別モーダルなので先に処理する。
+    if (handlePagePanelCropWheel(event)) {
+      return;
+    }
     const target = event.target as HTMLElement;
     if (target.id !== "maskCanvas" && target.id !== "paintCanvas" && !target.closest(".preview-media")) {
       return;
@@ -709,6 +715,7 @@ function render(_options: RenderOptions = {}) {
   syncAssetModalPaintCanvas();
   syncAssetModalPasteObjects();
   syncGridPasteCanvases();
+  syncPagePanelCropGizmo();
 }
 
 /**
