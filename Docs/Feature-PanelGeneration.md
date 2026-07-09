@@ -47,7 +47,10 @@
   - ダブルクリックは補助導線: 未生成コマなら生成 UI へ遷移、生成済みコマならクロップ編集モードへ。
   - 割り当て済みコマは `<clipPath>` + `<image>` でパネル形状にクリップ表示する。`pageLayoutSvg.ts` の形状ジオメトリ生成ロジックを `panelShapeElement`/`shapeCenter`/`num` として export し、clipPath の中身や枠線描画で再利用する。
   - クロップ編集は**参照画像貼り付け（Paste & Transform）と同型の UX**: パン（本体ドラッグ）/ 拡大縮小（コーナーハンドル + ホイール）/ 回転（上のハンドル、Shift で 15° スナップ、ダブルクリックで 0° リセット）。座標変換は `SVGGraphicsElement.getScreenCTM()` で「画面 px ↔ SVG 正規化座標 1 単位」の係数を得る（ダイアログの実表示サイズや `preserveAspectRatio="xMidYMid meet"` のレターボックスに関係なく正確。CSS の `aspect-ratio` 目算に頼らない）。パンは画像の `rotation` に合わせて画面デルタを image 軸へ回してから `x`/`y` に反映する。`pointerup`（ホイールは停止後 debounce）で1回だけ PATCH を送って確定する。
-  - 編集中は**スポットライト表示**: 対象コマの画像はオーバーレイ（最前面）で描き、元画像全体を薄く出す `page-panel-image-ghost` の上に、コマ形状でクリップした明画像を重ねて「コマ領域だけ濃く」見せる。回転は clip を持つ外側 `<g>` と別の内側 `<image>` に付ける（同一要素だと clip も回るため）。その上に paste 風ギズモ（回転した外接矩形の枠 + コーナー=拡縮 / 上=回転 ハンドル）を描く。ハンドル半径・回転柄の長さは render ループ末尾の `syncPagePanelCropGizmo()` が `getScreenCTM()` で画面基準の一定サイズへ直す（`syncPasteGizmo` と同型）。
+  - **拡大縮小は縦横比を必ず保つ**: `scaleCropAboutCenter` は width/height に同じ実効 factor をかけ、片辺だけ `[MIN_CROP_ZOOM_SIZE, 1]` 境界に当たって歪むことが無いよう factor を「両辺が範囲内」の区間へ丸める（cover 状態=片辺 1 の時はズームアウト不可）。
+  - **枠外ダブルクリックで編集終了**: クロップ編集中、画像・ギズモハンドル以外（＝枠外）のダブルクリックは「選択に戻る」相当で `closeCropEditor()`（回転ハンドルのダブルクリック＝0°リセットとは `data-crop-handle` の有無で切り分ける）。
+  - 編集中は**スポットライト表示**: 対象コマの画像はオーバーレイ（最前面）で描き、元画像全体を薄く出す `page-panel-image-ghost` の上に、コマ形状でクリップした明画像を重ねて「コマ領域だけ濃く」見せる。回転は clip を持つ外側 `<g>` と別の内側 `<image>` に付ける（同一要素だと clip も回るため）。その上に paste 風ギズモ（回転した外接矩形の枠 + コーナー=拡縮 / 上=回転 ハンドル）を描く。ハンドル半径・回転柄の長さは render ループ末尾の `syncPagePanelCropGizmo()` が `getScreenCTM()` で画面基準の一定サイズへ直す（`syncPasteGizmo` と同型）。**回転ハンドルはステージ外に切れて掴めなくなるのを防ぐため、外向き位置がページ範囲外になる場合は内向きへ反転する（`cropRotateHandlePoint`。最上段コマ対策。render と sync で同じロジック）。**
+  - **編集後のページ一覧プレビュー更新**: ページ一覧のコマ割りプレビューは `/api/.../preview.png?v=<割り当ての最終更新時刻>`（コマ合成）。クロップを保存すると `panelPreviewDirty` を立て、lightbox を閉じる時に `bookController.reloadBookPages()` でページ一覧を再取得し、新しい `v=` で最新プレビューを表示する。
   - 「選択コマを生成」ボタン（選択コマが無い間は disabled）で `generateForPanel(pageId, panelId)` を呼ぶ。未生成コマのダブルクリックも同じ関数を使う。lightbox を閉じ、必要なら該当ページを開き（`bookController.openPage`）、`state.activePanelTarget` をセットし、既存の同コマ向けラウンドがあればそのラウンドを active にする。コマの外接矩形アスペクト比から生成フォームの width/height 初期値を計算する（目標面積 1024×1024・8 刻み丸め、`generationController.roundToStep` を再利用）。
 - **状態（`appState.ts`）**
   - `pagePanelLightbox: PagePanelLightboxState | null` — lightbox の開閉・選択・クロップドラフト。
@@ -65,6 +68,7 @@
 
 ## 変更履歴
 
+- 2026-07-09: クロップ編集フォローアップ — 拡大縮小の縦横比ロック（片辺だけ境界に当たる歪みを排除）、回転ハンドルがステージ外に切れて掴めない問題の反転対策（`cropRotateHandlePoint`）、枠外ダブルクリックで編集終了、編集後にページ一覧のコマ割りプレビュー（`preview.png?v=...`）を再取得して最新化。
 - 2026-07-09: `PanelCrop` に `rotation` を追加し、クロップ編集を参照画像貼り付けと同型のパン/拡大縮小/回転 UX + スポットライト表示へ拡張。透明 outline がドラッグ pointer を奪っていた不具合も修正（画像をオーバーレイの最前面に出す）。OpenRaster エクスポートも回転対応。
 - 2026-07-09: コマ対象中のギャラリー/イテレーションツリーを対象コマのラウンドに限定し、別コマ由来の親ラウンドを引き継がない方針を追記。
 
