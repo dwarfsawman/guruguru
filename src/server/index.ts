@@ -24,6 +24,8 @@ import {
 } from "./pages";
 import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
 import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport";
+import { listFonts } from "./fonts";
+import { computeTextLayout } from "./textLayoutApi";
 import { createSourceAsset } from "./sourceAssets";
 import { createPasteSource, getPasteAttachments, purgeOrphanPasteSources, putPasteAttachments, servePasteSource } from "./pasteAttachments";
 import {
@@ -339,6 +341,16 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const pageObjectsMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/objects$/);
   if (method === "PATCH" && pageObjectsMatch) {
     sendJson(res, 200, updatePageObjects(pageObjectsMatch[1]!, pageObjectsMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  // テキストオブジェクト(Docs/Feature-CGCollectionSuite.md P2): フォント一覧+自前レイアウト計算。
+  if (method === "GET" && path === "/api/fonts") {
+    sendJson(res, 200, { fonts: listFonts() });
+    return;
+  }
+  if (method === "POST" && path === "/api/text-layout") {
+    sendJson(res, 200, computeTextLayout(await readJson(req)));
     return;
   }
 

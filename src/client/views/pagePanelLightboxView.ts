@@ -11,11 +11,22 @@
  *   `page.layout` が無いページ(1枚絵)でも開け、その場合はタブ自体を出さずオブジェクトモード固定にする。
  * 座標は pageLayoutSvg.ts と同じ width-relative 正規化(x∈[0,1], y∈[0,page.height])。
  */
-import type { PagePanelAssignment, PageSummary } from "../../shared/apiTypes";
+import type { FontSummary, PagePanelAssignment, PageSummary } from "../../shared/apiTypes";
 import type { LayoutPanel, PageLayout, PanelCrop } from "../../shared/pageLayout";
 import { panelBounds, panelBoundsSize } from "../../shared/pageLayout";
-import type { BoxObject, PageObject } from "../../shared/pageObjects";
-import { gizmoBoxCorners, gizmoRotateHandlePoint, gizmoTopMid, gizmoUpVector, type GizmoBox } from "../svgGizmo";
+import {
+  PAGE_OBJECT_MIN_SIZE,
+  TEXT_SIZE_MAX,
+  TEXT_SIZE_MIN,
+  type BoxObject,
+  type PageObject,
+  type TextObject,
+  type TextStyle
+} from "../../shared/pageObjects";
+import { renderTextSvg } from "../../shared/textSvg";
+import { gizmoBoxCorners, gizmoRotateHandlePoint, gizmoTopMid, gizmoUpVector } from "../svgGizmo";
+import { gizmoBoxForPageObject } from "../pageObjectGizmoBox";
+import { getCachedTextLayout } from "../textLayoutClient";
 import type { PagePanelLightboxState } from "../appState";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconClose, iconPlus, iconSparkle, iconTrash } from "../icons";
@@ -32,7 +43,8 @@ export function renderPagePanelLightbox(
   lightbox: PagePanelLightboxState,
   assignments: PagePanelAssignment[],
   objects: PageObject[],
-  selectedObjectId: string | null
+  selectedObjectId: string | null,
+  fonts: FontSummary[]
 ): string {
   if (lightbox.pageId !== page.id) {
     return "";
@@ -52,7 +64,7 @@ export function renderPagePanelLightbox(
       ? layout.panels.some((panel) => panel.id === lightbox.cropPanelId)
         ? renderCropToolbar()
         : renderSelectToolbar(lightbox)
-      : renderObjectsToolbar(objects, selectedObjectId);
+      : renderObjectsToolbar(objects, selectedObjectId, fonts);
 
   return `
     <div class="workflow-modal page-panel-lightbox" role="dialog" aria-modal="true" aria-label="${escapeAttr(label)} のページ編集">
@@ -280,26 +292,40 @@ function renderCropToolbar(): string {
   `;
 }
 
-// --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1: box オブジェクトの追加/選択/変形/削除/z順) ---
+// --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1: box / P2: text) ---
+
+/** ギズモで動かせるオブジェクトの型(balloon は P3 未実装)。 */
+type EditablePageObject = BoxObject | TextObject;
+
+function isEditablePageObject(object: PageObject): object is EditablePageObject {
+  return object.kind === "box" || object.kind === "text";
+}
 
 /** オブジェクトモードの `<svg>` 中身。scale(1000) group 内に正規化座標で描く(注意: group 外に置くと実質不可視)。 */
 function renderObjectsStageContent(objects: PageObject[], selectedObjectId: string | null, pageHeight: number): string {
   const selected = objects.find((object) => object.id === selectedObjectId);
-  const selectedBox = selected && selected.kind === "box" ? selected : null;
+  const selectedEditable = selected && isEditablePageObject(selected) ? selected : null;
   return `
     <g id="pageObjectStageRoot" transform="scale(${VIEWBOX_SCALE})">
       <rect x="0" y="0" width="1" height="${num(pageHeight)}" class="page-panel-paper" data-page-object-background="1" />
       ${objects.map((object) => renderPageObjectShape(object, object.id === selectedObjectId)).join("")}
-      ${selectedBox ? renderPageObjectGizmo(selectedBox, pageHeight) : ""}
+      ${selectedEditable ? renderPageObjectGizmo(selectedEditable, pageHeight) : ""}
     </g>
   `;
 }
 
 function renderPageObjectShape(object: PageObject, isSelected: boolean): string {
-  // P1 で編集/表示するのは box のみ(text/balloon は将来フェーズ。データとしては保持・往復するが未描画)。
-  if (object.kind !== "box") {
-    return "";
+  if (object.kind === "box") {
+    return renderBoxObjectShape(object, isSelected);
   }
+  if (object.kind === "text") {
+    return renderTextObjectShape(object, isSelected);
+  }
+  // balloon(P3 未実装)はデータとしては保持・往復するが未描画。
+  return "";
+}
+
+function renderBoxObjectShape(object: BoxObject, isSelected: boolean): string {
   const x = object.position.x - object.size.x / 2;
   const y = object.position.y - object.size.y / 2;
   const deg = (object.rotation * 180) / Math.PI;
@@ -307,6 +333,28 @@ function renderPageObjectShape(object: PageObject, isSelected: boolean): string 
   const radius = object.cornerRadius ? ` rx="${num(object.cornerRadius)}"` : "";
   const stateClass = isSelected ? " is-selected" : "";
   return `<rect data-page-object="${escapeAttr(object.id)}" class="page-object-shape${stateClass}" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}"${radius} fill="${escapeAttr(object.fill)}" stroke="${escapeAttr(object.strokeColor)}" stroke-width="${num(object.strokeWidth)}"${transform} />`;
+}
+
+/**
+ * text オブジェクト1件。グリフは `renderTextSvg`(クライアント/サーバ共用の純ロジック)の出力をそのまま
+ * 埋め込む -- プレビューと書き出しの見た目を一致させる P2 の核方針。グリフパスは pointer-events なし
+ * (`.page-object-text-glyphs`)なので、選択/ドラッグの当たり判定は別途「透明な矩形」を敷く
+ * (**fill="none" は SVG のヒットテスト対象から除外されるため使わない** -- panel クロップの既知の罠と同じ)。
+ * レイアウト未着(初回・サイズ変更直後)は破線のプレースホルダ枠だけを出す。
+ */
+function renderTextObjectShape(object: TextObject, isSelected: boolean): string {
+  const box = gizmoBoxForPageObject(object);
+  const deg = (object.rotation * 180) / Math.PI;
+  const transform = deg ? ` transform="rotate(${num(deg)} ${num(object.position.x)} ${num(object.position.y)})"` : "";
+  const hitX = box.center.x - box.size.x / 2;
+  const hitY = box.center.y - box.size.y / 2;
+  const stateClass = isSelected ? " is-selected" : "";
+  const hitArea = `<rect data-page-object="${escapeAttr(object.id)}" class="page-object-hit-area${stateClass}" x="${num(hitX)}" y="${num(hitY)}" width="${num(box.size.x)}" height="${num(box.size.y)}" fill="transparent" stroke="none"${transform} />`;
+  const layout = getCachedTextLayout(object.content, object.maxWidth);
+  const content = layout
+    ? renderTextSvg(layout, object.position, object.rotation, object.content.style)
+    : `<rect class="page-object-text-placeholder" x="${num(hitX)}" y="${num(hitY)}" width="${num(box.size.x)}" height="${num(box.size.y)}" fill="none"${transform} />`;
+  return `<g class="page-object-text">${hitArea}${content}</g>`;
 }
 
 /**
@@ -319,9 +367,12 @@ export function pageObjectGizmoViewBounds(pageHeight: number): { minX: number; m
   return { minX: 0, minY: 0, maxX: 1, maxY: pageHeight };
 }
 
-/** paste/crop 風ギズモ(コーナー=拡縮 / 上のハンドル=回転)。選択中の box オブジェクトの外接矩形まわりに描く。 */
-function renderPageObjectGizmo(object: BoxObject, pageHeight: number): string {
-  const box: GizmoBox = { center: object.position, size: object.size, rotation: object.rotation };
+/**
+ * paste/crop 風ギズモ(コーナー=拡縮 / 上のハンドル=回転)。選択中の box/text オブジェクトの外接矩形
+ * まわりに描く。矩形自体は `gizmoBoxForPageObject`(box は size そのまま、text はレイアウト bbox)。
+ */
+function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): string {
+  const box = gizmoBoxForPageObject(object);
   const corners = gizmoBoxCorners(box);
   const topMid = gizmoTopMid(box);
   const up = gizmoUpVector(box.rotation);
@@ -343,15 +394,18 @@ function renderPageObjectGizmo(object: BoxObject, pageHeight: number): string {
   </g>`;
 }
 
-function renderObjectsToolbar(objects: PageObject[], selectedObjectId: string | null): string {
+function renderObjectsToolbar(objects: PageObject[], selectedObjectId: string | null, fonts: FontSummary[]): string {
   const selected = objects.find((object) => object.id === selectedObjectId);
   const selectedBox = selected && selected.kind === "box" ? selected : null;
+  const selectedText = selected && selected.kind === "text" ? selected : null;
+  const hasSelection = Boolean(selectedBox || selectedText);
   return `
     <footer class="page-panel-toolbar page-object-toolbar">
       <div class="page-object-toolbar-row">
         <button class="button-secondary compact" type="button" data-action="add-page-object-box">${iconPlus()}ボックス追加</button>
+        <button class="button-secondary compact" type="button" data-action="add-page-object-text">${iconPlus()}テキスト追加</button>
         ${
-          selectedBox
+          hasSelection
             ? `
               <button class="button-secondary compact" type="button" data-action="page-object-bring-front" title="最前面へ">前面へ</button>
               <button class="button-secondary compact" type="button" data-action="page-object-send-back" title="最背面へ">背面へ</button>
@@ -360,12 +414,18 @@ function renderObjectsToolbar(objects: PageObject[], selectedObjectId: string | 
             : ""
         }
       </div>
-      ${selectedBox ? renderBoxPropertyPanel(selectedBox) : `<p class="page-panel-hint-text">ボックスをクリックして選択(ドラッグで移動・コーナーで拡縮・上のハンドルで回転・Delete で削除)</p>`}
+      ${
+        selectedBox
+          ? renderBoxPropertyPanel(selectedBox, fonts)
+          : selectedText
+            ? renderTextObjectPanel(selectedText, fonts)
+            : `<p class="page-panel-hint-text">ボックス/テキストをクリックして選択(ドラッグで移動・コーナーで拡縮・上のハンドルで回転・Delete で削除)</p>`
+      }
     </footer>
   `;
 }
 
-function renderBoxPropertyPanel(object: BoxObject): string {
+function renderBoxPropertyPanel(object: BoxObject, fonts: FontSummary[]): string {
   return `
     <div class="page-object-property-row">
       <label class="page-object-property-field">塗り
@@ -381,5 +441,117 @@ function renderBoxPropertyPanel(object: BoxObject): string {
         <input type="number" step="0.005" min="0" data-page-object-field="cornerRadius" value="${num(object.cornerRadius ?? 0)}" />
       </label>
     </div>
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-checkbox-field">
+        <input type="checkbox" data-page-object-field="hasContent" ${object.content ? "checked" : ""} /> テキストを載せる
+      </label>
+    </div>
+    ${
+      object.content
+        ? `
+          <textarea class="page-object-textarea" data-page-object-text="1" rows="2" placeholder="テキストを入力">${escapeHtml(object.content.text)}</textarea>
+          ${renderTextStyleFields(object.content.style, fonts, "data-page-object-content-field")}
+        `
+        : ""
+    }
+  `;
+}
+
+/** text オブジェクト本体のプロパティパネル(本文 textarea + スタイル欄 + 折り返し幅)。 */
+function renderTextObjectPanel(object: TextObject, fonts: FontSummary[]): string {
+  const hasMaxWidth = object.maxWidth !== undefined;
+  return `
+    <textarea class="page-object-textarea" data-page-object-text="1" rows="3" placeholder="テキストを入力">${escapeHtml(object.content.text)}</textarea>
+    ${renderTextStyleFields(object.content.style, fonts, "data-page-object-field")}
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-checkbox-field">
+        <input type="checkbox" data-page-object-field="maxWidthEnabled" ${hasMaxWidth ? "checked" : ""} /> 折り返し幅を指定
+      </label>
+      ${
+        hasMaxWidth
+          ? `
+            <label class="page-object-property-field">折り返し幅
+              <input type="number" step="0.01" min="${PAGE_OBJECT_MIN_SIZE}" data-page-object-field="maxWidth" value="${num(object.maxWidth ?? 0)}" />
+            </label>
+          `
+          : ""
+      }
+    </div>
+  `;
+}
+
+function fontOptionsHtml(fonts: FontSummary[], currentFontId: string): string {
+  const options = fonts.map((font) => {
+    const label = font.subfamilyName && font.subfamilyName !== "Regular" ? `${font.familyName} ${font.subfamilyName}` : font.familyName;
+    return `<option value="${escapeAttr(font.id)}"${font.id === currentFontId ? " selected" : ""}>${escapeHtml(label)}</option>`;
+  });
+  if (currentFontId && !fonts.some((font) => font.id === currentFontId) && currentFontId !== "default") {
+    options.unshift(`<option value="${escapeAttr(currentFontId)}" selected>${escapeHtml(currentFontId)}</option>`);
+  }
+  // 新規テキストの既定は fontId="default"(サーバが Noto Sans JP → 游ゴシック → メイリオへ解決する)。
+  // value="default" のオプションが無いとブラウザが一覧先頭のフォントを表示してしまい、
+  // 実際に使われる既定フォントと select の表示が食い違う。常に先頭へ置く。
+  options.unshift(`<option value="default"${currentFontId === "default" ? " selected" : ""}>既定フォント</option>`);
+  return options.join("");
+}
+
+/**
+ * TextStyle の編集欄(フォント/縦横/サイズ/文字色/行間/字間/揃え/フチ)。TextObject 自身にも
+ * box/balloon の内包テキストにも使う共通パーツ(`fieldAttr` で `data-page-object-field` /
+ * `data-page-object-content-field` を切り替える)。フォントのライセンス注意もここに出す。
+ */
+function renderTextStyleFields(style: TextStyle, fonts: FontSummary[], fieldAttr: string): string {
+  const hasOutline = Boolean(style.outlineColor && style.outlineWidth);
+  return `
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-property-field-wide">フォント
+        <select ${fieldAttr}="fontId">${fontOptionsHtml(fonts, style.fontId)}</select>
+      </label>
+      <label class="page-object-property-field">向き
+        <select ${fieldAttr}="direction">
+          <option value="vertical"${style.direction === "vertical" ? " selected" : ""}>縦書き</option>
+          <option value="horizontal"${style.direction === "horizontal" ? " selected" : ""}>横書き</option>
+        </select>
+      </label>
+    </div>
+    <div class="page-object-property-row">
+      <label class="page-object-property-field">サイズ
+        <input type="number" step="0.005" min="${TEXT_SIZE_MIN}" max="${TEXT_SIZE_MAX}" ${fieldAttr}="size" value="${num(style.size)}" />
+      </label>
+      <label class="page-object-property-field">文字色
+        <input type="color" ${fieldAttr}="color" value="${escapeAttr(style.color)}" />
+      </label>
+      <label class="page-object-property-field">行間
+        <input type="number" step="0.1" min="0.5" max="4" ${fieldAttr}="lineSpacing" value="${num(style.lineSpacing ?? 1.6)}" />
+      </label>
+      <label class="page-object-property-field">字間
+        <input type="number" step="0.1" min="0.2" max="4" ${fieldAttr}="letterSpacing" value="${num(style.letterSpacing ?? 1.0)}" />
+      </label>
+    </div>
+    <div class="page-object-property-row">
+      <label class="page-object-property-field">揃え
+        <select ${fieldAttr}="align">
+          <option value="start"${(style.align ?? "start") === "start" ? " selected" : ""}>先頭</option>
+          <option value="center"${style.align === "center" ? " selected" : ""}>中央</option>
+          <option value="end"${style.align === "end" ? " selected" : ""}>末尾</option>
+        </select>
+      </label>
+      <label class="page-object-property-field page-object-checkbox-field">
+        <input type="checkbox" ${fieldAttr}="outlineEnabled" ${hasOutline ? "checked" : ""} /> フチ
+      </label>
+      ${
+        hasOutline
+          ? `
+            <label class="page-object-property-field">フチ色
+              <input type="color" ${fieldAttr}="outlineColor" value="${escapeAttr(style.outlineColor ?? "#ffffff")}" />
+            </label>
+            <label class="page-object-property-field">フチ太さ
+              <input type="number" step="0.01" min="0" max="1" ${fieldAttr}="outlineWidth" value="${num(style.outlineWidth ?? 0)}" />
+            </label>
+          `
+          : ""
+      }
+    </div>
+    <p class="page-object-font-license-note">⚠ 頒布時はフォントのライセンスをご確認ください</p>
   `;
 }

@@ -1,28 +1,41 @@
 /**
- * ページオブジェクト編集(Docs/Feature-CGCollectionSuite.md P1)。ページ編集 lightbox の
- * 「オブジェクト」モードで box の追加/選択/移動/拡縮/回転/削除/z順/プロパティ変更を扱う。
+ * ページオブジェクト編集(Docs/Feature-CGCollectionSuite.md P1/P2)。ページ編集 lightbox の
+ * 「オブジェクト」モードで box/text の追加/選択/移動/拡縮/回転/削除/z順/プロパティ変更を扱う。
  * ギズモの座標変換・ジェスチャ数学は `svgGizmo.ts`(共通・純関数)、undo/redo は
  * `pageObjectHistory.ts` を使う。保存は 1s debounce PATCH + lightbox クローズ時 flush
  * (`asset_paste_attachments` 的な「1行に配列」パターン、競合制御なし)。
  * data-action は `registerActions`、pointer drag は main.ts の委譲チェーンから呼ぶ
  * (`pagePanelLightboxController.ts` の crop 編集と同じ設計)。
+ *
+ * P2(テキスト)で追加したもの:
+ * - text オブジェクトの追加・textarea 編集・スタイルパネル(フォント/縦横/サイズ/色/フチ/行間/字間/揃え/折返し幅)。
+ * - box への「テキストを載せる」(content)トグル+同じスタイルパネル。
+ * - ギズモの拡縮は text の場合 style.size(+ maxWidth 同率)を変える(box は従来通り size.x/y)。
+ *   選択枠は layout の bbox(`textLayoutClient.ts` のクライアント側 LRU キャッシュ)を使う。
+ * - `/api/text-layout` は 150ms debounce で叩く(`scheduleTextLayoutFetch`)。textarea の undo 履歴は
+ *   500ms 静止で1エントリにまとめる(`scheduleTextHistoryCommit`/`flushTextHistoryCommit`)。
  */
 import {
   DEFAULT_BOX_SIZE,
+  DEFAULT_TEXT_STYLE,
+  DEFAULT_TEXT_STRING,
   PAGE_OBJECT_MAX_SIZE,
   PAGE_OBJECT_MIN_SIZE,
+  TEXT_SIZE_MAX,
+  TEXT_SIZE_MIN,
+  contentMaxWidth,
   createBoxObject,
+  createTextObject,
   type BoxObject,
-  type PageObject
+  type PageObject,
+  type TextAlign,
+  type TextContent,
+  type TextDirection,
+  type TextObject,
+  type TextStyle
 } from "../shared/pageObjects";
-import {
-  getStageTransform,
-  gizmoRotateHandlePoint,
-  moveGizmoBox,
-  rotateGizmoBox,
-  scaleGizmoBoxAboutCenter,
-  type GizmoBox
-} from "./svgGizmo";
+import { getStageTransform, gizmoRotateHandlePoint, moveGizmoBox, rotateGizmoBox, scaleGizmoBoxAboutCenter } from "./svgGizmo";
+import { gizmoBoxForPageObject } from "./pageObjectGizmoBox";
 import { pageObjectGizmoViewBounds } from "./views/pagePanelLightboxView";
 import {
   createPageObjectHistory,
@@ -30,12 +43,23 @@ import {
   redoPageObjects,
   snapshotPageObjects,
   undoPageObjects,
+  type PageObjectHistorySnapshot,
   type PageObjectHistoryState
 } from "./pageObjectHistory";
+import type { FontSummary } from "../shared/apiTypes";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
+import { clampNumber } from "./clientUtils";
 import { isTextEntryTarget } from "./clientUtils";
+import { ensureTextLayout } from "./textLayoutClient";
+
+/** box/text 以外(balloon は P3 未実装)を除いた、ギズモで動かせるオブジェクトの型。 */
+type EditableObject = BoxObject | TextObject;
+
+function isEditableObject(object: PageObject): object is EditableObject {
+  return object.kind === "box" || object.kind === "text";
+}
 
 // --- 保存(debounce PATCH + flush) ---
 
@@ -54,6 +78,15 @@ export function resetPageObjectsSession(): void {
     window.clearTimeout(saveDebounceTimer);
     saveDebounceTimer = null;
   }
+  if (textLayoutDebounceTimer !== null) {
+    window.clearTimeout(textLayoutDebounceTimer);
+    textLayoutDebounceTimer = null;
+  }
+  if (textHistoryDebounceTimer !== null) {
+    window.clearTimeout(textHistoryDebounceTimer);
+    textHistoryDebounceTimer = null;
+  }
+  textHistoryBaseline = null;
   objectDrag = null;
 }
 
@@ -92,8 +125,10 @@ function startPersist(): Promise<void> {
  * ページ一覧再取得を行う -- PATCH 完了前に reload すると古い `?v=` を拾うため順序厳守。
  * **state.pagePanelLightbox がまだ立っている間に呼ぶこと**(persistPageObjects は呼び出しと同期に
  * pageId/projectId/ドラフトを確定するので、その後 state をクリアしても PATCH は完走する)。
+ * 未確定の textarea 編集(`flushTextHistoryCommit`)も先に履歴へ確定させておく。
  */
 export function flushPageObjectsSave(): Promise<void> {
+  flushTextHistoryCommit();
   if (saveDebounceTimer !== null) {
     window.clearTimeout(saveDebounceTimer);
     saveDebounceTimer = null;
@@ -140,6 +175,7 @@ function undoPageObjectsAction(): void {
   if (!state.pagePanelLightbox) {
     return;
   }
+  flushTextHistoryCommit();
   const restored = undoPageObjects(objectHistory, currentSnapshot());
   if (!restored) {
     return;
@@ -154,6 +190,7 @@ function redoPageObjectsAction(): void {
   if (!state.pagePanelLightbox) {
     return;
   }
+  flushTextHistoryCommit();
   const restored = redoPageObjects(objectHistory, currentSnapshot());
   if (!restored) {
     return;
@@ -188,15 +225,24 @@ export function handlePageObjectsKeydown(event: KeyboardEvent): boolean {
   return false;
 }
 
-// --- 追加/削除/z順/プロパティ ---
+// --- 追加/削除/z順 ---
 
-function findSelectedBox(): BoxObject | null {
+function findSelectedObject(): PageObject | null {
   const id = state.selectedPageObjectId;
   if (!id) {
     return null;
   }
-  const object = state.pageObjectsDraft.find((item) => item.id === id);
-  return object && object.kind === "box" ? object : null;
+  return state.pageObjectsDraft.find((item) => item.id === id) ?? null;
+}
+
+/** 新規に追加したオブジェクトを選択し、必要なら初回のレイアウトを(debounce 無しで)即座に取りに行く。 */
+function selectNewObject(object: PageObject): void {
+  state.selectedPageObjectId = object.id;
+  requestRender();
+  scheduleSave();
+  if (object.kind === "text") {
+    void ensureTextLayout(object.content, object.maxWidth);
+  }
 }
 
 function addBoxObject(): void {
@@ -204,6 +250,7 @@ function addBoxObject(): void {
   if (!lightbox || lightbox.mode !== "objects") {
     return;
   }
+  flushTextHistoryCommit();
   const previous = currentSnapshot();
   const size = {
     x: Math.min(DEFAULT_BOX_SIZE.x, 0.8),
@@ -213,9 +260,21 @@ function addBoxObject(): void {
   const object = createBoxObject(crypto.randomUUID(), center, size);
   pushPageObjectHistory(objectHistory, previous);
   state.pageObjectsDraft = [...state.pageObjectsDraft, object];
-  state.selectedPageObjectId = object.id;
-  requestRender();
-  scheduleSave();
+  selectNewObject(object);
+}
+
+function addTextObject(): void {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || lightbox.mode !== "objects") {
+    return;
+  }
+  flushTextHistoryCommit();
+  const previous = currentSnapshot();
+  const center = { x: 0.5, y: lightbox.pageHeight / 2 };
+  const object = createTextObject(crypto.randomUUID(), center);
+  pushPageObjectHistory(objectHistory, previous);
+  state.pageObjectsDraft = [...state.pageObjectsDraft, object];
+  selectNewObject(object);
 }
 
 function deleteSelectedPageObject(): void {
@@ -223,6 +282,7 @@ function deleteSelectedPageObject(): void {
   if (!id) {
     return;
   }
+  flushTextHistoryCommit();
   const previous = currentSnapshot();
   pushPageObjectHistory(objectHistory, previous);
   state.pageObjectsDraft = state.pageObjectsDraft.filter((item) => item.id !== id);
@@ -240,6 +300,7 @@ function reorderSelected(mutate: (objects: PageObject[], index: number) => void)
   if (index < 0) {
     return;
   }
+  flushTextHistoryCommit();
   const previous = currentSnapshot();
   const next = [...state.pageObjectsDraft];
   mutate(next, index);
@@ -271,35 +332,166 @@ function sendSelectedToBack(): void {
   });
 }
 
-const CLAMPABLE_FIELDS = {
-  strokeWidth: { min: 0, max: 0.2 },
-  cornerRadius: { min: 0, max: PAGE_OBJECT_MAX_SIZE }
-} as const;
+// --- テキストレイアウト取得(150ms debounce)と textarea の undo 履歴(500ms 静止で1エントリ) ---
 
-/** main.ts の change 委譲から呼ばれる。プロパティ行(fill/strokeColor/strokeWidth/cornerRadius)の入力反映。 */
-export function updatePageObjectFieldFromControl(target: HTMLInputElement): void {
-  const field = target.dataset.pageObjectField;
-  const object = findSelectedBox();
-  if (!field || !object) {
-    return;
+const TEXT_LAYOUT_DEBOUNCE_MS = 150;
+let textLayoutDebounceTimer: number | null = null;
+
+/** `/api/text-layout` の取得を150ms debounce する(タイピング中の毎キー入力でサーバを叩かないため)。 */
+function scheduleTextLayoutFetch(content: TextContent, maxWidth: number | undefined): void {
+  if (textLayoutDebounceTimer !== null) {
+    window.clearTimeout(textLayoutDebounceTimer);
   }
-  const index = state.pageObjectsDraft.findIndex((item) => item.id === object.id);
-  if (index < 0) {
-    return;
+  textLayoutDebounceTimer = window.setTimeout(() => {
+    textLayoutDebounceTimer = null;
+    void ensureTextLayout(content, maxWidth);
+  }, TEXT_LAYOUT_DEBOUNCE_MS);
+}
+
+const TEXT_HISTORY_DEBOUNCE_MS = 500;
+let textHistoryDebounceTimer: number | null = null;
+/** textarea 編集セッションの開始直前スナップショット。null なら編集セッション中でない。 */
+let textHistoryBaseline: PageObjectHistorySnapshot | null = null;
+
+function scheduleTextHistoryCommit(): void {
+  if (textHistoryDebounceTimer !== null) {
+    window.clearTimeout(textHistoryDebounceTimer);
   }
-  const updated: BoxObject = { ...object };
-  if (field === "fill") {
-    updated.fill = target.value;
-  } else if (field === "strokeColor") {
-    updated.strokeColor = target.value;
-  } else if (field === "strokeWidth" || field === "cornerRadius") {
-    const range = CLAMPABLE_FIELDS[field];
+  textHistoryDebounceTimer = window.setTimeout(() => {
+    textHistoryDebounceTimer = null;
+    flushTextHistoryCommit();
+  }, TEXT_HISTORY_DEBOUNCE_MS);
+}
+
+/**
+ * 未確定の textarea 編集セッションがあれば、その開始前スナップショットを1個の undo エントリとして積む。
+ * 他の確定操作(追加/削除/z順/undo/redo/ドラッグ開始/プロパティ変更/lightbox close)の前に必ず呼ぶ
+ * -- 呼ばずに他の操作を history へ push すると、textarea 編集の baseline が「その操作の後」になり
+ * undo で textarea 編集だけ戻せなくなる。
+ */
+function flushTextHistoryCommit(): void {
+  if (textHistoryDebounceTimer !== null) {
+    window.clearTimeout(textHistoryDebounceTimer);
+    textHistoryDebounceTimer = null;
+  }
+  if (textHistoryBaseline) {
+    pushPageObjectHistory(objectHistory, textHistoryBaseline);
+    textHistoryBaseline = null;
+  }
+}
+
+function beginTextHistoryEdit(): void {
+  if (textHistoryBaseline === null) {
+    textHistoryBaseline = currentSnapshot();
+  }
+}
+
+/** 変更後オブジェクトのレイアウトを(debounce しながら)取得しにいく。box/balloon は content があれば対象。 */
+function scheduleLayoutForUpdatedObject(updated: PageObject): void {
+  if (updated.kind === "text") {
+    scheduleTextLayoutFetch(updated.content, updated.maxWidth);
+  } else if ((updated.kind === "box" || updated.kind === "balloon") && updated.content) {
+    scheduleTextLayoutFetch(updated.content, contentMaxWidth(updated.size, updated.content.style.direction));
+  }
+}
+
+// --- テキストスタイル操作の共通ヘルパ(TextObject 自身にも box/balloon の content にも使う) ---
+
+const OUTLINE_WIDTH_DEFAULT = 0.12;
+const OUTLINE_COLOR_DEFAULT = "#ffffff";
+/** 折り返し有効化チェックを入れた時に使う初期幅(page 単位)。 */
+const TEXT_MAX_WIDTH_DEFAULT = 0.4;
+
+function applyTextStyleField(style: TextStyle, field: string, target: HTMLInputElement | HTMLSelectElement): TextStyle {
+  switch (field) {
+    case "color":
+      return { ...style, color: target.value };
+    case "direction": {
+      const direction: TextDirection = target.value === "vertical" ? "vertical" : "horizontal";
+      return { ...style, direction };
+    }
+    case "fontId":
+      return { ...style, fontId: target.value || "default" };
+    case "align": {
+      const value = target.value;
+      const align: TextAlign = value === "center" || value === "end" ? value : "start";
+      return { ...style, align };
+    }
+    case "size":
+      return { ...style, size: clampNumber(Number(target.value), TEXT_SIZE_MIN, TEXT_SIZE_MAX, style.size) };
+    case "lineSpacing":
+      return { ...style, lineSpacing: clampNumber(Number(target.value), 0.5, 4, style.lineSpacing ?? 1.6) };
+    case "letterSpacing":
+      return { ...style, letterSpacing: clampNumber(Number(target.value), 0.2, 4, style.letterSpacing ?? 1.0) };
+    case "outlineWidth":
+      return { ...style, outlineWidth: clampNumber(Number(target.value), 0, 1, style.outlineWidth ?? 0) };
+    case "outlineColor":
+      return { ...style, outlineColor: target.value };
+    case "outlineEnabled": {
+      if ((target as HTMLInputElement).checked) {
+        return { ...style, outlineColor: style.outlineColor ?? OUTLINE_COLOR_DEFAULT, outlineWidth: style.outlineWidth ?? OUTLINE_WIDTH_DEFAULT };
+      }
+      const { outlineColor: _outlineColor, outlineWidth: _outlineWidth, ...rest } = style;
+      return rest;
+    }
+    default:
+      return style;
+  }
+}
+
+function updateBoxOwnField(box: BoxObject, field: string, target: HTMLInputElement): BoxObject | null {
+  if (field === "hasContent") {
+    const updated: BoxObject = { ...box };
+    if (target.checked) {
+      updated.content = { text: DEFAULT_TEXT_STRING, style: { ...DEFAULT_TEXT_STYLE, direction: "horizontal" } };
+    } else {
+      updated.content = null;
+    }
+    return updated;
+  }
+  if (field === "fill" || field === "strokeColor") {
+    return { ...box, [field]: target.value };
+  }
+  if (field === "strokeWidth" || field === "cornerRadius") {
+    const range = field === "strokeWidth" ? { min: 0, max: 0.2 } : { min: 0, max: PAGE_OBJECT_MAX_SIZE };
     const parsed = Number(target.value);
-    const clamped = Number.isFinite(parsed) ? Math.min(range.max, Math.max(range.min, parsed)) : object[field] ?? 0;
-    updated[field] = clamped;
-  } else {
-    return;
+    const clamped = Number.isFinite(parsed) ? Math.min(range.max, Math.max(range.min, parsed)) : (box[field] ?? 0);
+    return { ...box, [field]: clamped };
   }
+  return null;
+}
+
+function updateTextOwnField(text: TextObject, field: string, target: HTMLInputElement | HTMLSelectElement): TextObject | null {
+  if (field === "maxWidthEnabled") {
+    const updated: TextObject = { ...text };
+    if ((target as HTMLInputElement).checked) {
+      updated.maxWidth = text.maxWidth ?? TEXT_MAX_WIDTH_DEFAULT;
+    } else {
+      delete updated.maxWidth;
+    }
+    return updated;
+  }
+  if (field === "maxWidth") {
+    return { ...text, maxWidth: clampNumber(Number(target.value), PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE, text.maxWidth ?? TEXT_MAX_WIDTH_DEFAULT) };
+  }
+  const nextStyle = applyTextStyleField(text.content.style, field, target);
+  if (nextStyle === text.content.style) {
+    return null;
+  }
+  return { ...text, content: { ...text.content, style: nextStyle } };
+}
+
+function updateBoxContentField(box: BoxObject, field: string, target: HTMLInputElement | HTMLSelectElement): BoxObject | null {
+  if (!box.content) {
+    return null;
+  }
+  const nextStyle = applyTextStyleField(box.content.style, field, target);
+  return { ...box, content: { ...box.content, style: nextStyle } };
+}
+
+/** 確定的なプロパティ変更(色ピッカー/select/number 等の change イベント)を history へ push して保存する。 */
+function commitFieldChange(index: number, updated: PageObject): void {
+  flushTextHistoryCommit();
   const previous = currentSnapshot();
   pushPageObjectHistory(objectHistory, previous);
   const next = [...state.pageObjectsDraft];
@@ -307,6 +499,78 @@ export function updatePageObjectFieldFromControl(target: HTMLInputElement): void
   state.pageObjectsDraft = next;
   requestRender();
   scheduleSave();
+  scheduleLayoutForUpdatedObject(updated);
+}
+
+/** main.ts の change 委譲から呼ばれる。プロパティ行(fill/strokeColor/... や text/content のスタイル欄)の入力反映。 */
+export function updatePageObjectFieldFromControl(target: HTMLInputElement | HTMLSelectElement): void {
+  const object = findSelectedObject();
+  if (!object) {
+    return;
+  }
+  const index = state.pageObjectsDraft.findIndex((item) => item.id === object.id);
+  if (index < 0) {
+    return;
+  }
+
+  const contentField = target.dataset.pageObjectContentField;
+  if (contentField && object.kind === "box") {
+    const updated = updateBoxContentField(object, contentField, target);
+    if (updated) {
+      commitFieldChange(index, updated);
+    }
+    return;
+  }
+
+  const field = target.dataset.pageObjectField;
+  if (!field) {
+    return;
+  }
+  if (object.kind === "box") {
+    const updated = updateBoxOwnField(object, field, target as HTMLInputElement);
+    if (updated) {
+      commitFieldChange(index, updated);
+    }
+    return;
+  }
+  if (object.kind === "text") {
+    const updated = updateTextOwnField(object, field, target);
+    if (updated) {
+      commitFieldChange(index, updated);
+    }
+  }
+}
+
+/**
+ * main.ts の input 委譲から呼ばれる。テキスト本文 textarea(TextObject 自身、または box/balloon の
+ * content)。タイピングごとに draft は即座に書き換えて再描画するが、undo 履歴と /api/text-layout の
+ * 取得はそれぞれ debounce する(`scheduleTextHistoryCommit`/`scheduleTextLayoutFetch`)。
+ */
+export function updatePageObjectTextFromInput(target: HTMLTextAreaElement): void {
+  const object = findSelectedObject();
+  if (!object) {
+    return;
+  }
+  const index = state.pageObjectsDraft.findIndex((item) => item.id === object.id);
+  if (index < 0) {
+    return;
+  }
+  let updated: PageObject;
+  if (object.kind === "text") {
+    updated = { ...object, content: { ...object.content, text: target.value } };
+  } else if ((object.kind === "box" || object.kind === "balloon") && object.content) {
+    updated = { ...object, content: { ...object.content, text: target.value } };
+  } else {
+    return;
+  }
+  beginTextHistoryEdit();
+  const next = [...state.pageObjectsDraft];
+  next[index] = updated;
+  state.pageObjectsDraft = next;
+  requestRender();
+  scheduleSave();
+  scheduleLayoutForUpdatedObject(updated);
+  scheduleTextHistoryCommit();
 }
 
 // --- ギズモ(移動/拡縮/回転)ジェスチャ ---
@@ -323,7 +587,7 @@ interface ObjectDragState {
   kind: ObjectGestureKind;
   /** ジェスチャ開始直前のスナップショット(実際に変化があった時だけ history へ push する)。 */
   startSnapshot: ReturnType<typeof currentSnapshot>;
-  startObject: BoxObject;
+  startObject: EditableObject;
   pxPerUnit: number;
   startClientX: number;
   startClientY: number;
@@ -339,10 +603,6 @@ let objectDrag: ObjectDragState | null = null;
 function stageRootElement(): SVGGraphicsElement | null {
   const el = document.getElementById("pageObjectStageRoot");
   return el instanceof SVGGraphicsElement ? el : null;
-}
-
-function toGizmoBox(object: BoxObject): GizmoBox {
-  return { center: { ...object.position }, size: { ...object.size }, rotation: object.rotation };
 }
 
 function objectIdFromEventTarget(target: EventTarget | null): { objectId: string | null; handleKind: "scale" | "rotate" | null } {
@@ -376,6 +636,7 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
   if (!objectId) {
     // 背景(ステージの空き領域)クリック = 選択解除。
     if (state.selectedPageObjectId) {
+      flushTextHistoryCommit();
       state.selectedPageObjectId = null;
       requestRender();
     }
@@ -383,13 +644,14 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
   }
 
   const object = state.pageObjectsDraft.find((item) => item.id === objectId);
-  if (!object || object.kind !== "box") {
-    // P1 で編集対象なのは box のみ(text/balloon は将来フェーズ)。
+  if (!object || !isEditableObject(object)) {
+    // P2 で編集対象なのは box/text のみ(balloon は将来フェーズ)。
     return true;
   }
 
   event.preventDefault();
   if (state.selectedPageObjectId !== objectId) {
+    flushTextHistoryCommit();
     state.selectedPageObjectId = objectId;
     requestRender();
   }
@@ -404,7 +666,7 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
   return true;
 }
 
-function beginObjectDrag(event: PointerEvent, object: BoxObject, kind: ObjectGestureKind): void {
+function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: ObjectGestureKind): void {
   const root = stageRootElement();
   const stage = root ? getStageTransform(root) : null;
   if (!stage) {
@@ -416,7 +678,10 @@ function beginObjectDrag(event: PointerEvent, object: BoxObject, kind: ObjectGes
     objectId: object.id,
     kind,
     startSnapshot: currentSnapshot(),
-    startObject: { ...object, position: { ...object.position }, size: { ...object.size } },
+    startObject:
+      object.kind === "box"
+        ? { ...object, position: { ...object.position }, size: { ...object.size } }
+        : { ...object, position: { ...object.position }, content: { ...object.content, style: { ...object.content.style } } },
     pxPerUnit: stage.pxPerUnit,
     startClientX: event.clientX,
     startClientY: event.clientY,
@@ -435,6 +700,18 @@ function beginObjectDrag(event: PointerEvent, object: BoxObject, kind: ObjectGes
   }
 }
 
+/** text の拡縮ドラッグ: style.size を factor 倍(クランプ後の実効倍率で maxWidth も同率スケール)。 */
+function scaleTextObject(start: TextObject, factor: number): TextObject {
+  const nextSize = clampNumber(start.content.style.size * factor, TEXT_SIZE_MIN, TEXT_SIZE_MAX, start.content.style.size);
+  const effectiveFactor = start.content.style.size > 0 ? nextSize / start.content.style.size : 1;
+  const nextStyle: TextStyle = { ...start.content.style, size: nextSize };
+  const updated: TextObject = { ...start, content: { ...start.content, style: nextStyle } };
+  if (start.maxWidth !== undefined) {
+    updated.maxWidth = clampNumber(start.maxWidth * effectiveFactor, PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE, start.maxWidth);
+  }
+  return updated;
+}
+
 export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   if (!objectDrag || event.pointerId !== objectDrag.pointerId) {
     return false;
@@ -445,8 +722,8 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
     return false;
   }
   const drag = objectDrag;
-  const startBox = toGizmoBox(drag.startObject);
-  let updated: BoxObject;
+  const startBox = gizmoBoxForPageObject(drag.startObject);
+  let updated: EditableObject;
   if (drag.kind === "move") {
     const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
     const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
@@ -455,8 +732,12 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   } else if (drag.kind === "scale") {
     const dist = Math.hypot(event.clientX - drag.centerScreenX, event.clientY - drag.centerScreenY);
     const factor = dist / Math.max(1, drag.startDist);
-    const box = scaleGizmoBoxAboutCenter(startBox, factor, PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE);
-    updated = { ...drag.startObject, size: box.size };
+    if (drag.startObject.kind === "box") {
+      const box = scaleGizmoBoxAboutCenter(startBox, factor, PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE);
+      updated = { ...drag.startObject, size: box.size };
+    } else {
+      updated = scaleTextObject(drag.startObject, factor);
+    }
   } else {
     const angle = Math.atan2(event.clientY - drag.centerScreenY, event.clientX - drag.centerScreenX);
     const box = rotateGizmoBox(startBox, drag.startAngle, angle, event.shiftKey, ROTATE_SNAP_RAD);
@@ -466,24 +747,33 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   next[index] = updated;
   state.pageObjectsDraft = next;
   requestRender();
+  if (drag.kind === "scale" && updated.kind === "text") {
+    // 拡縮ドラッグ中はサイズが連続的に変わるので、レイアウト取得は debounce に任せる(ギズモ枠自体は
+    // 直近のキャッシュ/仮サイズで追従し、確定した見た目は pointerup で最新化される)。
+    scheduleTextLayoutFetch(updated.content, updated.maxWidth);
+  }
   return true;
 }
 
-function boxUnchanged(a: BoxObject, b: BoxObject): boolean {
-  return (
-    a.position.x === b.position.x &&
-    a.position.y === b.position.y &&
-    a.size.x === b.size.x &&
-    a.size.y === b.size.y &&
-    a.rotation === b.rotation
-  );
+function editableObjectUnchanged(a: EditableObject, b: EditableObject): boolean {
+  if (a.position.x !== b.position.x || a.position.y !== b.position.y || a.rotation !== b.rotation) {
+    return false;
+  }
+  if (a.kind === "box" && b.kind === "box") {
+    return a.size.x === b.size.x && a.size.y === b.size.y;
+  }
+  if (a.kind === "text" && b.kind === "text") {
+    return a.content.style.size === b.content.style.size && a.maxWidth === b.maxWidth;
+  }
+  return false;
 }
 
-function commitObjectMutation(objectId: string, updated: BoxObject): void {
+function commitObjectMutation(objectId: string, updated: EditableObject): void {
   const index = state.pageObjectsDraft.findIndex((item) => item.id === objectId);
   if (index < 0) {
     return;
   }
+  flushTextHistoryCommit();
   const previous = currentSnapshot();
   pushPageObjectHistory(objectHistory, previous);
   const next = [...state.pageObjectsDraft];
@@ -500,10 +790,14 @@ export function handlePageObjectsPointerUp(event: PointerEvent): boolean {
   const drag = objectDrag;
   objectDrag = null;
   const current = state.pageObjectsDraft.find((item) => item.id === drag.objectId);
-  if (current && current.kind === "box" && !boxUnchanged(current, drag.startObject)) {
+  if (current && isEditableObject(current) && !editableObjectUnchanged(current, drag.startObject)) {
     // 実際に動いた/拡縮/回転した時だけ history へ push + 保存する(単クリックのみは選択だけで完結)。
     pushPageObjectHistory(objectHistory, drag.startSnapshot);
     scheduleSave();
+    if (current.kind === "text") {
+      // ドラッグ確定時は debounce を待たず即座に最新レイアウトを取りに行く。
+      void ensureTextLayout(current.content, current.maxWidth);
+    }
   }
   return true;
 }
@@ -564,8 +858,46 @@ export function syncPageObjectsGizmo(): void {
   gizmo.querySelector<SVGLineElement>("#pageObjectGizmoStick")?.setAttribute("y2", String(handle.y));
 }
 
+/**
+ * オブジェクトモード表示中の全 text(text オブジェクト本体 + box/balloon の content)のレイアウトを
+ * (未キャッシュなら)取得しにいく。lightbox を開いた直後・追加/削除以外での draft 差し替え(undo/redo 等)
+ * の後に呼ぶ想定 -- debounce しない即時取得(既にキャッシュ/inflight なら何もしない安全な呼び出し)。
+ */
+export function ensureAllPageObjectTextLayouts(objects: readonly PageObject[]): void {
+  for (const object of objects) {
+    if (object.kind === "text") {
+      void ensureTextLayout(object.content, object.maxWidth);
+    } else if ((object.kind === "box" || object.kind === "balloon") && object.content) {
+      void ensureTextLayout(object.content, contentMaxWidth(object.size, object.content.style.direction));
+    }
+  }
+}
+
+/**
+ * `GET /api/fonts` を初回オブジェクトモード表示時に1回だけ取得してキャッシュする(`state.pageObjectFonts`)。
+ * 既に取得済み/取得中なら何もしない -- `openPagePanelLightbox`(objects が既定モードの時)と
+ * `setPagePanelMode("objects")`(コマモードから切り替えた時)の両方から呼ぶ。
+ */
+export function ensureFontsLoaded(): void {
+  if (state.pageObjectFonts.status === "loading" || state.pageObjectFonts.status === "ready") {
+    return;
+  }
+  state.pageObjectFonts = { ...state.pageObjectFonts, status: "loading" };
+  void (async () => {
+    try {
+      const result = await api<{ fonts: FontSummary[] }>("/api/fonts");
+      state.pageObjectFonts = { status: "ready", fonts: result.fonts };
+    } catch (error) {
+      state.pageObjectFonts = { status: "error", fonts: [] };
+      pushToast(error instanceof Error ? error.message : String(error), "error");
+    }
+    requestRender();
+  })();
+}
+
 registerActions({
   "add-page-object-box": () => addBoxObject(),
+  "add-page-object-text": () => addTextObject(),
   "delete-selected-page-object": () => deleteSelectedPageObject(),
   "page-object-bring-front": () => bringSelectedToFront(),
   "page-object-send-back": () => sendSelectedToBack(),
