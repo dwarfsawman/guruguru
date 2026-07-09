@@ -1,6 +1,6 @@
 /**
- * ページオブジェクト編集(Docs/Feature-CGCollectionSuite.md P1/P2)。ページ編集 lightbox の
- * 「オブジェクト」モードで box/text の追加/選択/移動/拡縮/回転/削除/z順/プロパティ変更を扱う。
+ * ページオブジェクト編集(Docs/Feature-CGCollectionSuite.md P1/P2/P3)。ページ編集 lightbox の
+ * 「オブジェクト」モードで box/text/balloon の追加/選択/移動/拡縮/回転/削除/z順/プロパティ変更を扱う。
  * ギズモの座標変換・ジェスチャ数学は `svgGizmo.ts`(共通・純関数)、undo/redo は
  * `pageObjectHistory.ts` を使う。保存は 1s debounce PATCH + lightbox クローズ時 flush
  * (`asset_paste_attachments` 的な「1行に配列」パターン、競合制御なし)。
@@ -14,8 +14,17 @@
  *   選択枠は layout の bbox(`textLayoutClient.ts` のクライアント側 LRU キャッシュ)を使う。
  * - `/api/text-layout` は 150ms debounce で叩く(`scheduleTextLayoutFetch`)。textarea の undo 履歴は
  *   500ms 静止で1エントリにまとめる(`scheduleTextHistoryCommit`/`flushTextHistoryCommit`)。
+ *
+ * P3(吹き出し)で追加したもの:
+ * - balloon の追加・形状/塗り/線/しっぽ トグル+幅のプロパティ編集(content は box と同じ仕組みを再利用)。
+ * - ギズモの拡縮は box と同じく size.x/y を変える(tail.tip/width も同率でスケールする -- tip はローカル
+ *   座標なので、中心固定の拡縮であればそのままオブジェクトと一緒にスケールするだけでよい)。
+ * - しっぽの tip 専用ドラッグハンドル(`data-page-object-handle="tail"`)。画面デルタを -rotation 回して
+ *   ローカル座標へ変換する(`pagePanelLightboxController.ts` の crop パンと同じ考え方)。
  */
 import {
+  BALLOON_TAIL_TIP_CLAMP,
+  DEFAULT_BALLOON_TAIL_WIDTH,
   DEFAULT_BOX_SIZE,
   DEFAULT_TEXT_STYLE,
   DEFAULT_TEXT_STRING,
@@ -24,8 +33,12 @@ import {
   TEXT_SIZE_MAX,
   TEXT_SIZE_MIN,
   contentMaxWidth,
+  createBalloonObject,
   createBoxObject,
   createTextObject,
+  defaultBalloonTail,
+  type BalloonObject,
+  type BalloonShape,
   type BoxObject,
   type PageObject,
   type TextAlign,
@@ -34,6 +47,7 @@ import {
   type TextObject,
   type TextStyle
 } from "../shared/pageObjects";
+import { balloonContentMaxWidth } from "../shared/balloonShape";
 import { getStageTransform, gizmoRotateHandlePoint, moveGizmoBox, rotateGizmoBox, scaleGizmoBoxAboutCenter } from "./svgGizmo";
 import { gizmoBoxForPageObject } from "./pageObjectGizmoBox";
 import { pageObjectGizmoViewBounds } from "./views/pagePanelLightboxView";
@@ -54,11 +68,11 @@ import { clampNumber } from "./clientUtils";
 import { isTextEntryTarget } from "./clientUtils";
 import { ensureTextLayout } from "./textLayoutClient";
 
-/** box/text 以外(balloon は P3 未実装)を除いた、ギズモで動かせるオブジェクトの型。 */
-type EditableObject = BoxObject | TextObject;
+/** ギズモで動かせるオブジェクトの型(box/text/balloon)。 */
+type EditableObject = BoxObject | TextObject | BalloonObject;
 
 function isEditableObject(object: PageObject): object is EditableObject {
-  return object.kind === "box" || object.kind === "text";
+  return object.kind === "box" || object.kind === "text" || object.kind === "balloon";
 }
 
 // --- 保存(debounce PATCH + flush) ---
@@ -242,6 +256,8 @@ function selectNewObject(object: PageObject): void {
   scheduleSave();
   if (object.kind === "text") {
     void ensureTextLayout(object.content, object.maxWidth);
+  } else if (object.kind === "balloon" && object.content) {
+    void ensureTextLayout(object.content, balloonContentMaxWidth(object.shape, object.size, object.content.style.direction));
   }
 }
 
@@ -272,6 +288,20 @@ function addTextObject(): void {
   const previous = currentSnapshot();
   const center = { x: 0.5, y: lightbox.pageHeight / 2 };
   const object = createTextObject(crypto.randomUUID(), center);
+  pushPageObjectHistory(objectHistory, previous);
+  state.pageObjectsDraft = [...state.pageObjectsDraft, object];
+  selectNewObject(object);
+}
+
+function addBalloonObject(): void {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || lightbox.mode !== "objects") {
+    return;
+  }
+  flushTextHistoryCommit();
+  const previous = currentSnapshot();
+  const center = { x: 0.5, y: lightbox.pageHeight / 2 };
+  const object = createBalloonObject(crypto.randomUUID(), center);
   pushPageObjectHistory(objectHistory, previous);
   state.pageObjectsDraft = [...state.pageObjectsDraft, object];
   selectNewObject(object);
@@ -390,8 +420,10 @@ function beginTextHistoryEdit(): void {
 function scheduleLayoutForUpdatedObject(updated: PageObject): void {
   if (updated.kind === "text") {
     scheduleTextLayoutFetch(updated.content, updated.maxWidth);
-  } else if ((updated.kind === "box" || updated.kind === "balloon") && updated.content) {
+  } else if (updated.kind === "box" && updated.content) {
     scheduleTextLayoutFetch(updated.content, contentMaxWidth(updated.size, updated.content.style.direction));
+  } else if (updated.kind === "balloon" && updated.content) {
+    scheduleTextLayoutFetch(updated.content, balloonContentMaxWidth(updated.shape, updated.size, updated.content.style.direction));
   }
 }
 
@@ -489,6 +521,56 @@ function updateBoxContentField(box: BoxObject, field: string, target: HTMLInputE
   return { ...box, content: { ...box.content, style: nextStyle } };
 }
 
+const BALLOON_SHAPE_VALUES = new Set<BalloonShape>(["ellipse", "rounded", "cloud", "jagged", "thought"]);
+
+/** balloon 自身のプロパティ(shape/塗り/線/しっぽ トグル+幅/テキストを載せる)。content の中身は updateBalloonContentField。 */
+function updateBalloonOwnField(balloon: BalloonObject, field: string, target: HTMLInputElement | HTMLSelectElement): BalloonObject | null {
+  if (field === "hasContent") {
+    const updated: BalloonObject = { ...balloon };
+    if ((target as HTMLInputElement).checked) {
+      updated.content = balloon.content ?? { text: "", style: { ...DEFAULT_TEXT_STYLE } };
+    } else {
+      updated.content = null;
+    }
+    return updated;
+  }
+  if (field === "shape") {
+    const value = target.value;
+    if (!BALLOON_SHAPE_VALUES.has(value as BalloonShape)) {
+      return null;
+    }
+    return { ...balloon, shape: value as BalloonShape };
+  }
+  if (field === "fill" || field === "strokeColor") {
+    return { ...balloon, [field]: target.value };
+  }
+  if (field === "strokeWidth") {
+    const parsed = Number(target.value);
+    return { ...balloon, strokeWidth: Number.isFinite(parsed) ? Math.min(0.2, Math.max(0, parsed)) : balloon.strokeWidth };
+  }
+  if (field === "tailEnabled") {
+    const updated: BalloonObject = { ...balloon };
+    updated.tail = (target as HTMLInputElement).checked ? balloon.tail ?? defaultBalloonTail(balloon.size) : null;
+    return updated;
+  }
+  if (field === "tailWidth") {
+    if (!balloon.tail) {
+      return null;
+    }
+    const width = clampNumber(Number(target.value), 0, PAGE_OBJECT_MAX_SIZE, balloon.tail.width);
+    return { ...balloon, tail: { ...balloon.tail, width } };
+  }
+  return null;
+}
+
+function updateBalloonContentField(balloon: BalloonObject, field: string, target: HTMLInputElement | HTMLSelectElement): BalloonObject | null {
+  if (!balloon.content) {
+    return null;
+  }
+  const nextStyle = applyTextStyleField(balloon.content.style, field, target);
+  return { ...balloon, content: { ...balloon.content, style: nextStyle } };
+}
+
 /** 確定的なプロパティ変更(色ピッカー/select/number 等の change イベント)を history へ push して保存する。 */
 function commitFieldChange(index: number, updated: PageObject): void {
   flushTextHistoryCommit();
@@ -514,8 +596,9 @@ export function updatePageObjectFieldFromControl(target: HTMLInputElement | HTML
   }
 
   const contentField = target.dataset.pageObjectContentField;
-  if (contentField && object.kind === "box") {
-    const updated = updateBoxContentField(object, contentField, target);
+  if (contentField && (object.kind === "box" || object.kind === "balloon")) {
+    const updated =
+      object.kind === "box" ? updateBoxContentField(object, contentField, target) : updateBalloonContentField(object, contentField, target);
     if (updated) {
       commitFieldChange(index, updated);
     }
@@ -528,6 +611,13 @@ export function updatePageObjectFieldFromControl(target: HTMLInputElement | HTML
   }
   if (object.kind === "box") {
     const updated = updateBoxOwnField(object, field, target as HTMLInputElement);
+    if (updated) {
+      commitFieldChange(index, updated);
+    }
+    return;
+  }
+  if (object.kind === "balloon") {
+    const updated = updateBalloonOwnField(object, field, target);
     if (updated) {
       commitFieldChange(index, updated);
     }
@@ -575,7 +665,7 @@ export function updatePageObjectTextFromInput(target: HTMLTextAreaElement): void
 
 // --- ギズモ(移動/拡縮/回転)ジェスチャ ---
 
-type ObjectGestureKind = "move" | "scale" | "rotate";
+type ObjectGestureKind = "move" | "scale" | "rotate" | "tail";
 const ROTATE_SNAP_RAD = Math.PI / 12;
 /** ハンドルの画面基準サイズ(px)。paste/crop の前例に合わせる。 */
 const GIZMO_HANDLE_SCREEN_RADIUS_PX = 7;
@@ -605,13 +695,14 @@ function stageRootElement(): SVGGraphicsElement | null {
   return el instanceof SVGGraphicsElement ? el : null;
 }
 
-function objectIdFromEventTarget(target: EventTarget | null): { objectId: string | null; handleKind: "scale" | "rotate" | null } {
+function objectIdFromEventTarget(target: EventTarget | null): { objectId: string | null; handleKind: "scale" | "rotate" | "tail" | null } {
   if (!(target instanceof Element)) {
     return { objectId: null, handleKind: null };
   }
   const handle = target.closest<SVGElement>("[data-page-object-handle]");
   if (handle) {
-    const kind = handle.getAttribute("data-page-object-handle") === "rotate" ? "rotate" : "scale";
+    const raw = handle.getAttribute("data-page-object-handle");
+    const kind = raw === "rotate" ? "rotate" : raw === "tail" ? "tail" : "scale";
     return { objectId: handle.getAttribute("data-page-object-owner"), handleKind: kind };
   }
   const shape = target.closest<SVGElement>("[data-page-object]");
@@ -645,7 +736,6 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
 
   const object = state.pageObjectsDraft.find((item) => item.id === objectId);
   if (!object || !isEditableObject(object)) {
-    // P2 で編集対象なのは box/text のみ(balloon は将来フェーズ)。
     return true;
   }
 
@@ -681,7 +771,14 @@ function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: Obje
     startObject:
       object.kind === "box"
         ? { ...object, position: { ...object.position }, size: { ...object.size } }
-        : { ...object, position: { ...object.position }, content: { ...object.content, style: { ...object.content.style } } },
+        : object.kind === "balloon"
+          ? {
+              ...object,
+              position: { ...object.position },
+              size: { ...object.size },
+              tail: object.tail ? { tip: { ...object.tail.tip }, width: object.tail.width } : object.tail
+            }
+          : { ...object, position: { ...object.position }, content: { ...object.content, style: { ...object.content.style } } },
     pxPerUnit: stage.pxPerUnit,
     startClientX: event.clientX,
     startClientY: event.clientY,
@@ -712,6 +809,30 @@ function scaleTextObject(start: TextObject, factor: number): TextObject {
   return updated;
 }
 
+/**
+ * balloon の拡縮ドラッグ: box と同じく size を変えるが、tail はローカル座標(中心=原点)なので
+ * size の実効倍率でそのままスケールすれば移動/回転と独立に追従する(tip の長さも tail.width も同率)。
+ */
+function scaleBalloonObject(start: BalloonObject, nextSize: { x: number; y: number }): BalloonObject {
+  const factor = start.size.x > 0 ? nextSize.x / start.size.x : 1;
+  const updated: BalloonObject = { ...start, size: nextSize };
+  if (start.tail) {
+    updated.tail = {
+      tip: clampTailTip({ x: start.tail.tip.x * factor, y: start.tail.tip.y * factor }),
+      width: clampNumber(start.tail.width * factor, 0, PAGE_OBJECT_MAX_SIZE, start.tail.width)
+    };
+  }
+  return updated;
+}
+
+/** tail.tip(ローカル座標)を ± BALLOON_TAIL_TIP_CLAMP へ収める(`normalizePageObjects` の clamp と同じ範囲)。 */
+function clampTailTip(tip: { x: number; y: number }): { x: number; y: number } {
+  return {
+    x: clampNumber(tip.x, -BALLOON_TAIL_TIP_CLAMP, BALLOON_TAIL_TIP_CLAMP, 0),
+    y: clampNumber(tip.y, -BALLOON_TAIL_TIP_CLAMP, BALLOON_TAIL_TIP_CLAMP, 0)
+  };
+}
+
 export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   if (!objectDrag || event.pointerId !== objectDrag.pointerId) {
     return false;
@@ -735,9 +856,29 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
     if (drag.startObject.kind === "box") {
       const box = scaleGizmoBoxAboutCenter(startBox, factor, PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE);
       updated = { ...drag.startObject, size: box.size };
+    } else if (drag.startObject.kind === "balloon") {
+      const box = scaleGizmoBoxAboutCenter(startBox, factor, PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE);
+      updated = scaleBalloonObject(drag.startObject, box.size);
     } else {
       updated = scaleTextObject(drag.startObject, factor);
     }
+  } else if (drag.kind === "tail") {
+    if (drag.startObject.kind !== "balloon") {
+      // tail ハンドルは balloon にしか出さないので通常到達しない防御分岐。
+      objectDrag = null;
+      return false;
+    }
+    const dxScreen = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+    const dyScreen = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+    // 画面デルタを -rotation 回してローカル軸のデルタにする(`panGestureCrop` と同じ考え方)。
+    const rotation = drag.startObject.rotation;
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    const localDx = dxScreen * cos + dyScreen * sin;
+    const localDy = -dxScreen * sin + dyScreen * cos;
+    const startTip = drag.startObject.tail?.tip ?? { x: 0, y: 0 };
+    const nextTip = clampTailTip({ x: startTip.x + localDx, y: startTip.y + localDy });
+    updated = { ...drag.startObject, tail: { tip: nextTip, width: drag.startObject.tail?.width ?? DEFAULT_BALLOON_TAIL_WIDTH } };
   } else {
     const angle = Math.atan2(event.clientY - drag.centerScreenY, event.clientX - drag.centerScreenX);
     const box = rotateGizmoBox(startBox, drag.startAngle, angle, event.shiftKey, ROTATE_SNAP_RAD);
@@ -751,6 +892,8 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
     // 拡縮ドラッグ中はサイズが連続的に変わるので、レイアウト取得は debounce に任せる(ギズモ枠自体は
     // 直近のキャッシュ/仮サイズで追従し、確定した見た目は pointerup で最新化される)。
     scheduleTextLayoutFetch(updated.content, updated.maxWidth);
+  } else if (drag.kind === "scale" && updated.kind === "balloon" && updated.content) {
+    scheduleTextLayoutFetch(updated.content, balloonContentMaxWidth(updated.shape, updated.size, updated.content.style.direction));
   }
   return true;
 }
@@ -764,6 +907,20 @@ function editableObjectUnchanged(a: EditableObject, b: EditableObject): boolean 
   }
   if (a.kind === "text" && b.kind === "text") {
     return a.content.style.size === b.content.style.size && a.maxWidth === b.maxWidth;
+  }
+  if (a.kind === "balloon" && b.kind === "balloon") {
+    if (a.size.x !== b.size.x || a.size.y !== b.size.y) {
+      return false;
+    }
+    const at = a.tail;
+    const bt = b.tail;
+    if (Boolean(at) !== Boolean(bt)) {
+      return false;
+    }
+    if (at && bt && (at.tip.x !== bt.tip.x || at.tip.y !== bt.tip.y || at.width !== bt.width)) {
+      return false;
+    }
+    return true;
   }
   return false;
 }
@@ -797,6 +954,8 @@ export function handlePageObjectsPointerUp(event: PointerEvent): boolean {
     if (current.kind === "text") {
       // ドラッグ確定時は debounce を待たず即座に最新レイアウトを取りに行く。
       void ensureTextLayout(current.content, current.maxWidth);
+    } else if (current.kind === "balloon" && current.content) {
+      void ensureTextLayout(current.content, balloonContentMaxWidth(current.shape, current.size, current.content.style.direction));
     }
   }
   return true;
@@ -836,6 +995,7 @@ export function syncPageObjectsGizmo(): void {
   }
   const rotateHandle = gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoRotate");
   rotateHandle?.setAttribute("r", String(radius));
+  gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoTail")?.setAttribute("r", String(radius));
   const topMidX = Number(gizmo.dataset.tmx);
   const topMidY = Number(gizmo.dataset.tmy);
   const upX = Number(gizmo.dataset.upx);
@@ -867,8 +1027,10 @@ export function ensureAllPageObjectTextLayouts(objects: readonly PageObject[]): 
   for (const object of objects) {
     if (object.kind === "text") {
       void ensureTextLayout(object.content, object.maxWidth);
-    } else if ((object.kind === "box" || object.kind === "balloon") && object.content) {
+    } else if (object.kind === "box" && object.content) {
       void ensureTextLayout(object.content, contentMaxWidth(object.size, object.content.style.direction));
+    } else if (object.kind === "balloon" && object.content) {
+      void ensureTextLayout(object.content, balloonContentMaxWidth(object.shape, object.size, object.content.style.direction));
     }
   }
 }
@@ -897,6 +1059,7 @@ export function ensureFontsLoaded(): void {
 
 registerActions({
   "add-page-object-box": () => addBoxObject(),
+  "add-page-object-balloon": () => addBalloonObject(),
   "add-page-object-text": () => addTextObject(),
   "delete-selected-page-object": () => deleteSelectedPageObject(),
   "page-object-bring-front": () => bringSelectedToFront(),

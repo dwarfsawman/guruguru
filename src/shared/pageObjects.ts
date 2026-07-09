@@ -59,7 +59,12 @@ export interface TextObject extends PageObjectBase {
 export type BalloonShape = "ellipse" | "rounded" | "cloud" | "jagged" | "thought";
 
 export interface BalloonTail {
-  /** しっぽの先端(ページ座標、絶対位置)。 */
+  /**
+   * しっぽの先端(オブジェクトローカル座標: 中心=原点、回転前)。
+   * P3 実装時に「ページ座標(絶対)」から変更した -- 絶対座標のままだと、オブジェクトを移動/回転しても
+   * しっぽだけ元の位置に取り残され、本体から千切れて見える(または回転で全く違う向きを指す)ため。
+   * ローカル座標なら移動/回転に自動追従し、拡縮時も本体と同率でスケールすればよい。
+   */
   tip: PageVec;
   width: number;
 }
@@ -115,6 +120,12 @@ export const TEXT_SIZE_MAX = 1;
 
 /** 1ページに保存できるオブジェクト数の上限(暴走 PATCH へのガード)。 */
 export const PAGE_OBJECTS_MAX_COUNT = 300;
+
+/** 吹き出しの既定サイズ・線・しっぽ幅(P3: 「吹き出し追加」ボタン)。 */
+export const DEFAULT_BALLOON_SIZE: PageVec = { x: 0.35, y: 0.22 };
+export const DEFAULT_BALLOON_TAIL_WIDTH = 0.05;
+/** tail.tip(ローカル座標)の取り得る範囲(page-width 単位、± 両方向)。normalize と編集 UI の両方で使う。 */
+export const BALLOON_TAIL_TIP_CLAMP = 2;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -255,7 +266,15 @@ function normalizeBalloonObject(raw: Record<string, unknown>, fallbackId: string
   } else if (isJsonObject(raw.tail)) {
     const tip = asVec(raw.tail.tip);
     if (tip) {
-      object.tail = { tip, width: clampNumber(raw.tail.width, 0, PAGE_OBJECT_MAX_SIZE, 0.02) };
+      // tip はローカル座標(中心=原点、回転前)。絶対座標時代の名残の巨大値が来ても千切れないよう
+      // ± BALLOON_TAIL_TIP_CLAMP へ収める(通常の使用範囲は ±1 未満)。
+      object.tail = {
+        tip: {
+          x: clampNumber(tip.x, -BALLOON_TAIL_TIP_CLAMP, BALLOON_TAIL_TIP_CLAMP, 0),
+          y: clampNumber(tip.y, -BALLOON_TAIL_TIP_CLAMP, BALLOON_TAIL_TIP_CLAMP, 0)
+        },
+        width: clampNumber(raw.tail.width, 0, PAGE_OBJECT_MAX_SIZE, DEFAULT_BALLOON_TAIL_WIDTH)
+      };
     }
   }
   const content = normalizeOptionalContent(raw.content);
@@ -360,6 +379,31 @@ export function createTextObject(id: string, center: PageVec, text: string = DEF
     position: { ...center },
     rotation: 0,
     content: { text, style: { ...DEFAULT_TEXT_STYLE } }
+  };
+}
+
+/** 新規吹き出しオブジェクトを作る(既定: 楕円・fill 白・stroke 黒・しっぽ無し・content は空テキスト縦書き)。 */
+export function createBalloonObject(id: string, center: PageVec, size: PageVec = DEFAULT_BALLOON_SIZE): BalloonObject {
+  return {
+    id,
+    kind: "balloon",
+    position: { ...center },
+    rotation: 0,
+    shape: "ellipse",
+    size: { ...size },
+    tail: null,
+    fill: DEFAULT_BOX_FILL,
+    strokeColor: DEFAULT_BOX_STROKE_COLOR,
+    strokeWidth: DEFAULT_BOX_STROKE_WIDTH,
+    content: { text: "", style: { ...DEFAULT_TEXT_STYLE } }
+  };
+}
+
+/** しっぽトグル ON 時の既定しっぽ(下向き、ローカル座標)。size は toggle 時点のオブジェクトの size。 */
+export function defaultBalloonTail(size: PageVec): BalloonTail {
+  return {
+    tip: { x: 0, y: size.y / 2 + Math.max(0.05, size.y * 0.4) },
+    width: DEFAULT_BALLOON_TAIL_WIDTH
   };
 }
 

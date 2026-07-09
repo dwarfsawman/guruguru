@@ -236,6 +236,15 @@
   cursor: grabbing;
 }
 
+/* しっぽ tip ハンドル(Docs/Feature-CGCollectionSuite.md P3)。拡縮/回転ハンドルと見分けが付くよう別色にする。 */
+.page-object-gizmo-tail-handle {
+  fill: var(--warn);
+}
+
+.page-object-gizmo-tail-handle:active {
+  cursor: grabbing;
+}
+
 .page-object-toolbar {
   flex-direction: column;
   align-items: stretch;
@@ -335,4 +344,12 @@
   margin: 2px 0 0;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* --- balloon オブジェクト(Docs/Feature-CGCollectionSuite.md P3) --- */
+
+.page-object-balloon-shape {
+  /* 選択/ドラッグの当たり判定は外接矩形の .page-object-hit-area が担う(雲形/フラッシュの凹凸で
+     当たり判定が抜けるのを避けるため)。本体パス自体はクリックを拾わない。 */
+  pointer-events: none;
 }

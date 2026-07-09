@@ -7,8 +7,9 @@
  *   -- 元画像全体を薄く(ghost)出し、コマ形状にクリップした明画像を重ねて「コマ領域だけ濃く」見せ、
  *   その上に paste 風ギズモ(コーナー=拡縮 / 上のハンドル=回転)を描く。
  *   **この「コマ」モードの描画/挙動は P1 で一切変更していない**(既存コードをそのまま関数抽出しただけ)。
- * 「オブジェクト」モード(P1 新規): box オブジェクトの追加/選択/移動/拡縮/回転/削除/z順/プロパティ編集。
- *   `page.layout` が無いページ(1枚絵)でも開け、その場合はタブ自体を出さずオブジェクトモード固定にする。
+ * 「オブジェクト」モード: box(P1)/text(P2)/balloon(P3)オブジェクトの追加/選択/移動/拡縮/回転/削除/
+ *   z順/プロパティ編集。`page.layout` が無いページ(1枚絵)でも開け、その場合はタブ自体を出さず
+ *   オブジェクトモード固定にする。
  * 座標は pageLayoutSvg.ts と同じ width-relative 正規化(x∈[0,1], y∈[0,page.height])。
  */
 import type { FontSummary, PagePanelAssignment, PageSummary } from "../../shared/apiTypes";
@@ -18,13 +19,19 @@ import {
   PAGE_OBJECT_MIN_SIZE,
   TEXT_SIZE_MAX,
   TEXT_SIZE_MIN,
+  contentMaxWidth,
+  type BalloonObject,
+  type BalloonShape,
   type BoxObject,
   type PageObject,
+  type PageVec,
+  type TextContent,
   type TextObject,
   type TextStyle
 } from "../../shared/pageObjects";
+import { balloonContentMaxWidth, renderBalloonSvg } from "../../shared/balloonShape";
 import { renderTextSvg } from "../../shared/textSvg";
-import { gizmoBoxCorners, gizmoRotateHandlePoint, gizmoTopMid, gizmoUpVector } from "../svgGizmo";
+import { gizmoBoxCorners, gizmoRotateHandlePoint, gizmoTopMid, gizmoUpVector, rotatePointAround } from "../svgGizmo";
 import { gizmoBoxForPageObject } from "../pageObjectGizmoBox";
 import { getCachedTextLayout } from "../textLayoutClient";
 import type { PagePanelLightboxState } from "../appState";
@@ -292,13 +299,13 @@ function renderCropToolbar(): string {
   `;
 }
 
-// --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1: box / P2: text) ---
+// --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1: box / P2: text / P3: balloon) ---
 
-/** ギズモで動かせるオブジェクトの型(balloon は P3 未実装)。 */
-type EditablePageObject = BoxObject | TextObject;
+/** ギズモで動かせるオブジェクトの型(box/text/balloon)。 */
+type EditablePageObject = BoxObject | TextObject | BalloonObject;
 
 function isEditablePageObject(object: PageObject): object is EditablePageObject {
-  return object.kind === "box" || object.kind === "text";
+  return object.kind === "box" || object.kind === "text" || object.kind === "balloon";
 }
 
 /** オブジェクトモードの `<svg>` 中身。scale(1000) group 内に正規化座標で描く(注意: group 外に置くと実質不可視)。 */
@@ -321,8 +328,21 @@ function renderPageObjectShape(object: PageObject, isSelected: boolean): string 
   if (object.kind === "text") {
     return renderTextObjectShape(object, isSelected);
   }
-  // balloon(P3 未実装)はデータとしては保持・往復するが未描画。
-  return "";
+  return renderBalloonObjectShape(object, isSelected);
+}
+
+/**
+ * box/balloon の内包テキスト(content)のグリフ描画。`getCachedTextLayout` が未着(初回・サイズ変更直後)
+ * の間は何も出さない(box/balloon 本体の枠だけは常に見えているので、text オブジェクトのような
+ * プレースホルダ点線は不要)。maxWidth は呼び出し側(box は `contentMaxWidth`、balloon は形状の内接矩形
+ * 係数を含む `balloonContentMaxWidth`)が渡す -- ここでは共通のグリフ描画だけを担う。
+ */
+function renderInlineContentGlyphs(content: TextContent | null | undefined, maxWidth: number, position: PageVec, rotation: number): string {
+  if (!content) {
+    return "";
+  }
+  const layout = getCachedTextLayout(content, maxWidth);
+  return layout ? renderTextSvg(layout, position, rotation, content.style) : "";
 }
 
 function renderBoxObjectShape(object: BoxObject, isSelected: boolean): string {
@@ -332,7 +352,29 @@ function renderBoxObjectShape(object: BoxObject, isSelected: boolean): string {
   const transform = deg ? ` transform="rotate(${num(deg)} ${num(object.position.x)} ${num(object.position.y)})"` : "";
   const radius = object.cornerRadius ? ` rx="${num(object.cornerRadius)}"` : "";
   const stateClass = isSelected ? " is-selected" : "";
-  return `<rect data-page-object="${escapeAttr(object.id)}" class="page-object-shape${stateClass}" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}"${radius} fill="${escapeAttr(object.fill)}" stroke="${escapeAttr(object.strokeColor)}" stroke-width="${num(object.strokeWidth)}"${transform} />`;
+  const rect = `<rect data-page-object="${escapeAttr(object.id)}" class="page-object-shape${stateClass}" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}"${radius} fill="${escapeAttr(object.fill)}" stroke="${escapeAttr(object.strokeColor)}" stroke-width="${num(object.strokeWidth)}"${transform} />`;
+  const maxWidth = object.content ? contentMaxWidth(object.size, object.content.style.direction) : 0;
+  const content = renderInlineContentGlyphs(object.content, maxWidth, object.position, object.rotation);
+  return content ? `<g class="page-object-box">${rect}${content}</g>` : rect;
+}
+
+/**
+ * 吹き出し1件。本体+しっぽは `renderBalloonSvg`(クライアント/サーバ共用の純ロジック)にそのまま任せる
+ * -- 見た目(継ぎ目の消え方含む)を書き出しと一致させる P3 の核方針。本体パスは pointer-events なし
+ * (`.page-object-balloon-shape`)にし、box/text と同じく「透明な当たり判定矩形」を選択/ドラッグに使う
+ * (吹き出し形状の凹凸で当たり判定が抜けるのを避けるため、雲形/フラッシュも含め常に外接矩形をヒット領域にする)。
+ */
+function renderBalloonObjectShape(object: BalloonObject, isSelected: boolean): string {
+  const deg = (object.rotation * 180) / Math.PI;
+  const transform = deg ? ` transform="rotate(${num(deg)} ${num(object.position.x)} ${num(object.position.y)})"` : "";
+  const hitX = object.position.x - object.size.x / 2;
+  const hitY = object.position.y - object.size.y / 2;
+  const stateClass = isSelected ? " is-selected" : "";
+  const hitArea = `<rect data-page-object="${escapeAttr(object.id)}" class="page-object-hit-area${stateClass}" x="${num(hitX)}" y="${num(hitY)}" width="${num(object.size.x)}" height="${num(object.size.y)}" fill="transparent" stroke="none"${transform} />`;
+  const shape = renderBalloonSvg(object, object.position, object.rotation);
+  const maxWidth = object.content ? balloonContentMaxWidth(object.shape, object.size, object.content.style.direction) : 0;
+  const content = renderInlineContentGlyphs(object.content, maxWidth, object.position, object.rotation);
+  return `<g class="page-object-balloon">${hitArea}${shape}${content}</g>`;
 }
 
 /**
@@ -368,8 +410,21 @@ export function pageObjectGizmoViewBounds(pageHeight: number): { minX: number; m
 }
 
 /**
- * paste/crop 風ギズモ(コーナー=拡縮 / 上のハンドル=回転)。選択中の box/text オブジェクトの外接矩形
- * まわりに描く。矩形自体は `gizmoBoxForPageObject`(box は size そのまま、text はレイアウト bbox)。
+ * balloon のしっぽ tip ハンドルの世界(ページ)座標。tip はローカル座標(中心=原点、回転前)なので、
+ * オブジェクトの回転を掛けてから position を足す(`rotatePointAround` を原点まわりの回転として使う)。
+ */
+function balloonTailHandlePoint(object: BalloonObject): { x: number; y: number } {
+  if (!object.tail) {
+    return object.position;
+  }
+  const rotated = rotatePointAround(object.tail.tip, { x: 0, y: 0 }, object.rotation);
+  return { x: object.position.x + rotated.x, y: object.position.y + rotated.y };
+}
+
+/**
+ * paste/crop 風ギズモ(コーナー=拡縮 / 上のハンドル=回転)。選択中の box/text/balloon オブジェクトの
+ * 外接矩形まわりに描く。矩形自体は `gizmoBoxForPageObject`(box/balloon は size そのまま、text は
+ * レイアウト bbox)。balloon にしっぽがあれば、専用の tip ドラッグハンドル(別色)も追加する。
  */
 function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): string {
   const box = gizmoBoxForPageObject(object);
@@ -385,11 +440,19 @@ function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): 
         `<circle id="pageObjectGizmoCorner${index}" class="page-object-gizmo-handle" style="cursor:${cornerCursors[index]};" data-page-object-handle="scale" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(corner.x)}" cy="${num(corner.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />`
     )
     .join("");
+  const tailHandle =
+    object.kind === "balloon" && object.tail
+      ? (() => {
+          const point = balloonTailHandlePoint(object);
+          return `<circle id="pageObjectGizmoTail" class="page-object-gizmo-handle page-object-gizmo-tail-handle" style="cursor:move;" data-page-object-handle="tail" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(point.x)}" cy="${num(point.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />`;
+        })()
+      : "";
   // sync が柄長/半径を画面基準へ直すために基準点と反転判定用のページ高(data-ph)を data 属性で持たせる。
   return `<g id="pageObjectGizmo" class="page-object-gizmo" data-tmx="${num(topMid.x)}" data-tmy="${num(topMid.y)}" data-upx="${num(up.x)}" data-upy="${num(up.y)}" data-ph="${num(pageHeight)}">
     <polygon id="pageObjectGizmoOutline" class="page-object-gizmo-outline" points="${outlinePoints}" />
     <line id="pageObjectGizmoStick" class="page-object-gizmo-stick" x1="${num(topMid.x)}" y1="${num(topMid.y)}" x2="${num(rotateHandle.x)}" y2="${num(rotateHandle.y)}" />
     ${cornerHandles}
+    ${tailHandle}
     <circle id="pageObjectGizmoRotate" class="page-object-gizmo-handle page-object-gizmo-rotate" style="cursor:grab;" data-page-object-handle="rotate" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(rotateHandle.x)}" cy="${num(rotateHandle.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />
   </g>`;
 }
@@ -398,11 +461,13 @@ function renderObjectsToolbar(objects: PageObject[], selectedObjectId: string | 
   const selected = objects.find((object) => object.id === selectedObjectId);
   const selectedBox = selected && selected.kind === "box" ? selected : null;
   const selectedText = selected && selected.kind === "text" ? selected : null;
-  const hasSelection = Boolean(selectedBox || selectedText);
+  const selectedBalloon = selected && selected.kind === "balloon" ? selected : null;
+  const hasSelection = Boolean(selectedBox || selectedText || selectedBalloon);
   return `
     <footer class="page-panel-toolbar page-object-toolbar">
       <div class="page-object-toolbar-row">
         <button class="button-secondary compact" type="button" data-action="add-page-object-box">${iconPlus()}ボックス追加</button>
+        <button class="button-secondary compact" type="button" data-action="add-page-object-balloon">${iconPlus()}吹き出し追加</button>
         <button class="button-secondary compact" type="button" data-action="add-page-object-text">${iconPlus()}テキスト追加</button>
         ${
           hasSelection
@@ -417,11 +482,32 @@ function renderObjectsToolbar(objects: PageObject[], selectedObjectId: string | 
       ${
         selectedBox
           ? renderBoxPropertyPanel(selectedBox, fonts)
-          : selectedText
-            ? renderTextObjectPanel(selectedText, fonts)
-            : `<p class="page-panel-hint-text">ボックス/テキストをクリックして選択(ドラッグで移動・コーナーで拡縮・上のハンドルで回転・Delete で削除)</p>`
+          : selectedBalloon
+            ? renderBalloonPropertyPanel(selectedBalloon, fonts)
+            : selectedText
+              ? renderTextObjectPanel(selectedText, fonts)
+              : `<p class="page-panel-hint-text">ボックス/吹き出し/テキストをクリックして選択(ドラッグで移動・コーナーで拡縮・上のハンドルで回転・Delete で削除)</p>`
       }
     </footer>
+  `;
+}
+
+/** box/balloon 共通の「テキストを載せる」トグル+本文 textarea+スタイル欄。 */
+function renderContentSection(content: TextContent | null | undefined, fonts: FontSummary[]): string {
+  return `
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-checkbox-field">
+        <input type="checkbox" data-page-object-field="hasContent" ${content ? "checked" : ""} /> テキストを載せる
+      </label>
+    </div>
+    ${
+      content
+        ? `
+          <textarea class="page-object-textarea" data-page-object-text="1" rows="2" placeholder="テキストを入力">${escapeHtml(content.text)}</textarea>
+          ${renderTextStyleFields(content.style, fonts, "data-page-object-content-field")}
+        `
+        : ""
+    }
   `;
 }
 
@@ -441,19 +527,55 @@ function renderBoxPropertyPanel(object: BoxObject, fonts: FontSummary[]): string
         <input type="number" step="0.005" min="0" data-page-object-field="cornerRadius" value="${num(object.cornerRadius ?? 0)}" />
       </label>
     </div>
+    ${renderContentSection(object.content, fonts)}
+  `;
+}
+
+const BALLOON_SHAPE_LABELS: Record<BalloonShape, string> = {
+  ellipse: "楕円",
+  rounded: "角丸",
+  cloud: "雲形",
+  jagged: "フラッシュ",
+  thought: "思考"
+};
+
+/** balloon オブジェクトのプロパティパネル(形状/塗り/線/しっぽ トグル+幅、content は box と共通)。 */
+function renderBalloonPropertyPanel(object: BalloonObject, fonts: FontSummary[]): string {
+  const hasTail = Boolean(object.tail);
+  const shapeOptions = (Object.keys(BALLOON_SHAPE_LABELS) as BalloonShape[])
+    .map((shape) => `<option value="${shape}"${object.shape === shape ? " selected" : ""}>${escapeHtml(BALLOON_SHAPE_LABELS[shape])}</option>`)
+    .join("");
+  return `
     <div class="page-object-property-row">
-      <label class="page-object-property-field page-object-checkbox-field">
-        <input type="checkbox" data-page-object-field="hasContent" ${object.content ? "checked" : ""} /> テキストを載せる
+      <label class="page-object-property-field page-object-property-field-wide">形状
+        <select data-page-object-field="shape">${shapeOptions}</select>
+      </label>
+      <label class="page-object-property-field">塗り
+        <input type="color" data-page-object-field="fill" value="${escapeAttr(object.fill)}" />
+      </label>
+      <label class="page-object-property-field">線色
+        <input type="color" data-page-object-field="strokeColor" value="${escapeAttr(object.strokeColor)}" />
+      </label>
+      <label class="page-object-property-field">線幅
+        <input type="number" step="0.001" min="0" max="0.2" data-page-object-field="strokeWidth" value="${num(object.strokeWidth)}" />
       </label>
     </div>
-    ${
-      object.content
-        ? `
-          <textarea class="page-object-textarea" data-page-object-text="1" rows="2" placeholder="テキストを入力">${escapeHtml(object.content.text)}</textarea>
-          ${renderTextStyleFields(object.content.style, fonts, "data-page-object-content-field")}
-        `
-        : ""
-    }
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-checkbox-field">
+        <input type="checkbox" data-page-object-field="tailEnabled" ${hasTail ? "checked" : ""} /> しっぽ
+      </label>
+      ${
+        hasTail
+          ? `
+            <label class="page-object-property-field">しっぽ幅
+              <input type="number" step="0.005" min="0" data-page-object-field="tailWidth" value="${num(object.tail?.width ?? 0)}" />
+            </label>
+            <p class="page-panel-hint-text">オレンジのハンドルをドラッグでしっぽの先端を動かせます</p>
+          `
+          : ""
+      }
+    </div>
+    ${renderContentSection(object.content, fonts)}
   `;
 }
 
