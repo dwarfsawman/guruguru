@@ -10,6 +10,7 @@ import type { PagePanelAssignment, PageDetail, PageSummary } from "../shared/api
 import type { LayoutPanel, PanelCrop } from "../shared/pageLayout";
 import {
   clampPanelCrop,
+  clonePageLayout,
   defaultCoverCrop,
   normalizeRotation,
   panelBounds,
@@ -30,6 +31,7 @@ import {
   flushPageObjectsSave,
   resetPageObjectsSession
 } from "./pageObjectsController";
+import { consumeShapeEditDirtyFlag, flushShapeEditSave, resetShapeEditSession } from "./panelShapeController";
 
 /** レイアウト/代表アセットどちらからも解決できない時のページ高さフォールバック(A4 縦比に近い値。pageLayout.ts の resolveHeight と同じ値)。 */
 const FALLBACK_PAGE_HEIGHT = 1.4142;
@@ -74,7 +76,13 @@ export async function openPagePanelLightbox(pageId: string) {
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
   state.selectedPageObjectId = null;
+  state.pageLayoutDraft = page.layout ? clonePageLayout(page.layout) : null;
+  state.shapeSelectedPanelId = null;
+  state.shapeSelectedVertexIndex = null;
+  state.shapeSplitMode = false;
+  state.shapeSplitDraft = null;
   resetPageObjectsSession();
+  resetShapeEditSession();
   if (state.pagePanelLightbox.mode === "objects") {
     ensureFontsLoaded();
   }
@@ -87,6 +95,9 @@ export async function openPagePanelLightbox(pageId: string) {
     }
     state.pagePanelAssignments = detail.panelAssignments;
     state.pageObjectsDraft = detail.page.objects ?? [];
+    if (detail.page.layout) {
+      state.pageLayoutDraft = clonePageLayout(detail.page.layout);
+    }
     state.pagePanelLightbox.pageHeight = resolveLightboxPageHeight(detail, page);
     ensureAllPageObjectTextLayouts(state.pageObjectsDraft);
   } catch (error) {
@@ -116,31 +127,38 @@ function resolveLightboxPageHeight(detail: PageDetail, pageSummary: PageSummary)
 let panelPreviewDirty = false;
 
 export function closePagePanelLightbox() {
-  // flush は state クリアの前に呼ぶ(persistPageObjects は呼び出しと同期に pageId/送信ボディを確定する
-  // ので、この後 state をクリアしても PATCH 自体は完走する)。完了は下の async ブロックで待つ。
-  const flushPromise = flushPageObjectsSave();
+  // flush は state クリアの前に呼ぶ(persistPageObjects/persistShapeLayout は呼び出しと同期に
+  // pageId/送信ボディを確定するので、この後 state をクリアしても PATCH 自体は完走する)。
+  // 完了は下の async ブロックで待つ。
+  const flushObjectsPromise = flushPageObjectsSave();
+  const flushShapePromise = flushShapeEditSave();
   const wasCropDirty = panelPreviewDirty;
   panelPreviewDirty = false;
   state.pagePanelLightbox = null;
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
   state.selectedPageObjectId = null;
+  state.pageLayoutDraft = null;
+  state.shapeSelectedPanelId = null;
+  state.shapeSelectedVertexIndex = null;
+  state.shapeSplitMode = false;
+  state.shapeSplitDraft = null;
   requestRender();
-  // クロップ/オブジェクト編集があった場合だけ、ページ一覧の preview.png?v=... を最新化するため再取得する。
-  // オブジェクト側の dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に読むこと --
-  // 完了前に読むと false のままスキップされ、PATCH 前の古い `?v=` を拾ってしまう。
+  // クロップ/オブジェクト/コマ形状編集があった場合だけ、ページ一覧の preview.png?v=... を
+  // 最新化するため再取得する。dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に
+  // 読むこと -- 完了前に読むと false のままスキップされ、PATCH 前の古い `?v=` を拾ってしまう。
   void (async () => {
-    await flushPromise;
-    if (wasCropDirty || consumePageObjectsDirtyFlag()) {
+    await Promise.all([flushObjectsPromise, flushShapePromise]);
+    if (wasCropDirty || consumePageObjectsDirtyFlag() || consumeShapeEditDirtyFlag()) {
       await reloadBookPages();
     }
   })();
 }
 
-/** ページ編集モードタブ(コマ/オブジェクト)の切り替え。 */
+/** ページ編集モードタブ(コマ/オブジェクト/コマ枠)の切り替え。 */
 function setPagePanelMode(mode: string) {
   const lightbox = state.pagePanelLightbox;
-  if (!lightbox || (mode !== "panels" && mode !== "objects") || lightbox.mode === mode) {
+  if (!lightbox || (mode !== "panels" && mode !== "objects" && mode !== "shapes") || lightbox.mode === mode) {
     return;
   }
   lightbox.mode = mode;

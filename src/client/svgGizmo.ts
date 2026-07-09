@@ -50,6 +50,23 @@ export function getStageTransform(el: SVGGraphicsElement): StageTransform | null
   };
 }
 
+/**
+ * `getStageTransform` の逆方向: 画面px座標を(回転していない基準要素の)SVG正規化座標へ変換する関数を返す。
+ * paste/crop/オブジェクトの既存ギズモは中心固定のデルタ計算(pxPerUnit で割るだけ)で済んでいたため
+ * 逆変換は不要だったが、コマ形状編集(P5)の分割線ドラッグは「ポインタの絶対位置をそのままステージ座標
+ * として使いたい」ため、これが要る。ctm が取れない(非表示等)場合は null。
+ */
+export function getInverseStageTransform(el: SVGGraphicsElement): ((screen: GizmoVec) => GizmoVec) | null {
+  const ctm = el.getScreenCTM();
+  if (!ctm || !ctm.a || !ctm.d) {
+    return null;
+  }
+  return (screen) => ({
+    x: (screen.x - ctm.e) / ctm.a,
+    y: (screen.y - ctm.f) / ctm.d
+  });
+}
+
 /** 点を center まわりに角 rotation(rad, SVG y-down の時計回り)だけ回す。 */
 export function rotatePointAround(point: GizmoVec, center: GizmoVec, rotation: number): GizmoVec {
   const cos = Math.cos(rotation);

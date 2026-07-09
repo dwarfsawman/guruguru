@@ -45,13 +45,24 @@ const VIEWBOX_SCALE = 1000;
 const GIZMO_HANDLE_RADIUS = 0.014;
 const GIZMO_ROTATE_STICK = 0.07;
 
+/** コマ形状編集(P5)モードの表示用状態。lightbox を開いている間の作業ドラフト+選択/分割状態をまとめる。 */
+export interface PanelShapeEditViewState {
+  layout: PageLayout | null;
+  selectedPanelId: string | null;
+  selectedVertexIndex: number | null;
+  splitMode: boolean;
+  splitDraft: { start: [number, number]; current: [number, number] } | null;
+  gutter: number;
+}
+
 export function renderPagePanelLightbox(
   page: PageSummary,
   lightbox: PagePanelLightboxState,
   assignments: PagePanelAssignment[],
   objects: PageObject[],
   selectedObjectId: string | null,
-  fonts: FontSummary[]
+  fonts: FontSummary[],
+  shapeEdit: PanelShapeEditViewState
 ): string {
   if (lightbox.pageId !== page.id) {
     return "";
@@ -65,13 +76,17 @@ export function renderPagePanelLightbox(
   const stageContent =
     mode === "panels" && layout
       ? renderPanelsStageContent(layout, lightbox, assignments)
-      : renderObjectsStageContent(objects, selectedObjectId, pageHeight);
+      : mode === "shapes" && layout
+        ? renderShapesStageContent(shapeEdit, pageHeight)
+        : renderObjectsStageContent(objects, selectedObjectId, pageHeight);
   const toolbar =
     mode === "panels" && layout
       ? layout.panels.some((panel) => panel.id === lightbox.cropPanelId)
         ? renderCropToolbar()
         : renderSelectToolbar(lightbox)
-      : renderObjectsToolbar(objects, selectedObjectId, fonts);
+      : mode === "shapes" && layout
+        ? renderShapesToolbar(shapeEdit)
+        : renderObjectsToolbar(objects, selectedObjectId, fonts);
 
   return `
     <div class="workflow-modal page-panel-lightbox" role="dialog" aria-modal="true" aria-label="${escapeAttr(label)} のページ編集">
@@ -95,14 +110,14 @@ export function renderPagePanelLightbox(
   `;
 }
 
-/** コマ/オブジェクトのモードタブ。切替先が1つしか無ければ(レイアウト無しページ)タブ自体を出さない。 */
+/** コマ/オブジェクト/コマ枠のモードタブ。切替先が1つしか無ければ(レイアウト無しページ)タブ自体を出さない。 */
 function renderModeTabs(lightbox: PagePanelLightboxState, hasLayout: boolean): string {
   if (!hasLayout) {
     return "";
   }
-  const tab = (mode: "panels" | "objects", labelText: string) =>
+  const tab = (mode: "panels" | "objects" | "shapes", labelText: string) =>
     `<button type="button" class="page-panel-mode-tab${lightbox.mode === mode ? " is-active" : ""}" data-action="set-page-panel-mode" data-id="${mode}" role="tab" aria-selected="${lightbox.mode === mode ? "true" : "false"}">${escapeHtml(labelText)}</button>`;
-  return `<div class="page-panel-mode-tabs" role="tablist">${tab("panels", "コマ")}${tab("objects", "オブジェクト")}</div>`;
+  return `<div class="page-panel-mode-tabs" role="tablist">${tab("panels", "コマ")}${tab("objects", "オブジェクト")}${tab("shapes", "コマ枠")}</div>`;
 }
 
 /** 「コマ」モードの `<svg>` 中身。P1 以前と完全に同一の内容(関数抽出のみ、ロジック変更なし)。 */
@@ -294,6 +309,119 @@ function renderCropToolbar(): string {
       <div class="page-panel-toolbar-actions">
         <button class="button-secondary compact" type="button" data-action="reset-panel-crop">リセット</button>
         <button class="button-primary compact" type="button" data-action="close-panel-crop">選択に戻る</button>
+      </div>
+    </footer>
+  `;
+}
+
+// --- 「コマ枠」モード(Docs/Feature-CGCollectionSuite.md P5: 頂点編集・分割) ---
+
+/** 頂点ハンドルの半径 / 辺中点マーカーの半径(正規化座標の初期値)。 */
+const SHAPE_VERTEX_RADIUS = 0.012;
+const SHAPE_EDGE_MARKER_RADIUS = 0.008;
+
+function renderShapesStageContent(shapeEdit: PanelShapeEditViewState, pageHeight: number): string {
+  const layout = shapeEdit.layout;
+  if (!layout) {
+    return `<g transform="scale(${VIEWBOX_SCALE})"><rect x="0" y="0" width="1" height="${num(pageHeight)}" class="page-panel-paper" /></g>`;
+  }
+  const selectedPanel = shapeEdit.selectedPanelId ? layout.panels.find((panel) => panel.id === shapeEdit.selectedPanelId) ?? null : null;
+  const panelsHtml = layout.panels.map((panel) => renderShapePanelOutline(panel, panel.id === shapeEdit.selectedPanelId)).join("");
+  const handles =
+    selectedPanel && selectedPanel.shape.type === "polygon" && !shapeEdit.splitMode
+      ? renderShapeVertexHandles(selectedPanel.shape.points, shapeEdit.selectedVertexIndex)
+      : "";
+  const splitPreview = shapeEdit.splitMode && shapeEdit.splitDraft ? renderShapeSplitPreview(shapeEdit.splitDraft) : "";
+  return `
+    <g id="pageShapeStageRoot" transform="scale(${VIEWBOX_SCALE})" data-shape-stage="1">
+      <rect x="0" y="0" width="1" height="${num(layout.page.height)}" class="page-panel-paper" data-shape-background="1" />
+      ${panelsHtml}
+      ${handles}
+      ${splitPreview}
+    </g>
+  `;
+}
+
+function renderShapePanelOutline(panel: LayoutPanel, isSelected: boolean): string {
+  const strokeWidth = isSelected ? 0.01 : 0.005;
+  return panelShapeElement(
+    panel.shape,
+    `class="page-shape-outline${isSelected ? " is-selected" : ""}" data-shape-panel-id="${escapeAttr(panel.id)}" fill="transparent" stroke-width="${num(strokeWidth)}" stroke-linejoin="miter"`
+  );
+}
+
+function renderShapeVertexHandles(points: [number, number][], selectedIndex: number | null): string {
+  const n = points.length;
+  const edges = points
+    .map((point, i) => {
+      const next = points[(i + 1) % n]!;
+      const mx = (point[0] + next[0]) / 2;
+      const my = (point[1] + next[1]) / 2;
+      return `<circle class="page-shape-edge-handle" data-shape-edge="${i}" cx="${num(mx)}" cy="${num(my)}" r="${num(SHAPE_EDGE_MARKER_RADIUS)}" />`;
+    })
+    .join("");
+  const vertices = points
+    .map(
+      ([x, y], i) =>
+        `<circle class="page-shape-vertex-handle${i === selectedIndex ? " is-selected" : ""}" data-shape-vertex="${i}" cx="${num(x)}" cy="${num(y)}" r="${num(SHAPE_VERTEX_RADIUS)}" />`
+    )
+    .join("");
+  // 辺マーカーを先に描き頂点ハンドルを上に重ねる(頂点付近をクリックした時に頂点操作を優先させるため)。
+  return `<g class="page-shape-handles">${edges}${vertices}</g>`;
+}
+
+function renderShapeSplitPreview(splitDraft: { start: [number, number]; current: [number, number] }): string {
+  const [x1, y1] = splitDraft.start;
+  const [x2, y2] = splitDraft.current;
+  return `<line class="page-shape-split-line" x1="${num(x1)}" y1="${num(y1)}" x2="${num(x2)}" y2="${num(y2)}" />`;
+}
+
+function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
+  const layout = shapeEdit.layout;
+  const selectedPanel = layout && shapeEdit.selectedPanelId ? layout.panels.find((panel) => panel.id === shapeEdit.selectedPanelId) ?? null : null;
+
+  if (!selectedPanel) {
+    return `
+      <footer class="page-panel-toolbar">
+        <p class="page-panel-hint-text">コマをクリックして選択してください。</p>
+      </footer>
+    `;
+  }
+  if (selectedPanel.shape.type === "path") {
+    return `
+      <footer class="page-panel-toolbar">
+        <p class="page-panel-hint-text">このコマ形状は編集できません。</p>
+      </footer>
+    `;
+  }
+  if (selectedPanel.shape.type !== "polygon") {
+    return `
+      <footer class="page-panel-toolbar">
+        <p class="page-panel-hint-text">頂点を編集するには多角形に変換してください。</p>
+        <div class="page-panel-toolbar-actions">
+          <button class="button-secondary compact" type="button" data-action="convert-panel-shape-to-polygon">多角形に変換して編集</button>
+        </div>
+      </footer>
+    `;
+  }
+  if (shapeEdit.splitMode) {
+    return `
+      <footer class="page-panel-toolbar page-shape-split-toolbar">
+        <p class="page-panel-hint-text">コマの上をドラッグして分割線を引いてください。</p>
+        <div class="page-panel-toolbar-actions">
+          <label class="page-object-property-field">ガター幅
+            <input type="number" step="0.005" min="0" max="0.1" data-shape-gutter-field="1" value="${num(shapeEdit.gutter)}" />
+          </label>
+          <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-split-mode">キャンセル</button>
+        </div>
+      </footer>
+    `;
+  }
+  return `
+    <footer class="page-panel-toolbar">
+      <p class="page-panel-hint-text">頂点をドラッグで移動・辺の中点クリックで頂点追加・ダブルクリック(または選択+Delete)で頂点削除</p>
+      <div class="page-panel-toolbar-actions">
+        <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-split-mode">コマを分割</button>
       </div>
     </footer>
   `;

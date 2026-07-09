@@ -435,6 +435,79 @@ function readTitle(parsed: Record<string, unknown>): string | undefined {
   return typeof title === "string" && title.trim() ? title : undefined;
 }
 
+/** `PageLayout` のディープコピー(コマ形状編集 P5 の作業用ドラフト生成に使う。JSON 可搬なデータのみのため JSON 経由で十分)。 */
+export function clonePageLayout(layout: PageLayout): PageLayout {
+  return JSON.parse(JSON.stringify(layout)) as PageLayout;
+}
+
+/**
+ * コマ形状編集(Docs/Feature-CGCollectionSuite.md P5)。編集済みの `PageLayout` を PATCH で受け取った時の
+ * 軽量な再検証。`normalizeGuruguruLayout` は json5 取り込み専用(pageId 絞り込み・balloons/texts 抽出等の
+ * 前処理込み)なので流用せず、既に `PageLayout` の形をしている入力の型・数値・panel id 一意性だけを
+ * 検証する。balloons/texts/source は素通しで保持する(取り込み由来の予約フィールドを編集で消さないため)。
+ * 不正(page 情報が壊れている/panels が1つも残らない等)なら null。
+ */
+export function normalizeEditedPageLayout(raw: unknown): PageLayout | null {
+  if (!isJsonObject(raw)) {
+    return null;
+  }
+  const pageRaw = isJsonObject(raw.page) ? raw.page : null;
+  const aspectRatio = pageRaw ? asNumberPair(pageRaw.aspectRatio) : null;
+  const height = pageRaw && isFiniteNumber(pageRaw.height) && pageRaw.height > EPSILON ? pageRaw.height : null;
+  if (!aspectRatio || !(aspectRatio[0] > EPSILON) || !(aspectRatio[1] > EPSILON) || height === null) {
+    return null;
+  }
+
+  const rawPanels = Array.isArray(raw.panels) ? raw.panels : [];
+  const seenIds = new Set<string>();
+  const panels: LayoutPanel[] = [];
+  rawPanels.forEach((rawPanel, index) => {
+    if (!isJsonObject(rawPanel)) {
+      return;
+    }
+    const shape = normalizePanelShape(rawPanel.shape);
+    if (!shape) {
+      return;
+    }
+    const baseId = typeof rawPanel.id === "string" && rawPanel.id ? rawPanel.id : `panel_${index + 1}`;
+    // 一意性: 衝突したら連番サフィックスで回避する(黙って破棄すると編集中のパネルが消えてしまう)。
+    let id = baseId;
+    let suffix = 1;
+    while (seenIds.has(id)) {
+      id = `${baseId}_${suffix}`;
+      suffix += 1;
+    }
+    seenIds.add(id);
+    const order = isFiniteNumber(rawPanel.order) ? rawPanel.order : index + 1;
+    const panel: LayoutPanel = { id, order, shape };
+    if (rawPanel.frame !== undefined) {
+      panel.frame = normalizeFrame(rawPanel.frame, DEFAULT_PANEL_FRAME);
+    }
+    panels.push(panel);
+  });
+  if (panels.length === 0) {
+    return null;
+  }
+  panels.sort((a, b) => a.order - b.order);
+
+  const layout: PageLayout = {
+    version: 1,
+    page: { aspectRatio, height },
+    readingDirection: raw.readingDirection === "ltr" ? "ltr" : "rtl",
+    panels
+  };
+  if (Array.isArray(raw.balloons) && raw.balloons.length > 0) {
+    layout.balloons = raw.balloons as LayoutBalloon[];
+  }
+  if (Array.isArray(raw.texts) && raw.texts.length > 0) {
+    layout.texts = raw.texts;
+  }
+  if (isJsonObject(raw.source)) {
+    layout.source = raw.source as PageLayout["source"];
+  }
+  return layout;
+}
+
 function normalizeBalloons(raw: unknown, pageId: string | null): LayoutBalloon[] {
   if (!Array.isArray(raw)) {
     return [];

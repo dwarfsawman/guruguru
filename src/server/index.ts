@@ -19,6 +19,7 @@ import {
   listRecentImages,
   reorderPages,
   updatePage,
+  updatePageLayout,
   updatePageObjects,
   updatePagePanelAssignment
 } from "./pages";
@@ -355,6 +356,13 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const pageObjectsMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/objects$/);
   if (method === "PATCH" && pageObjectsMatch) {
     sendJson(res, 200, updatePageObjects(pageObjectsMatch[1]!, pageObjectsMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  // コマ形状編集(Docs/Feature-CGCollectionSuite.md P5): レイアウト(panels の shape/order 等)を丸ごと置換する。
+  const pageLayoutMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/layout$/);
+  if (method === "PATCH" && pageLayoutMatch) {
+    sendJson(res, 200, updatePageLayout(pageLayoutMatch[1]!, pageLayoutMatch[2]!, await readJson(req)));
     return;
   }
 

@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import type { BookPages, PageDetail, PageRow, PageSummary, ProjectRow, RecentReferenceImage } from "../shared/apiTypes";
 import type { GenerationRequest } from "../shared/types";
 import type { Asset } from "../shared/apiTypes";
+import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
 import { normalizePageObjects, type PageObject } from "../shared/pageObjects";
 import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
@@ -260,6 +261,41 @@ export function updatePageObjects(projectId: string, pageId: string, body: unkno
     projectId
   ]);
   return { objects };
+}
+
+/**
+ * コマ形状編集(Docs/Feature-CGCollectionSuite.md P5): レイアウト全体(panels の shape/order 等)を
+ * 丸ごと置換する。`body.layout` は `normalizeEditedPageLayout` で再検証し、不正(panels が1つも
+ * 残らない等)なら 400。保存時、消えた panel id への `page_panel_assignments` を削除する
+ * (割り当て解除。残った panel id の割り当て/crop は行を触らないのでそのまま温存される -- 分割で
+ * 生じた新パネルへの割り当て移行はクライアント側が別途 upsertPanelAssignment を呼ぶ)。
+ * `pages.updated_at` を更新し、`listPagesWithProject` のプレビューキャッシュバスタに乗せる。
+ */
+export function updatePageLayout(projectId: string, pageId: string, body: unknown): { layout: PageLayout } {
+  requirePage(projectId, pageId);
+  const input = objectBody(body);
+  const layout = normalizeEditedPageLayout(input.layout);
+  if (!layout) {
+    throw new HttpError(400, "layout is invalid or has no panels.");
+  }
+
+  const panelIds = new Set(layout.panels.map((panel) => panel.id));
+  const existingAssignments = getRows<{ panel_id: string }>(
+    "SELECT panel_id FROM page_panel_assignments WHERE page_id = ?",
+    [pageId]
+  );
+  for (const row of existingAssignments) {
+    if (!panelIds.has(row.panel_id)) {
+      runSql("DELETE FROM page_panel_assignments WHERE page_id = ? AND panel_id = ?", [pageId, row.panel_id]);
+    }
+  }
+
+  runSql("UPDATE pages SET layout_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
+    JSON.stringify(layout),
+    pageId,
+    projectId
+  ]);
+  return { layout };
 }
 
 /**
