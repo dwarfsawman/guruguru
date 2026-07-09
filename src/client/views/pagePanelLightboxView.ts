@@ -309,7 +309,15 @@ function renderPageObjectShape(object: PageObject, isSelected: boolean): string 
   return `<rect data-page-object="${escapeAttr(object.id)}" class="page-object-shape${stateClass}" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}"${radius} fill="${escapeAttr(object.fill)}" stroke="${escapeAttr(object.strokeColor)}" stroke-width="${num(object.strokeWidth)}"${transform} />`;
 }
 
-const OBJECT_GIZMO_VIEW_MARGIN = 2;
+/**
+ * オブジェクトギズモの回転ハンドル反転判定に使うステージ可視域(SVG は viewBox 外をクリップするため、
+ * ここを外れたハンドルは掴めない)。render(初期値)と sync(`syncPageObjectsGizmo` が画面基準の柄長で
+ * 再計算)の両方が**同じ bounds でこの判定を通る**こと -- 片方だけだと「render では内向き→sync で
+ * 外向きに戻って画面外」になる(crop 編集の cropRotateHandlePoint と同種の既知バグ)。
+ */
+export function pageObjectGizmoViewBounds(pageHeight: number): { minX: number; minY: number; maxX: number; maxY: number } {
+  return { minX: 0, minY: 0, maxX: 1, maxY: pageHeight };
+}
 
 /** paste/crop 風ギズモ(コーナー=拡縮 / 上のハンドル=回転)。選択中の box オブジェクトの外接矩形まわりに描く。 */
 function renderPageObjectGizmo(object: BoxObject, pageHeight: number): string {
@@ -317,8 +325,7 @@ function renderPageObjectGizmo(object: BoxObject, pageHeight: number): string {
   const corners = gizmoBoxCorners(box);
   const topMid = gizmoTopMid(box);
   const up = gizmoUpVector(box.rotation);
-  const bounds = { minX: -OBJECT_GIZMO_VIEW_MARGIN, minY: -OBJECT_GIZMO_VIEW_MARGIN, maxX: 1 + OBJECT_GIZMO_VIEW_MARGIN, maxY: pageHeight + OBJECT_GIZMO_VIEW_MARGIN };
-  const rotateHandle = gizmoRotateHandlePoint(topMid, up, GIZMO_ROTATE_STICK, bounds);
+  const rotateHandle = gizmoRotateHandlePoint(topMid, up, GIZMO_ROTATE_STICK, pageObjectGizmoViewBounds(pageHeight));
   const outlinePoints = corners.map((corner) => `${num(corner.x)},${num(corner.y)}`).join(" ");
   const cornerCursors = ["nwse-resize", "nesw-resize", "nwse-resize", "nesw-resize"];
   const cornerHandles = corners
@@ -327,7 +334,8 @@ function renderPageObjectGizmo(object: BoxObject, pageHeight: number): string {
         `<circle id="pageObjectGizmoCorner${index}" class="page-object-gizmo-handle" style="cursor:${cornerCursors[index]};" data-page-object-handle="scale" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(corner.x)}" cy="${num(corner.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />`
     )
     .join("");
-  return `<g id="pageObjectGizmo" class="page-object-gizmo" data-tmx="${num(topMid.x)}" data-tmy="${num(topMid.y)}" data-upx="${num(up.x)}" data-upy="${num(up.y)}">
+  // sync が柄長/半径を画面基準へ直すために基準点と反転判定用のページ高(data-ph)を data 属性で持たせる。
+  return `<g id="pageObjectGizmo" class="page-object-gizmo" data-tmx="${num(topMid.x)}" data-tmy="${num(topMid.y)}" data-upx="${num(up.x)}" data-upy="${num(up.y)}" data-ph="${num(pageHeight)}">
     <polygon id="pageObjectGizmoOutline" class="page-object-gizmo-outline" points="${outlinePoints}" />
     <line id="pageObjectGizmoStick" class="page-object-gizmo-stick" x1="${num(topMid.x)}" y1="${num(topMid.y)}" x2="${num(rotateHandle.x)}" y2="${num(rotateHandle.y)}" />
     ${cornerHandles}

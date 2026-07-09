@@ -17,11 +17,13 @@ import {
 } from "../shared/pageObjects";
 import {
   getStageTransform,
+  gizmoRotateHandlePoint,
   moveGizmoBox,
   rotateGizmoBox,
   scaleGizmoBoxAboutCenter,
   type GizmoBox
 } from "./svgGizmo";
+import { pageObjectGizmoViewBounds } from "./views/pagePanelLightboxView";
 import {
   createPageObjectHistory,
   pushPageObjectHistory,
@@ -39,6 +41,8 @@ import { isTextEntryTarget } from "./clientUtils";
 
 const SAVE_DEBOUNCE_MS = 1000;
 let saveDebounceTimer: number | null = null;
+/** 実行中の PATCH(flush が「全保存の完了」を待てるように保持する)。無ければ null。 */
+let inflightSave: Promise<void> | null = null;
 /** 直近の保存試行が成功したら true(閉じる時にページ一覧プレビューを最新化する目印)。 */
 let objectsDirty = false;
 
@@ -66,21 +70,41 @@ function scheduleSave(): void {
   }
   saveDebounceTimer = window.setTimeout(() => {
     saveDebounceTimer = null;
-    void persistPageObjects();
+    void startPersist();
   }, SAVE_DEBOUNCE_MS);
 }
 
-/** lightbox クローズ時に呼ぶ。保留中の debounce があれば即座に保存を実行する。 */
-export function flushPageObjectsSave(): void {
-  if (saveDebounceTimer === null) {
-    return;
+/** persistPageObjects を実行し、flush が完了を待てるよう in-flight として記録する。 */
+function startPersist(): Promise<void> {
+  const promise = persistPageObjects().finally(() => {
+    if (inflightSave === promise) {
+      inflightSave = null;
+    }
+  });
+  inflightSave = promise;
+  return promise;
+}
+
+/**
+ * lightbox クローズ時に呼ぶ。保留中の debounce があれば即座に保存を実行し、その完了を返す。
+ * 保留が無くても実行中の PATCH があればその完了を返す(どちらも無ければ即 resolve)。
+ * 呼び出し側(closePagePanelLightbox)はこの Promise の解決を待ってから dirty 判定 →
+ * ページ一覧再取得を行う -- PATCH 完了前に reload すると古い `?v=` を拾うため順序厳守。
+ * **state.pagePanelLightbox がまだ立っている間に呼ぶこと**(persistPageObjects は呼び出しと同期に
+ * pageId/projectId/ドラフトを確定するので、その後 state をクリアしても PATCH は完走する)。
+ */
+export function flushPageObjectsSave(): Promise<void> {
+  if (saveDebounceTimer !== null) {
+    window.clearTimeout(saveDebounceTimer);
+    saveDebounceTimer = null;
+    return startPersist();
   }
-  window.clearTimeout(saveDebounceTimer);
-  saveDebounceTimer = null;
-  void persistPageObjects();
+  return inflightSave ?? Promise.resolve();
 }
 
 async function persistPageObjects(): Promise<void> {
+  // pageId/projectId/送信ボディは await より前(同期)に確定する。以降 state が
+  // クリアされても(クローズ時 flush)この PATCH 自体は最後まで飛ぶ。
   const lightbox = state.pagePanelLightbox;
   const projectId = state.currentProjectId;
   if (!lightbox || !projectId) {
@@ -92,8 +116,10 @@ async function persistPageObjects(): Promise<void> {
       method: "PATCH",
       body: JSON.stringify({ objects: state.pageObjectsDraft })
     });
-    // 保存中に閉じられた/別ページへ切り替わっていたら結果は破棄する(現在のドラフトを上書きしない)。
-    if (state.pagePanelLightbox?.pageId === pageId) {
+    // 正規化済み応答をドラフトへ反映するのは「応答時点で新しい編集が何も進行していない」時だけに限定する。
+    // 送信〜応答の間にユーザーが編集していた(=保存タイマーが再スケジュール済み or ドラッグ中)場合に
+    // 無条件で代入すると、その編集が応答到着時に巻き戻ってしまう。閉じられた/別ページも同様に破棄。
+    if (state.pagePanelLightbox?.pageId === pageId && saveDebounceTimer === null && objectDrag === null) {
       state.pageObjectsDraft = result.objects;
     }
     objectsDirty = true;
@@ -144,7 +170,8 @@ export function handlePageObjectsKeydown(event: KeyboardEvent): boolean {
   if (!lightbox || lightbox.mode !== "objects") {
     return false;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+  // プロパティ入力欄などテキスト入力中はブラウザ標準のテキスト undo を優先する(Delete ガードと同じ)。
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !isTextEntryTarget(event.target)) {
     event.preventDefault();
     if (event.shiftKey) {
       redoPageObjectsAction();
@@ -519,15 +546,22 @@ export function syncPageObjectsGizmo(): void {
   const topMidY = Number(gizmo.dataset.tmy);
   const upX = Number(gizmo.dataset.upx);
   const upY = Number(gizmo.dataset.upy);
-  if (![topMidX, topMidY, upX, upY].every(Number.isFinite)) {
+  const pageHeight = Number(gizmo.dataset.ph);
+  if (![topMidX, topMidY, upX, upY, pageHeight].every(Number.isFinite)) {
     return;
   }
-  const handleX = topMidX + upX * stick;
-  const handleY = topMidY + upY * stick;
-  rotateHandle?.setAttribute("cx", String(handleX));
-  rotateHandle?.setAttribute("cy", String(handleY));
-  gizmo.querySelector<SVGLineElement>("#pageObjectGizmoStick")?.setAttribute("x2", String(handleX));
-  gizmo.querySelector<SVGLineElement>("#pageObjectGizmoStick")?.setAttribute("y2", String(handleY));
+  // render と同じ反転ロジック(pageObjectGizmoViewBounds + gizmoRotateHandlePoint)を画面基準の柄長で
+  // 再適用する -- 判定を通さず無条件に外向き配置すると、ページ上端付近でハンドルがステージ外に切れて掴めない。
+  const handle = gizmoRotateHandlePoint(
+    { x: topMidX, y: topMidY },
+    { x: upX, y: upY },
+    stick,
+    pageObjectGizmoViewBounds(pageHeight)
+  );
+  rotateHandle?.setAttribute("cx", String(handle.x));
+  rotateHandle?.setAttribute("cy", String(handle.y));
+  gizmo.querySelector<SVGLineElement>("#pageObjectGizmoStick")?.setAttribute("x2", String(handle.x));
+  gizmo.querySelector<SVGLineElement>("#pageObjectGizmoStick")?.setAttribute("y2", String(handle.y));
 }
 
 registerActions({

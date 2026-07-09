@@ -106,8 +106,10 @@ function resolveLightboxPageHeight(detail: PageDetail, pageSummary: PageSummary)
 let panelPreviewDirty = false;
 
 export function closePagePanelLightbox() {
-  flushPageObjectsSave();
-  const wasDirty = panelPreviewDirty || consumePageObjectsDirtyFlag();
+  // flush は state クリアの前に呼ぶ(persistPageObjects は呼び出しと同期に pageId/送信ボディを確定する
+  // ので、この後 state をクリアしても PATCH 自体は完走する)。完了は下の async ブロックで待つ。
+  const flushPromise = flushPageObjectsSave();
+  const wasCropDirty = panelPreviewDirty;
   panelPreviewDirty = false;
   state.pagePanelLightbox = null;
   state.pagePanelAssignments = [];
@@ -115,9 +117,14 @@ export function closePagePanelLightbox() {
   state.selectedPageObjectId = null;
   requestRender();
   // クロップ/オブジェクト編集があった場合だけ、ページ一覧の preview.png?v=... を最新化するため再取得する。
-  if (wasDirty) {
-    void reloadBookPages();
-  }
+  // オブジェクト側の dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に読むこと --
+  // 完了前に読むと false のままスキップされ、PATCH 前の古い `?v=` を拾ってしまう。
+  void (async () => {
+    await flushPromise;
+    if (wasCropDirty || consumePageObjectsDirtyFlag()) {
+      await reloadBookPages();
+    }
+  })();
 }
 
 /** ページ編集モードタブ(コマ/オブジェクト)の切り替え。 */
