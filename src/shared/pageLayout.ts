@@ -176,6 +176,103 @@ function shapeMaxY(shape: PanelShape): number {
 }
 
 /**
+ * コマ内生成(Docs/Feature-PanelGeneration.md)。パネルの外接矩形 [minX, minY, maxX, maxY]。
+ * 生成フォームの width/height 初期値やクロップ計算に使う。`path` はコマンド文字列を厳密に
+ * パースせず、含まれる数値を (x, y) ペアとして拾う近似(内蔵プリセット/取り込み仕様は
+ * polygon/rect/ellipse のみを使うため、path は将来の任意形状コマ用のベストエフォート)。
+ */
+export function panelBounds(shape: PanelShape): [number, number, number, number] {
+  if (shape.type === "polygon") {
+    const xs = shape.points.map(([x]) => x);
+    const ys = shape.points.map(([, y]) => y);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+  if (shape.type === "rect") {
+    const [x1, y1, x2, y2] = shape.bounds;
+    return [Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2)];
+  }
+  if (shape.type === "ellipse") {
+    const [cx, cy] = shape.center;
+    const [rx, ry] = shape.radius;
+    return [cx - rx, cy - ry, cx + rx, cy + ry];
+  }
+  const numbers = shape.d.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let i = 0; i + 1 < numbers.length; i += 2) {
+    xs.push(numbers[i]!);
+    ys.push(numbers[i + 1]!);
+  }
+  if (xs.length === 0) {
+    return [0, 0, 1, 1];
+  }
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+/** パネル外接矩形の幅・高さ([minX,minY,maxX,maxY] → [width, height])。0除算を避け最小値を敷く。 */
+export function panelBoundsSize(bounds: [number, number, number, number]): [number, number] {
+  const width = Math.max(EPSILON, bounds[2] - bounds[0]);
+  const height = Math.max(EPSILON, bounds[3] - bounds[1]);
+  return [width, height];
+}
+
+/**
+ * コマへ割り当てた画像の表示範囲。asset 画像座標系で正規化(x,y,width,height ∈ [0,1])した
+ * 「見えている矩形」。`renderPagePanelLightboxSvg` はこれを panel の外接矩形へ cover フィットで
+ * マップする。ドラッグはこの x/y(オフセット)だけを動かす(width/height はアスペクト比で決まり固定)。
+ */
+export interface PanelCrop {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export const FULL_PANEL_CROP: PanelCrop = { x: 0, y: 0, width: 1, height: 1 };
+
+/**
+ * asset 画像をパネル外接矩形へ「cover」フィットさせた時の既定 crop(中央寄せ)。
+ * 入力が不正(0以下等)なら全体表示にフォールバックする。
+ */
+export function defaultCoverCrop(assetWidth: number, assetHeight: number, boxWidth: number, boxHeight: number): PanelCrop {
+  if (!(assetWidth > 0) || !(assetHeight > 0) || !(boxWidth > 0) || !(boxHeight > 0)) {
+    return { ...FULL_PANEL_CROP };
+  }
+  const imageAspect = assetWidth / assetHeight;
+  const boxAspect = boxWidth / boxHeight;
+  if (imageAspect > boxAspect + EPSILON) {
+    const width = boxAspect / imageAspect;
+    return { x: (1 - width) / 2, y: 0, width, height: 1 };
+  }
+  if (imageAspect < boxAspect - EPSILON) {
+    const height = imageAspect / boxAspect;
+    return { x: 0, y: (1 - height) / 2, width: 1, height };
+  }
+  return { ...FULL_PANEL_CROP };
+}
+
+/** crop を有効範囲([0,1] かつ x+width<=1 等)へ丸める。width/height はドラッグでは変えない前提で下限のみ敷く。 */
+export function clampPanelCrop(crop: PanelCrop): PanelCrop {
+  const width = Math.min(1, Math.max(0.01, isFiniteNumber(crop.width) ? crop.width : 1));
+  const height = Math.min(1, Math.max(0.01, isFiniteNumber(crop.height) ? crop.height : 1));
+  const x = Math.min(1 - width, Math.max(0, isFiniteNumber(crop.x) ? crop.x : 0));
+  const y = Math.min(1 - height, Math.max(0, isFiniteNumber(crop.y) ? crop.y : 0));
+  return { x, y, width, height };
+}
+
+/** 任意値を厳密な `PanelCrop` へ正規化する(不正なら null)。取り込み(DB/API 入力)の検証に使う。 */
+export function normalizePanelCrop(raw: unknown): PanelCrop | null {
+  if (!isJsonObject(raw)) {
+    return null;
+  }
+  const { x, y, width, height } = raw;
+  if (![x, y, width, height].every(isFiniteNumber)) {
+    return null;
+  }
+  return clampPanelCrop({ x: x as number, y: y as number, width: width as number, height: height as number });
+}
+
+/**
  * `.guruguru-layout.json5` をパースしたオブジェクト(JSON5.parse 済み)を PageLayout へ正規化する。
  * 複数ページ(見開き)の場合は先頭ページ(と、その pageId のパネル)を採用する。
  * width は 1 に正規化されている前提。height は pages[].height → aspectRatio → パネルの y 最大値 の順で解決。

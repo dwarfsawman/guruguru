@@ -7,7 +7,7 @@
 import type { Json } from "./json";
 import type { GenerationRequest } from "./types";
 import type { PastedObject } from "./pasteAttachments";
-import type { PageLayout } from "./pageLayout";
+import type { PageLayout, PanelCrop } from "./pageLayout";
 import type { FeatureKey, ModelKind } from "./workflowModels";
 
 export interface ComfyStatus {
@@ -125,6 +125,26 @@ export interface BookPages {
 }
 
 /**
+ * コマ内生成(Docs/Feature-PanelGeneration.md)。1コマ(`PageLayout.panels[].id`)への画像割り当て。
+ * コマにつき現在の割り当ては1件(`page_id`+`panel_id` ユニーク)。`crop` は割り当て済み asset 画像の
+ * うちコマへ表示する範囲(asset 画像座標系で正規化)。
+ */
+export interface PagePanelAssignment {
+  id: string;
+  pageId: string;
+  panelId: string;
+  assetId: string;
+  crop: PanelCrop;
+  createdAt: string;
+  updatedAt: string;
+  /** 割り当て済み asset のフル画像 URL(lightbox のクリップ表示に使う)。 */
+  assetImageUrl: string;
+  /** 割り当て済み asset の元画像サイズ(取得できなければ null)。 */
+  assetWidth?: number | null;
+  assetHeight?: number | null;
+}
+
+/**
  * コマ割りテンプレート1件。`source: 'builtin'` はコード側の内蔵プリセット、`'imported'` は
  * ユーザーが取り込んで登録した `.guruguru-layout.json5`。`layout` は正規化済みの `PageLayout`。
  */
@@ -166,6 +186,8 @@ export interface Round {
   branchColorIndex: number;
   branchReason?: string | null;
   branchKey?: string | null;
+  /** コマ内生成(Docs/Feature-PanelGeneration.md): この Round が対象とするコマ id。対象外は null。 */
+  targetPanelId?: string | null;
   request: GenerationRequest;
   createdAt: string;
   completedAt?: string | null;
@@ -245,6 +267,8 @@ export interface ProjectDetail {
  */
 export interface PageDetail extends ProjectDetail {
   page: PageRow;
+  /** そのページのコマ割り当て一覧(`page.layout` が無ければ常に空配列)。 */
+  panelAssignments: PagePanelAssignment[];
 }
 
 export interface CollectRoundResponse {

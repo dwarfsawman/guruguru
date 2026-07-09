@@ -3,10 +3,12 @@ import type {
   BookPages,
   LayoutTemplateSummary,
   ModelCheckResult,
+  PagePanelAssignment,
   ProjectDetail,
   ProjectSummary,
   RecentReferenceImage
 } from "../shared/apiTypes";
+import type { PanelCrop } from "../shared/pageLayout";
 import type { ConnectionState } from "./views/homeView";
 import type { MaskPanelTab } from "./views/assetModal";
 import type { WorkflowTemplate } from "./workflowTypes";
@@ -24,6 +26,26 @@ import { DEFAULT_BOOK_READER_SETTINGS } from "./bookReader";
  */
 export interface ReferenceDraft {
   imageDataUrl: string | null;
+}
+
+/**
+ * コマ内生成(Docs/Feature-PanelGeneration.md)。ページの lightbox で開いているコマ選択/クロップ編集の状態。
+ * null = lightbox 閉。シングルクリックは `selectedPanelId` だけを更新し(通常の選択モード)、
+ * `cropPanelId` が非 null の間だけドラッグでのクロップ編集を許す(誤操作防止のため常時ドラッグ有効にはしない)。
+ */
+export interface PagePanelLightboxState {
+  pageId: string;
+  selectedPanelId: string | null;
+  /** クロップ編集モードの対象コマ id。null なら通常の選択モード。 */
+  cropPanelId: string | null;
+  /** クロップ編集中のドラッグ作業用コピー(pointerup で確定 PATCH、閉じると破棄)。 */
+  cropDraft: PanelCrop | null;
+}
+
+/** コマ内生成: 「選択コマを生成」等で生成フォームが対象にしているコマ(次の生成 round が targetPanelId を持つ)。 */
+export interface PanelGenerationTarget {
+  pageId: string;
+  panelId: string;
 }
 
 export const generationDraftFields = [
@@ -272,6 +294,12 @@ export interface AppState {
   bookReaderSettingsOpen: boolean;
   /** 「最近使った参照画像」ピッカーの候補(現在のプロジェクトのラウンドから収集)。 */
   recentReferenceImages: RecentReferenceImage[];
+  /** コマ内生成: 開いているページのコマ選択/クロップ編集 lightbox。null=閉。 */
+  pagePanelLightbox: PagePanelLightboxState | null;
+  /** コマ内生成: 現在開いているページのコマ割り当て一覧(PageDetail 取得のたびに更新)。single/未取得時は空配列。 */
+  pagePanelAssignments: PagePanelAssignment[];
+  /** コマ内生成: 生成フォームが対象にしているコマ。null なら通常の(コマ非対象)生成。 */
+  activePanelTarget: PanelGenerationTarget | null;
   /** 次回 render 後に iteration tracker のスクロールを先頭へ戻す(プロジェクト切替時など)。 */
   iterationScrollReset: boolean;
   maskEditMode: boolean;
@@ -356,6 +384,9 @@ export const state: AppState = {
   bookReaderSettings: DEFAULT_BOOK_READER_SETTINGS,
   bookReaderSettingsOpen: false,
   recentReferenceImages: [],
+  pagePanelLightbox: null,
+  pagePanelAssignments: [],
+  activePanelTarget: null,
   iterationScrollReset: false,
   maskEditMode: false,
   maskToolbarMinimized: false,

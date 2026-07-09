@@ -1,7 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import JSON5 from "json5";
-import { normalizeGuruguruLayout, normalizePanelShape } from "./pageLayout.ts";
+import {
+  clampPanelCrop,
+  defaultCoverCrop,
+  normalizeGuruguruLayout,
+  normalizePanelCrop,
+  normalizePanelShape,
+  panelBounds,
+  panelBoundsSize
+} from "./pageLayout.ts";
 
 /**
  * 添付の B5 6コマ テンプレート(dwarfsawman/guruguru-layout-template 準拠, 傾いたガター)。
@@ -111,4 +119,99 @@ test("normalizePanelShape: 対応形状を厳密に受け、未対応/不正は 
   assert.equal(normalizePanelShape({ type: "polygon", points: [[0, "x"]] }), null);
   assert.equal(normalizePanelShape({ type: "star" }), null);
   assert.equal(normalizePanelShape(null), null);
+});
+
+// --- コマ内生成(Docs/Feature-PanelGeneration.md)のジオメトリ ---
+
+test("panelBounds: polygon/rect/ellipse の外接矩形", () => {
+  assert.deepEqual(
+    panelBounds({ type: "polygon", points: [[0.1, 0.2], [0.5, 0.1], [0.4, 0.6]] }),
+    [0.1, 0.1, 0.5, 0.6]
+  );
+  // rect は bounds の順序を問わない(左上/右下どちらの向きでも min/max に正規化)。
+  assert.deepEqual(panelBounds({ type: "rect", bounds: [0.8, 0.5, 0.2, 0.1] }), [0.2, 0.1, 0.8, 0.5]);
+  assert.deepEqual(
+    panelBounds({ type: "ellipse", center: [0.5, 0.5], radius: [0.2, 0.1] }),
+    [0.3, 0.4, 0.7, 0.6]
+  );
+});
+
+test("panelBounds: path は d 中の数値を (x,y) ペアとして拾うベストエフォート", () => {
+  assert.deepEqual(panelBounds({ type: "path", d: "M0.1 0.2 L0.9 0.8 Z" }), [0.1, 0.2, 0.9, 0.8]);
+  // 数値を1つも拾えない場合は [0,0,1,1] にフォールバックする。
+  assert.deepEqual(panelBounds({ type: "path", d: "M Z" }), [0, 0, 1, 1]);
+});
+
+test("panelBoundsSize: 幅高さを返し、0除算にならないよう最小値を敷く", () => {
+  const [width1, height1] = panelBoundsSize([0.1, 0.2, 0.5, 0.6]);
+  assert.ok(Math.abs(width1 - 0.4) < 1e-9);
+  assert.ok(Math.abs(height1 - 0.4) < 1e-9);
+  const [width, height] = panelBoundsSize([0.3, 0.3, 0.3, 0.3]);
+  assert.ok(width > 0 && height > 0);
+});
+
+test("defaultCoverCrop: アスペクト比が一致すれば全体表示", () => {
+  assert.deepEqual(defaultCoverCrop(1000, 1000, 1, 1), { x: 0, y: 0, width: 1, height: 1 });
+});
+
+test("defaultCoverCrop: 横長画像を正方形コマへ cover フィット(左右がクロップされ中央寄せ)", () => {
+  const crop = defaultCoverCrop(2000, 1000, 1, 1);
+  assert.ok(Math.abs(crop.width - 0.5) < 1e-9);
+  assert.equal(crop.height, 1);
+  assert.ok(Math.abs(crop.x - 0.25) < 1e-9);
+  assert.equal(crop.y, 0);
+});
+
+test("defaultCoverCrop: 縦長画像を正方形コマへ cover フィット(上下がクロップされ中央寄せ)", () => {
+  const crop = defaultCoverCrop(1000, 2000, 1, 1);
+  assert.equal(crop.width, 1);
+  assert.ok(Math.abs(crop.height - 0.5) < 1e-9);
+  assert.equal(crop.x, 0);
+  assert.ok(Math.abs(crop.y - 0.25) < 1e-9);
+});
+
+test("defaultCoverCrop: 不正な入力(0以下)は全体表示にフォールバック", () => {
+  assert.deepEqual(defaultCoverCrop(0, 1000, 1, 1), { x: 0, y: 0, width: 1, height: 1 });
+  assert.deepEqual(defaultCoverCrop(1000, 1000, 0, 1), { x: 0, y: 0, width: 1, height: 1 });
+});
+
+test("clampPanelCrop: 範囲内の値はそのまま", () => {
+  assert.deepEqual(clampPanelCrop({ x: 0.1, y: 0.2, width: 0.5, height: 0.4 }), {
+    x: 0.1,
+    y: 0.2,
+    width: 0.5,
+    height: 0.4
+  });
+});
+
+test("clampPanelCrop: はみ出す offset は width/height を保ったまま境界へ丸める", () => {
+  assert.deepEqual(clampPanelCrop({ x: -0.5, y: 2, width: 0.3, height: 0.4 }), {
+    x: 0,
+    y: 0.6,
+    width: 0.3,
+    height: 0.4
+  });
+});
+
+test("clampPanelCrop: width/height は (0,1] へ丸め、不正値(NaN等)は 1 にフォールバック", () => {
+  assert.deepEqual(clampPanelCrop({ x: 0, y: 0, width: 1.5, height: 0 }), { x: 0, y: 0, width: 1, height: 0.01 });
+  assert.deepEqual(clampPanelCrop({ x: 0, y: 0, width: Number.NaN, height: 0.5 }), {
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 0.5
+  });
+});
+
+test("normalizePanelCrop: 妥当な値のみ受け付け、それ以外は null", () => {
+  assert.deepEqual(normalizePanelCrop({ x: 0.1, y: 0.1, width: 0.5, height: 0.5 }), {
+    x: 0.1,
+    y: 0.1,
+    width: 0.5,
+    height: 0.5
+  });
+  assert.equal(normalizePanelCrop({ x: 0.1, y: 0.1, width: "x", height: 0.5 }), null);
+  assert.equal(normalizePanelCrop({ x: 0.1 }), null);
+  assert.equal(normalizePanelCrop(null), null);
+  assert.equal(normalizePanelCrop("not an object"), null);
 });

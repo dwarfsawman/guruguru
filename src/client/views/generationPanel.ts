@@ -15,6 +15,7 @@ import {
   iconChevron,
   iconClose,
   iconDownload,
+  iconMangaPanelImport,
   iconMinimize,
   iconPlus,
   iconReset,
@@ -92,6 +93,19 @@ function assetDimension(asset: Asset | null, key: "width" | "height") {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/** コマ内生成: 「ページN / コマM を生成中」バッジ。フォーム先頭に出し、対象コマを常に視認できるようにする。 */
+function renderPanelTargetBadge(panelTarget: { pageNumber: number; panelOrder: number } | null): string {
+  if (!panelTarget) {
+    return "";
+  }
+  return `
+    <section class="sidebar-section panel-target-badge">
+      <span class="panel-target-label">${iconMangaPanelImport()}ページ${panelTarget.pageNumber} / コマ${panelTarget.panelOrder} を生成中</span>
+      <button class="button-secondary compact" type="button" data-action="clear-panel-target">対象を解除</button>
+    </section>
+  `;
+}
+
 export function renderGenerationPanel(
   detail: ProjectDetail,
   activeRound: Round | null,
@@ -106,7 +120,9 @@ export function renderGenerationPanel(
   loraChoices: { status: "idle" | "loading" | "ready" | "error"; names: string[] } = { status: "idle", names: [] },
   recentReferenceImages: RecentReferenceImage[] = [],
   /** Book共通設定画面での再利用時は true。親画像/顔参照セクション(ページ固有)を隠す。 */
-  bookSettingsMode = false
+  bookSettingsMode = false,
+  /** コマ内生成(Docs/Feature-PanelGeneration.md): 生成フォームが対象にしているコマ。null なら通常の生成。 */
+  panelTarget: { pageNumber: number; panelOrder: number } | null = null
 ) {
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
@@ -151,6 +167,7 @@ export function renderGenerationPanel(
   return `
     <form id="generation-form" class="sidebar-form">
       <input type="hidden" name="parentAssetId" value="${previous?.id ?? ""}" />
+      ${renderPanelTargetBadge(panelTarget)}
       <section class="sidebar-section">
         <p class="section-kicker">ワークフロー</p>
         <label>txt2img WorkflowTemplate

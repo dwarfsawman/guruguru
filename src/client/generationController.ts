@@ -5,7 +5,7 @@ import {
   requiresParentAsset
 } from "../shared/generationMode";
 import type { GenerationMode, GenerationRequest } from "../shared/types";
-import type { Asset, CollectRoundResponse, ProjectDetail, Round } from "../shared/apiTypes";
+import type { Asset, CollectRoundResponse, PageDetail, ProjectDetail, Round } from "../shared/apiTypes";
 import { api } from "./api";
 import { type Json } from "./json";
 import { pushToast, requestRender, state } from "./appState";
@@ -129,7 +129,9 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   requestRender();
   const response = await api<{ promptId: string; round: Round }>(`/api/projects/${state.currentProjectId}/rounds`, {
     method: "POST",
-    body: JSON.stringify({ ...request, pageId: state.activePageId })
+    // コマ内生成(Docs/Feature-PanelGeneration.md): targetPanelId は GenerationRequest に含めず
+    // pageId と同じ扱いのサイドカーフィールドとしてサーバへ渡す(generation_rounds の別列)。
+    body: JSON.stringify({ ...request, pageId: state.activePageId, targetPanelId: state.activePanelTarget?.panelId ?? null })
   });
   const roundId = response.round.id;
   const previousInpaint = parentAssetId ? inpaintDraftForAsset(parentAssetId) : null;
@@ -383,10 +385,15 @@ export async function refreshProject(keepRoundId = state.activeRoundId, keepAsse
   }
   // Book のページを開いている時は、そのページに絞った詳細を再取得する(round/asset id は全体一意なので
   // 下の keepRoundId/keepAssetId reconciliation はそのまま機能する)。
-  const detailUrl = state.activePageId
-    ? `/api/projects/${state.currentProjectId}/pages/${state.activePageId}`
-    : `/api/projects/${state.currentProjectId}`;
-  state.detail = await api<ProjectDetail>(detailUrl);
+  if (state.activePageId) {
+    const pageDetail = await api<PageDetail>(`/api/projects/${state.currentProjectId}/pages/${state.activePageId}`);
+    state.detail = pageDetail;
+    // コマ内生成(Docs/Feature-PanelGeneration.md): 生成完了(collect)のたびに割り当てが更新されうる
+    // (asset 選択時の自動割り当て)ので、ページ詳細と一緒に取り直す。
+    state.pagePanelAssignments = pageDetail.panelAssignments;
+  } else {
+    state.detail = await api<ProjectDetail>(`/api/projects/${state.currentProjectId}`);
+  }
   state.templates = state.detail.templates;
   state.activeRoundId = state.detail.rounds.some((round) => round.id === keepRoundId)
     ? keepRoundId

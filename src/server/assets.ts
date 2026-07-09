@@ -4,6 +4,7 @@ import type { AssetStatus, SelectionAction } from "../shared/types";
 import { createId, getRow, runSql, toApiRow } from "./db";
 import { streamFile } from "./files";
 import { HttpError, sendJson } from "./http";
+import { autoAssignPanelForSelectedAsset } from "./panelAssignments";
 import { objectBody, requiredString, stringOrNull } from "./validate";
 
 export function updateAssetStatus(assetId: string, body: unknown) {
@@ -28,6 +29,12 @@ export function updateAssetStatus(assetId: string, body: unknown) {
        VALUES (?, ?, ?, ?, ?, ?)`,
       [createId("selection"), asset.project_id, asset.round_id, assetId, action, stringOrNull(input.note)]
     );
+  }
+
+  // コマ内生成(Docs/Feature-PanelGeneration.md): 「選択」にした画像は、その生成が特定コマ向け
+  // (target_panel_id)なら自動でそのコマへ割り当てる。
+  if (status === "selected") {
+    autoAssignPanelForSelectedAsset(assetId, String(asset.round_id));
   }
 
   return {

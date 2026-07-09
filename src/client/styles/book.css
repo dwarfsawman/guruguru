@@ -188,7 +188,7 @@
   overflow: hidden;
 }
 
-/* 代表画像がある時のみクリックで lightbox 拡大できることを示す。 */
+/* 代表画像がある/コマ割りがある時のみクリックで lightbox(拡大 or コマ選択)を開けることを示す。 */
 .page-card-thumb.is-zoomable {
   cursor: zoom-in;
 }

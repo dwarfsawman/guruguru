@@ -30,13 +30,13 @@ export interface PageLayoutSvgOptions {
 const DEFAULT_PAPER = "var(--layout-paper, #efece6)";
 const DEFAULT_STROKE = "var(--layout-koma, #17140f)";
 
-/** 浮動小数を短く整形(末尾ゼロ除去)。 */
-function num(value: number): string {
+/** 浮動小数を短く整形(末尾ゼロ除去)。コマ内生成(pagePanelLightboxView)のジオメトリ計算とも共有する。 */
+export function num(value: number): string {
   return Number(value.toFixed(5)).toString();
 }
 
-/** 形状の中心(コマ番号の配置に使う)。path は中心不明なので null。 */
-function shapeCenter(shape: PanelShape): [number, number] | null {
+/** 形状の中心(コマ番号の配置、コマ内生成の空コマヒント表示に使う)。path は中心不明なので null。 */
+export function shapeCenter(shape: PanelShape): [number, number] | null {
   if (shape.type === "polygon") {
     const n = shape.points.length;
     if (n === 0) {
@@ -54,11 +54,11 @@ function shapeCenter(shape: PanelShape): [number, number] | null {
   return null;
 }
 
-function shapeElement(shape: PanelShape, stroke: string, strokeWidth: number): string {
-  const common = `fill="none" stroke="${escapeAttr(stroke)}" stroke-width="${num(strokeWidth)}" stroke-linejoin="miter"`;
+/** shape を素の SVG 形状要素にする(fill/stroke 等の装飾属性は `attrs` で指定)。 */
+function shapeGeometryElement(shape: PanelShape, attrs: string): string {
   if (shape.type === "polygon") {
     const points = shape.points.map(([x, y]) => `${num(x)},${num(y)}`).join(" ");
-    return `<polygon points="${points}" ${common} />`;
+    return `<polygon points="${points}" ${attrs} />`;
   }
   if (shape.type === "rect") {
     const [x1, y1, x2, y2] = shape.bounds;
@@ -67,12 +67,27 @@ function shapeElement(shape: PanelShape, stroke: string, strokeWidth: number): s
     const w = Math.abs(x2 - x1);
     const h = Math.abs(y2 - y1);
     const rx = shape.cornerRadius ? ` rx="${num(shape.cornerRadius)}"` : "";
-    return `<rect x="${num(x)}" y="${num(y)}" width="${num(w)}" height="${num(h)}"${rx} ${common} />`;
+    return `<rect x="${num(x)}" y="${num(y)}" width="${num(w)}" height="${num(h)}"${rx} ${attrs} />`;
   }
   if (shape.type === "ellipse") {
-    return `<ellipse cx="${num(shape.center[0])}" cy="${num(shape.center[1])}" rx="${num(shape.radius[0])}" ry="${num(shape.radius[1])}" ${common} />`;
+    return `<ellipse cx="${num(shape.center[0])}" cy="${num(shape.center[1])}" rx="${num(shape.radius[0])}" ry="${num(shape.radius[1])}" ${attrs} />`;
   }
-  return `<path d="${escapeAttr(shape.d)}" ${common} />`;
+  return `<path d="${escapeAttr(shape.d)}" ${attrs} />`;
+}
+
+/**
+ * shape を装飾なしの素の SVG 形状要素にする。コマ内生成(pagePanelLightboxView)が
+ * `<clipPath>` の中身や data 属性付きのドラッグ対象要素として再利用する。
+ */
+export function panelShapeElement(shape: PanelShape, attrs = ""): string {
+  return shapeGeometryElement(shape, attrs);
+}
+
+function shapeElement(shape: PanelShape, stroke: string, strokeWidth: number): string {
+  return shapeGeometryElement(
+    shape,
+    `fill="none" stroke="${escapeAttr(stroke)}" stroke-width="${num(strokeWidth)}" stroke-linejoin="miter"`
+  );
 }
 
 function panelElement(panel: LayoutPanel, defaultStroke: string, showOrder: boolean): string {
