@@ -23,6 +23,10 @@ import { openPage, reloadBookPages } from "./bookController";
 import { restoreGenerationDraftForRound, setGenerationDraftValue } from "./generationDraft";
 import { roundToStep } from "./generationController";
 import { cropRotateHandlePoint } from "./views/pagePanelLightboxView";
+import { consumePageObjectsDirtyFlag, flushPageObjectsSave, resetPageObjectsSession } from "./pageObjectsController";
+
+/** レイアウト/代表アセットどちらからも解決できない時のページ高さフォールバック(A4 縦比に近い値。pageLayout.ts の resolveHeight と同じ値)。 */
+const FALLBACK_PAGE_HEIGHT = 1.4142;
 
 /** コマ生成の目標解像度(この面積になるよう、コマの外接矩形アスペクト比から幅/高さを決める)。 */
 const PANEL_TARGET_PIXEL_AREA = 1024 * 1024;
@@ -43,14 +47,28 @@ function findPanel(page: PageSummary | null | undefined, panelId: string | null)
   return page.layout.panels.find((panel) => panel.id === panelId) ?? null;
 }
 
-/** ページのコマ選択 lightbox を開く(`page.layout` が無いページでは何もしない)。 */
+/**
+ * ページのコマ選択/オブジェクト編集 lightbox を開く。`page.layout` の有無に関わらず開ける
+ * (Docs/Feature-CGCollectionSuite.md P1: レイアウトの無い1枚絵ページでもオブジェクト編集は必要)。
+ * 既定モードはレイアウトがあれば "panels"(従来通り)、無ければ "objects"。
+ */
 export async function openPagePanelLightbox(pageId: string) {
   const page = state.book?.pages.find((item) => item.id === pageId);
-  if (!page?.layout || !state.currentProjectId) {
+  if (!page || !state.currentProjectId) {
     return;
   }
-  state.pagePanelLightbox = { pageId, selectedPanelId: null, cropPanelId: null, cropDraft: null };
+  state.pagePanelLightbox = {
+    pageId,
+    mode: page.layout ? "panels" : "objects",
+    selectedPanelId: null,
+    cropPanelId: null,
+    cropDraft: null,
+    pageHeight: page.layout?.page.height ?? FALLBACK_PAGE_HEIGHT
+  };
   state.pagePanelAssignments = [];
+  state.pageObjectsDraft = [];
+  state.selectedPageObjectId = null;
+  resetPageObjectsSession();
   requestRender();
   try {
     const detail = await api<PageDetail>(`/api/projects/${state.currentProjectId}/pages/${pageId}`);
@@ -59,6 +77,8 @@ export async function openPagePanelLightbox(pageId: string) {
       return;
     }
     state.pagePanelAssignments = detail.panelAssignments;
+    state.pageObjectsDraft = detail.page.objects ?? [];
+    state.pagePanelLightbox.pageHeight = resolveLightboxPageHeight(detail, page);
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
   } finally {
@@ -66,19 +86,55 @@ export async function openPagePanelLightbox(pageId: string) {
   }
 }
 
-/** クロップを編集(commit)した後 true。lightbox を閉じる時にページ一覧プレビューを最新化する目印。 */
+/**
+ * オブジェクトモードの座標系で使うページ高さ。レイアウトがあればその `page.height`、
+ * 無ければ代表アセット(`page.representativeAssetId`)のアスペクト比から求める。
+ */
+function resolveLightboxPageHeight(detail: PageDetail, pageSummary: PageSummary): number {
+  if (detail.page.layout) {
+    return detail.page.layout.page.height;
+  }
+  const assetId = pageSummary.representativeAssetId;
+  const asset = assetId ? detail.assets.find((item) => item.id === assetId) : null;
+  if (asset?.width && asset?.height && asset.width > 0 && asset.height > 0) {
+    return asset.height / asset.width;
+  }
+  return FALLBACK_PAGE_HEIGHT;
+}
+
+/** クロップ/オブジェクトを編集(commit)した後 true。lightbox を閉じる時にページ一覧プレビューを最新化する目印。 */
 let panelPreviewDirty = false;
 
 export function closePagePanelLightbox() {
-  const wasDirty = panelPreviewDirty;
+  // flush は state クリアの前に呼ぶ(persistPageObjects は呼び出しと同期に pageId/送信ボディを確定する
+  // ので、この後 state をクリアしても PATCH 自体は完走する)。完了は下の async ブロックで待つ。
+  const flushPromise = flushPageObjectsSave();
+  const wasCropDirty = panelPreviewDirty;
   panelPreviewDirty = false;
   state.pagePanelLightbox = null;
   state.pagePanelAssignments = [];
+  state.pageObjectsDraft = [];
+  state.selectedPageObjectId = null;
   requestRender();
-  // クロップ編集があった場合だけ、ページ一覧の preview.png?v=... を最新化するため再取得する。
-  if (wasDirty) {
-    void reloadBookPages();
+  // クロップ/オブジェクト編集があった場合だけ、ページ一覧の preview.png?v=... を最新化するため再取得する。
+  // オブジェクト側の dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に読むこと --
+  // 完了前に読むと false のままスキップされ、PATCH 前の古い `?v=` を拾ってしまう。
+  void (async () => {
+    await flushPromise;
+    if (wasCropDirty || consumePageObjectsDirtyFlag()) {
+      await reloadBookPages();
+    }
+  })();
+}
+
+/** ページ編集モードタブ(コマ/オブジェクト)の切り替え。 */
+function setPagePanelMode(mode: string) {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || (mode !== "panels" && mode !== "objects") || lightbox.mode === mode) {
+    return;
   }
+  lightbox.mode = mode;
+  requestRender();
 }
 
 function closeCropEditor() {
@@ -563,5 +619,6 @@ registerActions({
   "generate-selected-panel": () => generateSelectedPanel(),
   "close-panel-crop": () => closeCropEditor(),
   "reset-panel-crop": () => resetPanelCrop(),
-  "clear-panel-target": () => clearPanelTarget()
+  "clear-panel-target": () => clearPanelTarget(),
+  "set-page-panel-mode": (id) => setPagePanelMode(id)
 });

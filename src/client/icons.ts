@@ -129,3 +129,8 @@ export function iconMinimize() {
 export function iconExpand() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3"></path></svg>`;
 }
+
+/** ページオブジェクト編集(Docs/Feature-CGCollectionSuite.md P1)の入口ボタン用アイコン(レイヤー重ね)。 */
+export function iconLayers() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"></path><path d="m3 13 9 5 9-5"></path></svg>`;
+}

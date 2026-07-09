@@ -12,6 +12,7 @@ import {
   type PanelFrame,
   type PanelShape
 } from "../shared/pageLayout";
+import type { BoxObject, PageObject } from "../shared/pageObjects";
 import { getRow, getRows, toApiRow } from "./db";
 import { HttpError } from "./http";
 import { objectBody } from "./validate";
@@ -20,6 +21,8 @@ const OPENRASTER_MIME = "image/openraster";
 const DEFAULT_CANVAS_WIDTH = 1024;
 const DEFAULT_CANVAS_HEIGHT = 1446;
 const DEFAULT_RESOLUTION = 300;
+/** レイアウト/代表アセットどちらからも解決できない時のページ高さフォールバック(pageLayout.ts の resolveHeight と同じ値)。 */
+const FALLBACK_OBJECTS_PAGE_HEIGHT = 1.4142;
 
 interface ExportProjectRow {
   id: string;
@@ -189,7 +192,7 @@ async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<Ra
   const layout = page.layout ?? null;
   if (!layout) {
     const representative = representativeAsset(page.id);
-    return [
+    const layers: RasterLayer[] = [
       paperLayer,
       {
         name: "Page image",
@@ -197,6 +200,8 @@ async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<Ra
         png: representative ? await renderFullImageLayer(representative, canvas) : await transparentPng(canvas)
       }
     ];
+    await appendObjectsLayer(layers, page, null, canvas);
+    return layers;
   }
 
   const layers: RasterLayer[] = [paperLayer];
@@ -228,7 +233,64 @@ async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<Ra
   if (layers.length === 0) {
     layers.push({ name: "Blank page", src: "", png: await transparentPng(canvas) });
   }
+  // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1)。コマ枠より前面、配列順(先頭=背面)。
+  await appendObjectsLayer(layers, page, layout, canvas);
   return layers;
+}
+
+/**
+ * ページオブジェクト(P1: box のみ)レイヤーを最前面に追加する。box が1つも無ければ何もしない
+ * (空の透明レイヤーを作って合成コストをかけない)。
+ */
+async function appendObjectsLayer(layers: RasterLayer[], page: PageRow, layout: PageLayout | null, canvas: ExportCanvas): Promise<void> {
+  const pageHeight = layout ? layoutHeight(layout) : resolveObjectsPageHeight(page);
+  const png = await renderObjectsLayer(page.objects, pageHeight, canvas);
+  if (png) {
+    layers.push({ name: "Objects", src: "", png });
+  }
+}
+
+/** レイアウトの無いページのオブジェクト座標系の高さ。代表アセットのアスペクト比 → フォールバック順。 */
+function resolveObjectsPageHeight(page: PageRow): number {
+  const asset = representativeAsset(page.id);
+  if (asset?.width && asset?.height && asset.width > 0 && asset.height > 0) {
+    return asset.height / asset.width;
+  }
+  return FALLBACK_OBJECTS_PAGE_HEIGHT;
+}
+
+/** box オブジェクトを SVG でラスタライズしたレイヤー。box が無ければ null(パネル枠と同じ「無ければ null」規約)。 */
+async function renderObjectsLayer(
+  objects: PageObject[] | null | undefined,
+  pageHeight: number,
+  canvas: ExportCanvas
+): Promise<Buffer | null> {
+  const boxes = (objects ?? []).filter((object): object is BoxObject => object.kind === "box");
+  if (boxes.length === 0) {
+    return null;
+  }
+  const elements = boxes.map((box) => renderBoxObjectElement(box, pageHeight, canvas)).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}" viewBox="0 0 ${canvas.width} ${canvas.height}">${elements}</svg>`;
+  return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+/** box 1件の SVG `<rect>`。回転は中心まわりの rotate transform(ライブ編集の SVG と同じ見た目)。 */
+function renderBoxObjectElement(object: BoxObject, pageHeight: number, canvas: ExportCanvas): string {
+  const [x1, y1] = mapPoint([object.position.x - object.size.x / 2, object.position.y - object.size.y / 2], pageHeight, canvas);
+  const [x2, y2] = mapPoint([object.position.x + object.size.x / 2, object.position.y + object.size.y / 2], pageHeight, canvas);
+  const x = Math.min(x1, x2);
+  const y = Math.min(y1, y2);
+  const width = Math.abs(x2 - x1);
+  const height = Math.abs(y2 - y1);
+  const cornerRadius = object.cornerRadius ?? 0;
+  const radiusAttr = cornerRadius
+    ? ` rx="${fmt(cornerRadius * canvas.width)}" ry="${fmt((cornerRadius / pageHeight) * canvas.height)}"`
+    : "";
+  const strokeWidthPx = Math.max(0, object.strokeWidth * canvas.width);
+  const [cx, cy] = mapPoint([object.position.x, object.position.y], pageHeight, canvas);
+  const deg = (object.rotation * 180) / Math.PI;
+  const transform = deg ? ` transform="rotate(${fmt(deg)} ${fmt(cx)} ${fmt(cy)})"` : "";
+  return `<rect x="${fmt(x)}" y="${fmt(y)}" width="${fmt(width)}" height="${fmt(height)}"${radiusAttr} fill="${escapeXml(object.fill)}" stroke="${escapeXml(object.strokeColor)}" stroke-width="${fmt(strokeWidthPx)}"${transform}/>`;
 }
 
 function representativeAsset(pageId: string): ExportAssetRow | null {

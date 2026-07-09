@@ -101,6 +101,15 @@ import {
   handlePagePanelLightboxKeydown,
   syncPagePanelCropGizmo
 } from "./pagePanelLightboxController";
+import {
+  handlePageObjectsKeydown,
+  handlePageObjectsPointerCancel,
+  handlePageObjectsPointerDown,
+  handlePageObjectsPointerMove,
+  handlePageObjectsPointerUp,
+  syncPageObjectsGizmo,
+  updatePageObjectFieldFromControl
+} from "./pageObjectsController";
 import { handleBookReaderKeydown } from "./bookReaderController";
 import {
   deselectPasteObjectIfAny,
@@ -299,6 +308,10 @@ function bindEvents() {
       setPaintColor(target.value);
       return;
     }
+    if (target instanceof HTMLInputElement && target.dataset.pageObjectField) {
+      updatePageObjectFieldFromControl(target);
+      return;
+    }
     if (target.dataset.generationField && target.dataset.generationField !== "prompt" && target.dataset.generationField !== "batchSize") {
       const field = target.dataset.generationField as GenerationDraftField;
       setGenerationDraftValue(field, target.value);
@@ -424,6 +437,10 @@ function bindEvents() {
     if (handlePagePanelLightboxKeydown(event)) {
       return;
     }
+    // ページオブジェクト編集(オブジェクトモード)の Ctrl+Z/Ctrl+Shift+Z(undo/redo)・Delete。
+    if (handlePageObjectsKeydown(event)) {
+      return;
+    }
 
     if (!state.detail) {
       if (event.key === "Escape" && state.sidebarOpen) {
@@ -511,6 +528,9 @@ function bindEvents() {
     if (handlePagePanelCropPointerDown(event)) {
       return;
     }
+    if (handlePageObjectsPointerDown(event)) {
+      return;
+    }
     if (handlePoseEditorPointerDown(event)) {
       return;
     }
@@ -534,6 +554,9 @@ function bindEvents() {
       return;
     }
     if (handlePagePanelCropPointerMove(event)) {
+      return;
+    }
+    if (handlePageObjectsPointerMove(event)) {
       return;
     }
     if (handleMaskEditorPointerMove(event)) {
@@ -561,6 +584,9 @@ function bindEvents() {
     if (handlePagePanelCropPointerUp(event)) {
       return;
     }
+    if (handlePageObjectsPointerUp(event)) {
+      return;
+    }
     if (handleMaskEditorPointerUp(event)) {
       return;
     }
@@ -584,6 +610,9 @@ function bindEvents() {
       return;
     }
     if (handlePagePanelCropPointerCancel(event)) {
+      return;
+    }
+    if (handlePageObjectsPointerCancel(event)) {
       return;
     }
     if (handleMaskEditorPointerCancel(event)) {
@@ -716,6 +745,7 @@ function render(_options: RenderOptions = {}) {
   syncAssetModalPasteObjects();
   syncGridPasteCanvases();
   syncPagePanelCropGizmo();
+  syncPageObjectsGizmo();
 }
 
 /**
@@ -895,7 +925,7 @@ function renderPagePanelLightboxView(): string {
   if (!page) {
     return "";
   }
-  return renderPagePanelLightbox(page, lightbox, state.pagePanelAssignments);
+  return renderPagePanelLightbox(page, lightbox, state.pagePanelAssignments, state.pageObjectsDraft, state.selectedPageObjectId);
 }
 
 /** コマ内生成: 生成フォームが対象にしているコマの表示用ラベル({ページ番号, パネルの読み順}）。 */

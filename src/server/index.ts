@@ -19,6 +19,7 @@ import {
   listRecentImages,
   reorderPages,
   updatePage,
+  updatePageObjects,
   updatePagePanelAssignment
 } from "./pages";
 import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
@@ -331,6 +332,13 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       200,
       updatePagePanelAssignment(panelAssignmentMatch[1]!, panelAssignmentMatch[2]!, panelAssignmentMatch[3]!, await readJson(req))
     );
+    return;
+  }
+
+  // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1): テキスト/吹き出し/ボックスの配列を丸ごと置換する。
+  const pageObjectsMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/objects$/);
+  if (method === "PATCH" && pageObjectsMatch) {
+    sendJson(res, 200, updatePageObjects(pageObjectsMatch[1]!, pageObjectsMatch[2]!, await readJson(req)));
     return;
   }
 

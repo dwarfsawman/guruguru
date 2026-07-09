@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import type { BookPages, PageDetail, PageRow, PageSummary, ProjectRow, RecentReferenceImage } from "../shared/apiTypes";
 import type { GenerationRequest } from "../shared/types";
 import type { Asset } from "../shared/apiTypes";
+import { normalizePageObjects, type PageObject } from "../shared/pageObjects";
 import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
 import { resolveLayoutTemplate } from "./layoutTemplates";
@@ -56,8 +57,10 @@ export function listPagesWithProject(projectId: string): BookPages {
          (SELECT a.id FROM assets a JOIN generation_rounds r ON r.id = a.round_id
            WHERE r.page_id = pg.id ORDER BY a.created_at DESC LIMIT 1)
        ) AS representative_asset_id,
-       COALESCE(
-         (SELECT MAX(ppa.updated_at) FROM page_panel_assignments ppa WHERE ppa.page_id = pg.id),
+       -- コマクロップ編集(ppa.updated_at)とページオブジェクト編集(pg.updated_at, objects PATCH で更新)の
+       -- どちらが新しくてもキャッシュを最新化できるよう両方の MAX を取る(Feature-CGCollectionSuite.md P1)。
+       MAX(
+         COALESCE((SELECT MAX(ppa.updated_at) FROM page_panel_assignments ppa WHERE ppa.page_id = pg.id), pg.updated_at),
          pg.updated_at
        ) AS panel_preview_version
      FROM pages pg
@@ -235,6 +238,28 @@ export function getPageDetail(projectId: string, pageId: string, options: PageDe
 export function updatePagePanelAssignment(projectId: string, pageId: string, panelId: string, body: unknown) {
   const page = requirePage(projectId, pageId);
   return upsertPanelAssignment(page, panelId, body);
+}
+
+/**
+ * ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1): テキスト/吹き出し/ボックスの配列を丸ごと置換する。
+ * `body.objects` が配列でなければ 400。要素単位の型崩れ/未知 kind は `normalizePageObjects` が黙って
+ * 捨てる/clamp する(`asset_paste_attachments` の「1行に配列」パターンと同じ、競合制御なし)。
+ * `pages.updated_at` を更新することで、`listPagesWithProject` のプレビューキャッシュバスタ
+ * (`panel_preview_version`)がこの保存を拾って preview.png / grid サムネ(レイアウトページのみ)を最新化する。
+ */
+export function updatePageObjects(projectId: string, pageId: string, body: unknown): { objects: PageObject[] } {
+  requirePage(projectId, pageId);
+  const input = objectBody(body);
+  if (!Array.isArray(input.objects)) {
+    throw new HttpError(400, "objects must be an array.");
+  }
+  const objects = normalizePageObjects(input.objects);
+  runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
+    JSON.stringify(objects),
+    pageId,
+    projectId
+  ]);
+  return { objects };
 }
 
 /**
