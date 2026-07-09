@@ -41,8 +41,8 @@ export function renderPagePanelLightbox(
         <div class="page-panel-stage" style="aspect-ratio: 1 / ${num(layout.page.height)}">
           <svg class="page-panel-svg" viewBox="0 0 ${VIEWBOX_SCALE} ${num(VIEWBOX_SCALE * layout.page.height)}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
             <defs>${layout.panels.map(renderPanelClipPath).join("")}</defs>
-            <rect x="0" y="0" width="1" height="${num(layout.page.height)}" class="page-panel-paper" />
             <g transform="scale(${VIEWBOX_SCALE})">
+              <rect x="0" y="0" width="1" height="${num(layout.page.height)}" class="page-panel-paper" />
               ${layout.panels.map((panel) => renderPanelGroup(panel, assignmentByPanel.get(panel.id) ?? null, lightbox)).join("")}
             </g>
           </svg>
@@ -72,8 +72,10 @@ function renderPanelGroup(panel: LayoutPanel, assignment: PagePanelAssignment | 
   const crop = isCropTarget ? lightbox.cropDraft ?? assignment?.crop ?? null : assignment?.crop ?? null;
   const image = assignment && crop ? renderAssignmentImage(panel, assignment, crop, isCropTarget) : "";
   // stroke-width は正規化座標系の数値属性(pageLayoutSvg.ts と同じ規約)。色は CSS クラスで状態別に出し分ける。
+  // fill は "none" ではなく "transparent" にする -- "none" は SVG のヒットテスト対象から内部を除外してしまい、
+  // 枠線ちょうどでないとクリックが拾えなくなる(コマ内部どこでも選択できるようにするため)。
   const strokeWidth = isSelected || isCropTarget ? 0.01 : 0.005;
-  const outline = panelShapeElement(panel.shape, `class="page-panel-outline" fill="none" stroke-width="${num(strokeWidth)}" stroke-linejoin="miter"`);
+  const outline = panelShapeElement(panel.shape, `class="page-panel-outline" fill="transparent" stroke-width="${num(strokeWidth)}" stroke-linejoin="miter"`);
   const hint = assignment ? "" : renderEmptyPanelHint(panel);
 
   return `<g class="${stateClass}" data-panel-id="${escapeAttr(panel.id)}">${image}${outline}${hint}</g>`;
