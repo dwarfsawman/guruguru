@@ -9,15 +9,16 @@ Book の完成品を PowerPoint(.pptx)デッキとして書き出す機能。既
 - **API**: `POST /api/projects/:id/export-images` の `format` に `"pptx"` を追加。
   `src/server/imageExport.ts` の `parseImageExportFormat` が `"png" | "jpeg" | "pptx"` を受け付け、
   `createImageExport` は `format === "pptx"` なら `pageIds` 解決後に `src/server/pptxExport.ts` の
-  `createPptxExport(project, pages, quality, pixelWidth)` へ丸ごと委譲する。
+  `createPptxExport(project, pages, pixelWidth)` へ丸ごと委譲する(`quality` は PPTX には渡さない)。
 - **描画パイプラインの再利用**: 各ページは `computeExportCanvas(pixelWidth, resolvePageHeight(page, layout))`
   の解像度で `createPageLayers` + `renderMergedImage`(いずれも `openRasterExport.ts`)により平坦化する。
-  PPTX への埋め込みは常に JPEG(`sharp().flatten({ background: JPEG_FLATTEN_BACKGROUND }).jpeg({ quality })`)
-  — ページは Paper 層で不透明なので透過ロスの心配はない。`quality`/`pixelWidth` は
-  `imageExport.ts` の `clampJpegQuality`/`clampPixelWidth` で既に clamp 済みの値を渡す。
-- **循環 import 回避**: `computeExportCanvas` と `JPEG_FLATTEN_BACKGROUND` は元々 `imageExport.ts` に
-  あったが、`pptxExport.ts` からも使うために `openRasterExport.ts` へ移設した(`imageExport.ts` は
-  後方互換のため `computeExportCanvas` を re-export している)。`imageExport.ts` → `pptxExport.ts`
+  PPTX への埋め込みは `renderMergedImage` が返す PNG バッファをそのまま使う(再エンコード・
+  フラット化なし)— ページは Paper 層で不透明なので透過ロスの心配はない。これにより
+  `format=png` の単体書き出しと PPTX 内の画像はバイト単位で一致する(`pptxExport.test.ts` で担保)。
+  `pixelWidth` は `imageExport.ts` の `clampPixelWidth` で既に clamp 済みの値を渡す。
+- **循環 import 回避**: `computeExportCanvas` は元々 `imageExport.ts` にあったが、`pptxExport.ts`
+  からも使うために `openRasterExport.ts` へ移設した(`imageExport.ts` は後方互換のため
+  `computeExportCanvas` を re-export している)。`imageExport.ts` → `pptxExport.ts`
   (`createPptxExport` 呼び出し)の一方向 import のみで、`pptxExport.ts` → `imageExport.ts` は
   `import type { ImageExportResult }`(型のみ、実行時に消える)に留めてサイクルを作らない。
 - **スライドサイズ**: デッキ全体で1つ。幅は `9144000` EMU(10インチ)固定、高さは先頭ページの
@@ -41,8 +42,8 @@ ppt/presProps.xml, ppt/viewProps.xml, ppt/tableStyles.xml
 ppt/theme/theme1.xml
 ppt/slideMasters/slideMaster1.xml (+ _rels → slideLayout1, theme1)
 ppt/slideLayouts/slideLayout1.xml (+ _rels → slideMaster1)
-ppt/slides/slideN.xml (+ _rels → slideLayout1, ../media/imageN.jpeg) ×ページ数
-ppt/media/imageN.jpeg ×ページ数
+ppt/slides/slideN.xml (+ _rels → slideLayout1, ../media/imageN.png) ×ページ数
+ppt/media/imageN.png ×ページ数
 ```
 
 ### ハマりどころ
@@ -64,20 +65,37 @@ ppt/media/imageN.jpeg ×ページ数
 `src/server/pptxExport.test.ts`(`createImageExport(projectId, { format: "pptx" })` 経由の
 E2E スタイル)で検証:
 
-- `[Content_Types].xml` に jpeg Default と各 slide の Override が揃う
+- `[Content_Types].xml` に png Default と各 slide の Override が揃う
 - `presentation.xml` のスライド数がページ数と一致し、`sldId` が 256 以上で一意
 - `presentation.xml.rels` と `sldIdLst` の `r:id` が整合
-- 各 `slideN.xml.rels` が `../media/imageN.jpeg` と `slideLayout1.xml` の両方を指し、
-  media バイト列が JPEG マジック(`FF D8`)で始まる
+- 各 `slideN.xml.rels` が `../media/imageN.png` と `slideLayout1.xml` の両方を指し、
+  media バイト列が PNG マジック(`89 50 4E 47`)で始まる
 - 単一ページでも `.pptx` 単体で返る(zip 化しない)
 - `parseImageExportFormat("pptx")` が通り、不正な format 値は 400
 - `p:sldSz` の `cx`/`cy` が EMU の clamp 範囲内
+- **パイプライン同一性**: 同一ページ・同一 `pixelWidth` で `format="png"` 単体書き出しした
+  バッファと、pptx 内 `ppt/media/image1.png` がバイト完全一致する
+- **スライド配置矩形**: 先頭ページ(スライドサイズの基準)は `<a:off x="0" y="0"/>` かつ
+  スライド全面(`cx`/`cy` がスライドサイズと一致)。アスペクト比が異なる2ページ目は
+  `computeSlidePicRect` と同じ式(`Math.round` の丸めも含む)で中央 contain(レターボックス)配置に
+  なることを EMU 計算で検証
+- **ピクセル位置検証**: コマ枠(`DEFAULT_PANEL_FRAME`、bounds=[0.25,0.25,0.75,0.75])を持つページを
+  pptx 化し、`ppt/media/image1.png` を sharp で raw 読みして、枠線ストローク色のピクセルが
+  期待座標(コマ境界を canvas 解像度へ写像した位置)に実在し、コマ内部・コマ外は Paper 色
+  (245,242,234)であることを確認する
 
 ## クライアント
 
 `src/client/views/imageExportModal.ts` の形式ラジオに「PPTX」を追加。JPEG 品質行
-(`imageExportController.ts` の `bindImageExportEvents`)は format が `jpeg` **または** `pptx` のとき
-表示する(PPTX 埋め込みが常に JPEG のため)。既定は `png` なので初期表示では品質行は非表示のまま。
+(`imageExportController.ts` の `bindImageExportEvents`)は format が `jpeg` のときだけ表示する
+(PPTX 埋め込みは PNG のため品質行は不要)。既定は `png` なので初期表示では品質行は非表示のまま。
 `submitImageExport` の format 読み取りを3値対応にし(`readImageExportFormat`)、フォールバックファイル名
 (`fallbackImageExportName`)に pptx ケースを追加、成功トーストも pptx 時は「PPTXを書き出しました。」に
 変えた。
+
+## 変更履歴
+
+- 2026-07-11: PPTX への埋め込み形式を JPEG から PNG に変更(`renderMergedImage` の出力をそのまま
+  埋め込み、sharp での flatten+再エンコードを削除)。`createPptxExport` のシグネチャから `quality`
+  を削除。クライアントの JPEG 品質行表示条件を `format === "jpeg"` のみに戻した。位置関係の整合性
+  テスト(パイプライン同一性・スライド配置矩形・ピクセル位置検証)を追加。

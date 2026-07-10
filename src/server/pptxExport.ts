@@ -3,12 +3,12 @@
  * エンドポイント(format="pptx")から委譲される -- 独自エンドポイントは持たない。
  *
  * 各ページを `computeExportCanvas`(openRasterExport.ts)の解像度で `createPageLayers` +
- * `renderMergedImage` により平坦化し、JPEG(常に不透明。ページは Paper 層があるため透過ロスは無い)
- * にエンコードして PPTX の1スライド=1画像として埋め込む。ライブラリ(pptxgenjs 等)は使わず、
- * JSZip で OOXML(Office Open XML)パッケージを直接手組みする。
+ * `renderMergedImage` により平坦化し、その PNG バッファをそのまま PPTX の1スライド=1画像として
+ * 埋め込む(ページは Paper 層があるため常に不透明で、追加のフラット化・再エンコードは不要)。
+ * ライブラリ(pptxgenjs 等)は使わず、JSZip で OOXML(Office Open XML)パッケージを直接手組みする。
  *
  * OOXML の最小構成と罠(監督レビュー済み):
- * - `[Content_Types].xml` に jpeg の Default と、各 xml パートの Override を漏らさず列挙する。
+ * - `[Content_Types].xml` に png の Default と、各 xml パートの Override を漏らさず列挙する。
  * - `_rels/.rels` → docProps/core.xml, docProps/app.xml, ppt/presentation.xml の3本。
  * - `ppt/presentation.xml` の `p:sldIdLst` の id は 256 以上で一意(ここでは 256+pageIndex)。
  * - `ppt/_rels/presentation.xml.rels` の r:id は `sldIdLst`/`sldMasterIdLst` の r:id と厳密一致させる。
@@ -18,11 +18,9 @@
  * - `a:ext` の cx/cy(EMU)は正の整数であること。
  * - `a:blip` の `r:embed` は同じ slideN.xml.rels 内の画像 relationship Id と一致させる。
  */
-import sharp from "sharp";
 import JSZip from "jszip";
 import type { PageRow } from "../shared/apiTypes";
 import {
-  JPEG_FLATTEN_BACKGROUND,
   computeExportCanvas,
   createPageLayers,
   escapeXml,
@@ -48,23 +46,22 @@ interface SlideSize {
 }
 
 interface RenderedSlidePage {
-  jpeg: Buffer;
+  png: Buffer;
   canvas: ExportCanvas;
 }
 
 /**
  * PPTX デッキを1本組み立てて返す。常に単一 .pptx(複数ページでも zip 化しない、design point 5)。
- * `quality`/`pixelWidth` は呼び出し元(`createImageExport`)で既に clamp 済みのものを渡す。
+ * `pixelWidth` は呼び出し元(`createImageExport`)で既に clamp 済みのものを渡す。
  */
 export async function createPptxExport(
   project: ExportProjectRow,
   pages: PageRow[],
-  quality: number,
   pixelWidth: number
 ): Promise<ImageExportResult> {
   const rendered: RenderedSlidePage[] = [];
   for (const page of pages) {
-    rendered.push(await renderSlidePage(page, quality, pixelWidth));
+    rendered.push(await renderSlidePage(page, pixelWidth));
   }
 
   const slideSize = computeSlideSize(rendered[0]!.canvas);
@@ -94,7 +91,7 @@ export async function createPptxExport(
     zip.file(`ppt/slides/_rels/slide${slideNumber}.xml.rels`, renderSlideRelsXml(slideNumber), {
       compression: "DEFLATE"
     });
-    zip.file(`ppt/media/image${slideNumber}.jpeg`, slide.jpeg, { compression: "DEFLATE" });
+    zip.file(`ppt/media/image${slideNumber}.png`, slide.png, { compression: "DEFLATE" });
   });
 
   const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
@@ -106,15 +103,14 @@ export async function createPptxExport(
   };
 }
 
-/** ページ1件を PPTX 埋め込み用 JPEG にラスタライズする(埋め込みは常に JPEG)。 */
-async function renderSlidePage(page: PageRow, quality: number, pixelWidth: number): Promise<RenderedSlidePage> {
+/** ページ1件を PPTX 埋め込み用 PNG にラスタライズする(埋め込みは常に PNG。`renderMergedImage` の出力をそのまま使う)。 */
+async function renderSlidePage(page: PageRow, pixelWidth: number): Promise<RenderedSlidePage> {
   const layout = page.layout ?? null;
   const pageHeight = resolvePageHeight(page, layout);
   const canvas = computeExportCanvas(pixelWidth, pageHeight);
   const layers = await createPageLayers(page, canvas);
-  const merged = await renderMergedImage(layers, canvas);
-  const jpeg = await sharp(merged).flatten({ background: JPEG_FLATTEN_BACKGROUND }).jpeg({ quality }).toBuffer();
-  return { jpeg, canvas };
+  const png = await renderMergedImage(layers, canvas);
+  return { png, canvas };
 }
 
 /** デッキ全体のスライドサイズ(EMU)。幅は固定、高さは先頭ページのアスペクト比から算出して clamp する。 */
@@ -156,7 +152,7 @@ function renderContentTypesXml(pageCount: number): string {
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
-  <Default Extension="jpeg" ContentType="image/jpeg"/>
+  <Default Extension="png" ContentType="image/png"/>
   <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
   <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
   <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
@@ -452,7 +448,7 @@ function renderSlideRelsXml(slideNumber: number): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
   <Relationship Id="rIdLayout1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
-  <Relationship Id="rIdImage1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${slideNumber}.jpeg"/>
+  <Relationship Id="rIdImage1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image${slideNumber}.png"/>
 </Relationships>
 `;
 }

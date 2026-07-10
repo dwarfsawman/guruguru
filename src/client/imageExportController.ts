@@ -7,8 +7,9 @@
  * data-action は `registerActions`、フォーム内の非 click イベント(JPEG品質行の表示切替・
  * 解像度プリセット)は `registerEventBinder` で登録する(AGENTS.md 規約)。
  *
- * format は "png" | "jpeg" | "pptx"(Docs/Feature-PptxExport.md)。PPTX 埋め込みは常に JPEG なので
- * 品質行は jpeg/pptx どちらでも表示する。既定は "png" のため、モーダル初期表示では品質行は hidden のまま。
+ * format は "png" | "jpeg" | "pptx"(Docs/Feature-PptxExport.md)。PPTX 埋め込みは PNG なので
+ * 品質行(JPEG品質)は format="jpeg" のときだけ表示する。既定は "png" のため、モーダル初期表示では
+ * 品質行は hidden のまま。
  */
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
@@ -101,7 +102,7 @@ async function submitImageExport() {
   }
 }
 
-/** JPEG/PPTX 選択時だけ品質スライダー行を表示する(埋め込みが常に JPEG の PPTX も対象。state を介さない純 DOM 操作)。 */
+/** JPEG 選択時だけ品質スライダー行を表示する(PPTX 埋め込みは PNG のため対象外。state を介さない純 DOM 操作)。 */
 function bindImageExportEvents(app: HTMLElement) {
   app.addEventListener("change", (event) => {
     const target = event.target;
@@ -111,7 +112,7 @@ function bindImageExportEvents(app: HTMLElement) {
     const form = target.closest<HTMLFormElement>("#image-export-form");
     const qualityRow = form?.querySelector<HTMLElement>("[data-image-export-quality-row]");
     if (qualityRow) {
-      qualityRow.hidden = target.value !== "jpeg" && target.value !== "pptx";
+      qualityRow.hidden = target.value !== "jpeg";
     }
   });
 }

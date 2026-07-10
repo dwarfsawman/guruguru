@@ -53,7 +53,8 @@ export interface ExportCanvas {
 
 /**
  * JPEG 書き出しのフラット化背景色(白)。透過は使えないため合成前にこの色で塗り潰す。
- * imageExport.ts(P4 画像一括書き出し)と pptxExport.ts で共用する(PPTX に埋め込む画像は常に JPEG)。
+ * imageExport.ts(P4 画像一括書き出し、format="jpeg")が使う。PPTX への埋め込みは PNG のため
+ * pptxExport.ts はこの定数を使わない(埋め込みが PNG である旨は pptxExport.ts のファイル冒頭コメントを参照)。
  */
 export const JPEG_FLATTEN_BACKGROUND = { r: 255, g: 255, b: 255 };
 
