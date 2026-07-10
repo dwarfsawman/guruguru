@@ -9,13 +9,21 @@ import type {
   ChronicleApiResponse,
   DialogueAllocationRemovalResult,
   DialogueAllocationResult,
+  DialogueLayoutPreview,
   ExistingPlacementPolicy
 } from "../shared/chronicle";
-import type { MangaScript } from "../shared/apiTypes";
+import type { MangaScript, PageDetail } from "../shared/apiTypes";
 import { computeBeatState } from "../shared/chronicleBeat";
 import { api } from "./api";
 import { pushToast, requestRender, setChronicleCollapsed, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
+import {
+  currentPageObjectsSnapshot,
+  ensureAllPageObjectTextLayouts,
+  flushPageObjectsSave,
+  markPageObjectsDirty,
+  pushPageObjectHistorySnapshotExternal
+} from "./pageObjectsController";
 
 function resetChronicleState() {
   state.chronicle = {
@@ -200,6 +208,129 @@ function selectedLineIds(): string[] {
   return Array.from(ids);
 }
 
+/**
+ * 選択中 Beat に含まれる行のうち、現在ページへ割り当て済み・かつ未吹き出し化(balloon_object_id=NULL)の
+ * placement id(§2.3「配置案」の対象)。他ページ配置や吹き出し化済みの placement は含めない。
+ */
+function selectedUnmaterializedPlacementIds(): string[] {
+  const currentPageId = state.pagePanelLightbox?.pageId ?? null;
+  if (!currentPageId) {
+    return [];
+  }
+  const lineIds = new Set(selectedLineIds());
+  const ids: string[] = [];
+  for (const line of state.chronicle.lines) {
+    if (!lineIds.has(line.lineId)) {
+      continue;
+    }
+    for (const placement of line.placements) {
+      if (placement.pageId === currentPageId && !placement.balloonObjectId) {
+        ids.push(placement.id);
+      }
+    }
+  }
+  return ids;
+}
+
+/** preview 結果が実際にリクエストした placementIds 全体(配置済み+unplaced の和集合)を復元する。 */
+function requestedPlacementIdsOf(preview: DialogueLayoutPreview): string[] {
+  return [...preview.assignments.map((assignment) => assignment.placementId), ...preview.unplacedPlacementIds];
+}
+
+/** 「配置案」(§2.3・§3): preview API を叩き、DB を書き換えずに `state.chronicle.preview` へ保持する。 */
+async function previewChronicleLayout(): Promise<void> {
+  const context = currentAllocationContext();
+  const placementIds = selectedUnmaterializedPlacementIds();
+  if (!context || state.chronicle.busyAction) {
+    return;
+  }
+  if (placementIds.length === 0) {
+    pushToast("配置案の対象(未吹き出し化の行)がありません。", "info");
+    return;
+  }
+  state.chronicle.busyAction = "preview";
+  requestRender();
+  try {
+    const result = await api<DialogueLayoutPreview>(
+      `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/preview`,
+      { method: "POST", body: JSON.stringify({ placementIds }) }
+    );
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    state.chronicle.preview = result;
+    for (const warning of result.warnings) {
+      pushToast(warning, "info");
+    }
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    if (state.chronicle.busyAction === "preview") {
+      state.chronicle.busyAction = null;
+    }
+    requestRender();
+  }
+}
+
+/** 「キャンセル」(§2.3): プレビューを破棄する(DB は元々未更新なので取り消す対象は state のみ)。 */
+function cancelChronicleLayoutPreview(): void {
+  state.chronicle.preview = null;
+  requestRender();
+}
+
+/**
+ * 「確定」(§2.3・§3): apply API でトランザクション一括保存する。apply 直前の draft スナップショットを
+ * `pageObjectHistory` へ1エントリとして積み、Undo 一回で一括配置前へ戻せるようにする。apply はサーバー側
+ * DB の現在の objects_json を基準に動くため、まず未保存の draft 編集を flush してから呼ぶ
+ * (クライアント draft と DB の食い違いを避ける -- flush 完了後に取るスナップショットが Undo の基準点になる)。
+ */
+async function applyChronicleLayoutPreview(): Promise<void> {
+  const context = currentAllocationContext();
+  const preview = state.chronicle.preview;
+  if (!context || !preview || state.chronicle.busyAction) {
+    return;
+  }
+  if (preview.unplacedPlacementIds.length > 0) {
+    pushToast("配置できない行が含まれています。seed を変えて再試行するか、対象を絞ってください。", "error");
+    return;
+  }
+  state.chronicle.busyAction = "apply";
+  requestRender();
+  try {
+    await flushPageObjectsSave();
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    const previousSnapshot = currentPageObjectsSnapshot();
+    const placementIds = requestedPlacementIdsOf(preview);
+    const result = await api<DialogueLayoutPreview>(
+      `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/apply`,
+      { method: "POST", body: JSON.stringify({ placementIds, seed: preview.seed }) }
+    );
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    pushPageObjectHistorySnapshotExternal(previousSnapshot);
+    const detail = await api<PageDetail>(`/api/projects/${context.projectId}/pages/${context.pageId}`);
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    state.pageObjectsDraft = detail.page.objects ?? [];
+    ensureAllPageObjectTextLayouts(state.pageObjectsDraft);
+    markPageObjectsDirty();
+    state.chronicle.preview = null;
+    pushToast(`${result.objects.length}件の吹き出しを配置しました。`, "info");
+    await loadChronicleData(context.projectId, context.scriptId, context.pageId);
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    if (state.chronicle.busyAction === "apply") {
+      state.chronicle.busyAction = null;
+    }
+    requestRender();
+  }
+}
+
 /** 「現在ページへ割り当て」(§2.3・§3)。busyAction="assign" でガードする。 */
 async function assignSelectionToCurrentPage(): Promise<void> {
   const context = currentAllocationContext();
@@ -313,7 +444,10 @@ registerActions({
   "clear-chronicle-selection": () => clearChronicleSelection(),
   "assign-chronicle-selection": () => void assignSelectionToCurrentPage(),
   "remove-chronicle-selection": () => void removeSelectionFromCurrentPage(),
-  "jump-chronicle-next-unassigned": () => jumpToNextUnassignedBeat()
+  "jump-chronicle-next-unassigned": () => jumpToNextUnassignedBeat(),
+  "preview-chronicle-layout": () => void previewChronicleLayout(),
+  "apply-chronicle-layout": () => void applyChronicleLayoutPreview(),
+  "cancel-chronicle-layout": () => cancelChronicleLayoutPreview()
 });
 
 /** ページ切替時(=lightbox 再オープン)ごとに1回だけ自動スクロールする(ユーザーの手動スクロールを尊重)。 */

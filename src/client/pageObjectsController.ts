@@ -198,6 +198,19 @@ function currentSnapshot() {
   return snapshotPageObjects(state.pageObjectsDraft, state.selectedPageObjectId);
 }
 
+/**
+ * Chronicle 一括配置(Docs/Feature-ChroniclePageFlow.md §2.3 フェーズIII)。apply 直前のスナップショットを
+ * 呼び出し側(`chronicleController.ts`)が取得し、apply 成功後に `pushPageObjectHistorySnapshot` で1エントリ
+ * として積む -- Undo 一回で一括配置前へ戻せるようにする(このモジュール外からの確定操作は他に無いため専用に公開する)。
+ */
+export function currentPageObjectsSnapshot(): PageObjectHistorySnapshot {
+  return currentSnapshot();
+}
+
+export function pushPageObjectHistorySnapshotExternal(previous: PageObjectHistorySnapshot): void {
+  pushPageObjectHistory(objectHistory, previous);
+}
+
 function undoPageObjectsAction(): void {
   if (!state.pagePanelLightbox) {
     return;

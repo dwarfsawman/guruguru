@@ -131,7 +131,15 @@ export function renderPagePanelLightbox(
         ? renderShapesStageContent(shapeEdit, pageHeight)
         : mode === "mosaic"
           ? renderMosaicStageContent(mosaicEdit, pageHeight)
-          : renderObjectsStageContent(objects, selectedObjectId, pageHeight, layout, assignments, imageObjects.missingMediaIds);
+          : renderObjectsStageContent(
+              objects,
+              selectedObjectId,
+              pageHeight,
+              layout,
+              assignments,
+              imageObjects.missingMediaIds,
+              chronicleBar.preview?.objects ?? []
+            );
   const toolbar =
     mode === "panels" && layout
       ? layout.panels.some((panel) => panel.id === lightbox.cropPanelId)
@@ -693,7 +701,8 @@ function renderObjectsStageContent(
   pageHeight: number,
   layout: PageLayout | null,
   assignments: PagePanelAssignment[],
-  missingMediaIds: string[]
+  missingMediaIds: string[],
+  chroniclePreviewObjects: PageObject[] = []
 ): string {
   const selected = objects.find((object) => object.id === selectedObjectId);
   const selectedEditable = selected && isEditablePageObject(selected) ? selected : null;
@@ -716,6 +725,59 @@ function renderObjectsStageContent(
       ${panelFrame}
       ${frontObjects.map((object) => renderPageObjectShape(object, object.id === selectedObjectId, missingMediaIds)).join("")}
       ${selectedEditable ? renderPageObjectGizmo(selectedEditable, pageHeight) : ""}
+      ${renderChroniclePreviewGhosts(chroniclePreviewObjects)}
+    </g>
+  `;
+}
+
+/**
+ * Chronicle 一括配置(Docs/Feature-ChroniclePageFlow.md §2.3 フェーズIII)の配置案プレビュー。
+ * DB へは保存しない仮の PageObject 群を、半透明・破線のゴーストとしてステージ最前面へ重ねて描く
+ * (`pointer-events: none` -- クリック/ドラッグは既存オブジェクトへ素通しする)。正確な吹き出し曲線
+ * (`renderBalloonSvg`)ではなく簡易矩形で近似する(ゴーストは「だいたいの位置・サイズ」を見せれば十分、
+ * かつ text/sfx オブジェクトはサイズを持たないため矩形近似のほうが kind によらず一貫して描ける)。
+ */
+function renderChroniclePreviewGhosts(objects: PageObject[]): string {
+  if (objects.length === 0) {
+    return "";
+  }
+  return `<g class="chronicle-preview-ghost-layer" pointer-events="none">${objects.map(renderChroniclePreviewGhost).join("")}</g>`;
+}
+
+function chroniclePreviewGhostBox(object: PageObject): { x: number; y: number; w: number; h: number } {
+  if (object.kind === "box" || object.kind === "balloon" || object.kind === "image") {
+    return { x: object.position.x - object.size.x / 2, y: object.position.y - object.size.y / 2, w: object.size.x, h: object.size.y };
+  }
+  // text(sfx): size を持たないので文字数からの概算(ゴースト表示専用、正確なレイアウトではない)。
+  const length = Math.max(1, object.content.text.length);
+  const w = Math.min(0.6, 0.05 + length * 0.02);
+  const h = 0.06;
+  return { x: object.position.x - w / 2, y: object.position.y - h / 2, w, h };
+}
+
+function chroniclePreviewGhostLabel(object: PageObject): string {
+  if (object.kind === "balloon" || object.kind === "box") {
+    return object.content?.text ?? "";
+  }
+  if (object.kind === "text") {
+    return object.content.text;
+  }
+  return "";
+}
+
+function renderChroniclePreviewGhost(object: PageObject): string {
+  const box = chroniclePreviewGhostBox(object);
+  const label = chroniclePreviewGhostLabel(object);
+  const kindClass = object.kind === "balloon" ? " is-balloon" : object.kind === "text" ? " is-sfx" : " is-box";
+  const radius = object.kind === "balloon" ? Math.min(box.w, box.h) / 2 : Math.min(box.w, box.h) * 0.15;
+  const fontSize = Math.max(0.012, Math.min(0.026, box.h * 0.4));
+  const text = label
+    ? `<text x="${num(object.position.x)}" y="${num(object.position.y)}" font-size="${num(fontSize)}" text-anchor="middle" dominant-baseline="central">${escapeHtml(label.length > 20 ? `${label.slice(0, 20)}…` : label)}</text>`
+    : "";
+  return `
+    <g class="chronicle-preview-ghost-item${kindClass}">
+      <rect x="${num(box.x)}" y="${num(box.y)}" width="${num(box.w)}" height="${num(box.h)}" rx="${num(radius)}" />
+      ${text}
     </g>
   `;
 }

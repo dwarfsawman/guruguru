@@ -1,0 +1,267 @@
+/**
+ * Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §3・§4 フェーズIII)。
+ * 吹き出し一括配置の preview/apply。サイズ計算(`computeTextLayoutForContent` の結線)・
+ * トランザクション(`pages.ts` の `reorderPages` が手本)はここが担当し、候補探索・スコアリング
+ * 自体は `../shared/dialogueAutoLayout.ts`(純ロジック)に委ねる。
+ */
+import type { DialogueLayoutPreview } from "../shared/chronicle";
+import type { DialogueSemanticKind } from "../shared/apiTypes";
+import { runDialogueAutoLayout, AUTO_LAYOUT_SFX_FONT_SCALE, type DialogueAutoLayoutItem } from "../shared/dialogueAutoLayout";
+import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
+import {
+  CONTENT_PADDING_RATIO,
+  DEFAULT_TEXT_STYLE,
+  PAGE_OBJECTS_MAX_COUNT,
+  PAGE_OBJECT_MIN_SIZE,
+  normalizePageObjects,
+  type PageObject,
+  type PageVec,
+  type TextContent
+} from "../shared/pageObjects";
+import { computeTextLayoutForContent } from "./textLayoutApi";
+import { getRow, getRows, runSql } from "./db";
+import { HttpError } from "./http";
+import { objectBody } from "./validate";
+
+function requireProject(projectId: string) {
+  const project = getRow("SELECT id FROM projects WHERE id = ?", [projectId]);
+  if (!project) {
+    throw new HttpError(404, "Project was not found");
+  }
+}
+
+interface PageRow {
+  id: string;
+  project_id: string;
+  layout_json: string | null;
+  objects_json: string | null;
+}
+
+function requirePageRow(projectId: string, pageId: string): PageRow {
+  const page = getRow<PageRow>("SELECT id, project_id, layout_json, objects_json FROM pages WHERE id = ? AND project_id = ?", [
+    pageId,
+    projectId
+  ]);
+  if (!page) {
+    throw new HttpError(404, "Page was not found in this project");
+  }
+  return page;
+}
+
+function parsePlacementIds(input: Record<string, unknown>): string[] {
+  if (!Array.isArray(input.placementIds) || input.placementIds.length === 0 || input.placementIds.some((id) => typeof id !== "string")) {
+    throw new HttpError(400, "placementIds must be a non-empty array of strings");
+  }
+  return Array.from(new Set(input.placementIds as string[]));
+}
+
+interface PlacementRow {
+  id: string;
+  line_id: string;
+  page_id: string;
+  balloon_object_id: string | null;
+}
+
+interface LineRow {
+  id: string;
+  text: string;
+  semantic_kind: DialogueSemanticKind;
+  speaker_label: string;
+  order_index: number;
+}
+
+interface LoadedContext {
+  page: PageRow;
+  layout: PageLayout;
+  existingObjects: PageObject[];
+  placements: PlacementRow[];
+  items: DialogueAutoLayoutItem[];
+}
+
+/**
+ * placementIds の実在・当該ページ所属・未吹き出し化(balloon_object_id=NULL)を検証し、ソルバー入力を組む。
+ * サイズ計算(§2.5): 各行の既定バルーンスタイルで `computeTextLayoutForContent` を呼び、
+ * `CONTENT_PADDING_RATIO` の逆数でパディング込みの必要サイズへ換算する。
+ */
+function loadContext(projectId: string, pageId: string, body: unknown): LoadedContext {
+  requireProject(projectId);
+  const page = requirePageRow(projectId, pageId);
+  if (!page.layout_json) {
+    throw new HttpError(400, "このページにはコマ割りが無いため、吹き出し一括配置は使えません。");
+  }
+  const layout = normalizeEditedPageLayout(JSON.parse(page.layout_json));
+  if (!layout) {
+    throw new HttpError(400, "このページのレイアウトが不正です。");
+  }
+
+  const input = objectBody(body);
+  const placementIds = parsePlacementIds(input);
+  const placeholders = placementIds.map(() => "?").join(",");
+  const placements = getRows<PlacementRow>(
+    `SELECT id, line_id, page_id, balloon_object_id FROM dialogue_placements WHERE id IN (${placeholders})`,
+    placementIds
+  );
+  const foundIds = new Set(placements.map((row) => row.id));
+  const missing = placementIds.filter((id) => !foundIds.has(id));
+  if (missing.length > 0) {
+    throw new HttpError(404, `Dialogue placement(s) were not found: ${missing.join(", ")}`);
+  }
+  const notOnPage = placements.filter((row) => row.page_id !== pageId);
+  if (notOnPage.length > 0) {
+    throw new HttpError(400, `次の placement は当該ページに属していません: ${notOnPage.map((row) => row.id).join(", ")}`);
+  }
+  const alreadyMaterialized = placements.filter((row) => row.balloon_object_id);
+  if (alreadyMaterialized.length > 0) {
+    throw new HttpError(
+      409,
+      `次の placement は既に吹き出し化済みのため配置対象にできません: ${alreadyMaterialized.map((row) => row.id).join(", ")}`
+    );
+  }
+
+  const lineIds = placements.map((row) => row.line_id);
+  const linePlaceholders = lineIds.map(() => "?").join(",");
+  const lineRows = getRows<LineRow>(
+    `SELECT id, text, semantic_kind, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
+    lineIds
+  );
+  const lineById = new Map(lineRows.map((row) => [row.id, row]));
+
+  const existingObjects = normalizePageObjects(page.objects_json ? JSON.parse(page.objects_json) : []);
+
+  const items: DialogueAutoLayoutItem[] = placements.map((placement) => {
+    const line = lineById.get(placement.line_id);
+    if (!line) {
+      throw new HttpError(404, `Dialogue line was not found for placement ${placement.id}`);
+    }
+    return {
+      placementId: placement.id,
+      lineId: line.id,
+      text: line.text,
+      semanticKind: line.semantic_kind,
+      speakerLabel: line.speaker_label,
+      orderIndex: line.order_index,
+      size: requiredSizeFor(line.text, line.semantic_kind)
+    };
+  });
+
+  return { page, layout, existingObjects, placements, items };
+}
+
+/** dialogue の既定バルーンサイズ下限(page 単位)。短文でも読める最低限のサイズを保証する。 */
+const MIN_BALLOON_WIDTH = 0.07;
+const MIN_BALLOON_HEIGHT = 0.06;
+
+/**
+ * 折返し無し(`maxWidth=undefined`)で `computeTextLayoutForContent` を呼ぶと、縦書きは「1列がどこまでも
+ * 伸びる」形になり吹き出しとして非現実的な bbox になる(既知の落とし穴)。文字数の平方根に比例した
+ * 列高さを与え、概ね正方形に近いブロックへ折り返させてから実測する(バルーンらしいサイズ推定)。
+ */
+function estimateWrapWidth(text: string, style: TextContent["style"]): number {
+  const length = Math.max(1, text.length);
+  const target = Math.sqrt(length) * style.size * (style.lineSpacing ?? 1.6) * 1.15;
+  return Math.min(0.24, Math.max(style.size * 2.4, target));
+}
+
+function requiredSizeFor(text: string, semanticKind: DialogueSemanticKind): PageVec {
+  const style =
+    semanticKind === "sfx"
+      ? { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE }
+      : { ...DEFAULT_TEXT_STYLE };
+  const content: TextContent = { text: text || " ", style };
+  const layout = computeTextLayoutForContent(content, estimateWrapWidth(text, style));
+  const rawWidth = Math.max(PAGE_OBJECT_MIN_SIZE, layout.bbox.maxX - layout.bbox.minX);
+  const rawHeight = Math.max(PAGE_OBJECT_MIN_SIZE, layout.bbox.maxY - layout.bbox.minY);
+  // CONTENT_PADDING_RATIO は「形状サイズ→折返し幅」の比率(pageObjects.ts の contentMaxWidth)。
+  // ここでは逆に「必要な折返し幅→形状サイズ」を求めるため、その逆数で割り戻す。
+  const width = rawWidth / (1 - CONTENT_PADDING_RATIO);
+  const height = rawHeight / (1 - CONTENT_PADDING_RATIO);
+  if (semanticKind === "sfx") {
+    return { x: Math.max(PAGE_OBJECT_MIN_SIZE, width), y: Math.max(PAGE_OBJECT_MIN_SIZE, height) };
+  }
+  return { x: Math.max(MIN_BALLOON_WIDTH, width), y: Math.max(MIN_BALLOON_HEIGHT, height) };
+}
+
+/** FNV-1a ベースの簡易ハッシュ。preview で seed 省略時に使う(決定的である必要は無いが、結果は返却必須)。 */
+function defaultSeedFor(placementIds: string[]): number {
+  const key = [...placementIds].sort().join("|");
+  let hash = 2166136261;
+  for (let i = 0; i < key.length; i += 1) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function parseSeed(input: Record<string, unknown>): number | undefined {
+  return typeof input.seed === "number" && Number.isFinite(input.seed) ? input.seed : undefined;
+}
+
+/**
+ * `POST /api/projects/:projectId/pages/:pageId/dialogue-layout/preview`(§3)。DB は一切書き換えない。
+ */
+export function previewDialogueLayout(projectId: string, pageId: string, body: unknown): DialogueLayoutPreview {
+  const context = loadContext(projectId, pageId, body);
+  const input = objectBody(body);
+  const seed = parseSeed(input) ?? defaultSeedFor(context.placements.map((row) => row.id));
+  const result = runDialogueAutoLayout({
+    layout: context.layout,
+    existingObjects: context.existingObjects,
+    items: context.items,
+    seed
+  });
+  return { seed, ...result };
+}
+
+/**
+ * `POST /api/projects/:projectId/pages/:pageId/dialogue-layout/apply`(§3)。トランザクション:
+ * ソルバー再実行 → 1件でも unplaced なら 422 で全件ロールバック(実際には BEGIN 前に弾くので
+ * DB へは何も書かない)→ objects_json 追記 → 各 placement の balloon_object_id/panel_id/
+ * auto_layout_seed/auto_layout_version を更新。
+ */
+export function applyDialogueLayout(projectId: string, pageId: string, body: unknown): DialogueLayoutPreview {
+  const input = objectBody(body);
+  const seed = parseSeed(input);
+  if (seed === undefined) {
+    throw new HttpError(400, "seed is required");
+  }
+  const context = loadContext(projectId, pageId, body);
+  const result = runDialogueAutoLayout({
+    layout: context.layout,
+    existingObjects: context.existingObjects,
+    items: context.items,
+    seed
+  });
+  if (result.unplacedPlacementIds.length > 0) {
+    throw new HttpError(
+      422,
+      `一部の行を配置できなかったため確定を中止しました(${result.unplacedPlacementIds.length}件)。seed を変えて再試行するか、手動配置してください。`
+    );
+  }
+
+  runSql("BEGIN");
+  try {
+    const nextObjects = normalizePageObjects([...context.existingObjects, ...result.objects]);
+    if (nextObjects.length > PAGE_OBJECTS_MAX_COUNT || nextObjects.length !== context.existingObjects.length + result.objects.length) {
+      throw new HttpError(422, `ページオブジェクトの上限(${PAGE_OBJECTS_MAX_COUNT})を超えるため確定できません。`);
+    }
+    runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
+      JSON.stringify(nextObjects),
+      pageId,
+      projectId
+    ]);
+    for (const assignment of result.assignments) {
+      runSql(
+        `UPDATE dialogue_placements
+         SET balloon_object_id = ?, panel_id = ?, auto_layout_seed = ?, auto_layout_version = 1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [assignment.objectId, assignment.panelId, seed, assignment.placementId]
+      );
+    }
+    runSql("COMMIT");
+  } catch (error) {
+    runSql("ROLLBACK");
+    throw error;
+  }
+
+  return { seed, objects: result.objects, assignments: result.assignments, warnings: result.warnings, unplacedPlacementIds: [] };
+}

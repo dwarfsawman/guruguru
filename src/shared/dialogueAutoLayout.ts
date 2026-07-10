@@ -1,0 +1,553 @@
+/**
+ * Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §2.5・§4 フェーズIII)。
+ * 吹き出し一括配置の配置ソルバー(純ロジック、DOM・db 非依存)。サイズ計算(`computeTextLayoutForContent`
+ * の呼び出し)はサーバー側(`dialogueAutoLayoutApi.ts`)の役目 -- ここは「必要サイズ・semanticKind・
+ * order_index が渡されれば決定的に配置を組む」ことだけをやる。
+ *
+ * 手順(§2.5): コマを reading direction 順に並べ、発話を order 順に文字量比で各コマへ配分 →
+ * 各コマ内で候補座標を生成(コマ上部優先、RTL は右寄り/LTR は左寄りから)→ ハード制約チェック →
+ * ソフト制約スコアリング → 最良候補選択(同点近傍は seed で選ぶ)。
+ *
+ * 乱数は `Math.random` を使わず、自前の mulberry32 PRNG(seed 付き決定的)のみを使う。
+ */
+import type { DialogueSemanticKind } from "./apiTypes";
+import { panelBounds, panelBoundsSize, type LayoutPanel, type PageLayout, type PanelShape } from "./pageLayout";
+import {
+  DEFAULT_BALLOON_SIZE,
+  DEFAULT_BOX_FILL,
+  DEFAULT_BOX_STROKE_COLOR,
+  DEFAULT_BOX_STROKE_WIDTH,
+  DEFAULT_TEXT_STYLE,
+  PAGE_OBJECTS_MAX_COUNT,
+  PAGE_OBJECT_MAX_SIZE,
+  PAGE_OBJECT_MIN_SIZE,
+  defaultBalloonTail,
+  type BalloonObject,
+  type BoxObject,
+  type PageObject,
+  type PageVec,
+  type TextObject
+} from "./pageObjects";
+
+/** ページに対する、コマに対するアイテムの最大サイズ比率(これを超えたら配置不能として扱う、§2.5)。 */
+export const AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO = 0.8;
+
+/** sfx オブジェクトのフォントサイズ倍率(DEFAULT_TEXT_STYLE.size に対して)。 */
+export const AUTO_LAYOUT_SFX_FONT_SCALE = 2;
+
+export interface DialogueAutoLayoutItem {
+  placementId: string;
+  lineId: string;
+  text: string;
+  semanticKind: DialogueSemanticKind;
+  speakerLabel: string;
+  /** dialogue_lines.order_index。コマ順との単調性判定・文字量比配分のソートキー。 */
+  orderIndex: number;
+  /** 必要サイズ(page 単位、既にパディング込み)。サーバー側で `computeTextLayoutForContent` から算出。 */
+  size: PageVec;
+}
+
+/** 障害物(既存オブジェクト・ロック済み placement に対応する PageObject)。座標系は page 座標。 */
+export interface DialogueAutoLayoutObstacle {
+  position: PageVec;
+  size: PageVec;
+  rotation: number;
+}
+
+export interface DialogueAutoLayoutInput {
+  layout: PageLayout;
+  /** 既存 PageObject(障害物として扱う。ロック済み balloon もここに含まれる想定)。 */
+  existingObjects: readonly PageObject[];
+  items: DialogueAutoLayoutItem[];
+  seed: number;
+}
+
+export interface DialogueAutoLayoutAssignment {
+  placementId: string;
+  panelId: string | null;
+  objectId: string;
+}
+
+export interface DialogueAutoLayoutResult {
+  objects: PageObject[];
+  assignments: DialogueAutoLayoutAssignment[];
+  warnings: string[];
+  unplacedPlacementIds: string[];
+}
+
+// --- 決定的 PRNG(mulberry32) ---
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// --- 幾何ヘルパ ---
+
+interface Box {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+function boxFromCenterSize(center: PageVec, size: PageVec, rotation: number): Box {
+  const hw = size.x / 2;
+  const hh = size.y / 2;
+  if (!rotation) {
+    return { x0: center.x - hw, y0: center.y - hh, x1: center.x + hw, y1: center.y + hh };
+  }
+  const cos = Math.cos(rotation);
+  const sin = Math.sin(rotation);
+  const corners: [number, number][] = [
+    [-hw, -hh],
+    [hw, -hh],
+    [hw, hh],
+    [-hw, hh]
+  ];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [lx, ly] of corners) {
+    const x = center.x + lx * cos - ly * sin;
+    const y = center.y + lx * sin + ly * cos;
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
+  }
+  return { x0: minX, y0: minY, x1: maxX, y1: maxY };
+}
+
+function inflate(box: Box, margin: number): Box {
+  return { x0: box.x0 - margin, y0: box.y0 - margin, x1: box.x1 + margin, y1: box.y1 + margin };
+}
+
+function boxesOverlap(a: Box, b: Box): boolean {
+  return !(a.x1 <= b.x0 || b.x1 <= a.x0 || a.y1 <= b.y0 || b.y1 <= a.y0);
+}
+
+/** ray casting によるポリゴン内外判定。 */
+function pointInPolygon(point: [number, number], points: [number, number][]): boolean {
+  const [px, py] = point;
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const [xi, yi] = points[i]!;
+    const [xj, yj] = points[j]!;
+    const intersects = yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi;
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** panel shape の中心点内外判定(polygon/ellipse は形状に沿った判定、rect/path は外接矩形で近似)。 */
+function pointInPanelShape(point: [number, number], shape: PanelShape): boolean {
+  if (shape.type === "polygon") {
+    return pointInPolygon(point, shape.points);
+  }
+  if (shape.type === "ellipse") {
+    const [cx, cy] = shape.center;
+    const [rx, ry] = shape.radius;
+    if (rx <= 0 || ry <= 0) {
+      return false;
+    }
+    const dx = (point[0] - cx) / rx;
+    const dy = (point[1] - cy) / ry;
+    return dx * dx + dy * dy <= 1;
+  }
+  // rect/path: 外接矩形での近似(§2.5 は polygon のみ内部判定を明示)。
+  return true;
+}
+
+// --- コマ順(reading direction)ソート ---
+
+interface PanelWithCenter {
+  panel: LayoutPanel;
+  bounds: [number, number, number, number];
+  centerX: number;
+  centerY: number;
+  height: number;
+}
+
+/**
+ * コマを reading direction 順に並べる(§2.5)。panelBounds の中心座標でソートする -- 行(y が近い
+ * コマの集まり)ごとに束ね、行内を x でソートする(RTL=降順/右→左、LTR=昇順/左→右)。
+ * 行の束ねは「直前行の平均コマ高さの半分以内の y 差」をしきい値にする(一般的なコマ割りの行検出)。
+ */
+export function orderPanelsByReadingDirection(panels: readonly LayoutPanel[], direction: "rtl" | "ltr"): LayoutPanel[] {
+  const withCenters: PanelWithCenter[] = panels.map((panel) => {
+    const bounds = panelBounds(panel.shape);
+    const [width, height] = panelBoundsSize(bounds);
+    return { panel, bounds, centerX: (bounds[0] + bounds[2]) / 2, centerY: (bounds[1] + bounds[3]) / 2, height: height || width };
+  });
+  withCenters.sort((a, b) => a.centerY - b.centerY);
+
+  const rows: PanelWithCenter[][] = [];
+  for (const item of withCenters) {
+    const lastRow = rows[rows.length - 1];
+    if (lastRow) {
+      const avgCy = lastRow.reduce((sum, entry) => sum + entry.centerY, 0) / lastRow.length;
+      const avgHeight = lastRow.reduce((sum, entry) => sum + entry.height, 0) / lastRow.length;
+      if (Math.abs(item.centerY - avgCy) < Math.max(avgHeight * 0.5, 1e-6)) {
+        lastRow.push(item);
+        continue;
+      }
+    }
+    rows.push([item]);
+  }
+
+  const ordered: LayoutPanel[] = [];
+  for (const row of rows) {
+    row.sort((a, b) => (direction === "rtl" ? b.centerX - a.centerX : a.centerX - b.centerX));
+    ordered.push(...row.map((entry) => entry.panel));
+  }
+  return ordered;
+}
+
+// --- 発話の文字量比配分(order 順、コマ順との単調性を保つ) ---
+
+interface DistributedItem {
+  item: DialogueAutoLayoutItem;
+  panelIndex: number | null; // null = ページ全体候補(narration)
+}
+
+/**
+ * 発話を order 順に文字量比で各コマへ配分する(§2.5)。narration はコマ非依存(panelIndex=null)。
+ * dialogue/monologue/sfx はコマが1つも無ければ全て unplaced 扱いにする(呼び出し側で panelIndex===null
+ * かつ panel が必要な kind を弾く)。
+ */
+function distributeItemsToPanels(items: DialogueAutoLayoutItem[], panelCount: number): DistributedItem[] {
+  const sorted = [...items].sort((a, b) => a.orderIndex - b.orderIndex);
+  if (panelCount <= 0) {
+    return sorted.map((item) => ({ item, panelIndex: item.semanticKind === "narration" ? null : 0 }));
+  }
+  const weightOf = (item: DialogueAutoLayoutItem) => Math.max(1, item.text.length);
+  const panelNeeding = sorted.filter((item) => item.semanticKind !== "narration");
+  const totalWeight = panelNeeding.reduce((sum, item) => sum + weightOf(item), 0) || 1;
+  const targetPerPanel = totalWeight / panelCount;
+
+  let cumulative = 0;
+  let panelIndex = 0;
+  const result: DistributedItem[] = [];
+  for (const item of sorted) {
+    if (item.semanticKind === "narration") {
+      result.push({ item, panelIndex: null });
+      continue;
+    }
+    cumulative += weightOf(item);
+    while (panelIndex < panelCount - 1 && cumulative > (panelIndex + 1) * targetPerPanel) {
+      panelIndex += 1;
+    }
+    result.push({ item, panelIndex });
+  }
+  return result;
+}
+
+// --- 候補生成・スコアリング ---
+
+const CANDIDATE_GRID: number = 6;
+/**
+ * 「同点」の判定幅。厳密な浮動小数一致ではなく「同点近傍」(§2.5)を拾うため、隣接グリッドセル程度の
+ * スコア差(走査方向の重み 0.3 のグリッド刻み)は同点扱いにして seed で選ばせる -- そうしないと
+ * スコアが単調すぎて常に同じ候補が選ばれ、「再配置(seed 変更)」が実質無意味になってしまう。
+ */
+const SCORE_EPSILON = 0.09;
+
+interface Candidate {
+  position: PageVec;
+  score: number;
+}
+
+interface CandidateSearchArgs {
+  bounds: [number, number, number, number]; // x0,y0,x1,y1(候補を探す領域)
+  size: PageVec;
+  direction: "rtl" | "ltr";
+  obstacles: Box[];
+  pageBounds: [number, number, number, number];
+  insidePanelCheck?: (point: [number, number]) => boolean;
+  avoidPanelBoxes?: [number, number, number, number][]; // narration: コマの上に極力置かない
+  anchorHint?: PageVec | null; // 同一話者近接ボーナスの基準点
+  random: () => number;
+}
+
+function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
+  const { bounds, size, direction, obstacles, pageBounds, insidePanelCheck, avoidPanelBoxes, anchorHint, random } = args;
+  const margin = Math.max(0.006, Math.min(bounds[2] - bounds[0], bounds[3] - bounds[1]) * 0.04);
+  const minX = bounds[0] + margin + size.x / 2;
+  const maxX = bounds[2] - margin - size.x / 2;
+  const minY = bounds[1] + margin + size.y / 2;
+  const maxY = bounds[3] - margin - size.y / 2;
+  if (minX > maxX || minY > maxY) {
+    return null;
+  }
+
+  const candidates: Candidate[] = [];
+  for (let row = 0; row < CANDIDATE_GRID; row += 1) {
+    const ty = CANDIDATE_GRID === 1 ? 0 : row / (CANDIDATE_GRID - 1);
+    const y = minY + ty * (maxY - minY);
+    for (let col = 0; col < CANDIDATE_GRID; col += 1) {
+      const tx = CANDIDATE_GRID === 1 ? 0 : col / (CANDIDATE_GRID - 1);
+      // RTL は右寄り(x が大きい方)から、LTR は左寄りから優先して走査する。
+      const effectiveTx = direction === "rtl" ? 1 - tx : tx;
+      const x = minX + effectiveTx * (maxX - minX);
+      const position: PageVec = { x, y };
+
+      if (position.x - size.x / 2 < pageBounds[0] || position.x + size.x / 2 > pageBounds[2]) {
+        continue;
+      }
+      if (position.y - size.y / 2 < pageBounds[1] || position.y + size.y / 2 > pageBounds[3]) {
+        continue;
+      }
+      if (insidePanelCheck && !insidePanelCheck([x, y])) {
+        continue;
+      }
+      const candidateBox = boxFromCenterSize(position, size, 0);
+      if (obstacles.some((obstacle) => boxesOverlap(candidateBox, obstacle))) {
+        continue;
+      }
+
+      // ソフト制約スコア: コマ上部優先(y が小さいほど高得点)、reading direction 優先方向、
+      // avoidPanelBoxes との重なり回避(narration)、話者近接ボーナス、サイズが大きいほど微減点。
+      let score = 0;
+      score -= ty * 2; // 上部優先(row=0 が最上段)
+      score -= effectiveTx * 0.3; // 走査方向を弱くスコアにも反映(同点になりすぎないように)
+      if (avoidPanelBoxes) {
+        for (const panelBox of avoidPanelBoxes) {
+          if (x >= panelBox[0] && x <= panelBox[2] && y >= panelBox[1] && y <= panelBox[3]) {
+            score -= 3;
+            break;
+          }
+        }
+      }
+      if (anchorHint) {
+        const dist = Math.hypot(position.x - anchorHint.x, position.y - anchorHint.y);
+        score += Math.max(0, 0.5 - dist);
+      }
+      score -= size.x * size.y * 0.1;
+
+      candidates.push({ position, score });
+    }
+  }
+
+  if (candidates.length === 0) {
+    return null;
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  const bestScore = candidates[0]!.score;
+  const tied = candidates.filter((candidate) => Math.abs(candidate.score - bestScore) < SCORE_EPSILON);
+  const pickIndex = tied.length > 1 ? Math.floor(random() * tied.length) : 0;
+  return tied[Math.min(pickIndex, tied.length - 1)]!.position;
+}
+
+// --- PageObject 生成 ---
+
+/**
+ * `autolayout_${seed}_${localIndex}` の決定的 id(乱数不使用)。同 seed・同入力なら同じ id 列になる
+ * (§7「同 seed 再現性」テストの対象)。呼び出しをまたいだグローバルカウンタは持たない。
+ */
+function nextObjectId(seed: number, localIndex: number): string {
+  return `autolayout_${seed}_${localIndex}`;
+}
+
+function buildBalloonObject(id: string, item: DialogueAutoLayoutItem, position: PageVec, size: PageVec): BalloonObject {
+  const isThought = item.semanticKind === "monologue";
+  const object: BalloonObject = {
+    id,
+    kind: "balloon",
+    position,
+    rotation: 0,
+    shape: isThought ? "thought" : "ellipse",
+    size,
+    fill: DEFAULT_BOX_FILL,
+    strokeColor: DEFAULT_BOX_STROKE_COLOR,
+    strokeWidth: DEFAULT_BOX_STROKE_WIDTH,
+    tail: isThought ? null : defaultBalloonTail(size),
+    content: { text: item.text, style: { ...DEFAULT_TEXT_STYLE } },
+    sourceDialogueLineId: item.lineId
+  };
+  return object;
+}
+
+function buildNarrationObject(id: string, item: DialogueAutoLayoutItem, position: PageVec, size: PageVec): BoxObject {
+  return {
+    id,
+    kind: "box",
+    position,
+    rotation: 0,
+    size,
+    cornerRadius: 0,
+    fill: DEFAULT_BOX_FILL,
+    strokeColor: DEFAULT_BOX_STROKE_COLOR,
+    strokeWidth: DEFAULT_BOX_STROKE_WIDTH,
+    content: { text: item.text, style: { ...DEFAULT_TEXT_STYLE } },
+    sourceDialogueLineId: item.lineId
+  };
+}
+
+function buildSfxObject(id: string, item: DialogueAutoLayoutItem, position: PageVec): TextObject {
+  return {
+    id,
+    kind: "text",
+    position,
+    rotation: 0,
+    content: {
+      text: item.text,
+      style: { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE }
+    },
+    sourceDialogueLineId: item.lineId
+  };
+}
+
+function clampItemSize(size: PageVec): PageVec {
+  return {
+    x: Math.min(PAGE_OBJECT_MAX_SIZE, Math.max(PAGE_OBJECT_MIN_SIZE, size.x || DEFAULT_BALLOON_SIZE.x)),
+    y: Math.min(PAGE_OBJECT_MAX_SIZE, Math.max(PAGE_OBJECT_MIN_SIZE, size.y || DEFAULT_BALLOON_SIZE.y))
+  };
+}
+
+/**
+ * 吹き出し一括配置ソルバーの本体(§2.5・§4)。同 seed → 同結果(決定的)。
+ * `existingObjects` はロック済み balloon も含めた障害物一覧として扱う(呼び出し側で用意する)。
+ */
+export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueAutoLayoutResult {
+  const { layout, existingObjects, items, seed } = input;
+  const random = mulberry32(seed);
+  const pageBounds: [number, number, number, number] = [0, 0, 1, layout.page.height];
+  const orderedPanels = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
+  const panelBoundsList = orderedPanels.map((panel) => panelBounds(panel.shape));
+
+  const obstacles: Box[] = existingObjects.map((object) => {
+    const size = object.kind === "text" ? estimateTextObjectSize(object) : object.size;
+    return inflate(boxFromCenterSize(object.position, size, object.rotation), 0.006);
+  });
+
+  const distributed = distributeItemsToPanels(items, orderedPanels.length);
+
+  const objects: PageObject[] = [];
+  const assignments: DialogueAutoLayoutAssignment[] = [];
+  const warnings: string[] = [];
+  const unplacedPlacementIds: string[] = [];
+  let placedCount = existingObjects.length;
+  let localIndex = 0;
+  const lastPositionBySpeaker = new Map<string, PageVec>();
+
+  for (const { item, panelIndex } of distributed) {
+    if (placedCount >= PAGE_OBJECTS_MAX_COUNT) {
+      unplacedPlacementIds.push(item.placementId);
+      warnings.push(`「${truncate(item.text)}」: ページオブジェクトの上限(${PAGE_OBJECTS_MAX_COUNT})に達しているため配置できませんでした。`);
+      continue;
+    }
+
+    const needsPanel = item.semanticKind !== "narration";
+    if (needsPanel && (panelIndex === null || orderedPanels.length === 0)) {
+      unplacedPlacementIds.push(item.placementId);
+      warnings.push(`「${truncate(item.text)}」: このページにコマが無いため配置できませんでした。`);
+      continue;
+    }
+
+    const size = clampItemSize(item.size);
+    const anchorHint = lastPositionBySpeaker.get(item.speakerLabel) ?? null;
+
+    let position: PageVec | null = null;
+    let targetPanel: LayoutPanel | null = null;
+
+    if (item.semanticKind === "narration") {
+      // ページ全体候補(コマ非依存)。コマの上に極力被らないようスコアで回避する。
+      position = searchBestCandidate({
+        bounds: pageBounds,
+        size,
+        direction: layout.readingDirection,
+        obstacles,
+        pageBounds,
+        avoidPanelBoxes: panelBoundsList,
+        anchorHint,
+        random
+      });
+    } else {
+      const index = panelIndex as number;
+      targetPanel = orderedPanels[index] ?? null;
+      const bounds = panelBoundsList[index];
+      if (!targetPanel || !bounds) {
+        unplacedPlacementIds.push(item.placementId);
+        warnings.push(`「${truncate(item.text)}」: 対象コマが見つかりませんでした。`);
+        continue;
+      }
+      const [bx0, by0, bx1, by1] = bounds;
+      const panelWidth = Math.max(1e-6, bx1 - bx0);
+      const panelHeight = Math.max(1e-6, by1 - by0);
+      if (size.x > panelWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || size.y > panelHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
+        unplacedPlacementIds.push(item.placementId);
+        warnings.push(`「${truncate(item.text)}」: コマに対して文字量が多すぎるため配置できませんでした(分割/フォント縮小/手動配置をご検討ください)。`);
+        continue;
+      }
+      const insidePanelCheck = (point: [number, number]) => pointInPanelShape(point, targetPanel!.shape);
+      position = searchBestCandidate({
+        bounds,
+        size,
+        direction: layout.readingDirection,
+        obstacles,
+        pageBounds,
+        insidePanelCheck,
+        anchorHint,
+        random
+      });
+    }
+
+    if (!position) {
+      unplacedPlacementIds.push(item.placementId);
+      warnings.push(`「${truncate(item.text)}」: 空きスペースが見つからず配置できませんでした。`);
+      continue;
+    }
+
+    const objectId = nextObjectId(seed, localIndex);
+    localIndex += 1;
+    let object: PageObject;
+    if (item.semanticKind === "dialogue" || item.semanticKind === "monologue") {
+      object = buildBalloonObject(objectId, item, position, size);
+    } else if (item.semanticKind === "narration") {
+      object = buildNarrationObject(objectId, item, position, size);
+    } else {
+      object = buildSfxObject(objectId, item, position);
+    }
+
+    objects.push(object);
+    assignments.push({ placementId: item.placementId, panelId: targetPanel?.id ?? null, objectId });
+    obstacles.push(inflate(boxFromCenterSize(position, size, 0), 0.006));
+    placedCount += 1;
+    if (item.speakerLabel) {
+      lastPositionBySpeaker.set(item.speakerLabel, position);
+    }
+  }
+
+  return { objects, assignments, warnings, unplacedPlacementIds };
+}
+
+function truncate(text: string, max = 16): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** TextObject は size を持たないため、文字数・スタイルから概算 bbox を出す(既存オブジェクト回避の近似)。 */
+function estimateTextObjectSize(object: TextObject): PageVec {
+  const style = object.content.style;
+  const length = Math.max(1, object.content.text.length);
+  const lineExtent = style.size * (style.lineSpacing ?? 1.6);
+  const crossExtent = Math.max(style.size, style.size * (style.letterSpacing ?? 1) * length * 0.6);
+  if (style.direction === "vertical") {
+    return {
+      x: object.maxWidth ?? Math.max(PAGE_OBJECT_MIN_SIZE, lineExtent),
+      y: object.maxWidth ? Math.min(object.maxWidth, crossExtent) : Math.max(PAGE_OBJECT_MIN_SIZE, crossExtent)
+    };
+  }
+  return {
+    x: object.maxWidth ?? Math.max(PAGE_OBJECT_MIN_SIZE, crossExtent),
+    y: Math.max(PAGE_OBJECT_MIN_SIZE, lineExtent)
+  };
+}

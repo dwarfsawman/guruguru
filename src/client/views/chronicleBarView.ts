@@ -5,7 +5,13 @@
  * 選択サマリ(文字数・発話数・推定吹き出し数)・他ページ配置の警告・一括割り当て/解除ボタン・
  * ポリシー(skip/move/copy)選択・「次の未配置区間へ」ボタン(自動配置 preview/apply はフェーズIII)。
  */
-import type { ChronicleBeat, ChronicleLineSummary, ChroniclePageSummary, ExistingPlacementPolicy } from "../../shared/chronicle";
+import type {
+  ChronicleBeat,
+  ChronicleLineSummary,
+  ChroniclePageSummary,
+  DialogueLayoutPreview,
+  ExistingPlacementPolicy
+} from "../../shared/chronicle";
 import type { MangaScript } from "../../shared/apiTypes";
 import { buildBeatPreview, computeBeatState } from "../../shared/chronicleBeat";
 import { escapeAttr, escapeHtml } from "../format";
@@ -26,8 +32,10 @@ export interface ChronicleBarViewState {
   selectedBeatIds: string[];
   /** フェーズII: 一括割り当て時の他ページ配置ポリシー(§3、既定 "skip")。 */
   allocationPolicy: ExistingPlacementPolicy;
-  /** フェーズII: 一括割り当て/解除の実行中ガード(§4)。ボタンの disabled/表示に使う。 */
+  /** フェーズII/III: 一括割り当て/解除・配置案/確定の実行中ガード(§4)。ボタンの disabled/表示に使う。 */
   busyAction: null | "assign" | "preview" | "apply" | "reflow";
+  /** フェーズIII(§2.3・§3): 直近の preview API 結果。null=未実施/キャンセル/確定済み。 */
+  preview: DialogueLayoutPreview | null;
 }
 
 const POLICY_LABEL: Record<ExistingPlacementPolicy, string> = {
@@ -99,7 +107,8 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
               ${view.beats.map((beat) => renderBeatChip(beat, lineSummaryById, view.currentPageId, view.selectedBeatIds)).join("")}
             </div>
             ${view.selectedBeatIds.length > 0 ? renderSelectionPanel(view, lineSummaryById) : ""}
-            ${view.previewBeatId ? renderBeatPreview(view, lineSummaryById) : ""}`;
+            ${view.previewBeatId ? renderBeatPreview(view, lineSummaryById) : ""}
+            ${view.preview ? renderLayoutPreviewPanel(view) : ""}`;
 
   return `
     <section class="chronicle-bar${view.collapsed ? " is-collapsed" : ""}" aria-label="Chronicle バー">
@@ -161,6 +170,11 @@ function renderSelectionPanel(view: ChronicleBarViewState, lineSummaryById: Map<
     line.placements.some((placement) => placement.pageId === view.currentPageId && placement.balloonObjectId)
   );
   const busy = view.busyAction === "assign";
+  const layoutBusy = view.busyAction === "preview" || view.busyAction === "apply";
+  // 配置案の対象(§2.3): 選択に含まれる行のうち、現在ページ配置済み・かつ未吹き出し化の行だけ。
+  const previewTargetCount = lines.filter(
+    (line) => line.placements.some((placement) => placement.pageId === view.currentPageId && !placement.balloonObjectId)
+  ).length;
 
   return `
     <div class="chronicle-selection-panel">
@@ -204,6 +218,50 @@ function renderSelectionPanel(view: ChronicleBarViewState, lineSummaryById: Map<
           選択を解除
         </button>
       </div>
+      <div class="chronicle-selection-actions chronicle-layout-actions">
+        <button type="button" class="button-primary compact" data-action="preview-chronicle-layout"
+          ${layoutBusy || previewTargetCount === 0 ? "disabled" : ""} title="選択中の未吹き出し化の行(${previewTargetCount}件)を仮配置します">
+          ${view.busyAction === "preview" ? "配置案を計算中…" : "配置案"}
+        </button>
+        ${
+          view.preview
+            ? `
+              <button type="button" class="button-primary compact" data-action="apply-chronicle-layout"
+                ${layoutBusy || view.preview.unplacedPlacementIds.length > 0 ? "disabled" : ""}>
+                ${view.busyAction === "apply" ? "確定中…" : "確定"}
+              </button>
+              <button type="button" class="button-secondary compact" data-action="cancel-chronicle-layout" ${layoutBusy ? "disabled" : ""}>
+                キャンセル
+              </button>
+            `
+            : ""
+        }
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * 配置案プレビューのサマリ(§2.3・§4)。ゴースト本体はページ編集ステージ側(`pagePanelLightboxView.ts`)が
+ * `state.chronicle.preview` を直接参照して描く -- ここは seed・件数・警告のテキストサマリのみ。
+ */
+function renderLayoutPreviewPanel(view: ChronicleBarViewState): string {
+  const preview = view.preview;
+  if (!preview) {
+    return "";
+  }
+  return `
+    <div class="chronicle-layout-preview-panel">
+      <div class="chronicle-layout-preview-stats">
+        <span>seed ${preview.seed}</span>
+        <span>配置 ${preview.objects.length}件</span>
+        ${preview.unplacedPlacementIds.length > 0 ? `<span class="is-warning">未配置 ${preview.unplacedPlacementIds.length}件</span>` : ""}
+      </div>
+      ${
+        preview.warnings.length > 0
+          ? `<ul class="chronicle-layout-preview-warnings">${preview.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+          : ""
+      }
     </div>
   `;
 }

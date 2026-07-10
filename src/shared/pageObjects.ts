@@ -512,8 +512,12 @@ export function defaultBalloonTail(size: PageVec): BalloonTail {
   };
 }
 
-/** box/balloon 内包テキストの折り返し幅(page 単位)。パディング分だけ形状のサイズより小さくする。 */
-const CONTENT_PADDING_RATIO = 0.12;
+/**
+ * box/balloon 内包テキストの折り返し幅(page 単位)。パディング分だけ形状のサイズより小さくする。
+ * export しているのは Chronicle Page Flow の自動配置サイズ計算(`dialogueAutoLayoutApi.ts`)が
+ * 「必要な折返し幅から逆算して形状サイズを出す」ために同じ比率を使うため(§2.5)。
+ */
+export const CONTENT_PADDING_RATIO = 0.12;
 
 export function contentMaxWidth(size: PageVec, direction: TextDirection): number {
   const extent = direction === "vertical" ? size.y : size.x;
