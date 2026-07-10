@@ -513,6 +513,16 @@ PATCH/DELETE  /api/dialogue-placements/:id
 
 ## S4: 構造化 LLM セリフ提案(DialogueProvider)
 
+### 実装状況メモ(**S4 完了 — 2026-07-10 main マージ済み、merge commit f6f27d8。これで S1〜S4 全フェーズ完了**)
+本セクションの要求はすべて実装済み(llm.ts 改修+LlmHttpError/リトライ分類、llmStructured の
+json_schema→プロンプト誘導フォールバック、DialogueProvider+prompt 分離、dialogue_proposals+項目別採用履歴、
+adopt/reject API、AIセリフ提案 UI+ページ移動ガード+stale/failed バッジ)。631 テスト緑(+23)。
+実装判断(コード内コメントにも記載): apiKey は LlmSettingsView(hasApiKey)で非露出+部分更新
+(clearApiKey で削除)。DialogueProvider.suggest は messages も返す(request_json 保存の再現性のため)。
+提案の panelId 不正は 400 でなく null 化+警告。adopt は dialogue_lines 作成のみ(配置は S3 フローに合流)。
+シーン選定は配置済み行の scene_index 最頻値→ページ位置からの線形推定のヒューリスティック。
+60s タイムアウトは LLM 1 呼び出し単位(リトライ合計では超え得る)。
+
 ### 目的
 OpenAI 互換 LLM に「このページ(コマ構成・シーン文脈・キャラ口調)に合うセリフ案」を構造化 JSON で出させ、
 採用すると dialogue_lines になる。**LLM の生出力・モデル名・脚本 revision・項目別の採用履歴を永続化。**
