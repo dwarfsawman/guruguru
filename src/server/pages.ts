@@ -13,6 +13,7 @@ import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout
 import { normalizePageObjects, type PageObject } from "../shared/pageObjects";
 import { normalizeMosaicRegions, type MosaicRegion } from "../shared/mosaicRegion";
 import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
+import { clearOrphanedPlacementPanelIds } from "./dialogueLines";
 import { HttpError } from "./http";
 import { resolveLayoutTemplate } from "./layoutTemplates";
 import { listPanelAssignments, upsertPanelAssignment } from "./panelAssignments";
@@ -313,6 +314,9 @@ export function updatePageLayout(projectId: string, pageId: string, body: unknow
       runSql("DELETE FROM page_panel_assignments WHERE page_id = ? AND panel_id = ?", [pageId, row.panel_id]);
     }
   }
+  // 脚本ドメイン(Docs/Feature-ScriptToManga.md S3): 消えたコマへの DialoguePlacement は panel_id を
+  // NULL 化する(placement/吹き出し自体は消さない -- ページ中央扱いに落ちるだけ)。
+  clearOrphanedPlacementPanelIds(pageId, panelIds);
 
   runSql("UPDATE pages SET layout_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
     JSON.stringify(layout),

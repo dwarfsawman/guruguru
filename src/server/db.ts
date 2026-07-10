@@ -31,7 +31,11 @@ const jsonColumnNames = new Map<string, string>([
   ["objects_json", "objects"],
   ["mosaic_json", "mosaic"],
   ["intent_json", "intent"],
-  ["provider_snapshot_json", "providerSnapshot"]
+  ["provider_snapshot_json", "providerSnapshot"],
+  ["aliases_json", "aliases"],
+  ["binding_json", "binding"],
+  ["parsed_json", "parsed"],
+  ["warnings_json", "warnings"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -270,6 +274,104 @@ export function initializeDb() {
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (source_asset_id) REFERENCES assets(id) ON DELETE SET NULL
     );
+
+    -- 脚本ドメイン(Docs/Feature-ScriptToManga.md S3): Character は Provider 中立(name/aliases/notes/color)。
+    -- 顔参照/LoRA 等 Provider 別の設定は character_bindings へ分離する(将来の外部 Provider が別形式を持てる)。
+    CREATE TABLE IF NOT EXISTS characters (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      aliases_json TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      color TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    -- comfy: { faceImagePath?, loraName?, loraStrength? }(provider が検証)。faceImagePath はサーバ内部の
+    -- 絶対パスであり API では直接返さない(GET は存在フラグ+配信 URL に変換する。既知の罠11)。
+    CREATE TABLE IF NOT EXISTS character_bindings (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      binding_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS manga_scripts (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    -- 脚本原文と parse 結果は不変保存(再取り込みは新 revision の追加)。fountain_source / parsed_json は
+    -- INSERT 後に更新しない。
+    CREATE TABLE IF NOT EXISTS script_revisions (
+      id TEXT PRIMARY KEY,
+      script_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      fountain_source TEXT NOT NULL,
+      parsed_json TEXT NOT NULL,
+      warnings_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE CASCADE
+    );
+
+    -- DialogueLine(物語上の台詞)。DialoguePlacement(ページ上の配置)とは1対多で分離する
+    -- (1台詞を複数吹き出しへ分割できるように)。semantic_kind は台詞の属性(会話/心の声/ナレーション/SFX)。
+    CREATE TABLE IF NOT EXISTS dialogue_lines (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      script_id TEXT,
+      character_id TEXT,
+      speaker_label TEXT NOT NULL DEFAULT '',
+      text TEXT NOT NULL,
+      semantic_kind TEXT NOT NULL DEFAULT 'dialogue',
+      emotion TEXT,
+      order_index INTEGER NOT NULL DEFAULT 0,
+      scene_index INTEGER,
+      source_hash TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      source TEXT NOT NULL DEFAULT 'fountain',
+      proposal_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE SET NULL,
+      FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE SET NULL
+    );
+
+    -- DialoguePlacement(ページ上の配置)。panel_id は layout.panels の JSON id を指すため FK は張れない
+    -- (実在検証はアプリ側、rounds.ts の targetPanelId 検証と同じ前例)。render_kind=balloon の場合、
+    -- balloon_object_id が対応する PageObject(pages.objects_json 内)の id を指す(双方向リンク)。
+    CREATE TABLE IF NOT EXISTS dialogue_placements (
+      id TEXT PRIMARY KEY,
+      line_id TEXT NOT NULL,
+      page_id TEXT NOT NULL,
+      panel_id TEXT,
+      part_index INTEGER NOT NULL DEFAULT 0,
+      render_kind TEXT NOT NULL DEFAULT 'balloon',
+      balloon_object_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (line_id) REFERENCES dialogue_lines(id) ON DELETE CASCADE,
+      FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_character_bindings_char_provider ON character_bindings(character_id, provider_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_script_revisions_script_rev ON script_revisions(script_id, revision);
+    CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id);
+    CREATE INDEX IF NOT EXISTS idx_manga_scripts_project ON manga_scripts(project_id);
+    CREATE INDEX IF NOT EXISTS idx_dialogue_lines_project ON dialogue_lines(project_id);
+    CREATE INDEX IF NOT EXISTS idx_dialogue_lines_script ON dialogue_lines(script_id);
+    CREATE INDEX IF NOT EXISTS idx_dialogue_placements_line ON dialogue_placements(line_id);
+    CREATE INDEX IF NOT EXISTS idx_dialogue_placements_page ON dialogue_placements(page_id);
 
     CREATE INDEX IF NOT EXISTS idx_paste_sources_project ON paste_sources(project_id);
     CREATE INDEX IF NOT EXISTS idx_page_media_project ON page_media(project_id);

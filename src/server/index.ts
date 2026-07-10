@@ -42,6 +42,25 @@ import {
   serveRoundAttachment
 } from "./rounds";
 import {
+  createCharacter,
+  deleteCharacter,
+  getCharacterBinding,
+  listCharacters,
+  putCharacterBinding,
+  serveCharacterFaceImage,
+  updateCharacter
+} from "./characters";
+import { addScriptRevision, createScript, deleteScript, getScript, getScriptRevision, listScripts } from "./scripts";
+import {
+  createDialogueLine,
+  createDialoguePlacement,
+  deleteDialogueLine,
+  deleteDialoguePlacement,
+  listDialogueLines,
+  updateDialogueLine,
+  updateDialoguePlacement
+} from "./dialogueLines";
+import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
   GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
   GITHUB_POSE_RELEASE_API_URL,
@@ -483,6 +502,117 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const roundDeleteMatch = path.match(/^\/api\/rounds\/([^/]+)$/);
   if (method === "DELETE" && roundDeleteMatch) {
     sendJson(res, 200, deleteRoundTree(roundDeleteMatch[1]!));
+    return;
+  }
+
+  // --- 脚本ドメイン(Docs/Feature-ScriptToManga.md S3): Character / Script / DialogueLine / Placement ---
+  const charactersCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/characters$/);
+  if (method === "GET" && charactersCollectionMatch) {
+    sendJson(res, 200, { characters: listCharacters(charactersCollectionMatch[1]!) });
+    return;
+  }
+  if (method === "POST" && charactersCollectionMatch) {
+    sendJson(res, 201, { character: createCharacter(charactersCollectionMatch[1]!, await readJson(req)) });
+    return;
+  }
+
+  const characterFaceImageMatch = path.match(/^\/api\/characters\/([^/]+)\/bindings\/([^/]+)\/face-image$/);
+  if (method === "GET" && characterFaceImageMatch) {
+    serveCharacterFaceImage(res, characterFaceImageMatch[1]!, characterFaceImageMatch[2]!);
+    return;
+  }
+
+  const characterBindingMatch = path.match(/^\/api\/characters\/([^/]+)\/bindings\/([^/]+)$/);
+  if (method === "GET" && characterBindingMatch) {
+    sendJson(res, 200, getCharacterBinding(characterBindingMatch[1]!, characterBindingMatch[2]!));
+    return;
+  }
+  if (method === "PUT" && characterBindingMatch) {
+    sendJson(res, 200, await putCharacterBinding(characterBindingMatch[1]!, characterBindingMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  const characterDetailMatch = path.match(/^\/api\/characters\/([^/]+)$/);
+  if (method === "PATCH" && characterDetailMatch) {
+    sendJson(res, 200, { character: updateCharacter(characterDetailMatch[1]!, await readJson(req)) });
+    return;
+  }
+  if (method === "DELETE" && characterDetailMatch) {
+    sendJson(res, 200, deleteCharacter(characterDetailMatch[1]!));
+    return;
+  }
+
+  const scriptsCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/scripts$/);
+  if (method === "GET" && scriptsCollectionMatch) {
+    sendJson(res, 200, { scripts: listScripts(scriptsCollectionMatch[1]!) });
+    return;
+  }
+  if (method === "POST" && scriptsCollectionMatch) {
+    sendJson(res, 201, createScript(scriptsCollectionMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const scriptRevisionDetailMatch = path.match(/^\/api\/scripts\/([^/]+)\/revisions\/([^/]+)$/);
+  if (method === "GET" && scriptRevisionDetailMatch) {
+    sendJson(res, 200, getScriptRevision(scriptRevisionDetailMatch[1]!, Number(scriptRevisionDetailMatch[2])));
+    return;
+  }
+
+  const scriptRevisionsMatch = path.match(/^\/api\/scripts\/([^/]+)\/revisions$/);
+  if (method === "POST" && scriptRevisionsMatch) {
+    sendJson(res, 201, addScriptRevision(scriptRevisionsMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const scriptDetailMatch = path.match(/^\/api\/scripts\/([^/]+)$/);
+  if (method === "GET" && scriptDetailMatch) {
+    sendJson(res, 200, { script: getScript(scriptDetailMatch[1]!) });
+    return;
+  }
+  if (method === "DELETE" && scriptDetailMatch) {
+    sendJson(res, 200, deleteScript(scriptDetailMatch[1]!));
+    return;
+  }
+
+  const dialogueLinesCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/dialogue-lines$/);
+  if (method === "GET" && dialogueLinesCollectionMatch) {
+    sendJson(res, 200, {
+      lines: listDialogueLines(dialogueLinesCollectionMatch[1]!, {
+        pageId: url.searchParams.get("pageId") ?? undefined,
+        scriptId: url.searchParams.get("scriptId") ?? undefined,
+        status: url.searchParams.get("status") ?? undefined
+      })
+    });
+    return;
+  }
+  if (method === "POST" && dialogueLinesCollectionMatch) {
+    sendJson(res, 201, { line: createDialogueLine(dialogueLinesCollectionMatch[1]!, await readJson(req)) });
+    return;
+  }
+
+  const dialoguePlacementsCreateMatch = path.match(/^\/api\/dialogue-lines\/([^/]+)\/placements$/);
+  if (method === "POST" && dialoguePlacementsCreateMatch) {
+    sendJson(res, 201, createDialoguePlacement(dialoguePlacementsCreateMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const dialogueLineDetailMatch = path.match(/^\/api\/dialogue-lines\/([^/]+)$/);
+  if (method === "PATCH" && dialogueLineDetailMatch) {
+    sendJson(res, 200, { line: updateDialogueLine(dialogueLineDetailMatch[1]!, await readJson(req)) });
+    return;
+  }
+  if (method === "DELETE" && dialogueLineDetailMatch) {
+    sendJson(res, 200, deleteDialogueLine(dialogueLineDetailMatch[1]!));
+    return;
+  }
+
+  const dialoguePlacementDetailMatch = path.match(/^\/api\/dialogue-placements\/([^/]+)$/);
+  if (method === "PATCH" && dialoguePlacementDetailMatch) {
+    sendJson(res, 200, { placement: updateDialoguePlacement(dialoguePlacementDetailMatch[1]!, await readJson(req)) });
+    return;
+  }
+  if (method === "DELETE" && dialoguePlacementDetailMatch) {
+    sendJson(res, 200, deleteDialoguePlacement(dialoguePlacementDetailMatch[1]!));
     return;
   }
 

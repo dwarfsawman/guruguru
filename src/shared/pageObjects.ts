@@ -47,6 +47,12 @@ interface PageObjectBase {
   position: PageVec;
   /** ラジアン (-π, π]。 */
   rotation: number;
+  /**
+   * 台詞⇄吹き出しの双方向リンク(Docs/Feature-ScriptToManga.md S3)。dialogue_placements.balloon_object_id
+   * と対で使う `dialogue_lines.id`。セリフドロワーから生成したオブジェクトのみ持つ。
+   * **normalizeBase で保持する**(正規化往復で消えるとリンクが壊れる -- 既知の罠1)。
+   */
+  sourceDialogueLineId?: string;
 }
 
 export interface TextObject extends PageObjectBase {
@@ -231,6 +237,7 @@ interface NormalizedBase {
   id: string;
   position: PageVec;
   rotation: number;
+  sourceDialogueLineId?: string;
 }
 
 function normalizeBase(raw: Record<string, unknown>, fallbackId: string): NormalizedBase | null {
@@ -239,7 +246,24 @@ function normalizeBase(raw: Record<string, unknown>, fallbackId: string): Normal
     return null;
   }
   const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : fallbackId;
-  return { id, position, rotation: normalizeRotation(raw.rotation) };
+  const base: NormalizedBase = { id, position, rotation: normalizeRotation(raw.rotation) };
+  if (typeof raw.sourceDialogueLineId === "string" && raw.sourceDialogueLineId.trim()) {
+    base.sourceDialogueLineId = raw.sourceDialogueLineId.trim();
+  }
+  return base;
+}
+
+/** base の共通フィールド(id/position/rotation/sourceDialogueLineId)を出力オブジェクトへ広げる。 */
+function spreadBase(base: NormalizedBase): Pick<PageObjectBase, "id" | "position" | "rotation" | "sourceDialogueLineId"> {
+  const out: Pick<PageObjectBase, "id" | "position" | "rotation" | "sourceDialogueLineId"> = {
+    id: base.id,
+    position: base.position,
+    rotation: base.rotation
+  };
+  if (base.sourceDialogueLineId !== undefined) {
+    out.sourceDialogueLineId = base.sourceDialogueLineId;
+  }
+  return out;
 }
 
 function normalizeSize(raw: unknown): PageVec | null {
@@ -259,7 +283,7 @@ function normalizeTextObject(raw: Record<string, unknown>, fallbackId: string): 
   if (!base || !content) {
     return null;
   }
-  const object: TextObject = { id: base.id, kind: "text", position: base.position, rotation: base.rotation, content };
+  const object: TextObject = { ...spreadBase(base), kind: "text", content };
   if (isFiniteNumber(raw.maxWidth) && raw.maxWidth > 0) {
     object.maxWidth = clampNumber(raw.maxWidth, 0.01, PAGE_OBJECT_MAX_SIZE, raw.maxWidth);
   }
@@ -277,10 +301,8 @@ function normalizeBalloonObject(raw: Record<string, unknown>, fallbackId: string
   const shape: BalloonShape =
     typeof raw.shape === "string" && BALLOON_SHAPES.has(raw.shape as BalloonShape) ? (raw.shape as BalloonShape) : "ellipse";
   const object: BalloonObject = {
-    id: base.id,
+    ...spreadBase(base),
     kind: "balloon",
-    position: base.position,
-    rotation: base.rotation,
     shape,
     size,
     fill: asColor(raw.fill, DEFAULT_BOX_FILL),
@@ -317,10 +339,8 @@ function normalizeBoxObject(raw: Record<string, unknown>, fallbackId: string): B
     return null;
   }
   const object: BoxObject = {
-    id: base.id,
+    ...spreadBase(base),
     kind: "box",
-    position: base.position,
-    rotation: base.rotation,
     size,
     fill: asColor(raw.fill, DEFAULT_BOX_FILL),
     strokeColor: asColor(raw.strokeColor, DEFAULT_BOX_STROKE_COLOR),
@@ -349,7 +369,7 @@ function normalizeImageObject(raw: Record<string, unknown>, fallbackId: string):
   if (!base || !size || !mediaId) {
     return null;
   }
-  const object: ImageObject = { id: base.id, kind: "image", position: base.position, rotation: base.rotation, mediaId, size };
+  const object: ImageObject = { ...spreadBase(base), kind: "image", mediaId, size };
   if (isFiniteNumber(raw.opacity)) {
     object.opacity = clampNumber(raw.opacity, 0, 1, 1);
   }

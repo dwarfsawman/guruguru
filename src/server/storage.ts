@@ -43,7 +43,8 @@ export function ensureProjectStorage(projectId: string) {
     exports: join(projectRoot, "exports"),
     pasteSources: join(projectRoot, "paste_sources"),
     composites: join(projectRoot, "composites"),
-    pageMedia: join(projectRoot, "page_media")
+    pageMedia: join(projectRoot, "page_media"),
+    characterFaces: join(projectRoot, "character_faces")
   };
 
   for (const path of Object.values(paths)) {
@@ -197,6 +198,36 @@ export async function storePageMediaImage(projectId: string, mediaId: string, so
     throw new Error("Page media storage path is outside the project directory");
   }
   const bytes = await readFile(sourceImagePath);
+  await writeFile(filePath, bytes);
+  const size = readImageSize(bytes);
+  return { filePath, width: size?.width ?? null, height: size?.height ?? null };
+}
+
+export interface StoredCharacterFace {
+  filePath: string;
+  width: number | null;
+  height: number | null;
+}
+
+/**
+ * Character binding(Docs/Feature-ScriptToManga.md S3)の顔参照画像を
+ * `character_faces/<characterId>_<providerId><ext>` へ保存する。`binding_json.faceImagePath` は
+ * このサーバ内部パスを保持するが、API 応答はこれを直接返さず存在フラグ+配信 URL に変換する
+ * (既知の罠11: SELECT * + toApiRow によるローカル絶対パスの無条件露出を避ける)。
+ */
+export async function storeCharacterFaceImage(
+  projectId: string,
+  characterId: string,
+  providerId: string,
+  ext: string,
+  bytes: Buffer
+): Promise<StoredCharacterFace> {
+  const storage = ensureProjectStorage(projectId);
+  const baseName = `${sanitizeBaseName(characterId)}_${sanitizeBaseName(providerId)}${ext}`;
+  const filePath = resolve(join(storage.characterFaces, baseName));
+  if (!isPathInside(filePath, resolve(storage.projectRoot))) {
+    throw new Error("Character face storage path is outside the project directory");
+  }
   await writeFile(filePath, bytes);
   const size = readImageSize(bytes);
   return { filePath, width: size?.width ?? null, height: size?.height ?? null };
