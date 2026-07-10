@@ -3,8 +3,8 @@
  * `src/client/main.ts` から抽出。state は引数で受け取るため main.ts への逆依存を持たない（circular import なし）。
  * UI 文言・HTML 構造・CSS class・data-action・selector は移動前と同一。
  */
-import type { ComfySettings, LlmSettings } from "../../shared/types";
-import type { ProjectSummary, WorkflowTemplate } from "../../shared/apiTypes";
+import type { ComfySettings } from "../../shared/types";
+import type { LlmSettingsView, ProjectSummary, WorkflowTemplate } from "../../shared/apiTypes";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../../shared/constants";
 import { escapeAttr, escapeHtml, formatDate } from "../format";
 import { iconChevron, iconPlus, iconTrash } from "../icons";
@@ -24,7 +24,7 @@ export function renderHome(
   projects: ProjectSummary[],
   settings: ComfySettings | null,
   templates: WorkflowTemplate[],
-  llmSettings: LlmSettings | null = null,
+  llmSettings: LlmSettingsView | null = null,
   comfyStatus: ConnectionSummary = unknownConnectionSummary,
   llmStatus: ConnectionSummary = unknownConnectionSummary,
   createMode: "single" | "book" = "single"
@@ -108,7 +108,7 @@ export function renderProjectCard(project: ProjectSummary) {
 
 export function renderSettingsPanel(
   settings: ComfySettings | null,
-  llmSettings: LlmSettings | null = null,
+  llmSettings: LlmSettingsView | null = null,
   comfyStatus: ConnectionSummary = unknownConnectionSummary,
   llmStatus: ConnectionSummary = unknownConnectionSummary
 ) {
@@ -144,6 +144,14 @@ export function renderSettingsPanel(
           <form id="llm-settings-form" class="form-stack">
             <label>Base URL<input name="baseUrl" value="${escapeAttr(llmSettings?.baseUrl ?? "")}" placeholder="http://127.0.0.1:1234/v1" /></label>
             <label>Model<input name="model" value="${escapeAttr(llmSettings?.model ?? "")}" placeholder="qwen3-14b-instruct" /></label>
+            <label>API Key
+              <input name="apiKey" type="password" autocomplete="off" placeholder="${llmSettings?.hasApiKey ? "設定済み(変更する場合のみ入力)" : "未設定(任意)"}" />
+            </label>
+            ${
+              llmSettings?.hasApiKey
+                ? `<label><input name="clearApiKey" type="checkbox" value="1" /> API Keyを削除</label>`
+                : ""
+            }
             <label>System Prompt<textarea name="systemPrompt" rows="3" placeholder="ComfyUIのプロンプト作成を支援する指示を入力...">${escapeHtml(llmSettings?.systemPrompt ?? "")}</textarea></label>
             ${renderRangeControl("temperature", "Temperature", llmSettings?.temperature ?? 0.4, 0, 2, 0.1, "llmTemperatureValue")}
             <button class="button-primary" type="button" data-action="connect-llm">接続</button>

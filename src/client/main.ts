@@ -1090,7 +1090,10 @@ function renderPagePanelLightboxView(): string {
     },
     {
       open: state.dialogueDrawerOpen,
-      lines: state.pagePanelLightboxDialogueLines
+      lines: state.pagePanelLightboxDialogueLines,
+      llmConfigured: Boolean(state.llmSettings?.baseUrl.trim() && state.llmSettings?.model.trim()),
+      proposals: state.dialogueProposals,
+      busy: state.dialogueProposalBusy
     }
   );
 }

@@ -3,7 +3,7 @@ import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
 import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
 import { checkModels, listAvailableLoras } from "./modelCheck";
-import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection } from "./llm";
+import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection, toLlmSettingsView } from "./llm";
 import { serveStatic } from "./files";
 import { HttpError, readJson, sendJson } from "./http";
 import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
@@ -68,6 +68,12 @@ import {
   updateDialogueLine,
   updateDialoguePlacement
 } from "./dialogueLines";
+import {
+  adoptDialogueProposalItems,
+  createDialogueProposal,
+  listDialogueProposals,
+  rejectDialogueProposalItems
+} from "./dialogueProposals";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
   GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
@@ -185,21 +191,31 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
 
   if (method === "GET" && path === "/api/settings/llm") {
-    sendJson(res, 200, getLlmSettings());
+    sendJson(res, 200, toLlmSettingsView(getLlmSettings()));
     return;
   }
 
   if (method === "PUT" && path === "/api/settings/llm") {
-    const body = await readJson<Partial<LlmSettings>>(req);
+    const body = await readJson<Partial<LlmSettings> & { clearApiKey?: boolean }>(req);
     const currentSettings = getLlmSettings();
+    // apiKey はフィールド単位の部分更新(既知の罠11: GET が生の値を返さないため、未指定=維持が既定。
+    // 空文字/未指定は現在値を維持、`clearApiKey: true` で明示的に削除する -- character binding の
+    // faceImageDataUrl/clearFaceImage と同型)。
+    const apiKey =
+      body.clearApiKey === true
+        ? undefined
+        : typeof body.apiKey === "string" && body.apiKey.trim()
+          ? body.apiKey.trim()
+          : currentSettings.apiKey;
     const settings: LlmSettings = {
       baseUrl: stringOr(body.baseUrl, currentSettings.baseUrl).trim().replace(/\/+$/, ""),
       model: stringOr(body.model, currentSettings.model).trim(),
       systemPrompt: stringOr(body.systemPrompt, currentSettings.systemPrompt),
-      temperature: Math.min(2, Math.max(0, numberOr(body.temperature, currentSettings.temperature)))
+      temperature: Math.min(2, Math.max(0, numberOr(body.temperature, currentSettings.temperature))),
+      ...(apiKey ? { apiKey } : {})
     };
     setSetting("llm", settings);
-    sendJson(res, 200, settings);
+    sendJson(res, 200, toLlmSettingsView(settings));
     return;
   }
 
@@ -627,6 +643,39 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (method === "DELETE" && dialoguePlacementDetailMatch) {
     sendJson(res, 200, deleteDialoguePlacement(dialoguePlacementDetailMatch[1]!));
+    return;
+  }
+
+  // --- 構造化 LLM セリフ提案(Docs/Feature-ScriptToManga.md S4): DialogueProposal ---
+  const dialogueProposalsCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-proposals$/);
+  if (method === "POST" && dialogueProposalsCreateMatch) {
+    sendJson(
+      res,
+      201,
+      await createDialogueProposal(dialogueProposalsCreateMatch[1]!, dialogueProposalsCreateMatch[2]!, await readJson(req))
+    );
+    return;
+  }
+
+  const dialogueProposalsCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/dialogue-proposals$/);
+  if (method === "GET" && dialogueProposalsCollectionMatch) {
+    sendJson(res, 200, {
+      proposals: listDialogueProposals(dialogueProposalsCollectionMatch[1]!, {
+        pageId: url.searchParams.get("pageId") ?? undefined
+      })
+    });
+    return;
+  }
+
+  const dialogueProposalAdoptMatch = path.match(/^\/api\/dialogue-proposals\/([^/]+)\/adopt$/);
+  if (method === "POST" && dialogueProposalAdoptMatch) {
+    sendJson(res, 200, adoptDialogueProposalItems(dialogueProposalAdoptMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const dialogueProposalRejectMatch = path.match(/^\/api\/dialogue-proposals\/([^/]+)\/reject$/);
+  if (method === "POST" && dialogueProposalRejectMatch) {
+    sendJson(res, 200, rejectDialogueProposalItems(dialogueProposalRejectMatch[1]!, await readJson(req)));
     return;
   }
 

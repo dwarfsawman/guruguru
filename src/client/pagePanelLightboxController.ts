@@ -6,7 +6,16 @@
  * (`handleAssetCardClick` 等と同じ理由 -- lightbox は render/morph サイクルで再描画されるため
  * imageLightboxController.ts の直接 DOM 操作とは別方式)。
  */
-import type { CreatePlacementResult, DialogueLine, PagePanelAssignment, PageDetail, PageSummary } from "../shared/apiTypes";
+import type {
+  AdoptDialogueProposalResult,
+  CreateDialogueProposalResult,
+  CreatePlacementResult,
+  DialogueLine,
+  DialogueProposal,
+  PagePanelAssignment,
+  PageDetail,
+  PageSummary
+} from "../shared/apiTypes";
 import type { LayoutPanel, PanelCrop } from "../shared/pageLayout";
 import {
   clampPanelCrop,
@@ -94,6 +103,9 @@ export async function openPagePanelLightbox(pageId: string) {
   state.mosaicPolygonDraft = null;
   state.dialogueDrawerOpen = false;
   state.pagePanelLightboxDialogueLines = [];
+  state.dialogueProposals = [];
+  state.dialogueProposalBusy = false;
+  state.dialogueProposalRequestPageId = null;
   resetPageObjectsSession();
   resetShapeEditSession();
   resetMosaicEditSession();
@@ -172,6 +184,9 @@ export function closePagePanelLightbox() {
   state.mosaicPolygonDraft = null;
   state.dialogueDrawerOpen = false;
   state.pagePanelLightboxDialogueLines = [];
+  state.dialogueProposals = [];
+  state.dialogueProposalBusy = false;
+  state.dialogueProposalRequestPageId = null;
   requestRender();
   // クロップ/オブジェクト/コマ形状/モザイク編集があった場合だけ、ページ一覧の preview.png?v=... を
   // 最新化するため再取得する。dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に
@@ -692,6 +707,7 @@ function toggleDialogueDrawer() {
   requestRender();
   if (state.dialogueDrawerOpen) {
     void loadDialogueDrawerLines();
+    void loadDialogueProposals();
   }
 }
 
@@ -756,6 +772,129 @@ async function placeDialogueLine(lineId: string) {
   }
 }
 
+// --- 構造化 LLM セリフ提案(Docs/Feature-ScriptToManga.md S4) ---
+
+async function loadDialogueProposals() {
+  const projectId = state.currentProjectId;
+  const lightbox = state.pagePanelLightbox;
+  if (!projectId || !lightbox) {
+    return;
+  }
+  const pageId = lightbox.pageId;
+  try {
+    const result = await api<{ proposals: DialogueProposal[] }>(
+      `/api/projects/${projectId}/dialogue-proposals?pageId=${encodeURIComponent(pageId)}`
+    );
+    // 取得中に別ページへ切り替わっていたら結果を捨てる(既知の罠6: 非同期完了後の state 書き込みガード)。
+    if (state.pagePanelLightbox?.pageId !== pageId) {
+      return;
+    }
+    state.dialogueProposals = result.proposals;
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    requestRender();
+  }
+}
+
+/**
+ * 「AIセリフ提案」ボタン。LLM 呼び出しは数十秒かかりうるため、リクエスト発行時点の pageId を
+ * `dialogueProposalRequestPageId` に捕捉し、完了時に現在の lightbox.pageId と一致する場合のみ
+ * 結果を state へ反映する(LLM 待ち中のページ移動ガード -- 別ページへ移動/lightbox を閉じた後に
+ * 結果が返っても無視する。既知の罠6と同型)。サーバは LLM 呼び出し失敗時も status='failed' の
+ * proposal を返す(HttpError にはならない)ので、catch は主にネットワーク断/バリデーションエラー用。
+ */
+async function requestDialogueProposal() {
+  const projectId = state.currentProjectId;
+  const lightbox = state.pagePanelLightbox;
+  if (!projectId || !lightbox || state.dialogueProposalBusy) {
+    return;
+  }
+  const pageId = lightbox.pageId;
+  state.dialogueProposalBusy = true;
+  state.dialogueProposalRequestPageId = pageId;
+  requestRender();
+  try {
+    const result = await api<CreateDialogueProposalResult>(
+      `/api/projects/${projectId}/pages/${pageId}/dialogue-proposals`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+    if (state.dialogueProposalRequestPageId !== pageId || state.pagePanelLightbox?.pageId !== pageId) {
+      return;
+    }
+    state.dialogueProposals = [result.proposal, ...state.dialogueProposals];
+    if (result.proposal.status === "failed") {
+      pushToast(result.proposal.error ?? "LLMセリフ提案の生成に失敗しました。", "error");
+    }
+  } catch (error) {
+    if (state.dialogueProposalRequestPageId !== pageId || state.pagePanelLightbox?.pageId !== pageId) {
+      return;
+    }
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    if (state.dialogueProposalRequestPageId === pageId) {
+      state.dialogueProposalBusy = false;
+      state.dialogueProposalRequestPageId = null;
+    }
+    requestRender();
+  }
+}
+
+function replaceProposalInState(proposal: DialogueProposal) {
+  state.dialogueProposals = state.dialogueProposals.map((item) => (item.id === proposal.id ? proposal : item));
+}
+
+/** 提案項目1件の採用(文言修正可)。採用で作られた行はセリフ一覧に合流するので再取得する。 */
+async function adoptDialogueProposalItem(proposalId: string, itemIndex: number, editedText?: string) {
+  const pageId = state.pagePanelLightbox?.pageId;
+  if (!pageId) {
+    return;
+  }
+  try {
+    const proposal = state.dialogueProposals.find((item) => item.id === proposalId);
+    const originalText = proposal?.items?.[itemIndex]?.text ?? "";
+    const body: { itemIndices: number[]; edits?: Array<{ index: number; text: string }> } = { itemIndices: [itemIndex] };
+    if (editedText?.trim() && editedText.trim() !== originalText) {
+      body.edits = [{ index: itemIndex, text: editedText.trim() }];
+    }
+    const result = await api<AdoptDialogueProposalResult>(`/api/dialogue-proposals/${proposalId}/adopt`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    if (state.pagePanelLightbox?.pageId !== pageId) {
+      return;
+    }
+    replaceProposalInState(result.proposal);
+    void loadDialogueDrawerLines();
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    requestRender();
+  }
+}
+
+/** 提案項目1件の却下。 */
+async function rejectDialogueProposalItem(proposalId: string, itemIndex: number) {
+  const pageId = state.pagePanelLightbox?.pageId;
+  if (!pageId) {
+    return;
+  }
+  try {
+    const result = await api<{ proposal: DialogueProposal }>(`/api/dialogue-proposals/${proposalId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ itemIndices: [itemIndex] })
+    });
+    if (state.pagePanelLightbox?.pageId !== pageId) {
+      return;
+    }
+    replaceProposalInState(result.proposal);
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    requestRender();
+  }
+}
+
 registerActions({
   "open-page-panels": (id) => openPagePanelLightbox(id),
   "close-page-panels": () => closePagePanelLightbox(),
@@ -765,5 +904,22 @@ registerActions({
   "clear-panel-target": () => clearPanelTarget(),
   "set-page-panel-mode": (id) => setPagePanelMode(id),
   "toggle-dialogue-drawer": () => toggleDialogueDrawer(),
-  "place-dialogue-line": (id) => void placeDialogueLine(id)
+  "place-dialogue-line": (id) => void placeDialogueLine(id),
+  "request-dialogue-proposal": () => void requestDialogueProposal(),
+  "adopt-dialogue-proposal-item": (id, target) => {
+    const itemIndex = Number(target.dataset.itemIndex);
+    if (!Number.isInteger(itemIndex)) {
+      return;
+    }
+    const container = target.closest<HTMLElement>("[data-dialogue-proposal-item]");
+    const textarea = container?.querySelector<HTMLTextAreaElement>("[data-dialogue-proposal-edit]");
+    void adoptDialogueProposalItem(id, itemIndex, textarea?.value);
+  },
+  "reject-dialogue-proposal-item": (id, target) => {
+    const itemIndex = Number(target.dataset.itemIndex);
+    if (!Number.isInteger(itemIndex)) {
+      return;
+    }
+    void rejectDialogueProposalItem(id, itemIndex);
+  }
 });

@@ -616,3 +616,106 @@
   color: var(--muted);
   font-size: 10.5px;
 }
+
+/* 構造化 LLM セリフ提案(Docs/Feature-ScriptToManga.md S4)。 */
+.dialogue-proposal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dialogue-proposal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.dialogue-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-strong);
+}
+
+.dialogue-proposal-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.dialogue-proposal-model {
+  color: var(--muted);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dialogue-proposal-status {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.dialogue-proposal-status.is-failed {
+  color: var(--danger);
+}
+
+.dialogue-proposal-error {
+  color: var(--danger);
+}
+
+.dialogue-proposal-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dialogue-proposal-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-soft);
+  font-size: 11.5px;
+}
+
+.dialogue-proposal-item.is-resolved {
+  opacity: 0.55;
+}
+
+.dialogue-proposal-item-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.dialogue-proposal-item-panel {
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.dialogue-proposal-item-edit {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+}
+
+.dialogue-proposal-item-text {
+  margin: 0;
+}
+
+.dialogue-proposal-item-actions {
+  display: flex;
+  gap: 6px;
+}

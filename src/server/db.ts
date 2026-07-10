@@ -35,7 +35,8 @@ const jsonColumnNames = new Map<string, string>([
   ["aliases_json", "aliases"],
   ["binding_json", "binding"],
   ["parsed_json", "parsed"],
-  ["warnings_json", "warnings"]
+  ["warnings_json", "warnings"],
+  ["items_json", "items"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -364,6 +365,27 @@ export function initializeDb() {
       FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
     );
 
+    -- 構造化 LLM セリフ提案(Docs/Feature-ScriptToManga.md S4)。LLM の生出力・モデル名・脚本 revision・
+    -- 項目別の採用履歴(items_json)を永続化する。script_revision_id は提案時点の revision id(stale 判定用、
+    -- 最新 revision と比較する派生値なので列としては持たない -- dialogueProposals.ts が都度計算する)。
+    CREATE TABLE IF NOT EXISTS dialogue_proposals (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      script_id TEXT,
+      script_revision_id TEXT,
+      page_id TEXT,
+      model TEXT NOT NULL,
+      request_json TEXT NOT NULL,
+      raw_output TEXT,
+      items_json TEXT,
+      status TEXT NOT NULL DEFAULT 'proposed',
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE SET NULL,
+      FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE SET NULL
+    );
+
     CREATE UNIQUE INDEX IF NOT EXISTS idx_character_bindings_char_provider ON character_bindings(character_id, provider_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_script_revisions_script_rev ON script_revisions(script_id, revision);
     CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id);
@@ -372,6 +394,8 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_dialogue_lines_script ON dialogue_lines(script_id);
     CREATE INDEX IF NOT EXISTS idx_dialogue_placements_line ON dialogue_placements(line_id);
     CREATE INDEX IF NOT EXISTS idx_dialogue_placements_page ON dialogue_placements(page_id);
+    CREATE INDEX IF NOT EXISTS idx_dialogue_proposals_project ON dialogue_proposals(project_id);
+    CREATE INDEX IF NOT EXISTS idx_dialogue_proposals_page ON dialogue_proposals(page_id);
 
     CREATE INDEX IF NOT EXISTS idx_paste_sources_project ON paste_sources(project_id);
     CREATE INDEX IF NOT EXISTS idx_page_media_project ON page_media(project_id);

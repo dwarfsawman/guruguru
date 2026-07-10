@@ -1,5 +1,5 @@
-import type { ComfySettings, LlmSettings } from "../shared/types";
-import type { ComfyStatus, LlmStatus } from "../shared/apiTypes";
+import type { ComfySettings } from "../shared/types";
+import type { ComfyStatus, LlmSettingsView, LlmStatus } from "../shared/apiTypes";
 import { api } from "./api";
 import { type Json } from "./json";
 import { pushToast, requestRender, state } from "./appState";
@@ -75,14 +75,22 @@ function isComfyTestSuccessful(result: Json) {
 
 async function persistLlmSettings() {
   const form = readForm("llm-settings-form");
-  state.llmSettings = await api<LlmSettings>("/api/settings/llm", {
+  // apiKey はフィールド単位の部分更新(既知の罠11: GET が生の値を返さないため、空欄=維持が既定。
+  // 「API Keyを削除」チェック時のみ明示的に削除する)。
+  const body: Record<string, unknown> = {
+    baseUrl: form.baseUrl,
+    model: form.model,
+    systemPrompt: form.systemPrompt,
+    temperature: Number(form.temperature)
+  };
+  if (form.clearApiKey === "1") {
+    body.clearApiKey = true;
+  } else if (form.apiKey?.trim()) {
+    body.apiKey = form.apiKey.trim();
+  }
+  state.llmSettings = await api<LlmSettingsView>("/api/settings/llm", {
     method: "PUT",
-    body: JSON.stringify({
-      baseUrl: form.baseUrl,
-      model: form.model,
-      systemPrompt: form.systemPrompt,
-      temperature: Number(form.temperature)
-    })
+    body: JSON.stringify(body)
   });
 }
 

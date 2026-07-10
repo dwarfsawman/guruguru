@@ -103,6 +103,12 @@ export interface LlmSettings {
   model: string;
   systemPrompt: string;
   temperature: number;
+  /**
+   * OpenAI互換サーバーの Authorization: Bearer トークン(Docs/Feature-ScriptToManga.md S4)。
+   * この値そのものは API レスポンスへ露出しない(既知の罠11。GET/PUT /api/settings/llm は
+   * `LlmSettingsView`(hasApiKey フラグのみ)を返す -- src/shared/apiTypes.ts 参照)。
+   */
+  apiKey?: string;
 }
 
 export interface GenerationRequest {

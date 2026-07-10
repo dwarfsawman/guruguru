@@ -1,6 +1,6 @@
 import { defaultDenoiseForMode, normalizeDenoiseForMode } from "../shared/generationMode";
-import type { ComfySettings, LlmSettings } from "../shared/types";
-import type { Asset, ProjectDetail, ProjectRow, ProjectSummary, Round } from "../shared/apiTypes";
+import type { ComfySettings } from "../shared/types";
+import type { Asset, LlmSettingsView, ProjectDetail, ProjectRow, ProjectSummary, Round } from "../shared/apiTypes";
 import { api } from "./api";
 import type { WorkflowTemplate } from "./workflowTypes";
 import { pushToast, requestRender, state } from "./appState";
@@ -34,7 +34,7 @@ export async function loadHome() {
   state.roundProgress = {};
   state.iterationScrollReset = true;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
-  state.llmSettings = await api<LlmSettings>("/api/settings/llm");
+  state.llmSettings = await api<LlmSettingsView>("/api/settings/llm");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
   state.projects = (await api<{ projects: ProjectSummary[] }>("/api/projects")).projects;
   requestRender();
