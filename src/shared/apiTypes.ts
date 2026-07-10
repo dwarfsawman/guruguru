@@ -432,6 +432,72 @@ export interface CreatePlacementResult {
   objects: PageObject[];
 }
 
+// --- 構造化 LLM セリフ提案(Docs/Feature-ScriptToManga.md S4) ---
+
+/**
+ * `GET/PUT /api/settings/llm` の応答。`apiKey` 本体は API へ露出しない(既知の罠11)。
+ * `hasApiKey` は設定済みかどうかのフラグのみ。PUT はフィールド単位の部分更新
+ * (未指定 `apiKey` は現在値を維持、`clearApiKey: true` で削除 -- character binding の
+ * faceImage と同型)。
+ */
+export interface LlmSettingsView {
+  baseUrl: string;
+  model: string;
+  systemPrompt: string;
+  temperature: number;
+  hasApiKey: boolean;
+}
+
+export type DialogueProposalStatus = "proposed" | "resolved" | "failed";
+export type DialogueProposalItemStatus = "proposed" | "adopted" | "rejected" | "replaced";
+
+/** LLM 提案の1項目(項目別の採用履歴を保持)。 */
+export interface DialogueProposalItem {
+  panelId: string | null;
+  speakerName: string;
+  text: string;
+  semanticKind: DialogueSemanticKind;
+  emotion?: string;
+  itemStatus: DialogueProposalItemStatus;
+  /** 採用で作られた dialogue_lines.id。 */
+  adoptedLineId?: string;
+  /** 手修正して採用した場合の最終文言。 */
+  editedText?: string;
+}
+
+/**
+ * `dialogue_proposals` 行。`rawOutput`(LLM 生出力 verbatim)と `request`(送信 messages)は
+ * 再現性のため永続化する。`isStale` はサーバが `scriptRevisionId` と当該脚本の最新 revision を
+ * 比較して都度計算する(既知の罠2並みの単純な派生値だが、テーブル自体には持たない)。
+ */
+export interface DialogueProposal {
+  id: string;
+  projectId: string;
+  scriptId: string | null;
+  scriptRevisionId: string | null;
+  pageId: string | null;
+  model: string;
+  request: unknown;
+  rawOutput: string | null;
+  items: DialogueProposalItem[] | null;
+  status: DialogueProposalStatus;
+  error: string | null;
+  createdAt: string;
+  /** `scriptRevisionId` が当該脚本の最新 revision と一致しない(脚本が再取り込みされた)場合 true。 */
+  isStale: boolean;
+}
+
+/** `POST /api/projects/:id/pages/:pageId/dialogue-proposals` の応答。 */
+export interface CreateDialogueProposalResult {
+  proposal: DialogueProposal;
+}
+
+/** `POST /api/dialogue-proposals/:id/adopt` の応答。採用項目から作られた DialogueLine を含む。 */
+export interface AdoptDialogueProposalResult {
+  proposal: DialogueProposal;
+  lines: DialogueLine[];
+}
+
 export interface CollectRoundResponse {
   round?: Round;
   assets?: Asset[];
