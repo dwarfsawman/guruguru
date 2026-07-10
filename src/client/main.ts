@@ -1111,7 +1111,8 @@ function renderPagePanelLightboxView(): string {
       previewBeatId: state.chronicle.previewBeatId,
       selectedBeatIds: state.chronicle.selectedBeatIds,
       allocationPolicy: state.chronicle.allocationPolicy,
-      busyAction: state.chronicle.busyAction
+      busyAction: state.chronicle.busyAction,
+      preview: state.chronicle.preview
     }
   );
 }

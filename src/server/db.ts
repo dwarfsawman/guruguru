@@ -443,6 +443,11 @@ export function initializeDb() {
   // (レガシー列の宣言は下記コメント参照)。読み側は `provider_job_ref ?? prompt_id` を読み、
   // v2 導入前の旧行(NULL)にも後方互換で動く(rounds.ts の jobNativeRef)。
   ensureColumn("generation_jobs", "provider_job_ref", "TEXT");
+  // Chronicle Page Flow(Docs/Feature-ChroniclePageFlow.md §2.4 フェーズIII): 自動配置の再現・ロック管理用。
+  // auto_layout_locked=1 は手動編集済みで再配置対象外、auto_layout_seed/version は preview/apply の再現用。
+  ensureColumn("dialogue_placements", "auto_layout_locked", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("dialogue_placements", "auto_layout_seed", "INTEGER");
+  ensureColumn("dialogue_placements", "auto_layout_version", "INTEGER");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {

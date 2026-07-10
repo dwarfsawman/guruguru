@@ -176,12 +176,19 @@ function requirePanelExists(page: PageRowForPlacement, panelId: string) {
   }
 }
 
+/**
+ * `dialogue_placements` の1行を API 型へ変換する。`auto_layout_locked` は INTEGER(0/1)なので
+ * `toApiRow` の自動変換(単純 snake→camel、型変換なし)の後に boolean へ直す
+ * (`pasteAttachments.ts` の `enabled` と同じパターン)。
+ */
 function placementRow(placementId: string): DialoguePlacement {
-  const row = toApiRow(getRow("SELECT * FROM dialogue_placements WHERE id = ?", [placementId])) as unknown as DialoguePlacement | null;
+  const row = toApiRow(getRow("SELECT * FROM dialogue_placements WHERE id = ?", [placementId])) as unknown as
+    | (DialoguePlacement & { autoLayoutLocked: unknown })
+    | null;
   if (!row) {
     throw new HttpError(404, "Dialogue placement was not found");
   }
-  return row;
+  return { ...row, autoLayoutLocked: Boolean(row.autoLayoutLocked) };
 }
 
 /**

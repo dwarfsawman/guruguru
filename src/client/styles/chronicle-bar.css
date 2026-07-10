@@ -284,3 +284,61 @@
   color: var(--muted);
   font-size: 11px;
 }
+
+/* フェーズIII(§2.3・§3): 吹き出し一括配置の「配置案」「確定」「キャンセル」ボタン列。 */
+.chronicle-layout-actions {
+  border-top: 1px dashed var(--line);
+  padding-top: 6px;
+}
+
+.chronicle-layout-preview-panel {
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chronicle-layout-preview-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chronicle-layout-preview-stats .is-warning {
+  color: var(--warn);
+}
+
+.chronicle-layout-preview-warnings {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--warn);
+  max-height: 72px;
+  overflow-y: auto;
+}
+
+/*
+ * フェーズIII(§2.3): 配置案プレビューのゴースト(DB 未保存の仮 PageObject)。半透明・破線で
+ * 「まだ確定していない」ことを視覚的に示す。pointer-events は呼び出し側(pagePanelLightboxView.ts)が
+ * レイヤー全体へ none を付けているので、既存オブジェクトの選択/ドラッグを妨げない。
+ */
+.chronicle-preview-ghost-layer rect {
+  fill: var(--accent-soft);
+  stroke: var(--accent-strong);
+  stroke-width: 0.003;
+  stroke-dasharray: 0.01 0.008;
+  opacity: 0.55;
+}
+
+.chronicle-preview-ghost-item.is-sfx rect {
+  fill: none;
+  stroke: var(--warn);
+}
+
+.chronicle-preview-ghost-layer text {
+  fill: var(--ink);
+  opacity: 0.85;
+  font-family: inherit;
+}

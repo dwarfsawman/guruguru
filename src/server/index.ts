@@ -76,6 +76,7 @@ import {
 } from "./dialogueProposals";
 import { getChronicle } from "./chronicle";
 import { allocateDialoguePages, removeDialogueAllocation } from "./dialogueAllocation";
+import { applyDialogueLayout, previewDialogueLayout } from "./dialogueAutoLayoutApi";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
   GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
@@ -648,6 +649,20 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const dialogueAllocationMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-allocation$/);
   if (method === "POST" && dialogueAllocationMatch) {
     sendJson(res, 200, allocateDialoguePages(dialogueAllocationMatch[1]!, dialogueAllocationMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  // Chronicle Page Flow フェーズIII(§3・§4): 吹き出し一括配置の preview/apply。末尾セグメントが
+  // dialogue-allocation より多く末尾 $ で完全一致するため、前段の pageDetailMatch 等との順序衝突は無い。
+  const dialogueLayoutPreviewMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/preview$/);
+  if (method === "POST" && dialogueLayoutPreviewMatch) {
+    sendJson(res, 200, previewDialogueLayout(dialogueLayoutPreviewMatch[1]!, dialogueLayoutPreviewMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  const dialogueLayoutApplyMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/apply$/);
+  if (method === "POST" && dialogueLayoutApplyMatch) {
+    sendJson(res, 200, applyDialogueLayout(dialogueLayoutApplyMatch[1]!, dialogueLayoutApplyMatch[2]!, await readJson(req)));
     return;
   }
 

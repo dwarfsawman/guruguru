@@ -1,0 +1,242 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  orderPanelsByReadingDirection,
+  runDialogueAutoLayout,
+  type DialogueAutoLayoutItem
+} from "./dialogueAutoLayout.ts";
+import type { LayoutPanel, PageLayout } from "./pageLayout.ts";
+import type { PageObject } from "./pageObjects.ts";
+
+function rectPanel(id: string, order: number, bounds: [number, number, number, number]): LayoutPanel {
+  return { id, order, shape: { type: "rect", bounds } };
+}
+
+/** 2x1(横並び2コマ)のレイアウト。 */
+function twoPanelLayout(direction: "rtl" | "ltr" = "rtl"): PageLayout {
+  return {
+    version: 1,
+    page: { aspectRatio: [1, 1.4142], height: 1.4142 },
+    readingDirection: direction,
+    panels: [rectPanel("panel_left", 1, [0, 0, 0.48, 1.4142]), rectPanel("panel_right", 2, [0.52, 0, 1, 1.4142])]
+  };
+}
+
+function item(overrides: Partial<DialogueAutoLayoutItem> & Pick<DialogueAutoLayoutItem, "placementId" | "lineId" | "orderIndex">): DialogueAutoLayoutItem {
+  return {
+    text: "テスト",
+    semanticKind: "dialogue",
+    speakerLabel: "太郎",
+    size: { x: 0.1, y: 0.1 },
+    ...overrides
+  };
+}
+
+test("orderPanelsByReadingDirection: RTL は右上→左下(同じ行なら右のコマが先)", () => {
+  const panels = [rectPanel("left", 1, [0, 0, 0.48, 0.5]), rectPanel("right", 2, [0.52, 0, 1, 0.5])];
+  const ordered = orderPanelsByReadingDirection(panels, "rtl");
+  assert.deepEqual(ordered.map((p) => p.id), ["right", "left"]);
+});
+
+test("orderPanelsByReadingDirection: LTR は左上→右下(同じ行なら左のコマが先)", () => {
+  const panels = [rectPanel("left", 1, [0, 0, 0.48, 0.5]), rectPanel("right", 2, [0.52, 0, 1, 0.5])];
+  const ordered = orderPanelsByReadingDirection(panels, "ltr");
+  assert.deepEqual(ordered.map((p) => p.id), ["left", "right"]);
+});
+
+test("orderPanelsByReadingDirection: 行が違えば y が小さい(上の)行を先にする", () => {
+  const panels = [rectPanel("bottom", 1, [0, 1, 1, 1.4]), rectPanel("top", 2, [0, 0, 1, 0.4])];
+  const ordered = orderPanelsByReadingDirection(panels, "rtl");
+  assert.deepEqual(ordered.map((p) => p.id), ["top", "bottom"]);
+});
+
+test("runDialogueAutoLayout: 同 seed なら同じ結果(位置・id とも再現)", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, text: "おはよう" }),
+    item({ placementId: "p2", lineId: "l2", orderIndex: 1, text: "おはよう、太郎", speakerLabel: "花子" })
+  ];
+  const a = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 42 });
+  const b = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 42 });
+  assert.deepEqual(a, b);
+  assert.equal(a.unplacedPlacementIds.length, 0);
+  assert.equal(a.objects.length, 2);
+});
+
+test("runDialogueAutoLayout: 異なる seed では(通常)異なる配置になりうる", () => {
+  const layout = twoPanelLayout();
+  // 密集させて tie-break を誘発しやすいよう、同じサイズ・同じコマへ複数アイテムを置く。
+  const items: DialogueAutoLayoutItem[] = Array.from({ length: 6 }, (_, i) =>
+    item({ placementId: `p${i}`, lineId: `l${i}`, orderIndex: i, text: "あ", size: { x: 0.05, y: 0.05 } })
+  );
+  const results = new Set<string>();
+  for (const seed of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed });
+    results.add(JSON.stringify(result.objects.map((o) => o.position)));
+  }
+  // 全 seed が同一配置になることはまず無い(tie-break が seed に依存するため)。
+  assert.ok(results.size > 1, "seed によって配置が変わることを期待");
+});
+
+test("runDialogueAutoLayout: 非重複(生成されたオブジェクト同士は重ならない)", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = Array.from({ length: 4 }, (_, i) =>
+    item({ placementId: `p${i}`, lineId: `l${i}`, orderIndex: i, size: { x: 0.1, y: 0.1 } })
+  );
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 7 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  for (let i = 0; i < result.objects.length; i += 1) {
+    for (let j = i + 1; j < result.objects.length; j += 1) {
+      const a = result.objects[i]! as { position: { x: number; y: number }; size?: { x: number; y: number } };
+      const b = result.objects[j]! as { position: { x: number; y: number }; size?: { x: number; y: number } };
+      if (!a.size || !b.size) continue;
+      const overlap =
+        Math.abs(a.position.x - b.position.x) < (a.size.x + b.size.x) / 2 &&
+        Math.abs(a.position.y - b.position.y) < (a.size.y + b.size.y) / 2;
+      assert.equal(overlap, false, `objects ${i} and ${j} should not overlap`);
+    }
+  }
+});
+
+test("runDialogueAutoLayout: コマ・ページ外に出ない", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = [item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 0.1, y: 0.1 } })];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 3 });
+  const object = result.objects[0]! as { position: { x: number; y: number }; size: { x: number; y: number } };
+  assert.ok(object.position.x - object.size.x / 2 >= 0);
+  assert.ok(object.position.x + object.size.x / 2 <= 1);
+  assert.ok(object.position.y - object.size.y / 2 >= 0);
+  assert.ok(object.position.y + object.size.y / 2 <= layout.page.height);
+});
+
+test("runDialogueAutoLayout: 既存オブジェクトを避ける", () => {
+  const layout = twoPanelLayout();
+  // 右コマ全域を覆う既存 box。RTL なので右コマが先に埋まる想定 -- 既存オブジェクトのせいで
+  // 右コマには置けず、警告付き unplaced になるか、あるいは他の空きを探す(コマ非依存の narration なら)。
+  const existingObjects: PageObject[] = [
+    {
+      id: "existing_box",
+      kind: "box",
+      position: { x: 0.76, y: 0.7 },
+      rotation: 0,
+      size: { x: 0.48, y: 1.4 },
+      fill: "#ffffff",
+      strokeColor: "#000000",
+      strokeWidth: 0.004
+    }
+  ];
+  const items: DialogueAutoLayoutItem[] = [item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 0.1, y: 0.1 } })];
+  const result = runDialogueAutoLayout({ layout, existingObjects, items, seed: 1 });
+  if (result.objects.length > 0) {
+    const object = result.objects[0]! as { position: { x: number; y: number }; size: { x: number; y: number } };
+    const overlap =
+      Math.abs(object.position.x - 0.76) < (object.size.x + 0.48) / 2 && Math.abs(object.position.y - 0.7) < (object.size.y + 1.4) / 2;
+    assert.equal(overlap, false);
+  } else {
+    assert.equal(result.unplacedPlacementIds.length, 1);
+  }
+});
+
+test("runDialogueAutoLayout: ロック済み(既存)吹き出しは障害物として避ける", () => {
+  const layout = twoPanelLayout();
+  const lockedBalloon: PageObject = {
+    id: "locked_balloon",
+    kind: "balloon",
+    position: { x: 0.24, y: 0.3 },
+    rotation: 0,
+    shape: "ellipse",
+    size: { x: 0.4, y: 0.4 },
+    fill: "#ffffff",
+    strokeColor: "#000000",
+    strokeWidth: 0.004,
+    tail: null
+  };
+  const items: DialogueAutoLayoutItem[] = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 0.15, y: 0.15 }, speakerLabel: "太郎" })
+  ];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [lockedBalloon], items, seed: 5 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  const object = result.objects[0]! as { position: { x: number; y: number }; size: { x: number; y: number } };
+  const overlap =
+    Math.abs(object.position.x - lockedBalloon.position.x) < (object.size.x + lockedBalloon.size.x) / 2 &&
+    Math.abs(object.position.y - lockedBalloon.position.y) < (object.size.y + lockedBalloon.size.y) / 2;
+  assert.equal(overlap, false);
+});
+
+test("runDialogueAutoLayout: narration はページ全体候補(コマ外にも置ける)", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, semanticKind: "narration", text: "その日、街は静かだった。", size: { x: 0.3, y: 0.08 } })
+  ];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 9 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  assert.equal(result.objects[0]!.kind, "box");
+  assert.equal(result.assignments[0]!.panelId, null);
+});
+
+test("runDialogueAutoLayout: 発話順とコマ順の単調性(order_index 昇順で panelId のコマ順が逆転しない)", () => {
+  const layout = twoPanelLayout("rtl");
+  const orderedPanelIds = orderPanelsByReadingDirection(layout.panels, "rtl").map((p) => p.id);
+  const items: DialogueAutoLayoutItem[] = Array.from({ length: 6 }, (_, i) =>
+    item({ placementId: `p${i}`, lineId: `l${i}`, orderIndex: i, text: "あいうえお".repeat(i + 1), size: { x: 0.08, y: 0.08 } })
+  );
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 11 });
+  const byOrder = items
+    .map((it) => result.assignments.find((a) => a.placementId === it.placementId))
+    .filter((a): a is NonNullable<typeof a> => Boolean(a));
+  let lastIndex = -1;
+  for (const assignment of byOrder) {
+    if (assignment.panelId === null) continue;
+    const idx = orderedPanelIds.indexOf(assignment.panelId);
+    assert.ok(idx >= lastIndex, "panel order must be non-decreasing along order_index");
+    lastIndex = idx;
+  }
+});
+
+test("runDialogueAutoLayout: 矩形コマの bbox 内に収まる", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = [item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 0.1, y: 0.1 } })];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 2 });
+  const assignment = result.assignments[0]!;
+  const panel = layout.panels.find((p) => p.id === assignment.panelId)!;
+  const bounds = (panel.shape as { bounds: [number, number, number, number] }).bounds;
+  const object = result.objects[0]! as { position: { x: number; y: number }; size: { x: number; y: number } };
+  assert.ok(object.position.x - object.size.x / 2 >= bounds[0] - 1e-6);
+  assert.ok(object.position.x + object.size.x / 2 <= bounds[2] + 1e-6);
+});
+
+test("runDialogueAutoLayout: polygon コマは内部判定で絞る(中心が polygon の外なら不採用)", () => {
+  // 三角形コマ(polygon)。外接矩形は正方形だが、実面積は半分しかない。
+  const layout: PageLayout = {
+    version: 1,
+    page: { aspectRatio: [1, 1], height: 1 },
+    readingDirection: "rtl",
+    panels: [{ id: "tri", order: 1, shape: { type: "polygon", points: [[0, 0], [1, 0], [0, 1]] } }]
+  };
+  const items: DialogueAutoLayoutItem[] = [item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 0.15, y: 0.15 } })];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 4 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  const object = result.objects[0]! as { position: { x: number; y: number } };
+  // 三角形 (0,0)-(1,0)-(0,1) の内部条件: x>=0, y>=0, x+y<=1。
+  assert.ok(object.position.x + object.position.y <= 1 + 1e-6);
+});
+
+test("runDialogueAutoLayout: 配置不能(コマに対して大きすぎる)は unplaced + warning", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 2, y: 2 } })
+  ];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 1 });
+  assert.deepEqual(result.unplacedPlacementIds, ["p1"]);
+  assert.equal(result.objects.length, 0);
+  assert.ok(result.warnings.length > 0);
+});
+
+test("runDialogueAutoLayout: コマの無いページで dialogue は unplaced", () => {
+  const layout: PageLayout = { version: 1, page: { aspectRatio: [1, 1.4], height: 1.4 }, readingDirection: "rtl", panels: [] };
+  // panels が空だと normalizeEditedPageLayout は弾くが、ソルバー自体は panels=[] を受けても
+  // 動く(API 層のバリデーションとは独立に純ロジックとして防御的であることを確認する)。
+  const items: DialogueAutoLayoutItem[] = [item({ placementId: "p1", lineId: "l1", orderIndex: 0 })];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 1 });
+  assert.deepEqual(result.unplacedPlacementIds, ["p1"]);
+});
