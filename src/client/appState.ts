@@ -1,12 +1,14 @@
-import type { ComfySettings, LlmSettings } from "../shared/types";
+import type { ComfySettings } from "../shared/types";
 import type {
   Asset,
   BookPages,
   Character,
   CharacterBindingView,
   DialogueLine,
+  DialogueProposal,
   FontSummary,
   LayoutTemplateSummary,
+  LlmSettingsView,
   MangaScript,
   ModelCheckResult,
   PagePanelAssignment,
@@ -282,7 +284,7 @@ export interface AppState {
   sidebarWidth: number;
   comfyConnection: ConnectionState;
   comfyStatusText: string;
-  llmSettings: LlmSettings | null;
+  llmSettings: LlmSettingsView | null;
   llmConnection: ConnectionState;
   llmStatusText: string;
   llmImproving: boolean;
@@ -471,6 +473,19 @@ export interface AppState {
   dialogueDrawerOpen: boolean;
   /** 配置ドロワー: そのプロジェクトの active なセリフ行(ドロワーを開いた時に取得)。lightbox 非開時は空配列。 */
   pagePanelLightboxDialogueLines: DialogueLine[];
+
+  // --- 構造化 LLM セリフ提案(Docs/Feature-ScriptToManga.md S4) ---
+
+  /** 配置ドロワー: 「AIセリフ提案」でこのページ向けに取得済みの提案一覧(新しい順)。lightbox 非開時は空配列。 */
+  dialogueProposals: DialogueProposal[];
+  /**
+   * 配置ドロワー: LLM 提案リクエスト送信中フラグ(ボタン disabled + スピナー表示、llmImproving 同型)。
+   * 「LLM 待ち中のページ移動ガード」はこのフラグ+リクエスト発行時に捕捉した pageId で行う
+   * (dialogueProposalRequestPageId が現在の lightbox.pageId と一致する時だけ結果を state へ反映する)。
+   */
+  dialogueProposalBusy: boolean;
+  /** 直近の提案リクエストを発行した pageId(非同期完了後の state 書き込みガード。既知の罠6)。 */
+  dialogueProposalRequestPageId: string | null;
 }
 
 export const state: AppState = {
@@ -583,5 +598,8 @@ export const state: AppState = {
   characterLoraStrengthDraft: 1,
   characterFacePickerOpen: false,
   dialogueDrawerOpen: false,
-  pagePanelLightboxDialogueLines: []
+  pagePanelLightboxDialogueLines: [],
+  dialogueProposals: [],
+  dialogueProposalBusy: false,
+  dialogueProposalRequestPageId: null
 };
