@@ -325,6 +325,11 @@ export interface PageDetail extends ProjectDetail {
   page: PageRow;
   /** そのページのコマ割り当て一覧(`page.layout` が無ければ常に空配列)。 */
   panelAssignments: PagePanelAssignment[];
+  /**
+   * ImageObject が参照する mediaId のうち、page_media 行/ファイルが欠損しているものの id
+   * (Docs/Feature-ScriptToManga.md S2)。編集画面はこれを見てプレースホルダ(破線枠+media id)を表示する。
+   */
+  missingPageMediaIds: string[];
 }
 
 export interface CollectRoundResponse {

@@ -16,6 +16,7 @@ import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from
 import { HttpError } from "./http";
 import { resolveLayoutTemplate } from "./layoutTemplates";
 import { listPanelAssignments, upsertPanelAssignment } from "./panelAssignments";
+import { missingPageMediaIds } from "./pageMedia";
 import { isPathInside } from "./paths";
 import { getProjectDetail } from "./projects";
 import { deleteRoundTree, roundAttachmentPathFromRequest } from "./rounds";
@@ -233,7 +234,7 @@ export function getPageDetail(projectId: string, pageId: string, options: PageDe
   const page = requirePage(projectId, pageId);
   const detail = getProjectDetail(projectId, options, pageId);
   const panelAssignments = page.layout ? listPanelAssignments(pageId) : [];
-  return { ...detail, page, panelAssignments };
+  return { ...detail, page, panelAssignments, missingPageMediaIds: missingPageMediaIds(page.objects ?? []) };
 }
 
 /** コマ内生成(Docs/Feature-PanelGeneration.md): コマへの画像割り当て/クロップを更新する。 */
