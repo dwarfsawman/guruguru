@@ -81,6 +81,40 @@ export interface ChronicleApiResponse {
   pages: ChroniclePageSummary[];
 }
 
+// --- フェーズII: 一括割り当て/解除(§3・§6) ---
+
+/**
+ * 他ページ配置済み行の扱い(§3)。既定 "skip"。
+ * skip=無視 / move=当該ページへ移動(balloon 化済みは移動不可・skip 扱い) / copy=複数ページ配置を許可。
+ */
+export type ExistingPlacementPolicy = "skip" | "move" | "copy";
+
+/** `POST /api/projects/:projectId/pages/:pageId/dialogue-allocation` のリクエストボディ。 */
+export interface DialogueAllocationRequest {
+  lineIds: string[];
+  existingPlacementPolicy?: ExistingPlacementPolicy;
+}
+
+/** 一括割り当ての結果集計。冪等な呼び出しは `created` が増えない。 */
+export interface DialogueAllocationResult {
+  created: number;
+  skipped: number;
+  moved: number;
+  warnings: string[];
+}
+
+/** `POST /api/projects/:projectId/pages/:pageId/dialogue-allocation/remove` のリクエストボディ。 */
+export interface DialogueAllocationRemovalRequest {
+  lineIds: string[];
+}
+
+/** 一括解除の結果集計。balloon_object_id が付いた placement はスキップされ warnings に載る。 */
+export interface DialogueAllocationRemovalResult {
+  removed: number;
+  skipped: number;
+  warnings: string[];
+}
+
 // --- フェーズIII 先出し型(dialogue-layout/preview、未使用) ---
 
 export interface DialogueLayoutAssignment {

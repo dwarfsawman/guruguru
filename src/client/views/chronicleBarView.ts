@@ -1,9 +1,11 @@
 /**
  * Chronicle バー(S5、Docs/Feature-ChroniclePageFlow.md)の描画。ページ編集 lightbox 下部の
  * 折り畳み可能な脚本タイムライン。フェーズI: 横スクロール一覧・状態色分け・現在ページ範囲強調・
- * Beat クリックでの内容プレビュー表示のみ(選択/一括割り当てはフェーズII 以降、UI は出さない)。
+ * Beat クリックでの内容プレビュー表示。フェーズII: 範囲選択(Shift+クリック)のハイライト・
+ * 選択サマリ(文字数・発話数・推定吹き出し数)・他ページ配置の警告・一括割り当て/解除ボタン・
+ * ポリシー(skip/move/copy)選択・「次の未配置区間へ」ボタン(自動配置 preview/apply はフェーズIII)。
  */
-import type { ChronicleBeat, ChronicleLineSummary, ChroniclePageSummary } from "../../shared/chronicle";
+import type { ChronicleBeat, ChronicleLineSummary, ChroniclePageSummary, ExistingPlacementPolicy } from "../../shared/chronicle";
 import type { MangaScript } from "../../shared/apiTypes";
 import { buildBeatPreview, computeBeatState } from "../../shared/chronicleBeat";
 import { escapeAttr, escapeHtml } from "../format";
@@ -20,7 +22,19 @@ export interface ChronicleBarViewState {
   pages: ChroniclePageSummary[];
   currentPageId: string;
   previewBeatId: string | null;
+  /** フェーズII: Shift+クリックで選択中の Beat id(§2.3)。 */
+  selectedBeatIds: string[];
+  /** フェーズII: 一括割り当て時の他ページ配置ポリシー(§3、既定 "skip")。 */
+  allocationPolicy: ExistingPlacementPolicy;
+  /** フェーズII: 一括割り当て/解除の実行中ガード(§4)。ボタンの disabled/表示に使う。 */
+  busyAction: null | "assign" | "preview" | "apply" | "reflow";
 }
+
+const POLICY_LABEL: Record<ExistingPlacementPolicy, string> = {
+  skip: "スキップ",
+  move: "移動",
+  copy: "複製"
+};
 
 const STATUS_LABEL: Record<string, string> = {
   unassigned: "未配置",
@@ -62,6 +76,16 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
         ? `<span class="chronicle-bar-script-name">${escapeHtml(view.scripts[0].title.trim() || "(無題の脚本)")}</span>`
         : "";
 
+  const hasUnassigned = view.beats.some(
+    (beat) => computeBeatState(beat, lineSummaryById, view.currentPageId).status === "unassigned"
+  );
+  const nextUnassignedButton = `
+    <button type="button" class="chronicle-bar-next-unassigned" data-action="jump-chronicle-next-unassigned"
+      ${hasUnassigned ? "" : "disabled"}>
+      次の未配置区間へ
+    </button>
+  `;
+
   const body = view.collapsed
     ? ""
     : view.status === "loading"
@@ -70,9 +94,11 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
         ? `<div class="chronicle-bar-message chronicle-bar-message-error">${escapeHtml(view.errorMessage ?? "Chronicle の取得に失敗しました。")}</div>`
         : view.beats.length === 0
           ? `<div class="chronicle-bar-message">セリフがまだありません。</div>`
-          : `<div class="chronicle-bar-track">
-              ${view.beats.map((beat) => renderBeatChip(beat, lineSummaryById, view.currentPageId)).join("")}
+          : `<div class="chronicle-bar-toolbar">${nextUnassignedButton}</div>
+            <div class="chronicle-bar-track">
+              ${view.beats.map((beat) => renderBeatChip(beat, lineSummaryById, view.currentPageId, view.selectedBeatIds)).join("")}
             </div>
+            ${view.selectedBeatIds.length > 0 ? renderSelectionPanel(view, lineSummaryById) : ""}
             ${view.previewBeatId ? renderBeatPreview(view, lineSummaryById) : ""}`;
 
   return `
@@ -90,7 +116,12 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
   `;
 }
 
-function renderBeatChip(beat: ChronicleBeat, lineSummaryById: Map<string, ChronicleLineSummary>, currentPageId: string): string {
+function renderBeatChip(
+  beat: ChronicleBeat,
+  lineSummaryById: Map<string, ChronicleLineSummary>,
+  currentPageId: string,
+  selectedBeatIds: string[]
+): string {
   const beatState = computeBeatState(beat, lineSummaryById, currentPageId);
   const isCurrentPage = beatState.currentPageLineCount > 0;
   const classes = ["chronicle-beat", `is-status-${beatState.status}`];
@@ -100,12 +131,80 @@ function renderBeatChip(beat: ChronicleBeat, lineSummaryById: Map<string, Chroni
   if (beatState.locked) {
     classes.push("is-locked");
   }
+  if (selectedBeatIds.includes(beat.id)) {
+    classes.push("is-selected");
+  }
   return `
     <button type="button" class="${classes.join(" ")}" data-action="toggle-chronicle-beat-preview" data-id="${escapeAttr(beat.id)}"
-      title="${escapeAttr(`${beat.label}: ${beat.summary}`)}" aria-label="${escapeAttr(STATUS_LABEL[beatState.status] ?? beatState.status)}">
+      title="${escapeAttr(`${beat.label}: ${beat.summary}(Shift+クリックで範囲選択)`)}" aria-label="${escapeAttr(STATUS_LABEL[beatState.status] ?? beatState.status)}"
+      aria-pressed="${selectedBeatIds.includes(beat.id) ? "true" : "false"}">
       <span class="chronicle-beat-label">${escapeHtml(beat.label)}</span>
       <span class="chronicle-beat-summary">${escapeHtml(beat.summary)}</span>
     </button>
+  `;
+}
+
+/**
+ * 選択サマリ+割り当て/解除操作パネル(§2.3)。文字数・発話数・推定吹き出し数(=行数)を表示し、
+ * 他ページ配置済み行が選択に含まれる場合は警告を出す(既定 skip のまま実行可)。
+ */
+function renderSelectionPanel(view: ChronicleBarViewState, lineSummaryById: Map<string, ChronicleLineSummary>): string {
+  const selectedBeats = view.beats.filter((beat) => view.selectedBeatIds.includes(beat.id));
+  const lineIds = Array.from(new Set(selectedBeats.flatMap((beat) => beat.lineIds)));
+  const lines = lineIds.map((id) => lineSummaryById.get(id)).filter((value): value is ChronicleLineSummary => Boolean(value));
+  const charCount = lines.reduce((sum, line) => sum + line.text.length, 0);
+  const lineCount = lines.length;
+  const hasOtherPageLines = lines.some(
+    (line) => line.placements.length > 0 && !line.placements.some((placement) => placement.pageId === view.currentPageId)
+  );
+  const hasMaterializedOnCurrentPage = lines.some((line) =>
+    line.placements.some((placement) => placement.pageId === view.currentPageId && placement.balloonObjectId)
+  );
+  const busy = view.busyAction === "assign";
+
+  return `
+    <div class="chronicle-selection-panel">
+      <div class="chronicle-selection-stats">
+        <span>${selectedBeats.length}区間選択中</span>
+        <span>${lineCount}発話</span>
+        <span>${charCount}字</span>
+        <span>吹き出し見込み ${lineCount}個</span>
+      </div>
+      ${
+        hasOtherPageLines
+          ? `<div class="chronicle-selection-warning">選択に他ページ配置済みの行が含まれています(既定では動かしません)。</div>`
+          : ""
+      }
+      ${
+        hasMaterializedOnCurrentPage
+          ? `<div class="chronicle-selection-warning">選択に吹き出し化済みの行が含まれています(割り当て解除の対象外)。</div>`
+          : ""
+      }
+      <div class="chronicle-selection-policy-tabs" role="tablist" aria-label="他ページ配置済み行の扱い">
+        ${(["skip", "move", "copy"] as const)
+          .map(
+            (policy) => `
+              <button type="button" class="chronicle-selection-policy-tab${policy === view.allocationPolicy ? " is-active" : ""}"
+                data-action="select-chronicle-allocation-policy" data-id="${policy}" role="tab"
+                aria-selected="${policy === view.allocationPolicy ? "true" : "false"}">
+                ${POLICY_LABEL[policy]}
+              </button>
+            `
+          )
+          .join("")}
+      </div>
+      <div class="chronicle-selection-actions">
+        <button type="button" class="button-primary compact" data-action="assign-chronicle-selection" ${busy ? "disabled" : ""}>
+          現在ページへ割り当て
+        </button>
+        <button type="button" class="button-secondary compact" data-action="remove-chronicle-selection" ${busy ? "disabled" : ""}>
+          割り当て解除
+        </button>
+        <button type="button" class="button-secondary compact" data-action="clear-chronicle-selection" ${busy ? "disabled" : ""}>
+          選択を解除
+        </button>
+      </div>
+    </div>
   `;
 }
 

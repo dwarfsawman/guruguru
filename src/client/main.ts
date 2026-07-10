@@ -1108,7 +1108,10 @@ function renderPagePanelLightboxView(): string {
       lines: state.chronicle.lines,
       pages: state.chronicle.pages,
       currentPageId: lightbox.pageId,
-      previewBeatId: state.chronicle.previewBeatId
+      previewBeatId: state.chronicle.previewBeatId,
+      selectedBeatIds: state.chronicle.selectedBeatIds,
+      allocationPolicy: state.chronicle.allocationPolicy,
+      busyAction: state.chronicle.busyAction
     }
   );
 }

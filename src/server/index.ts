@@ -75,6 +75,7 @@ import {
   rejectDialogueProposalItems
 } from "./dialogueProposals";
 import { getChronicle } from "./chronicle";
+import { allocateDialoguePages, removeDialogueAllocation } from "./dialogueAllocation";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
   GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
@@ -627,6 +628,26 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const chronicleMatch = path.match(/^\/api\/projects\/([^/]+)\/chronicle$/);
   if (method === "GET" && chronicleMatch) {
     sendJson(res, 200, getChronicle(chronicleMatch[1]!, url.searchParams.get("scriptId") ?? undefined));
+    return;
+  }
+
+  // Chronicle Page Flow フェーズII(§3・§6): 一括割り当て/解除。`/pages/:pageId` より末尾セグメントが
+  // 多く末尾 $ で完全一致するため、既存の pageDetailMatch 等との順序衝突は無い。
+  const dialogueAllocationRemoveMatch = path.match(
+    /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-allocation\/remove$/
+  );
+  if (method === "POST" && dialogueAllocationRemoveMatch) {
+    sendJson(
+      res,
+      200,
+      removeDialogueAllocation(dialogueAllocationRemoveMatch[1]!, dialogueAllocationRemoveMatch[2]!, await readJson(req))
+    );
+    return;
+  }
+
+  const dialogueAllocationMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-allocation$/);
+  if (method === "POST" && dialogueAllocationMatch) {
+    sendJson(res, 200, allocateDialoguePages(dialogueAllocationMatch[1]!, dialogueAllocationMatch[2]!, await readJson(req)));
     return;
   }
 
