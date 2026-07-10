@@ -20,6 +20,7 @@ import {
   reorderPages,
   updatePage,
   updatePageLayout,
+  updatePageMosaic,
   updatePageObjects,
   updatePagePanelAssignment
 } from "./pages";
@@ -363,6 +364,13 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const pageLayoutMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/layout$/);
   if (method === "PATCH" && pageLayoutMatch) {
     sendJson(res, 200, updatePageLayout(pageLayoutMatch[1]!, pageLayoutMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  // モザイク(Docs/Feature-CGCollectionSuite.md P6): 非破壊リージョンの配列を丸ごと置換する。
+  const pageMosaicMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/mosaic$/);
+  if (method === "PATCH" && pageMosaicMatch) {
+    sendJson(res, 200, updatePageMosaic(pageMosaicMatch[1]!, pageMosaicMatch[2]!, await readJson(req)));
     return;
   }
 

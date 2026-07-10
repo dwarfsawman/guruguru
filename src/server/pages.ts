@@ -11,6 +11,7 @@ import type { GenerationRequest } from "../shared/types";
 import type { Asset } from "../shared/apiTypes";
 import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
 import { normalizePageObjects, type PageObject } from "../shared/pageObjects";
+import { normalizeMosaicRegions, type MosaicRegion } from "../shared/mosaicRegion";
 import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
 import { resolveLayoutTemplate } from "./layoutTemplates";
@@ -261,6 +262,28 @@ export function updatePageObjects(projectId: string, pageId: string, body: unkno
     projectId
   ]);
   return { objects };
+}
+
+/**
+ * モザイクリージョン(Docs/Feature-CGCollectionSuite.md P6): 非破壊リージョンの配列を丸ごと置換する。
+ * `body.regions` が配列でなければ 400。要素単位の型崩れ(未知 shape type・頂点3未満の polygon・
+ * 非正サイズの rect 等)は `normalizeMosaicRegions` が黙って捨てる/clamp する(`updatePageObjects` と
+ * 同じ「1行に配列」パターン、競合制御なし)。`pages.updated_at` を更新することで、
+ * `listPagesWithProject` のプレビューキャッシュバスタがこの保存を拾って preview.png を最新化する。
+ */
+export function updatePageMosaic(projectId: string, pageId: string, body: unknown): { regions: MosaicRegion[] } {
+  requirePage(projectId, pageId);
+  const input = objectBody(body);
+  if (!Array.isArray(input.regions)) {
+    throw new HttpError(400, "regions must be an array.");
+  }
+  const regions = normalizeMosaicRegions(input.regions);
+  runSql("UPDATE pages SET mosaic_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
+    JSON.stringify(regions),
+    pageId,
+    projectId
+  ]);
+  return { regions };
 }
 
 /**

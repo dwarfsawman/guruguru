@@ -11,6 +11,7 @@ import type {
 } from "../shared/apiTypes";
 import type { PageLayout, PanelCrop } from "../shared/pageLayout";
 import type { PageObject } from "../shared/pageObjects";
+import type { MosaicRegion } from "../shared/mosaicRegion";
 import type { ConnectionState } from "./views/homeView";
 import type { MaskPanelTab } from "./views/assetModal";
 import type { WorkflowTemplate } from "./workflowTypes";
@@ -38,11 +39,12 @@ export interface ReferenceDraft {
 export interface PagePanelLightboxState {
   pageId: string;
   /**
-   * ページ編集モードタブ(Docs/Feature-CGCollectionSuite.md P1/P5)。"panels" = 既存のコマ選択/クロップ編集、
-   * "objects" = テキスト/吹き出し/ボックスの編集、"shapes" = コマ形状編集(P5: 頂点ドラッグ・分割)。
-   * `page.layout` が無いページは常に "objects" 扱い(呼び出し側が open 時に決める。タブ自体は表示しない)。
+   * ページ編集モードタブ(Docs/Feature-CGCollectionSuite.md P1/P5/P6)。"panels" = 既存のコマ選択/クロップ編集、
+   * "objects" = テキスト/吹き出し/ボックスの編集、"shapes" = コマ形状編集(P5: 頂点ドラッグ・分割)、
+   * "mosaic" = モザイクリージョン編集(P6)。`page.layout` が無いページは "mosaic" 以外は常に "objects" 扱い
+   * (モザイクはレイアウト無しページでも開ける。呼び出し側が open 時に決める)。
    */
-  mode: "panels" | "objects" | "shapes";
+  mode: "panels" | "objects" | "shapes" | "mosaic";
   selectedPanelId: string | null;
   /** クロップ編集モードの対象コマ id。null なら通常の選択モード。 */
   cropPanelId: string | null;
@@ -360,6 +362,22 @@ export interface AppState {
   shapeSplitDraft: { start: [number, number]; current: [number, number] } | null;
   /** コマ形状編集: 分割時のガター幅(page 単位、既定はページ幅の1.5%)。 */
   shapeSplitGutter: number;
+  /**
+   * モザイク編集(Docs/Feature-CGCollectionSuite.md P6): 開いている lightbox のページのモザイクリージョン
+   * ドラフト。追加/頂点編集/削除/granularity 変更はこれを直接書き換え、`pageMosaicController.ts` が
+   * 1s debounce で PATCH する。lightbox 非開時は空配列。
+   */
+  pageMosaicDraft: MosaicRegion[];
+  /** モザイク編集: 選択中リージョン id。null=未選択。 */
+  mosaicSelectedRegionId: string | null;
+  /** モザイク編集: 選択中頂点 index(polygon の頂点削除/矩形の辺・角 index にも使う)。null=未選択。 */
+  mosaicSelectedVertexIndex: number | null;
+  /** モザイク編集: 新規リージョン追加モード。null=通常(選択/編集)、"rect"=矩形をドラッグで追加、"polygon"=クリックで頂点を置いていく。 */
+  mosaicAddMode: "rect" | "polygon" | null;
+  /** モザイク編集: 矩形追加ドラッグ中の作業用プレビュー(pointerdown〜pointerup)。null=非ドラッグ中。 */
+  mosaicRectDraft: { start: [number, number]; current: [number, number] } | null;
+  /** モザイク編集: 多角形追加でこれまでにクリックした頂点列。追加モードでない時/開始前は null。 */
+  mosaicPolygonDraft: [number, number][] | null;
   /** コマ内生成: 生成フォームが対象にしているコマ。null なら通常の(コマ非対象)生成。 */
   activePanelTarget: PanelGenerationTarget | null;
   /** 独自確認ダイアログ。null=閉。 */
@@ -464,6 +482,12 @@ export const state: AppState = {
   shapeSplitMode: false,
   shapeSplitDraft: null,
   shapeSplitGutter: 0.015,
+  pageMosaicDraft: [],
+  mosaicSelectedRegionId: null,
+  mosaicSelectedVertexIndex: null,
+  mosaicAddMode: null,
+  mosaicRectDraft: null,
+  mosaicPolygonDraft: null,
   activePanelTarget: null,
   confirmDialog: null,
   iterationScrollReset: false,

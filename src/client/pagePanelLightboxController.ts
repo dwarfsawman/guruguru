@@ -32,6 +32,7 @@ import {
   resetPageObjectsSession
 } from "./pageObjectsController";
 import { consumeShapeEditDirtyFlag, flushShapeEditSave, resetShapeEditSession } from "./panelShapeController";
+import { consumeMosaicDirtyFlag, flushMosaicEditSave, resetMosaicEditSession } from "./pageMosaicController";
 
 /** レイアウト/代表アセットどちらからも解決できない時のページ高さフォールバック(A4 縦比に近い値。pageLayout.ts の resolveHeight と同じ値)。 */
 const FALLBACK_PAGE_HEIGHT = 1.4142;
@@ -81,8 +82,15 @@ export async function openPagePanelLightbox(pageId: string) {
   state.shapeSelectedVertexIndex = null;
   state.shapeSplitMode = false;
   state.shapeSplitDraft = null;
+  state.pageMosaicDraft = [];
+  state.mosaicSelectedRegionId = null;
+  state.mosaicSelectedVertexIndex = null;
+  state.mosaicAddMode = null;
+  state.mosaicRectDraft = null;
+  state.mosaicPolygonDraft = null;
   resetPageObjectsSession();
   resetShapeEditSession();
+  resetMosaicEditSession();
   if (state.pagePanelLightbox.mode === "objects") {
     ensureFontsLoaded();
   }
@@ -95,6 +103,7 @@ export async function openPagePanelLightbox(pageId: string) {
     }
     state.pagePanelAssignments = detail.panelAssignments;
     state.pageObjectsDraft = detail.page.objects ?? [];
+    state.pageMosaicDraft = detail.page.mosaic ?? [];
     if (detail.page.layout) {
       state.pageLayoutDraft = clonePageLayout(detail.page.layout);
     }
@@ -127,11 +136,12 @@ function resolveLightboxPageHeight(detail: PageDetail, pageSummary: PageSummary)
 let panelPreviewDirty = false;
 
 export function closePagePanelLightbox() {
-  // flush は state クリアの前に呼ぶ(persistPageObjects/persistShapeLayout は呼び出しと同期に
-  // pageId/送信ボディを確定するので、この後 state をクリアしても PATCH 自体は完走する)。
+  // flush は state クリアの前に呼ぶ(persistPageObjects/persistShapeLayout/persistMosaicRegions は
+  // 呼び出しと同期に pageId/送信ボディを確定するので、この後 state をクリアしても PATCH 自体は完走する)。
   // 完了は下の async ブロックで待つ。
   const flushObjectsPromise = flushPageObjectsSave();
   const flushShapePromise = flushShapeEditSave();
+  const flushMosaicPromise = flushMosaicEditSave();
   const wasCropDirty = panelPreviewDirty;
   panelPreviewDirty = false;
   state.pagePanelLightbox = null;
@@ -143,22 +153,28 @@ export function closePagePanelLightbox() {
   state.shapeSelectedVertexIndex = null;
   state.shapeSplitMode = false;
   state.shapeSplitDraft = null;
+  state.pageMosaicDraft = [];
+  state.mosaicSelectedRegionId = null;
+  state.mosaicSelectedVertexIndex = null;
+  state.mosaicAddMode = null;
+  state.mosaicRectDraft = null;
+  state.mosaicPolygonDraft = null;
   requestRender();
-  // クロップ/オブジェクト/コマ形状編集があった場合だけ、ページ一覧の preview.png?v=... を
+  // クロップ/オブジェクト/コマ形状/モザイク編集があった場合だけ、ページ一覧の preview.png?v=... を
   // 最新化するため再取得する。dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に
   // 読むこと -- 完了前に読むと false のままスキップされ、PATCH 前の古い `?v=` を拾ってしまう。
   void (async () => {
-    await Promise.all([flushObjectsPromise, flushShapePromise]);
-    if (wasCropDirty || consumePageObjectsDirtyFlag() || consumeShapeEditDirtyFlag()) {
+    await Promise.all([flushObjectsPromise, flushShapePromise, flushMosaicPromise]);
+    if (wasCropDirty || consumePageObjectsDirtyFlag() || consumeShapeEditDirtyFlag() || consumeMosaicDirtyFlag()) {
       await reloadBookPages();
     }
   })();
 }
 
-/** ページ編集モードタブ(コマ/オブジェクト/コマ枠)の切り替え。 */
+/** ページ編集モードタブ(コマ/オブジェクト/コマ枠/モザイク)の切り替え。 */
 function setPagePanelMode(mode: string) {
   const lightbox = state.pagePanelLightbox;
-  if (!lightbox || (mode !== "panels" && mode !== "objects" && mode !== "shapes") || lightbox.mode === mode) {
+  if (!lightbox || (mode !== "panels" && mode !== "objects" && mode !== "shapes" && mode !== "mosaic") || lightbox.mode === mode) {
     return;
   }
   lightbox.mode = mode;

@@ -12,7 +12,7 @@ guruguru を「AI生成画像を素材に、商用CG集（DLsite/FANZA 等で頒
 | P3 | 吹き出し＋ボックス（形状ライブラリ・しっぽ・テキスト内包） | 完了(2026-07-10) |
 | P4 | 完成品書き出し（全ページ PNG/JPEG 連番一括・ORA レイヤ反映） | 完了(2026-07-10) |
 | P5 | コマ形状編集（頂点ドラッグ・分割・ガター） | 完了(2026-07-10) |
-| P6 | モザイクツール（非破壊リージョン・販路規定準拠粒度） | 未着手 |
+| P6 | モザイクツール（非破壊リージョン・販路規定準拠粒度） | 実装完了・監督レビュー待ち(2026-07-10、branch: p6-mosaic) |
 
 実装は各フェーズ = 1 worktree ブランチ → レビュー → main マージ。実装者は Sonnet 5 executor、
 本ドキュメントが監督（Fable 5）の指示書を兼ねる。
@@ -323,3 +323,65 @@ debounce PATCH（1s）＋クローズ時 flush。
     「コマ」タブでも同じ形状に追従することを確認)→ 辺クリックで頂点追加 → ダブルクリックで頂点削除 →
     分割モードでドラッグ → 2コマに分割されガター込みで反映(ページ一覧のプレビューにも反映)されることを
     確認。コンソールエラーなし。監督による最終レビュー・ブラウザ確認は別途。
+- 2026-07-10: P6 実装完了(branch `p6-mosaic`、監督レビュー待ち)。設計からの差分・補足:
+  - **`src/shared/mosaicRegion.ts`**(新規): `MosaicRegion`/`MosaicShape`(rect: `bounds:[x,y,w,h]` /
+    polygon: `points`)、`normalizeMosaicRegions`(型崩れ/頂点3未満のpolygon/非正サイズのrect破棄・
+    数値clamp・id重複は`_dup`・上限100件、`normalizePageObjects`と同じ流儀)、`mosaicBlockSizePx`
+    (`max(4, ceil(長辺/100), granularity ? round(長辺*granularity) : 0)` で規定下限を一元管理)、
+    `regionBoundsPage`、矩形コーナー/辺ハンドルの純粋なリサイズ関数 `resizeMosaicRectBounds`
+    (設計書には無い追加 -- P5 の `panelShapeEdit.ts` に倣い、UI 操作のジオメトリ計算を純関数化してテストした)。
+    polygon の頂点編集(移動/辺への挿入/削除)は **P5 の `panelShapeEdit.ts` の関数をそのまま再利用**
+    (`movePolygonVertex`/`insertPolygonVertex`/`removePolygonVertex` は座標系に依存しない汎用実装だったため、
+    複製せず import して使った)。ユニットテスト22件(`mosaicBlockSizePx`の規定下限クランプ含む)。
+  - **DB/API**: `pages.mosaic_json` + `jsonColumnNames`(`mosaic_json`→`mosaic`)。
+    `PATCH /api/projects/:id/pages/:pageId/mosaic`(`updatePageMosaic`、body `{regions}` が配列でなければ
+    400、`updatePageObjects` と同型)。
+  - **サーバ書き出し(`openRasterExport.ts`)**: `createPageLayers` の最後に `appendMosaicLayer` を追加
+    (レイアウト有り/無し両方の分岐末尾)。モザイク化には「そのページの下層(Paper〜Objects)の合成結果」が
+    要るため、`appendMosaicLayer` 内で一度 `renderMergedImage(layers, canvas)` を呼んで下層マージ画像を得る
+    (createPageLayers 自体の構造は変更せず、末尾に1関数呼び出しを足すだけで済んだ)。
+    **設計書は「sharp の resize(縮小)→resize(拡大, kernel:nearest)」を示唆していたが、実装では
+    `pixelateRegionBuffer` として生ピクセル(raw buffer)を直接 blockSize×blockSize の格子で平均色に
+    量子化する方式にした** -- resize→resize は非整数倍率のスケーリングで格子境界が ±1px ずれ得て
+    「1粒 ≧ 規定値」を全ブロックで厳密に保証できない懸念があったため、格子をリージョン bbox の
+    左上に直接アンカーする自前量子化に変更した(端の欠けブロックのみ規定未満になり得るが、bbox 境界の
+    必然的な端数でありモザイク規定違反ではない)。形状マスク(`renderMosaicMaskSvg`、rect/polygon)は
+    `dest-in` で合成(既存 `renderShapeMaskSvg` と同じパターン)。ORA は `createPageLayers` を共有するため
+    追加コード無しで `Mosaic` レイヤーが独立レイヤーとして出力される。
+  - **クライアント「モザイク」モードタブ**(4つ目、レイアウト無しページでも表示。P1のモードタブ機構に
+    "mosaic" を追加): 新規 `src/client/pageMosaicController.ts`。矩形はドラッグで追加(`pointerdown`→
+    `pointermove`→`pointerup`)、多角形はクリックで頂点追加→ダブルクリックまたは始点近傍クリック
+    (`MOSAIC_CLOSE_POLYGON_THRESHOLD`)で確定。ダブルクリックの2発目クリック(`event.detail>=2`)は
+    頂点追加をスキップし、`dblclick` イベント側で確定する(`handlePagePanelClick` の detail>=2 ガードと
+    同じ考え方)。選択中リージョンの編集は rect が4隅(自由リサイズ)+4辺(1軸リサイズ)ハンドル、polygon が
+    P5 と同じ頂点ドラッグ/辺クリックでの頂点追加/ダブルクリックでの頂点削除。座標変換は全て
+    `getInverseStageTransform`(画面px→ステージ絶対座標)で統一し、P5のような delta 方式は使わなかった
+    (分割線ドラッグと同じ理由でシンプルになる)。granularity は「粒度を指定」チェックボックス+数値入力
+    (未指定 = 自動で規定最小値、と明記)。ライブの canvas ピクセル化プレビューは監督決定により省略し、
+    半透明ハッチ塗り+枠のみ表示。保存は1s debounce PATCH + lightbox クローズ時 flush(既存2モードと同型)。
+    **undo/redo は P5 と同様スコープ外**。
+  - **実装中に見つけたバグ1件・その場で修正**: ブラウザ検証中、頂点のダブルクリックで削除されず
+    (ダブルクリックが常に「多角形確定」ロジックだけを見ていて、非追加モード中の頂点削除処理が
+    `handleMosaicDblClick` に無かった)。ツールバーのヒント文言(P5から流用)は「ダブルクリックで頂点削除」を
+    謳っていたため、`handleMosaicDblClick` に非追加モード時の頂点削除分岐を追加して解消(修正後、実ブラウザで
+    5頂点→4頂点への削除を確認)。
+  - ヘッドレス検証(隔離 `GURUGURU_TEST_DATA_DIR`、bun で `src/server/index.ts` を直接起動、実測値):
+    レイアウト無しページに box オブジェクトで市松模様(8x8、square=0.01 = `PAGE_OBJECT_MIN_SIZE` 下限)を
+    4箇所作り、rect region(granularity=0.001)・polygon region(三角形)・rect region(granularity 未指定)・
+    無指定コントロール領域を配置して `export-images`(pixelWidth 2048)を検証。
+    実測: canvas 2048×2896、regulation 最小ブロックサイズ = `max(4, ceil(2896/100))` = **29px**。
+    (a) granularity=0.001 と granularity 未指定の両方で、リージョン内は29px四方のブロックへ一様量子化
+    (ブロック内部サンプル一致・ブロック間で色が変化・黒白の平均であるグレー系ブロックが実在)を確認、
+    (b) granularity=0.001(規定を大きく下回る値)でもブロックサイズが29pxのまま(規定の下限でクランプされ、
+    より小さくならない)ことを確認、(c) polygon(三角形)region で bbox 四隅のうち三角形の外側にあたる
+    2隅が元の市松模様のまま(非モザイク、`255,255,255`/`0,0,0`)、三角形内側は `156,155,155` 等のグレーへ
+    量子化されていることを確認、(d) ORA の `stack.xml` に `name="Mosaic"` レイヤーが含まれることを確認、
+    (e) `regions` が配列でない PATCH が 400 になることを確認。preview.png もモザイク込みで生成できることを
+    確認(全項目 PASS)。
+  - ブラウザ検証(実施者、`guruguru-preview-p6-mosaic` エントリ追加): レイアウト無しページ・レイアウト有り
+    ページの両方でモザイクタブを開き、矩形追加(ドラッグ)・矩形コーナー/辺ハンドルでのリサイズ・削除・
+    多角形追加(クリック連打+ダブルクリックで確定)・頂点ドラッグ(範囲clamp確認)・辺クリックでの頂点追加・
+    ダブルクリックでの頂点削除(上記バグ修正後に確認)・Delete キーでのリージョン削除・粒度チェックボックス+
+    数値入力・ページ再読込後の永続化(live-reloadによる意図しないフルリロードでも図らずも実証)・
+    レイアウト有りページでのページ一覧プレビュー(`preview.png?v=...`)へのクローズ後反映(タイムスタンプ更新
+    +サムネイル画像の変化を確認)を確認。コンソールエラーなし。監督による最終レビューは別途。

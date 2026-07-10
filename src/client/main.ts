@@ -122,6 +122,16 @@ import {
   handlePanelShapePointerUp,
   updateShapeSplitGutterFromControl
 } from "./panelShapeController";
+import {
+  handleMosaicDblClick,
+  handleMosaicKeydown,
+  handleMosaicPointerCancel,
+  handleMosaicPointerDown,
+  handleMosaicPointerMove,
+  handleMosaicPointerUp,
+  toggleMosaicGranularityEnabled,
+  updateMosaicGranularityFromControl
+} from "./pageMosaicController";
 import { handleBookReaderKeydown } from "./bookReaderController";
 import {
   deselectPasteObjectIfAny,
@@ -257,6 +267,9 @@ function bindEvents() {
     if (handlePanelShapeDblClick(event)) {
       return;
     }
+    if (handleMosaicDblClick(event)) {
+      return;
+    }
     if (handlePagePanelDblClick(event)) {
       return;
     }
@@ -334,6 +347,14 @@ function bindEvents() {
     }
     if (target instanceof HTMLInputElement && target.dataset.shapeGutterField) {
       updateShapeSplitGutterFromControl(target);
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.mosaicField === "granularityEnabled") {
+      toggleMosaicGranularityEnabled(target.checked);
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.dataset.mosaicField === "granularity") {
+      updateMosaicGranularityFromControl(target);
       return;
     }
     if (target.dataset.generationField && target.dataset.generationField !== "prompt" && target.dataset.generationField !== "batchSize") {
@@ -473,6 +494,10 @@ function bindEvents() {
     if (handlePanelShapeKeydown(event)) {
       return;
     }
+    // モザイク編集(モザイクモード)の選択中頂点/リージョンの Delete/Backspace。
+    if (handleMosaicKeydown(event)) {
+      return;
+    }
 
     if (!state.detail) {
       if (event.key === "Escape" && state.sidebarOpen) {
@@ -566,6 +591,9 @@ function bindEvents() {
     if (handlePanelShapePointerDown(event)) {
       return;
     }
+    if (handleMosaicPointerDown(event)) {
+      return;
+    }
     if (handlePoseEditorPointerDown(event)) {
       return;
     }
@@ -595,6 +623,9 @@ function bindEvents() {
       return;
     }
     if (handlePanelShapePointerMove(event)) {
+      return;
+    }
+    if (handleMosaicPointerMove(event)) {
       return;
     }
     if (handleMaskEditorPointerMove(event)) {
@@ -628,6 +659,9 @@ function bindEvents() {
     if (handlePanelShapePointerUp(event)) {
       return;
     }
+    if (handleMosaicPointerUp(event)) {
+      return;
+    }
     if (handleMaskEditorPointerUp(event)) {
       return;
     }
@@ -657,6 +691,9 @@ function bindEvents() {
       return;
     }
     if (handlePanelShapePointerCancel(event)) {
+      return;
+    }
+    if (handleMosaicPointerCancel(event)) {
       return;
     }
     if (handleMaskEditorPointerCancel(event)) {
@@ -987,6 +1024,14 @@ function renderPagePanelLightboxView(): string {
       splitMode: state.shapeSplitMode,
       splitDraft: state.shapeSplitDraft,
       gutter: state.shapeSplitGutter
+    },
+    {
+      regions: state.pageMosaicDraft,
+      selectedRegionId: state.mosaicSelectedRegionId,
+      selectedVertexIndex: state.mosaicSelectedVertexIndex,
+      addMode: state.mosaicAddMode,
+      rectDraft: state.mosaicRectDraft,
+      polygonDraft: state.mosaicPolygonDraft
     }
   );
 }
