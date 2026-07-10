@@ -12,7 +12,7 @@
  *   オブジェクトモード固定にする。
  * 座標は pageLayoutSvg.ts と同じ width-relative 正規化(x∈[0,1], y∈[0,page.height])。
  */
-import type { Asset, FontSummary, PagePanelAssignment, PageSummary } from "../../shared/apiTypes";
+import type { Asset, DialogueLine, FontSummary, PagePanelAssignment, PageSummary } from "../../shared/apiTypes";
 import type { LayoutPanel, PageLayout, PanelCrop } from "../../shared/pageLayout";
 import { panelBounds, panelBoundsSize } from "../../shared/pageLayout";
 import {
@@ -43,7 +43,7 @@ import { gizmoBoxForPageObject } from "../pageObjectGizmoBox";
 import { getCachedTextLayout } from "../textLayoutClient";
 import type { PagePanelLightboxState } from "../appState";
 import { escapeAttr, escapeHtml } from "../format";
-import { iconClose, iconPlus, iconSparkle, iconTrash } from "../icons";
+import { iconClose, iconPlus, iconScript, iconSparkle, iconTrash } from "../icons";
 import { num, panelShapeElement, shapeCenter } from "./pageLayoutSvg";
 
 const VIEWBOX_SCALE = 1000;
@@ -85,6 +85,16 @@ export interface ImageObjectViewState {
   picker: { mode: "add" | "replace" } | null;
 }
 
+/**
+ * 「セリフ」ドロワー(Docs/Feature-ScriptToManga.md S3 UI 2)の表示用状態。`lines` はそのプロジェクトの
+ * active なセリフ行(script 横断)。行クリックで placement 作成+吹き出し生成を行う(同じ行を複数回
+ * クリックすれば分割配置になる -- 既に配置済みの行も一覧に残し「配置済み ×N」を添えて再クリック可能にする)。
+ */
+export interface DialogueDrawerViewState {
+  open: boolean;
+  lines: DialogueLine[];
+}
+
 export function renderPagePanelLightbox(
   page: PageSummary,
   lightbox: PagePanelLightboxState,
@@ -94,7 +104,8 @@ export function renderPagePanelLightbox(
   fonts: FontSummary[],
   shapeEdit: PanelShapeEditViewState,
   mosaicEdit: MosaicEditViewState,
-  imageObjects: ImageObjectViewState
+  imageObjects: ImageObjectViewState,
+  dialogueDrawer: DialogueDrawerViewState
 ): string {
   if (lightbox.pageId !== page.id) {
     return "";
@@ -122,7 +133,7 @@ export function renderPagePanelLightbox(
         ? renderShapesToolbar(shapeEdit)
         : mode === "mosaic"
           ? renderMosaicToolbar(mosaicEdit)
-          : renderObjectsToolbar(objects, selectedObjectId, fonts, layout, imageObjects);
+          : renderObjectsToolbar(objects, selectedObjectId, fonts, layout, imageObjects, dialogueDrawer);
 
   return `
     <div class="workflow-modal page-panel-lightbox" role="dialog" aria-modal="true" aria-label="${escapeAttr(label)} のページ編集">
@@ -874,7 +885,8 @@ function renderObjectsToolbar(
   selectedObjectId: string | null,
   fonts: FontSummary[],
   layout: PageLayout | null,
-  imageObjects: ImageObjectViewState
+  imageObjects: ImageObjectViewState,
+  dialogueDrawer: DialogueDrawerViewState
 ): string {
   const selected = objects.find((object) => object.id === selectedObjectId);
   const selectedBox = selected && selected.kind === "box" ? selected : null;
@@ -893,6 +905,7 @@ function renderObjectsToolbar(
         <button class="button-secondary compact" type="button" data-action="add-page-object-balloon">${iconPlus()}吹き出し追加</button>
         <button class="button-secondary compact" type="button" data-action="add-page-object-text">${iconPlus()}テキスト追加</button>
         <button class="button-secondary compact${pickerMode === "add" ? " is-active" : ""}" type="button" data-action="toggle-page-object-image-picker" data-id="add">${iconPlus()}画像追加</button>
+        <button class="button-secondary compact${dialogueDrawer.open ? " is-active" : ""}" type="button" data-action="toggle-dialogue-drawer">${iconScript()}セリフ</button>
         ${
           hasSelection
             ? `
@@ -903,6 +916,7 @@ function renderObjectsToolbar(
             : ""
         }
       </div>
+      ${dialogueDrawer.open ? renderDialogueDrawer(dialogueDrawer.lines, objects) : ""}
       ${pickerMode ? renderImageObjectPicker(imageObjects.pickerAssets) : ""}
       ${
         selectedBox
@@ -916,6 +930,54 @@ function renderObjectsToolbar(
                 : `<p class="page-panel-hint-text">ボックス/吹き出し/テキスト/画像をクリックして選択(ドラッグで移動・コーナーで拡縮・上のハンドルで回転・Delete で削除)</p>`
       }
     </footer>
+  `;
+}
+
+const SEMANTIC_KIND_LABEL: Record<DialogueLine["semanticKind"], string> = {
+  dialogue: "台詞",
+  monologue: "心の声",
+  narration: "ナレーション",
+  sfx: "SFX"
+};
+
+/**
+ * 「セリフ」ドロワー(Docs/Feature-ScriptToManga.md S3 UI 2)。行クリックで placement 作成+
+ * 吹き出し生成が対で行われる(同じ行を複数回クリックすれば1台詞を複数吹き出しへ分割配置できる)。
+ * 既に配置済みの行も一覧からは消さず「配置済み ×N」を添えて残す(設計書の逸脱: サーバ側に
+ * dialogue_lines.page_id が無く「ページ割当済み・未配置」の中間状態を持たないため、
+ * 「このページの PageObject.sourceDialogueLineId」から配置回数を数える方式にしている)。
+ */
+function renderDialogueDrawer(lines: DialogueLine[], objects: PageObject[]): string {
+  if (lines.length === 0) {
+    return `<div class="dialogue-drawer"><p class="page-panel-hint-text">配置できるセリフがありません。先に脚本画面で取り込んでください。</p></div>`;
+  }
+  const placedCounts = new Map<string, number>();
+  for (const object of objects) {
+    if (object.sourceDialogueLineId) {
+      placedCounts.set(object.sourceDialogueLineId, (placedCounts.get(object.sourceDialogueLineId) ?? 0) + 1);
+    }
+  }
+  return `
+    <div class="dialogue-drawer">
+      <p class="page-panel-hint-text">行をクリックすると、このページ(選択中のコマがあればそのコマ中心)に吹き出しを配置します。</p>
+      <div class="dialogue-drawer-list">
+        ${lines
+          .map((line) => {
+            const placedCount = placedCounts.get(line.id) ?? 0;
+            const orphaned = line.status === "orphaned";
+            return `
+              <button class="dialogue-drawer-item${orphaned ? " is-orphaned" : ""}" type="button" data-action="place-dialogue-line" data-id="${escapeAttr(line.id)}" ${orphaned ? "disabled" : ""}>
+                <span class="dialogue-drawer-item-speaker">${escapeHtml(line.speakerLabel || "(話者不明)")}</span>
+                <span class="dialogue-drawer-item-kind">${SEMANTIC_KIND_LABEL[line.semanticKind]}</span>
+                <span class="dialogue-drawer-item-text">${escapeHtml(line.text)}</span>
+                ${placedCount > 0 ? `<span class="dialogue-drawer-item-badge">配置済み ×${placedCount}</span>` : ""}
+                ${orphaned ? `<span class="dialogue-drawer-item-badge">⚠ orphaned</span>` : ""}
+              </button>
+            `;
+          })
+          .join("")}
+      </div>
+    </div>
   `;
 }
 

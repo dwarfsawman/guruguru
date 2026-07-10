@@ -50,7 +50,15 @@ import {
   serveCharacterFaceImage,
   updateCharacter
 } from "./characters";
-import { addScriptRevision, createScript, deleteScript, getScript, getScriptRevision, listScripts } from "./scripts";
+import {
+  addScriptRevision,
+  createScript,
+  deleteScript,
+  getScript,
+  getScriptRevision,
+  listScriptRevisions,
+  listScripts
+} from "./scripts";
 import {
   createDialogueLine,
   createDialoguePlacement,
@@ -558,7 +566,13 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
+  // GET は設計書のルート表に明示は無いが、クライアントが「最新 revision」を O(revision数) の
+  // ポーリング無しで解決するために追加した(scripts.ts の listScriptRevisions を配線するだけ)。
   const scriptRevisionsMatch = path.match(/^\/api\/scripts\/([^/]+)\/revisions$/);
+  if (method === "GET" && scriptRevisionsMatch) {
+    sendJson(res, 200, { revisions: listScriptRevisions(scriptRevisionsMatch[1]!) });
+    return;
+  }
   if (method === "POST" && scriptRevisionsMatch) {
     sendJson(res, 201, addScriptRevision(scriptRevisionsMatch[1]!, await readJson(req)));
     return;

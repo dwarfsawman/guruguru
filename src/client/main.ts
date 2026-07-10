@@ -13,6 +13,7 @@ import { renderModelInstallModal } from "./workflowUi";
 import { renderHome, type ConnectionState, type ConnectionSummary } from "./views/homeView";
 import { renderBookView } from "./views/bookView";
 import { renderBookSettingsView } from "./views/bookSettingsView";
+import { renderScriptView } from "./views/scriptView";
 import { renderBookReaderView } from "./views/bookReaderView";
 import { renderLayoutTemplatePicker } from "./views/layoutTemplateModal";
 import { renderImageExportModal } from "./views/imageExportModal";
@@ -195,6 +196,13 @@ import {
 import { refreshLoraChoices, updateStyleLoraFromControl } from "./styleLoraController";
 import { closeAssetDetail } from "./assetDetailController";
 import { closeShortcutsHelp, handleAssetActionShortcuts, renderShortcutsHelpModal, toggleShortcutsHelp } from "./shortcuts";
+import {
+  handleDialogueLinePageAssignSelect,
+  updateCharacterFieldFromControl,
+  updateCharacterLoraFromControl,
+  updateScriptFountainDraftFromControl,
+  uploadCharacterFaceImage
+} from "./scriptController";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
@@ -308,6 +316,26 @@ function bindEvents() {
       });
       return;
     }
+    if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.characterFaceUpload) {
+      void uploadCharacterFaceImage(target).catch((error) => {
+        pushToast(error instanceof Error ? error.message : String(error), "error");
+        render();
+      });
+      return;
+    }
+    if (target.dataset.characterField) {
+      updateCharacterFieldFromControl(target as HTMLInputElement);
+      return;
+    }
+    if (target.dataset.characterLoraField) {
+      updateCharacterLoraFromControl(target as HTMLInputElement | HTMLSelectElement);
+      render();
+      return;
+    }
+    if (target instanceof HTMLSelectElement && target.dataset.dialogueLineId) {
+      handleDialogueLinePageAssignSelect(target);
+      return;
+    }
     if (target.id === "round-filter") {
       state.filter = target.value as typeof state.filter;
       render();
@@ -376,6 +404,10 @@ function bindEvents() {
     const valueId = target instanceof HTMLInputElement ? target.dataset.valueTarget : undefined;
     if (target instanceof HTMLTextAreaElement && target.dataset.pageObjectText) {
       updatePageObjectTextFromInput(target);
+      return;
+    }
+    if (target instanceof HTMLTextAreaElement && target.dataset.scriptFountain) {
+      updateScriptFountainDraftFromControl(target);
       return;
     }
     if (target.dataset.loraField && target instanceof HTMLInputElement) {
@@ -783,6 +815,24 @@ function render(_options: RenderOptions = {}) {
             state.sidebarWidth,
             state.bookCommonSettings !== null
           )
+        : state.scriptScreenOpen && state.book
+        ? renderScriptView({
+            book: state.book,
+            scripts: state.scripts,
+            activeScriptId: state.activeScriptId,
+            activeScriptRevision: state.activeScriptRevision,
+            dialogueLines: state.scriptDialogueLines,
+            fountainDraft: state.scriptFountainDraft,
+            importBusy: state.scriptImportBusy,
+            characters: state.characters,
+            selectedCharacterId: state.selectedCharacterId,
+            selectedCharacterBinding: state.selectedCharacterBinding,
+            characterLoraNameDraft: state.characterLoraNameDraft,
+            characterLoraStrengthDraft: state.characterLoraStrengthDraft,
+            characterFacePickerOpen: state.characterFacePickerOpen,
+            recentImages: state.recentReferenceImages,
+            loraChoices: state.loraChoices.names
+          })
         : state.book
           ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds)
           : renderHome(
@@ -1037,6 +1087,10 @@ function renderPagePanelLightboxView(): string {
       pickerAssets: state.pagePanelLightboxAssets,
       missingMediaIds: state.pagePanelLightboxMissingMediaIds,
       picker: state.pageObjectImagePicker
+    },
+    {
+      open: state.dialogueDrawerOpen,
+      lines: state.pagePanelLightboxDialogueLines
     }
   );
 }

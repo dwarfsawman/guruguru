@@ -6,7 +6,7 @@
  * (`handleAssetCardClick` 等と同じ理由 -- lightbox は render/morph サイクルで再描画されるため
  * imageLightboxController.ts の直接 DOM 操作とは別方式)。
  */
-import type { PagePanelAssignment, PageDetail, PageSummary } from "../shared/apiTypes";
+import type { CreatePlacementResult, DialogueLine, PagePanelAssignment, PageDetail, PageSummary } from "../shared/apiTypes";
 import type { LayoutPanel, PanelCrop } from "../shared/pageLayout";
 import {
   clampPanelCrop,
@@ -29,6 +29,7 @@ import {
   ensureAllPageObjectTextLayouts,
   ensureFontsLoaded,
   flushPageObjectsSave,
+  markPageObjectsDirty,
   resetPageObjectsSession
 } from "./pageObjectsController";
 import { consumeShapeEditDirtyFlag, flushShapeEditSave, resetShapeEditSession } from "./panelShapeController";
@@ -91,6 +92,8 @@ export async function openPagePanelLightbox(pageId: string) {
   state.mosaicAddMode = null;
   state.mosaicRectDraft = null;
   state.mosaicPolygonDraft = null;
+  state.dialogueDrawerOpen = false;
+  state.pagePanelLightboxDialogueLines = [];
   resetPageObjectsSession();
   resetShapeEditSession();
   resetMosaicEditSession();
@@ -167,6 +170,8 @@ export function closePagePanelLightbox() {
   state.mosaicAddMode = null;
   state.mosaicRectDraft = null;
   state.mosaicPolygonDraft = null;
+  state.dialogueDrawerOpen = false;
+  state.pagePanelLightboxDialogueLines = [];
   requestRender();
   // クロップ/オブジェクト/コマ形状/モザイク編集があった場合だけ、ページ一覧の preview.png?v=... を
   // 最新化するため再取得する。dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に
@@ -669,6 +674,88 @@ export function syncPagePanelCropGizmo(): void {
 const GIZMO_HANDLE_SCREEN_RADIUS_PX = 7;
 const GIZMO_ROTATE_STICK_SCREEN_PX = 30;
 
+// --- セリフドロワー(Docs/Feature-ScriptToManga.md S3 UI 2) ---
+
+/**
+ * 「セリフ」ドロワーの開閉。開く時はそのプロジェクトの active なセリフ行を取得する
+ * (dialogue_lines は page_id を持たないため、行の絞り込みは「このページに配置済みか」を
+ * `pageObjectsDraft` の `sourceDialogueLineId` から数える方式 -- renderDialogueDrawer 参照)。
+ * 自動配置はこの本人操作(lightbox を開いている間のクリック)としてのみ実行する
+ * (last-write-wins 競合回避、設計書 UI 3)。
+ */
+function toggleDialogueDrawer() {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || lightbox.mode !== "objects") {
+    return;
+  }
+  state.dialogueDrawerOpen = !state.dialogueDrawerOpen;
+  requestRender();
+  if (state.dialogueDrawerOpen) {
+    void loadDialogueDrawerLines();
+  }
+}
+
+async function loadDialogueDrawerLines() {
+  const projectId = state.currentProjectId;
+  if (!projectId) {
+    return;
+  }
+  try {
+    const result = await api<{ lines: DialogueLine[] }>(`/api/projects/${projectId}/dialogue-lines?status=active`);
+    if (state.currentProjectId === projectId) {
+      state.pagePanelLightboxDialogueLines = result.lines;
+    }
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    requestRender();
+  }
+}
+
+/**
+ * セリフ行をこのページへ配置する(placement 作成+吹き出し生成が対)。選択中のコマがあれば
+ * そのコマ中心、無ければページ中央に配置される(サーバ側 `createDialoguePlacement` の挙動)。
+ * 保留中の pageObjects 編集を先に flush してから叩く(サーバの pages.objects_json を最新化してから
+ * 追記させることで、ローカル未保存編集が応答で巻き戻らないようにする)。
+ */
+async function placeDialogueLine(lineId: string) {
+  const lightbox = state.pagePanelLightbox;
+  const projectId = state.currentProjectId;
+  if (!lightbox || !projectId) {
+    return;
+  }
+  const pageId = lightbox.pageId;
+  await flushPageObjectsSave();
+  if (state.pagePanelLightbox?.pageId !== pageId) {
+    return;
+  }
+  try {
+    const body: { pageId: string; panelId?: string } = { pageId };
+    if (lightbox.selectedPanelId) {
+      body.panelId = lightbox.selectedPanelId;
+    }
+    const result = await api<CreatePlacementResult>(`/api/dialogue-lines/${lineId}/placements`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+    if (state.pagePanelLightbox?.pageId !== pageId) {
+      return;
+    }
+    state.pageObjectsDraft = result.objects;
+    // 既に専用 API でサーバへ保存済み(このモジュールの debounce PATCH は経由しない)。
+    // undo 履歴は「配置」を安全に取り消せない(取り消すと dialogue_placements 行と PageObject が
+    // 食い違う)ため、ここでリセットする。
+    resetPageObjectsSession();
+    ensureAllPageObjectTextLayouts(state.pageObjectsDraft);
+    // ページ一覧プレビューのキャッシュバスタ(閉じる時の dirty 判定)に乗せる。
+    markPageObjectsDirty();
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    requestRender();
+  }
+}
+
 registerActions({
   "open-page-panels": (id) => openPagePanelLightbox(id),
   "close-page-panels": () => closePagePanelLightbox(),
@@ -676,5 +763,7 @@ registerActions({
   "close-panel-crop": () => closeCropEditor(),
   "reset-panel-crop": () => resetPanelCrop(),
   "clear-panel-target": () => clearPanelTarget(),
-  "set-page-panel-mode": (id) => setPagePanelMode(id)
+  "set-page-panel-mode": (id) => setPagePanelMode(id),
+  "toggle-dialogue-drawer": () => toggleDialogueDrawer(),
+  "place-dialogue-line": (id) => void placeDialogueLine(id)
 });

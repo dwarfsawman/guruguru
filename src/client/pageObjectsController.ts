@@ -115,6 +115,15 @@ export function consumePageObjectsDirtyFlag(): boolean {
   return value;
 }
 
+/**
+ * このモジュール経由の debounce PATCH を通さずにサーバへ保存済みの変更があったことを記録する
+ * (Docs/Feature-ScriptToManga.md S3: セリフドロワーの `createDialoguePlacement` は専用 API で
+ * pages.objects_json を直接更新するため)。lightbox クローズ時のページ一覧プレビュー再取得判定に乗せる。
+ */
+export function markPageObjectsDirty(): void {
+  objectsDirty = true;
+}
+
 function scheduleSave(): void {
   if (saveDebounceTimer !== null) {
     window.clearTimeout(saveDebounceTimer);
