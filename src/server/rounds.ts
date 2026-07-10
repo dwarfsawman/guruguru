@@ -1,7 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import type { ServerResponse } from "node:http";
-import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
+import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { deleteQueuedPrompts, fetchViewImage, getHistory, interruptComfy } from "./comfy";
 import { readImageSize, storeCompositeImage, storeControlImage, storeImage, storeMaskImage, storeReferenceImage } from "./storage";
 import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
@@ -9,7 +7,6 @@ import { HttpError } from "./http";
 import { isJsonObject, numberOr, objectBody, stringOrNull, stringOr } from "./validate";
 import { resolveSeed } from "./workflow";
 import { decorateAsset } from "./assets";
-import { streamFile } from "./files";
 import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
 import {
   readRoundTrashSnapshot,
@@ -24,13 +21,16 @@ import {
   relationForGenerationMode,
   requiresParentAsset
 } from "../shared/generationMode";
-import { getProvider } from "./providers/registry";
+import { findProvider, getProvider } from "./providers/registry";
 import { extractHistoryEntry, extractImages, selectFinalImages } from "./providers/comfyProvider";
-import type { ProviderJobSubmission } from "./providers/types";
+import { resolveIntentArtifacts } from "./providers/types";
+import type { GenerationProvider, ProviderJobSubmission, ProviderSubmittedJob } from "./providers/types";
 import { toGenerationIntent } from "../shared/generationIntent";
-import { isPathInside } from "./paths";
 import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ReferenceImageOptions } from "../shared/types";
 import type { Asset, PageRow, Round } from "../shared/apiTypes";
+
+export type { RoundAttachmentKind } from "./roundAttachments";
+export { roundAttachmentPathFromRequest, resolveRoundAttachmentPath, serveRoundAttachment } from "./roundAttachments";
 
 type GenerationJobStatus = "pending" | "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled";
 type GenerationJob = {
@@ -39,13 +39,13 @@ type GenerationJob = {
   round_id: string;
   batch_index: number;
   prompt_id?: string | null;
+  provider_job_ref?: string | null;
   client_id: string;
   seed?: number | null;
   status: GenerationJobStatus;
   last_error_json?: string | null;
 };
 type CollectRoundResult = { statusCode: number; body: Record<string, unknown> };
-export type RoundAttachmentKind = "mask" | "pose" | "reference";
 type JobStats = {
   total: number;
   pending: number;
@@ -69,43 +69,6 @@ const roundProgress = new Map<string, { value: number; max: number }>();
 /** UX改善#5: `pollCollectRound` の collect レスポンスに乗せる現在の生成進捗。 */
 export function getRoundProgress(roundId: string): { value: number; max: number } | null {
   return roundProgress.get(roundId) ?? null;
-}
-
-export function roundAttachmentPathFromRequest(request: GenerationRequest, kind: RoundAttachmentKind): string | null {
-  const path =
-    kind === "mask"
-      ? request.inpaint?.maskPath
-      : kind === "pose"
-        ? request.controlnet?.poseImagePath
-        : request.reference?.imagePath;
-  return typeof path === "string" && path.trim() !== "" ? path : null;
-}
-
-function resolveRoundAttachmentPath(roundId: string, kind: RoundAttachmentKind): string {
-  const round = getRow<{ request_json: string }>("SELECT request_json FROM generation_rounds WHERE id = ?", [roundId]);
-  if (!round) {
-    throw new HttpError(404, "Round was not found");
-  }
-  let request: GenerationRequest;
-  try {
-    request = JSON.parse(round.request_json) as GenerationRequest;
-  } catch {
-    throw new HttpError(404, "Round attachment was not found");
-  }
-  const path = roundAttachmentPathFromRequest(request, kind);
-  const resolved = path ? resolve(path) : "";
-  if (!resolved || !isPathInside(resolved, resolve(dataRoot))) {
-    throw new HttpError(404, "Round attachment was not found");
-  }
-  return resolved;
-}
-
-export function serveRoundAttachment(res: ServerResponse, roundId: string, kind: RoundAttachmentKind) {
-  try {
-    streamFile(res, resolveRoundAttachmentPath(roundId, kind));
-  } catch (error) {
-    throw error;
-  }
 }
 
 function getRoundForApi(roundId: string): Round | null {
@@ -196,12 +159,17 @@ export async function createGenerationRound(
   request = await prepareReferenceRequest(projectId, roundId, requestBody, request);
   const branch = branchAssignmentForRound(projectId, parentAsset, roundId, "txt2img_root");
 
-  // S1(Docs/Feature-ScriptToManga.md): 現状は Provider を常に "comfy" 固定。将来テンプレ/プロジェクト設定
-  // から選べるようにする際もここ 1 箇所を変えるだけで済む。
-  const providerId = "comfy";
-  const parentImagePath = parentAsset && requiresParentAsset(request.generationMode) ? String(parentAsset.image_path) : null;
-  const targetMeta = { pageId: resolvedPageId, panelId: resolvedTargetPanelId, parentImagePath };
-  const initialIntent = toGenerationIntent(request, targetMeta);
+  // S1(Docs/Feature-ScriptToManga.md): 通常は "comfy" 固定。`providerId` は契約テスト
+  // (FakeProvider)専用の隠しフックで、クライアントは送らない(省略時 'comfy')。
+  const providerId = stringOrNull((requestBody as unknown as Record<string, unknown>).providerId) ?? "comfy";
+  const intentCtx = {
+    roundId,
+    providerId,
+    recipeRevision: typeof template.version === "number" || typeof template.version === "string" ? String(template.version) : undefined,
+    pageId: resolvedPageId,
+    panelId: resolvedTargetPanelId
+  };
+  const initialIntent = toGenerationIntent(request, intentCtx);
 
   runSql(
     `INSERT INTO generation_rounds
@@ -227,8 +195,10 @@ export async function createGenerationRound(
     ]
   );
 
+  let provider: GenerationProvider | null = null;
+  let submitted: ProviderSubmittedJob[] = [];
   try {
-    const provider = getProvider(providerId);
+    provider = getProvider(providerId);
     const jobCount = clampInteger(request.batchSize, 1, maxBatchSize);
     const firstSeed = typeof request.seed === "number" ? request.seed : resolveSeed(request, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
     request = {
@@ -236,27 +206,33 @@ export async function createGenerationRound(
       batchSize: jobCount,
       seed: firstSeed
     };
-    const finalIntent = toGenerationIntent(request, targetMeta);
+    const finalIntent = toGenerationIntent(request, intentCtx);
     runSql("UPDATE generation_rounds SET request_json = ?, intent_json = ? WHERE id = ?", [JSON.stringify(request), JSON.stringify(finalIntent), roundId]);
     runSql("UPDATE generation_rounds SET status = 'running' WHERE id = ?", [roundId]);
+
+    // Intent がこの Provider/recipe で実行可能かの事前検証(S1 v2: providerOptions の規律含む)。
+    const validation = await provider.validateIntent(finalIntent);
+    if (!validation.ok) {
+      throw new HttpError(400, `Generation intent is not valid for provider "${providerId}": ${validation.issues.join(", ")}`);
+    }
 
     const jobSubmissions: ProviderJobSubmission[] = [];
     for (let batchIndex = 0; batchIndex < jobCount; batchIndex += 1) {
       const jobRequest = requestForBatchJob(request, batchIndex);
       jobSubmissions.push({
         batchIndex,
-        intent: toGenerationIntent(jobRequest, targetMeta),
-        request: jobRequest,
-        seed: jobRequest.seed
+        seed: jobRequest.seed,
+        request: jobRequest
       });
     }
 
-    const submitted = await provider.submit({
+    submitted = await provider.submit({
       projectId,
       roundId,
       roundIndex,
       templateId: request.templateId,
-      parentAssetImagePath: parentImagePath,
+      parentAssetImagePath: parentImagePathForRequest(parentAsset, request),
+      intent: resolveIntentArtifacts(finalIntent),
       jobs: jobSubmissions
     });
 
@@ -265,9 +241,9 @@ export async function createGenerationRound(
       const batchIndex = jobSubmissions[index]!.batchIndex;
       runSql(
         `INSERT INTO generation_jobs
-          (id, project_id, round_id, batch_index, prompt_id, client_id, seed, status, queued_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', CURRENT_TIMESTAMP)`,
-        [createId("job"), projectId, roundId, batchIndex, job.jobRef, job.watchRef ?? job.jobRef, job.seed]
+          (id, project_id, round_id, batch_index, prompt_id, provider_job_ref, client_id, seed, status, queued_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', CURRENT_TIMESTAMP)`,
+        [createId("job"), projectId, roundId, batchIndex, job.jobRef, job.jobRef, job.watchRef ?? job.jobRef, job.seed]
       );
     });
 
@@ -280,18 +256,32 @@ export async function createGenerationRound(
       ensureRoundMonitor(roundId);
     }
 
-    try {
-      const capabilities = await provider.getCapabilities();
-      runSql("UPDATE generation_rounds SET provider_snapshot_json = ? WHERE id = ?", [JSON.stringify(capabilities), roundId]);
-    } catch {
-      // Capability スナップショットはベストエフォートのメタデータ。失敗させても round 自体は失敗させない。
-    }
+    // S1 レビュー指摘5: capability スナップショットの解決(/object_info 等)は HTTP レスポンスを
+    // 遅延させないよう非同期化する(await しない)。失敗しても round 自体は失敗させない。
+    void provider
+      .resolveCapabilities({ recipeId: request.templateId, revision: intentCtx.recipeRevision })
+      .then((capabilities) => {
+        runSql("UPDATE generation_rounds SET provider_snapshot_json = ? WHERE id = ?", [JSON.stringify(capabilities), roundId]);
+      })
+      .catch(() => {
+        // Capability スナップショットはベストエフォートのメタデータ。
+      });
 
     return {
       round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])) as unknown as Round | null,
       promptId: first?.jobRef ?? null
     };
   } catch (error) {
+    // S1 レビュー指摘4: submit 成功後(ComfyUI へのキュー投入は完了)に後続の DB 書き込み等が
+    // 失敗した場合、キューに残った native ジョブをベストエフォートで後始末する(main の
+    // deleteQueuedPrompts 後始末に相当。失敗しても元のエラーを優先して投げる)。
+    if (submitted.length > 0 && provider) {
+      try {
+        await provider.interrupt(submitted.map((job) => job.jobRef), false);
+      } catch (cleanupError) {
+        console.warn(`Failed to clean up queued jobs for round ${roundId} after a submit-time error:`, cleanupError);
+      }
+    }
     runSql(
       "UPDATE generation_rounds SET status = 'failed', last_error_json = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
       [JSON.stringify(errorToJson(error)), roundId]
@@ -302,6 +292,11 @@ export async function createGenerationRound(
     );
     throw error;
   }
+}
+
+/** requiresParentAsset なモードで pasteComposite が無い場合に Provider へ渡す親アセットの画像パス。 */
+function parentImagePathForRequest(parentAsset: Record<string, unknown> | null, request: GenerationRequest): string | null {
+  return parentAsset && requiresParentAsset(request.generationMode) ? String(parentAsset.image_path) : null;
 }
 
 async function prepareInpaintRequest(
@@ -567,8 +562,15 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
   }
 
   const jobs = getGenerationJobs(roundId);
-  if (jobs.length === 0) {
+  // S1 レビュー指摘3: submit() が jobs 行を 1 件も作れずに失敗した Round(intent_json はある)は、
+  // ComfyUI の history/prompt_id を前提とするレガシー経路(旧 Round)へ誤分類してはいけない。
+  // レガシー判定は「jobs 0 件『かつ』intent_json が無い」に限定する。
+  const isLegacyRound = jobs.length === 0 && !round.intent_json;
+  if (isLegacyRound) {
     return collectLegacyRound(round);
+  }
+  if (jobs.length === 0) {
+    return zeroJobRoundCollectResult(round);
   }
 
   const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ?", [round.template_id]);
@@ -584,10 +586,11 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
   const createdAssets: Asset[] = [];
 
   for (const job of jobs) {
-    if (!job.prompt_id || job.status === "cancelled" || job.status === "failed") {
+    const nativeRef = jobNativeRef(job);
+    if (!nativeRef || job.status === "cancelled" || job.status === "failed") {
       continue;
     }
-    if (hasAssetsForPrompt(roundId, job.prompt_id)) {
+    if (hasAssetsForPrompt(roundId, nativeRef)) {
       if (job.status !== "completed") {
         runSql(
           "UPDATE generation_jobs SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ?",
@@ -597,7 +600,7 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
       continue;
     }
 
-    const images = await provider.collectImages(job.prompt_id, {
+    const images = await provider.collectImages(nativeRef, {
       projectId: String(round.project_id),
       roundId,
       roleMap,
@@ -615,7 +618,7 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
         imageBytes: image.bytes,
         filename: image.filename,
         outputNodeId: image.outputNodeId,
-        promptId: job.prompt_id ?? null,
+        promptId: nativeRef,
         seed: typeof job.seed === "number" ? job.seed : request.seed
       });
       createdAssets.push(asset);
@@ -649,6 +652,28 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
       progress: getRoundProgress(roundId),
       message: createdAssets.length > 0
         ? `${createdAssets.length} generated image(s) were collected.`
+        : "No new generated images are available yet."
+    }
+  };
+}
+
+/**
+ * S1 レビュー指摘3: submit() が(intent_json の保存は済んだが)jobs 行を 1 件も作れずに失敗した
+ * Round の collect レスポンス。ComfyUI の prompt_id を要求するレガシー経路には委譲せず、Round の
+ * 現在の終端状態(通常は 'failed')をそのまま 200 + jobStats で返す(main の挙動に合わせる)。
+ */
+function zeroJobRoundCollectResult(round: Record<string, unknown>): CollectRoundResult {
+  const roundId = String(round.id);
+  const isTerminal = typeof round.status === "string" && terminalRoundStatuses.has(round.status);
+  return {
+    statusCode: isTerminal ? 200 : 202,
+    body: {
+      round: getRoundForApi(roundId),
+      assets: [],
+      jobStats: jobStats(roundId),
+      progress: getRoundProgress(roundId),
+      message: isTerminal
+        ? "This round did not produce any generation jobs."
         : "No new generated images are available yet."
     }
   };
@@ -825,6 +850,15 @@ function getGenerationJobs(roundId: string) {
   );
 }
 
+/**
+ * このジョブの不透明な native 参照(S1 v2: `generation_jobs.provider_job_ref`)。旧行(v2 導入前に
+ * 作成された行)は `provider_job_ref` が NULL のため `prompt_id`(comfy レガシー列)へ後方互換フォール
+ * バックする(Docs/Feature-ScriptToManga.md S1 DB(v2方針))。
+ */
+function jobNativeRef(job: GenerationJob): string | null {
+  return job.provider_job_ref ?? job.prompt_id ?? null;
+}
+
 function requestForBatchJob(request: GenerationRequest, batchIndex: number): GenerationRequest {
   return {
     ...request,
@@ -918,13 +952,24 @@ export async function interruptRound(roundId: string) {
   }
 
   const jobs = getGenerationJobs(roundId);
-  if (jobs.length === 0) {
+  // S1 レビュー指摘3: submit() が jobs 行を作れずに失敗した Round(intent_json はある)は、
+  // interruptLegacyRound へ委譲すると「すでに 'failed' な Round のステータスを問答無用で
+  // 'interrupted' に上書きしてしまう」ため、collect と同じ判定でレガシー経路を限定する。
+  const isLegacyRound = jobs.length === 0 && !round.intent_json;
+  if (isLegacyRound) {
     return interruptLegacyRound(round);
+  }
+  if (jobs.length === 0) {
+    return {
+      round: toApiRow(round) as unknown as Round | null,
+      interrupted: false,
+      deletedPromptIds: []
+    };
   }
 
   const activeJobs = jobs.filter((job) => activeJobStatuses.has(job.status));
   const activePromptIds = activeJobs
-    .map((job) => job.prompt_id)
+    .map((job) => jobNativeRef(job))
     .filter((promptId): promptId is string => typeof promptId === "string" && promptId.length > 0);
   if (activeJobs.length === 0) {
     return {
@@ -939,7 +984,7 @@ export async function interruptRound(roundId: string) {
 
   const runningSet = new Set(result.runningJobRefs);
   for (const job of activeJobs) {
-    const promptId = typeof job.prompt_id === "string" ? job.prompt_id : null;
+    const promptId = jobNativeRef(job);
     if (job.status === "running" && !result.interruptedRunning) {
       continue;
     }
@@ -1021,9 +1066,11 @@ function onRoundJobUpdate(
   status: "running" | "collectable" | "interrupted" | "failed",
   error?: unknown
 ) {
+  // S1 v2: `provider_job_ref`(新)と `prompt_id`(comfy レガシー)のどちらでも一致させる
+  // (`jobNativeRef` の書き込み側は常に両方へ jobRef を書くが、旧データは provider_job_ref が NULL)。
   const job = getRow<GenerationJob>(
-    "SELECT * FROM generation_jobs WHERE round_id = ? AND prompt_id = ?",
-    [roundId, jobRef]
+    "SELECT * FROM generation_jobs WHERE round_id = ? AND (provider_job_ref = ? OR prompt_id = ?)",
+    [roundId, jobRef, jobRef]
   );
   if (!job) {
     return;
@@ -1068,9 +1115,15 @@ function onRoundJobUpdate(
   }
 }
 
+/**
+ * S1 レビュー指摘1 [critical]: `deleteRoundTree` はツリー内の全 Round(provider_id='manual' の
+ * アップロード由来 Round を含みうる)に対してこれを呼ぶ。`getProvider` は未登録 provider_id で
+ * HttpError(400) を投げるため、`manual` ラウンドが混じるとサブツリー削除全体が ROLLBACK して
+ * ページ削除が失敗する(実測再現済み)。未知 provider は監視対象がそもそも無いので黙って無視する。
+ */
 function stopRoundMonitor(roundId: string) {
   roundProgress.delete(roundId);
-  getProvider(providerIdForRound(roundId)).stopWatch?.(roundId);
+  findProvider(providerIdForRound(roundId))?.stopWatch?.(roundId);
 }
 
 /**
