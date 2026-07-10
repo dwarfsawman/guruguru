@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createDialoguePlacement, createDialogueLine, deleteDialoguePlacement } from "./dialogueLines.ts";
+import {
+  createDialoguePlacement,
+  createDialogueLine,
+  deleteDialogueLine,
+  deleteDialoguePlacement,
+  listDialogueLines,
+  updateDialogueLine,
+  updateDialoguePlacement
+} from "./dialogueLines.ts";
 import { createPage, getPageDetail, updatePageLayout, updatePageObjects } from "./pages.ts";
 import { createProject } from "./projects.ts";
 import { initializeDb, getRow } from "./db.ts";
@@ -127,4 +135,50 @@ test("updatePageLayout: 消えたコマへの placement は panel_id が NULL �
   assert.ok(getRow("SELECT id FROM dialogue_placements WHERE id = ?", [created.placement.id]));
   const detail = getPageDetail(projectId, page.id);
   assert.ok(detail.page.objects?.some((obj) => obj.id === created.placement.balloonObjectId));
+});
+
+test("updateDialogueLine / deleteDialogueLine: 手動編集・削除ができる", () => {
+  const projectId = createTestProject();
+  const line = createDialogueLine(projectId, { text: "元の台詞", speakerLabel: "太郎", semanticKind: "dialogue" });
+
+  const updated = updateDialogueLine(line.id, { text: "編集後の台詞", semanticKind: "monologue" });
+  assert.equal(updated.text, "編集後の台詞");
+  assert.equal(updated.semanticKind, "monologue");
+
+  const deleted = deleteDialogueLine(line.id);
+  assert.equal(deleted.deleted, true);
+  assert.equal(getRow("SELECT id FROM dialogue_lines WHERE id = ?", [line.id]), null);
+});
+
+test("updateDialoguePlacement: panelId/renderKind をメタデータ更新できる(PageObject は再生成しない)", () => {
+  const projectId = createTestProject();
+  const page = createPage(projectId);
+  updatePageLayout(projectId, page.id, { layout: twoPanelLayout() });
+  const line = createDialogueLine(projectId, { text: "更新される台詞", speakerLabel: "太郎" });
+  const created = createDialoguePlacement(line.id, { pageId: page.id });
+  assert.equal(created.placement.panelId, null);
+
+  const updated = updateDialoguePlacement(created.placement.id, { panelId: "panel_1" });
+  assert.equal(updated.panelId, "panel_1");
+  assert.equal(updated.balloonObjectId, created.placement.balloonObjectId, "balloon_object_id は維持される(オブジェクト再生成なし)");
+
+  assert.throws(() => updateDialoguePlacement(created.placement.id, { panelId: "panel_missing" }), HttpError);
+});
+
+test("listDialogueLines: scriptId/status/pageId で絞り込める", () => {
+  const projectId = createTestProject();
+  const page = createPage(projectId);
+  const active = createDialogueLine(projectId, { text: "アクティブ", speakerLabel: "太郎" });
+  const other = createDialogueLine(projectId, { text: "別の行", speakerLabel: "花子" });
+
+  const allActive = listDialogueLines(projectId, { status: "active" });
+  assert.ok(allActive.some((line) => line.id === active.id));
+  assert.ok(allActive.some((line) => line.id === other.id));
+
+  createDialoguePlacement(active.id, { pageId: page.id });
+  const pageScoped = listDialogueLines(projectId, { pageId: page.id });
+  assert.deepEqual(
+    pageScoped.map((line) => line.id),
+    [active.id]
+  );
 });
