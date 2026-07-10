@@ -287,20 +287,36 @@ function panelIdFromEventTarget(target: EventTarget | null): string | null {
  * シングルクリックは遅延予約するだけで、ダブルクリックの実処理は `handlePagePanelDblClick`
  * (dblclick イベント)側が担う -- ここでは detail>=2 の2発目クリックを握り潰すだけにする
  * (dblclick はブラウザ既定のダブルクリック判定に委ね、detail の連続性に頼らない)。
+ * クロップ編集中は、対象画像/ギズモ/操作 UI 以外のシングルクリック(紙面の余白・ステージ外・
+ * 背景など)で編集を抜けて選択モードへ戻す。
  */
 export function handlePagePanelClick(event: MouseEvent): boolean {
-  if (!state.pagePanelLightbox) {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox) {
     return false;
+  }
+  if (lightbox.cropPanelId) {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("[data-action], input, select, textarea, label")) {
+      // ツールバーのボタン等は通常の data-action 委譲(main.ts)に流す。
+      return false;
+    }
+    if (target?.closest("[data-crop-drag-panel], [data-crop-handle], [data-panel-id]")) {
+      // 対象画像/ギズモ上のクリック(パン等ドラッグの一環)とコマクリックは無視する(ドラッグに専念)。
+      event.preventDefault();
+      return true;
+    }
+    // 枠外のシングルクリックで編集を抜ける(「選択に戻る」相当。dblclick 側の既存導線と同じ判定思想)。
+    event.preventDefault();
+    clearPendingPanelSelect();
+    closeCropEditor();
+    return true;
   }
   const panelId = panelIdFromEventTarget(event.target);
   if (!panelId) {
     return false;
   }
   event.preventDefault();
-  if (state.pagePanelLightbox.cropPanelId) {
-    // クロップ編集モード中はコマクリックでの選択切替を無視する(ドラッグに専念)。
-    return true;
-  }
   if (event.detail >= 2) {
     clearPendingPanelSelect();
     return true;
@@ -336,6 +352,18 @@ export function handlePagePanelDblClick(event: MouseEvent): boolean {
   clearPendingPanelSelect();
   handlePanelDoubleClick(panelId);
   return true;
+}
+
+/**
+ * main.ts のバックドロップ(`.page-panel-lightbox` 自身)クリックから呼ばれる。
+ * Escape と同じ段階的挙動: クロップ編集中なら編集を抜けるだけにし、そうでなければ lightbox を閉じる。
+ */
+export function handlePagePanelLightboxBackdropClick(): void {
+  if (state.pagePanelLightbox?.cropPanelId) {
+    closeCropEditor();
+  } else {
+    closePagePanelLightbox();
+  }
 }
 
 /** main.ts の keydown ハンドラから呼ばれる。Escape は「クロップ編集→選択モード→閉じる」の順に1段ずつ戻す。 */
