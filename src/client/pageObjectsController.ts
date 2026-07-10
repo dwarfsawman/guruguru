@@ -35,11 +35,15 @@ import {
   contentMaxWidth,
   createBalloonObject,
   createBoxObject,
+  createImageObject,
   createTextObject,
   defaultBalloonTail,
+  defaultImageObjectSize,
   type BalloonObject,
   type BalloonShape,
   type BoxObject,
+  type ImageObject,
+  type ImageObjectBand,
   type PageObject,
   type TextAlign,
   type TextContent,
@@ -68,11 +72,11 @@ import { clampNumber } from "./clientUtils";
 import { isTextEntryTarget } from "./clientUtils";
 import { ensureTextLayout } from "./textLayoutClient";
 
-/** ギズモで動かせるオブジェクトの型(box/text/balloon)。 */
-type EditableObject = BoxObject | TextObject | BalloonObject;
+/** ギズモで動かせるオブジェクトの型(box/text/balloon/image)。 */
+type EditableObject = BoxObject | TextObject | BalloonObject | ImageObject;
 
 function isEditableObject(object: PageObject): object is EditableObject {
-  return object.kind === "box" || object.kind === "text" || object.kind === "balloon";
+  return object.kind === "box" || object.kind === "text" || object.kind === "balloon" || object.kind === "image";
 }
 
 // --- 保存(debounce PATCH + flush) ---
@@ -305,6 +309,79 @@ function addBalloonObject(): void {
   pushPageObjectHistory(objectHistory, previous);
   state.pageObjectsDraft = [...state.pageObjectsDraft, object];
   selectNewObject(object);
+}
+
+// --- 画像オブジェクト(Docs/Feature-ScriptToManga.md S2): 「画像追加」/「メディア差し替え」ピッカー ---
+
+/** 「画像追加」/「メディア差し替え」ボタン。同じボタンをもう一度押す/キャンセルで閉じる。 */
+function togglePageObjectImagePicker(action: string): void {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || lightbox.mode !== "objects") {
+    return;
+  }
+  if (action === "cancel") {
+    state.pageObjectImagePicker = null;
+    requestRender();
+    return;
+  }
+  const mode: "add" | "replace" = action === "replace" ? "replace" : "add";
+  if (mode === "replace" && (!state.selectedPageObjectId || findSelectedObject()?.kind !== "image")) {
+    return;
+  }
+  state.pageObjectImagePicker = state.pageObjectImagePicker?.mode === mode ? null : { mode };
+  requestRender();
+}
+
+/**
+ * ピッカーでサムネをクリックした時の処理。`POST /api/projects/:id/page-media { assetId }` で
+ * mediaId を取得し、"add" なら新規 ImageObject を追加、"replace" なら選択中の ImageObject の
+ * mediaId だけを差し替える(帯/不透明度/クリップ設定は維持)。
+ */
+async function pickPageObjectImage(assetId: string): Promise<void> {
+  const lightbox = state.pagePanelLightbox;
+  const picker = state.pageObjectImagePicker;
+  const projectId = state.currentProjectId;
+  if (!lightbox || !picker || !projectId) {
+    return;
+  }
+  const pageId = lightbox.pageId;
+  const mode = picker.mode;
+  const replaceTargetId = mode === "replace" ? state.selectedPageObjectId : null;
+  state.pageObjectImagePicker = null;
+  requestRender();
+  try {
+    const result = await api<{ mediaId: string; width: number | null; height: number | null }>(
+      `/api/projects/${projectId}/page-media`,
+      { method: "POST", body: JSON.stringify({ assetId }) }
+    );
+    // 取得中に lightbox が閉じられた/別ページへ切り替わっていたら結果を捨てる。
+    if (state.pagePanelLightbox?.pageId !== pageId) {
+      return;
+    }
+    if (mode === "add") {
+      flushTextHistoryCommit();
+      const previous = currentSnapshot();
+      const center = { x: 0.5, y: lightbox.pageHeight / 2 };
+      const size = defaultImageObjectSize(result.width, result.height);
+      const object = createImageObject(crypto.randomUUID(), center, result.mediaId, size);
+      pushPageObjectHistory(objectHistory, previous);
+      state.pageObjectsDraft = [...state.pageObjectsDraft, object];
+      selectNewObject(object);
+      return;
+    }
+    if (!replaceTargetId) {
+      return;
+    }
+    const index = state.pageObjectsDraft.findIndex((item) => item.id === replaceTargetId);
+    const current = state.pageObjectsDraft[index];
+    if (index < 0 || !current || current.kind !== "image") {
+      return;
+    }
+    commitObjectMutation(replaceTargetId, { ...current, mediaId: result.mediaId });
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+    requestRender();
+  }
 }
 
 function deleteSelectedPageObject(): void {
@@ -571,6 +648,25 @@ function updateBalloonContentField(balloon: BalloonObject, field: string, target
   return { ...balloon, content: { ...balloon.content, style: nextStyle } };
 }
 
+const IMAGE_BAND_VALUES = new Set<ImageObjectBand>(["back", "front"]);
+
+/** 画像オブジェクト自身のプロパティ(帯/不透明度/クリップ先コマ)。メディア差し替えは別 action(ピッカー)。 */
+function updateImageOwnField(image: ImageObject, field: string, target: HTMLInputElement | HTMLSelectElement): ImageObject | null {
+  if (field === "band") {
+    const value = target.value;
+    return IMAGE_BAND_VALUES.has(value as ImageObjectBand) ? { ...image, band: value as ImageObjectBand } : null;
+  }
+  if (field === "opacity") {
+    const parsed = Number(target.value);
+    return { ...image, opacity: Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : (image.opacity ?? 1) };
+  }
+  if (field === "clipPanelId") {
+    const value = target.value.trim();
+    return { ...image, clipPanelId: value || null };
+  }
+  return null;
+}
+
 /** 確定的なプロパティ変更(色ピッカー/select/number 等の change イベント)を history へ push して保存する。 */
 function commitFieldChange(index: number, updated: PageObject): void {
   flushTextHistoryCommit();
@@ -618,6 +714,13 @@ export function updatePageObjectFieldFromControl(target: HTMLInputElement | HTML
   }
   if (object.kind === "balloon") {
     const updated = updateBalloonOwnField(object, field, target);
+    if (updated) {
+      commitFieldChange(index, updated);
+    }
+    return;
+  }
+  if (object.kind === "image") {
+    const updated = updateImageOwnField(object, field, target);
     if (updated) {
       commitFieldChange(index, updated);
     }
@@ -769,7 +872,7 @@ function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: Obje
     kind,
     startSnapshot: currentSnapshot(),
     startObject:
-      object.kind === "box"
+      object.kind === "box" || object.kind === "image"
         ? { ...object, position: { ...object.position }, size: { ...object.size } }
         : object.kind === "balloon"
           ? {
@@ -853,7 +956,7 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   } else if (drag.kind === "scale") {
     const dist = Math.hypot(event.clientX - drag.centerScreenX, event.clientY - drag.centerScreenY);
     const factor = dist / Math.max(1, drag.startDist);
-    if (drag.startObject.kind === "box") {
+    if (drag.startObject.kind === "box" || drag.startObject.kind === "image") {
       const box = scaleGizmoBoxAboutCenter(startBox, factor, PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE);
       updated = { ...drag.startObject, size: box.size };
     } else if (drag.startObject.kind === "balloon") {
@@ -903,6 +1006,9 @@ function editableObjectUnchanged(a: EditableObject, b: EditableObject): boolean 
     return false;
   }
   if (a.kind === "box" && b.kind === "box") {
+    return a.size.x === b.size.x && a.size.y === b.size.y;
+  }
+  if (a.kind === "image" && b.kind === "image") {
     return a.size.x === b.size.x && a.size.y === b.size.y;
   }
   if (a.kind === "text" && b.kind === "text") {
@@ -1065,5 +1171,9 @@ registerActions({
   "page-object-bring-front": () => bringSelectedToFront(),
   "page-object-send-back": () => sendSelectedToBack(),
   "page-objects-undo": () => undoPageObjectsAction(),
-  "page-objects-redo": () => redoPageObjectsAction()
+  "page-objects-redo": () => redoPageObjectsAction(),
+  "toggle-page-object-image-picker": (id) => togglePageObjectImagePicker(id),
+  "pick-page-object-image": (id) => {
+    void pickPageObjectImage(id);
+  }
 });

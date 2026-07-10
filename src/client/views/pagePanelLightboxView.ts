@@ -12,7 +12,7 @@
  *   オブジェクトモード固定にする。
  * 座標は pageLayoutSvg.ts と同じ width-relative 正規化(x∈[0,1], y∈[0,page.height])。
  */
-import type { FontSummary, PagePanelAssignment, PageSummary } from "../../shared/apiTypes";
+import type { Asset, FontSummary, PagePanelAssignment, PageSummary } from "../../shared/apiTypes";
 import type { LayoutPanel, PageLayout, PanelCrop } from "../../shared/pageLayout";
 import { panelBounds, panelBoundsSize } from "../../shared/pageLayout";
 import {
@@ -23,6 +23,7 @@ import {
   type BalloonObject,
   type BalloonShape,
   type BoxObject,
+  type ImageObject,
   type PageObject,
   type PageVec,
   type TextContent,
@@ -71,6 +72,19 @@ export interface MosaicEditViewState {
   polygonDraft: [number, number][] | null;
 }
 
+/**
+ * 「オブジェクト」モードのうち画像オブジェクト(Docs/Feature-ScriptToManga.md S2)に関する表示用状態。
+ * 「画像追加」ピッカーの候補・欠損 mediaId・ピッカー開閉をまとめる(shapeEdit/mosaicEdit と同じ束ね方)。
+ */
+export interface ImageObjectViewState {
+  /** 「画像追加」ピッカーの候補(PageDetail.assets)。 */
+  pickerAssets: Asset[];
+  /** page_media 行/ファイルが欠損している mediaId(プレースホルダ表示用)。 */
+  missingMediaIds: string[];
+  /** 「画像追加」/「メディア差し替え」ピッカーの開閉。null=閉。 */
+  picker: { mode: "add" | "replace" } | null;
+}
+
 export function renderPagePanelLightbox(
   page: PageSummary,
   lightbox: PagePanelLightboxState,
@@ -79,7 +93,8 @@ export function renderPagePanelLightbox(
   selectedObjectId: string | null,
   fonts: FontSummary[],
   shapeEdit: PanelShapeEditViewState,
-  mosaicEdit: MosaicEditViewState
+  mosaicEdit: MosaicEditViewState,
+  imageObjects: ImageObjectViewState
 ): string {
   if (lightbox.pageId !== page.id) {
     return "";
@@ -97,7 +112,7 @@ export function renderPagePanelLightbox(
         ? renderShapesStageContent(shapeEdit, pageHeight)
         : mode === "mosaic"
           ? renderMosaicStageContent(mosaicEdit, pageHeight)
-          : renderObjectsStageContent(objects, selectedObjectId, pageHeight);
+          : renderObjectsStageContent(objects, selectedObjectId, pageHeight, layout, assignments, imageObjects.missingMediaIds);
   const toolbar =
     mode === "panels" && layout
       ? layout.panels.some((panel) => panel.id === lightbox.cropPanelId)
@@ -107,7 +122,7 @@ export function renderPagePanelLightbox(
         ? renderShapesToolbar(shapeEdit)
         : mode === "mosaic"
           ? renderMosaicToolbar(mosaicEdit)
-          : renderObjectsToolbar(objects, selectedObjectId, fonts);
+          : renderObjectsToolbar(objects, selectedObjectId, fonts, layout, imageObjects);
 
   return `
     <div class="workflow-modal page-panel-lightbox" role="dialog" aria-modal="true" aria-label="${escapeAttr(label)} のページ編集">
@@ -611,36 +626,121 @@ function renderMosaicToolbar(mosaicEdit: MosaicEditViewState): string {
   `;
 }
 
-// --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1: box / P2: text / P3: balloon) ---
+// --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1: box / P2: text / P3: balloon、
+//      Docs/Feature-ScriptToManga.md S2: image + back/front 帯) ---
 
-/** ギズモで動かせるオブジェクトの型(box/text/balloon)。 */
-type EditablePageObject = BoxObject | TextObject | BalloonObject;
+/** ギズモで動かせるオブジェクトの型(box/text/balloon/image)。 */
+type EditablePageObject = BoxObject | TextObject | BalloonObject | ImageObject;
 
 function isEditablePageObject(object: PageObject): object is EditablePageObject {
-  return object.kind === "box" || object.kind === "text" || object.kind === "balloon";
+  return object.kind === "box" || object.kind === "text" || object.kind === "balloon" || object.kind === "image";
 }
 
-/** オブジェクトモードの `<svg>` 中身。scale(1000) group 内に正規化座標で描く(注意: group 外に置くと実質不可視)。 */
-function renderObjectsStageContent(objects: PageObject[], selectedObjectId: string | null, pageHeight: number): string {
+/** image オブジェクトのうち back 帯に属するか(既定は front)。サーバ側 openRasterExport.ts と同じ判定。 */
+function isBackBandObject(object: PageObject): boolean {
+  return object.kind === "image" && object.band === "back";
+}
+
+/**
+ * 対象コマの非活性背景1件(画像 + 枠)。objects モードでは pointer-events を一切拾わせず、
+ * コマ画像の下に敷いて「ぶち抜き位置を見ながら編集できる」ようにする(受け入れ条件)。
+ * clip は panels モードと同じ `panelClipId` を再利用する(defs も共有)。
+ */
+function renderObjectsPanelBackgroundImage(panel: LayoutPanel, assignment: PagePanelAssignment | null): string {
+  if (!assignment) {
+    return "";
+  }
+  const crop = assignment.crop;
+  const bounds = panelBounds(panel.shape);
+  const rect = imageRectForCrop(bounds, crop);
+  const transform = rotationTransformAttr(crop, boxCenter(bounds));
+  const image = `<image href="${escapeAttr(assignment.assetImageUrl)}" x="${num(rect.x)}" y="${num(rect.y)}" width="${num(rect.width)}" height="${num(rect.height)}" preserveAspectRatio="none" class="page-object-panel-bg-image"${transform} />`;
+  return `<g clip-path="url(#${panelClipId(panel.id)})" pointer-events="none">${image}</g>`;
+}
+
+function renderObjectsPanelBackgroundOutline(panel: LayoutPanel): string {
+  return panelShapeElement(panel.shape, `class="page-object-panel-bg-outline" fill="none" pointer-events="none"`);
+}
+
+/**
+ * オブジェクトモードの `<svg>` 中身。scale(1000) group 内に正規化座標で描く(注意: group 外に置くと実質不可視)。
+ * S2: コマ画像+コマ枠を非活性背景として、back帯image → 枠 → front帯(image含む text/balloon/box)の順で
+ * 重ねる(受け入れ条件: ぶち抜き位置を見ながら編集できること)。
+ */
+function renderObjectsStageContent(
+  objects: PageObject[],
+  selectedObjectId: string | null,
+  pageHeight: number,
+  layout: PageLayout | null,
+  assignments: PagePanelAssignment[],
+  missingMediaIds: string[]
+): string {
   const selected = objects.find((object) => object.id === selectedObjectId);
   const selectedEditable = selected && isEditablePageObject(selected) ? selected : null;
+  const backObjects = objects.filter(isBackBandObject);
+  const frontObjects = objects.filter((object) => !isBackBandObject(object));
+  const assignmentByPanel = new Map(assignments.map((assignment) => [assignment.panelId, assignment]));
+  const panels = layout ? [...layout.panels].sort((a, b) => a.order - b.order) : [];
+  const panelBackground = layout
+    ? `<g class="page-object-panel-background">${panels.map((panel) => renderObjectsPanelBackgroundImage(panel, assignmentByPanel.get(panel.id) ?? null)).join("")}</g>`
+    : "";
+  const panelFrame = layout
+    ? `<g class="page-object-panel-frame" pointer-events="none">${panels.map(renderObjectsPanelBackgroundOutline).join("")}</g>`
+    : "";
   return `
+    <defs>${panels.map(renderPanelClipPath).join("")}</defs>
     <g id="pageObjectStageRoot" transform="scale(${VIEWBOX_SCALE})">
       <rect x="0" y="0" width="1" height="${num(pageHeight)}" class="page-panel-paper" data-page-object-background="1" />
-      ${objects.map((object) => renderPageObjectShape(object, object.id === selectedObjectId)).join("")}
+      ${panelBackground}
+      ${backObjects.map((object) => renderPageObjectShape(object, object.id === selectedObjectId, missingMediaIds)).join("")}
+      ${panelFrame}
+      ${frontObjects.map((object) => renderPageObjectShape(object, object.id === selectedObjectId, missingMediaIds)).join("")}
       ${selectedEditable ? renderPageObjectGizmo(selectedEditable, pageHeight) : ""}
     </g>
   `;
 }
 
-function renderPageObjectShape(object: PageObject, isSelected: boolean): string {
+function renderPageObjectShape(object: PageObject, isSelected: boolean, missingMediaIds: string[] = []): string {
   if (object.kind === "box") {
     return renderBoxObjectShape(object, isSelected);
   }
   if (object.kind === "text") {
     return renderTextObjectShape(object, isSelected);
   }
+  if (object.kind === "image") {
+    return renderImageObjectShape(object, isSelected, missingMediaIds.includes(object.mediaId));
+  }
   return renderBalloonObjectShape(object, isSelected);
+}
+
+/**
+ * 画像オブジェクト1件(Docs/Feature-ScriptToManga.md S2)。ヒットは「透明外接矩形 `fill="transparent"`
+ * (`"none"` 禁止)+表示要素 pointer-events:none」パターン踏襲。clipPanelId があれば `panelClipId` の
+ * clipPath(コマモードと共有の defs)でクリップする。欠損時(missing)はプレースホルダ(破線枠+media id)を表示する
+ * (Docs/Feature-ScriptToManga.md S2: 「file/media 行欠損は編集画面ではプレースホルダ表示。黙って落とさない」)。
+ */
+function renderImageObjectShape(object: ImageObject, isSelected: boolean, isMissing: boolean): string {
+  const x = object.position.x - object.size.x / 2;
+  const y = object.position.y - object.size.y / 2;
+  const deg = (object.rotation * 180) / Math.PI;
+  const transform = deg ? ` transform="rotate(${num(deg)} ${num(object.position.x)} ${num(object.position.y)})"` : "";
+  const stateClass = isSelected ? " is-selected" : "";
+  const hitArea = `<rect data-page-object="${escapeAttr(object.id)}" class="page-object-hit-area${stateClass}" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}" fill="transparent" stroke="none"${transform} />`;
+
+  if (isMissing) {
+    const placeholder = `<rect class="page-object-image-missing" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}" fill="none" pointer-events="none"${transform} />`;
+    // font-size は他の SVG 要素(pageLayoutSvg.ts の page-layout-order)と同じく scale(1000) group 内の
+    // 正規化単位で指定する(CSS px は ambient transform の影響を受けて巨大化するため使わない)。
+    const fontSize = Math.max(0.012, Math.min(0.03, object.size.y * 0.12));
+    const label = `<text class="page-object-image-missing-label" x="${num(object.position.x)}" y="${num(object.position.y)}" font-size="${num(fontSize)}" text-anchor="middle" dominant-baseline="central" pointer-events="none">${escapeHtml(object.mediaId)}</text>`;
+    return `<g class="page-object-image is-missing">${hitArea}${placeholder}${label}</g>`;
+  }
+
+  const opacity = object.opacity ?? 1;
+  const href = `/api/page-media/${encodeURIComponent(object.mediaId)}`;
+  const image = `<image href="${escapeAttr(href)}" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}" preserveAspectRatio="none" class="page-object-image-el" opacity="${num(opacity)}" pointer-events="none"${transform} />`;
+  const clipped = object.clipPanelId ? `<g clip-path="url(#${panelClipId(object.clipPanelId)})">${image}</g>` : image;
+  return `<g class="page-object-image">${hitArea}${clipped}</g>`;
 }
 
 /**
@@ -769,18 +869,30 @@ function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): 
   </g>`;
 }
 
-function renderObjectsToolbar(objects: PageObject[], selectedObjectId: string | null, fonts: FontSummary[]): string {
+function renderObjectsToolbar(
+  objects: PageObject[],
+  selectedObjectId: string | null,
+  fonts: FontSummary[],
+  layout: PageLayout | null,
+  imageObjects: ImageObjectViewState
+): string {
   const selected = objects.find((object) => object.id === selectedObjectId);
   const selectedBox = selected && selected.kind === "box" ? selected : null;
   const selectedText = selected && selected.kind === "text" ? selected : null;
   const selectedBalloon = selected && selected.kind === "balloon" ? selected : null;
-  const hasSelection = Boolean(selectedBox || selectedText || selectedBalloon);
+  const selectedImage = selected && selected.kind === "image" ? selected : null;
+  const hasSelection = Boolean(selectedBox || selectedText || selectedBalloon || selectedImage);
+  // "replace" ピッカーは対象(選択中の image オブジェクト)が無くなったら表示しない
+  // (選択解除後もピッカーが浮いたままにならないようにする。state 自体はここではリセットしない)。
+  const rawPickerMode = imageObjects.picker?.mode ?? null;
+  const pickerMode = rawPickerMode === "replace" && !selectedImage ? null : rawPickerMode;
   return `
     <footer class="page-panel-toolbar page-object-toolbar">
       <div class="page-object-toolbar-row">
         <button class="button-secondary compact" type="button" data-action="add-page-object-box">${iconPlus()}ボックス追加</button>
         <button class="button-secondary compact" type="button" data-action="add-page-object-balloon">${iconPlus()}吹き出し追加</button>
         <button class="button-secondary compact" type="button" data-action="add-page-object-text">${iconPlus()}テキスト追加</button>
+        <button class="button-secondary compact${pickerMode === "add" ? " is-active" : ""}" type="button" data-action="toggle-page-object-image-picker" data-id="add">${iconPlus()}画像追加</button>
         ${
           hasSelection
             ? `
@@ -791,6 +903,7 @@ function renderObjectsToolbar(objects: PageObject[], selectedObjectId: string | 
             : ""
         }
       </div>
+      ${pickerMode ? renderImageObjectPicker(imageObjects.pickerAssets) : ""}
       ${
         selectedBox
           ? renderBoxPropertyPanel(selectedBox, fonts)
@@ -798,9 +911,65 @@ function renderObjectsToolbar(objects: PageObject[], selectedObjectId: string | 
             ? renderBalloonPropertyPanel(selectedBalloon, fonts)
             : selectedText
               ? renderTextObjectPanel(selectedText, fonts)
-              : `<p class="page-panel-hint-text">ボックス/吹き出し/テキストをクリックして選択(ドラッグで移動・コーナーで拡縮・上のハンドルで回転・Delete で削除)</p>`
+              : selectedImage
+                ? renderImageObjectPropertyPanel(selectedImage, layout, imageObjects.missingMediaIds.includes(selectedImage.mediaId))
+                : `<p class="page-panel-hint-text">ボックス/吹き出し/テキスト/画像をクリックして選択(ドラッグで移動・コーナーで拡縮・上のハンドルで回転・Delete で削除)</p>`
       }
     </footer>
+  `;
+}
+
+/** 「画像追加」/「メディア差し替え」ピッカー(PageDetail.assets からのサムネ選択、reference-recent-* を再利用)。 */
+function renderImageObjectPicker(assets: Asset[]): string {
+  if (assets.length === 0) {
+    return `<p class="page-panel-hint-text">このページにはまだ画像がありません。先に生成 or 取り込みしてください。</p>`;
+  }
+  return `
+    <div class="reference-recent page-object-image-picker">
+      <p class="reference-recent-label">画像を選択</p>
+      <div class="reference-recent-strip">
+        ${assets
+          .map(
+            (asset) =>
+              `<button class="reference-recent-item" type="button" data-action="pick-page-object-image" data-id="${escapeAttr(asset.id)}" aria-label="この画像を使う" title="この画像を使う"><img src="${escapeAttr(asset.thumbnailUrl)}" alt="" loading="lazy" draggable="false" /></button>`
+          )
+          .join("")}
+      </div>
+      <button class="button-secondary compact" type="button" data-action="toggle-page-object-image-picker" data-id="cancel">キャンセル</button>
+    </div>
+  `;
+}
+
+/** 画像オブジェクトのプロパティパネル(帯トグル・不透明度・クリップ先コマ選択・メディア差し替え)。 */
+function renderImageObjectPropertyPanel(object: ImageObject, layout: PageLayout | null, isMissing: boolean): string {
+  const band = object.band ?? "front";
+  const panelOptions = (layout?.panels ?? [])
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .map((panel) => `<option value="${escapeAttr(panel.id)}"${object.clipPanelId === panel.id ? " selected" : ""}>コマ ${panel.order}</option>`)
+    .join("");
+  return `
+    ${isMissing ? `<p class="page-panel-hint-text page-object-image-missing-hint">メディアが見つかりません(media id: ${escapeHtml(object.mediaId)})。「メディア差し替え」で選び直せます。</p>` : ""}
+    <div class="page-object-property-row">
+      <label class="page-object-property-field">レイヤー帯
+        <select data-page-object-field="band">
+          <option value="front"${band === "front" ? " selected" : ""}>前面(コマ枠より前)</option>
+          <option value="back"${band === "back" ? " selected" : ""}>背面(コマ枠より後ろ)</option>
+        </select>
+      </label>
+      <label class="page-object-property-field">不透明度
+        <input type="range" min="0" max="1" step="0.01" data-page-object-field="opacity" value="${num(object.opacity ?? 1)}" />
+      </label>
+    </div>
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-property-field-wide">クリップ先のコマ
+        <select data-page-object-field="clipPanelId"${panelOptions ? "" : " disabled"}>
+          <option value=""${object.clipPanelId ? "" : " selected"}>クリップしない(ぶち抜き)</option>
+          ${panelOptions}
+        </select>
+      </label>
+      <button class="button-secondary compact" type="button" data-action="toggle-page-object-image-picker" data-id="replace">メディア差し替え</button>
+    </div>
   `;
 }
 
