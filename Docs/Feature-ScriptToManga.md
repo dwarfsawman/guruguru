@@ -327,6 +327,15 @@ Paper → コマ画像(order昇順) → [image back 帯] → コマ枠(Panels)
 
 ## S3: 脚本ドメイン(Character / MangaScript / DialogueLine / DialoguePlacement)+ Fountain パーサ
 
+### 実装状況メモ(**S3 完了 — 2026-07-10 main マージ済み、merge commit e644c34**)
+本セクションの要求はすべて実装済み(6テーブル、Fountain パーサ+日本語寛容モード、source_hash 差分照合、
+API 一式、脚本画面、セリフドロワー、panel 削除時の placement NULL 化)。608 テスト緑(+33)。
+実装判断(コード内コメントにも記載): binding の顔参照は dataUrl アップロード専用+API は
+hasFaceImage/faceImageUrl のみ返す(生パス非露出)。「ページ割当」は中間状態を持たず placement 作成に統一
+(dialogue_lines に page_id 列が無いため。ドロワーは全 active 行+「配置済み ×N」表示)。PUT binding は
+フィールド単位の部分更新。`GET /api/scripts/:id/revisions`(一覧)をルート表へ追加。
+手動セリフ行作成はサーバ実装+テスト済みだが専用 UI ボタンは未設置。
+
 ### 目的
 物語データを一級市民にする。Fountain 取り込み → キャラクタ管理 → セリフ一覧 → **手動配置を先に完成**させる
 (S4 の LLM 提案はこの上に乗る)。
