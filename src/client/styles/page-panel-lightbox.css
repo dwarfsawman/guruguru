@@ -6,7 +6,9 @@
  */
 
 .page-panel-dialog {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* 行 = ヘッダー / モードタブ / ステージ / ツールバー の4行。タブ行を数えず3行定義のままにすると、
+     タブが minmax(0,1fr) 行に入って高さ0に潰れ、ステージが暗黙 auto 行で溢れる。 */
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   width: min(760px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
 }

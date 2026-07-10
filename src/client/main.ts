@@ -93,7 +93,6 @@ import { importImagesAsPages } from "./bookController";
 import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
 import { closeImageExport } from "./imageExportController";
 import {
-  closePagePanelLightbox,
   handlePagePanelClick,
   handlePagePanelCropPointerCancel,
   handlePagePanelCropPointerDown,
@@ -101,6 +100,7 @@ import {
   handlePagePanelCropPointerUp,
   handlePagePanelCropWheel,
   handlePagePanelDblClick,
+  handlePagePanelLightboxBackdropClick,
   handlePagePanelLightboxKeydown,
   syncPagePanelCropGizmo
 } from "./pagePanelLightboxController";
@@ -237,7 +237,8 @@ function bindEvents() {
       return;
     }
     if (target.classList.contains("page-panel-lightbox")) {
-      closePagePanelLightbox();
+      // クロップ編集中は編集を抜けるだけ(Escape と同じ段階的挙動)。それ以外は lightbox を閉じる。
+      handlePagePanelLightboxBackdropClick();
       return;
     }
     if (target.classList.contains("workflow-modal")) {
