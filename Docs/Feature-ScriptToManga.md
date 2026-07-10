@@ -231,6 +231,14 @@ generation_jobs.provider_job_ref         TEXT                            … v2 
 
 ## S2: ImageObject + レイヤー帯(コマぶち抜き立ち絵の土台)
 
+### 実装状況メモ(**S2 完了 — 2026-07-10 main マージ済み、merge commit 757ae18**)
+本セクションの要求はすべて実装済み(page_media+コピーAPI+配信、ImageObject 型+全フィールド保持
+normalize、帯順 3 経路共通、ORA "Objects (back)" レイヤー、clip 二層、objects モードの非活性コマ背景+
+ピッカー+プロパティ行、欠損時プレースホルダ/スキップ+警告)。575 テスト緑(+16)。
+設計に無かった追加: `PageDetail.missingPageMediaIds`(編集画面のプレースホルダ判定用の明示 API フィールド)。
+クライアント表示は data URI でなく `GET /api/page-media/:id` 参照(renderAssignmentImage の前例踏襲。
+data URI 化はサーバ書き出しの sharp ラスタライズのみ)。
+
 ### 目的
 ページオブジェクトに「画像」を追加し、**コマ枠より後ろ/前**のレイヤー帯を導入する。これで
 「コマ背景 → 枠の後ろの前景人物 → コマ枠 → 枠より前の人物 → 吹き出し・文字 → モザイク」の合成ができる。
