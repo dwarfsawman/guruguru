@@ -29,7 +29,9 @@ const jsonColumnNames = new Map<string, string>([
   ["layout_json", "layout"],
   ["crop_json", "crop"],
   ["objects_json", "objects"],
-  ["mosaic_json", "mosaic"]
+  ["mosaic_json", "mosaic"],
+  ["intent_json", "intent"],
+  ["provider_snapshot_json", "providerSnapshot"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -283,6 +285,13 @@ export function initializeDb() {
   // コマ内生成(Docs/Feature-PanelGeneration.md): この Round がどのコマ向けの生成かを示す。
   // 通常の(コマを対象としない)生成/single モードでは NULL。
   ensureColumn("generation_rounds", "target_panel_id", "TEXT");
+  // GenerationIntent/Provider 抽象化(Docs/Feature-ScriptToManga.md S1): この Round を実行した
+  // Provider の id。既存行は全て ComfyUI 実行だったため 'comfy' を既定値とする。
+  ensureColumn("generation_rounds", "provider_id", "TEXT NOT NULL DEFAULT 'comfy'");
+  // 導出済みの GenerationIntent(モデル中立の生成意図)。再現性・将来の re-run 用。旧行は NULL。
+  ensureColumn("generation_rounds", "intent_json", "TEXT");
+  // submit() 時点の ProviderCapabilities スナップショット。旧行は NULL。
+  ensureColumn("generation_rounds", "provider_snapshot_json", "TEXT");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {

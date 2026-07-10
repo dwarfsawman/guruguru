@@ -56,10 +56,12 @@ export async function createSourceAsset(projectId: string, body: unknown) {
   const stored = await storeImage(projectId, roundId, 0, filename, image.bytes);
 
   runSql(
+    // provider_id='manual': アップロードは ComfyUI 実行を経ないため、既定の 'comfy' ではなく
+    // 手動アップロードであることを明示する(Docs/Feature-ScriptToManga.md S1)。
     `INSERT INTO generation_rounds
       (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
-       branch_color_index, branch_reason, branch_key, page_id, request_json, completed_at)
-     VALUES (?, ?, ?, NULL, ?, 'completed', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+       branch_color_index, branch_reason, branch_key, page_id, request_json, completed_at, provider_id)
+     VALUES (?, ?, ?, NULL, ?, 'completed', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'manual')`,
     [
       roundId,
       projectId,
