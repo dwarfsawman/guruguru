@@ -74,6 +74,7 @@ import {
   listDialogueProposals,
   rejectDialogueProposalItems
 } from "./dialogueProposals";
+import { getChronicle } from "./chronicle";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
   GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
@@ -618,6 +619,14 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (method === "POST" && dialogueLinesCollectionMatch) {
     sendJson(res, 201, { line: createDialogueLine(dialogueLinesCollectionMatch[1]!, await readJson(req)) });
+    return;
+  }
+
+  // Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §3)。dialogue-lines と同じブロックに置く
+  // (`/api/projects/:id/scripts` 等、他の projectId 系ルートとの前方一致衝突は起きない -- 末尾 $ で完全一致)。
+  const chronicleMatch = path.match(/^\/api\/projects\/([^/]+)\/chronicle$/);
+  if (method === "GET" && chronicleMatch) {
+    sendJson(res, 200, getChronicle(chronicleMatch[1]!, url.searchParams.get("scriptId") ?? undefined));
     return;
   }
 

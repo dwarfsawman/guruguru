@@ -1,0 +1,198 @@
+/*
+ * Chronicle バー(S5、Docs/Feature-ChroniclePageFlow.md)。ページ編集 lightbox(.page-panel-dialog)
+ * 下部の折り畳み可能な脚本タイムライン。高さは控えめにし(1680×920・1600×900 で編集領域を妨げない)、
+ * 横スクロールは `.chronicle-bar-track` 単体([data-action] 委譲やホイール横スクロールの対象)。
+ */
+
+.chronicle-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  max-height: 128px;
+  min-height: 0;
+}
+
+.chronicle-bar.is-collapsed {
+  max-height: none;
+}
+
+.chronicle-bar-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chronicle-bar-collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.chronicle-bar-collapse-icon svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+}
+
+.chronicle-bar.is-collapsed .chronicle-bar-collapse-icon svg {
+  transform: rotate(-90deg);
+}
+
+.chronicle-bar-script-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.chronicle-bar-script-tab {
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chronicle-bar-script-tab.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.chronicle-bar-script-name {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chronicle-bar-message {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 2px;
+}
+
+.chronicle-bar-message-error {
+  color: var(--danger);
+}
+
+.chronicle-bar-track {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+
+.chronicle-beat {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 92px;
+  max-width: 160px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.chronicle-beat-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.chronicle-beat-summary {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* 状態色分け(§2.2)。unassigned は既定色のまま(border-left で軽く示す)。 */
+.chronicle-beat.is-status-unassigned {
+  border-left: 3px solid var(--faint);
+}
+
+.chronicle-beat.is-status-assigned {
+  border-left: 3px solid var(--accent);
+}
+
+.chronicle-beat.is-status-materialized {
+  border-left: 3px solid var(--good);
+}
+
+.chronicle-beat.is-status-otherPage {
+  border-left: 3px solid var(--warn);
+}
+
+.chronicle-beat.is-status-orphaned {
+  border-left: 3px solid var(--danger);
+  opacity: 0.6;
+}
+
+.chronicle-beat.is-locked {
+  border-style: dashed;
+}
+
+/* 現在ページの割り当て範囲強調(§2.1)。 */
+.chronicle-beat.is-current-page {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -1px;
+}
+
+.chronicle-beat-preview {
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.chronicle-beat-preview-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chronicle-beat-preview-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chronicle-beat-preview-speaker {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.chronicle-beat-preview-text {
+  flex: 1 1 auto;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+.chronicle-beat-preview-page {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+}

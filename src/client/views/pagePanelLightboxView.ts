@@ -45,6 +45,7 @@ import type { PagePanelLightboxState } from "../appState";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconClose, iconPlus, iconScript, iconSparkle, iconTrash } from "../icons";
 import { num, panelShapeElement, shapeCenter } from "./pageLayoutSvg";
+import { renderChronicleBar, type ChronicleBarViewState } from "./chronicleBarView";
 
 const VIEWBOX_SCALE = 1000;
 
@@ -111,7 +112,8 @@ export function renderPagePanelLightbox(
   shapeEdit: PanelShapeEditViewState,
   mosaicEdit: MosaicEditViewState,
   imageObjects: ImageObjectViewState,
-  dialogueDrawer: DialogueDrawerViewState
+  dialogueDrawer: DialogueDrawerViewState,
+  chronicleBar: ChronicleBarViewState
 ): string {
   if (lightbox.pageId !== page.id) {
     return "";
@@ -158,6 +160,7 @@ export function renderPagePanelLightbox(
           </svg>
         </div>
         ${toolbar}
+        ${renderChronicleBar(chronicleBar)}
       </section>
     </div>
   `;
