@@ -323,7 +323,7 @@ debounce PATCH（1s）＋クローズ時 flush。
     「コマ」タブでも同じ形状に追従することを確認)→ 辺クリックで頂点追加 → ダブルクリックで頂点削除 →
     分割モードでドラッグ → 2コマに分割されガター込みで反映(ページ一覧のプレビューにも反映)されることを
     確認。コンソールエラーなし。監督による最終レビュー・ブラウザ確認は別途。
-- 2026-07-10: P6 実装完了(branch `p6-mosaic`、監督レビュー待ち)。設計からの差分・補足:
+- 2026-07-10: P6 完了・main マージ（merge e235a9f、監督レビュー済み）。設計からの差分・補足:
   - **`src/shared/mosaicRegion.ts`**(新規): `MosaicRegion`/`MosaicShape`(rect: `bounds:[x,y,w,h]` /
     polygon: `points`)、`normalizeMosaicRegions`(型崩れ/頂点3未満のpolygon/非正サイズのrect破棄・
     数値clamp・id重複は`_dup`・上限100件、`normalizePageObjects`と同じ流儀)、`mosaicBlockSizePx`
@@ -385,3 +385,8 @@ debounce PATCH（1s）＋クローズ時 flush。
     数値入力・ページ再読込後の永続化(live-reloadによる意図しないフルリロードでも図らずも実証)・
     レイアウト有りページでのページ一覧プレビュー(`preview.png?v=...`)へのクローズ後反映(タイムスタンプ更新
     +サムネイル画像の変化を確認)を確認。コンソールエラーなし。監督による最終レビューは別途。
+- 2026-07-10: **全フェーズ完了**。最終 E2E 通し検証（監督実施・13/13 pass）: テンプレページ作成 →
+  layout PATCH でコマ3分割（P5）→ box/縦書きtext/balloon+しっぽ+content（P1〜P3）→ mosaic rect（P6）→
+  export-images 2048px（P4）のピクセル検証（box インク・縦書き赤グリフ・モザイクブロック一様性
+  blockSize=29px=規定 ceil(2896/100)）、ORA の Mosaic/Objects/Panels レイヤ、複数ページ zip 連番
+  001.jpg〜003.jpg。テスト計 529 件グリーン。
