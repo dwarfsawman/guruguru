@@ -9,6 +9,7 @@ import type { GenerationRequest } from "./types";
 import type { PastedObject } from "./pasteAttachments";
 import type { PageLayout, PanelCrop } from "./pageLayout";
 import type { PageObject, TextContent } from "./pageObjects";
+import type { MosaicRegion } from "./mosaicRegion";
 import type { TextLayoutResult } from "./textLayout";
 import type { FeatureKey, ModelKind } from "./workflowModels";
 
@@ -112,6 +113,11 @@ export interface PageRow {
    * 未設定(objects_json が NULL)は null。クライアントは `normalizePageObjects(page.objects)` を通して使う。
    */
   objects?: PageObject[] | null;
+  /**
+   * モザイクリージョン(Docs/Feature-CGCollectionSuite.md P6): 非破壊で保存するモザイク領域の配列。
+   * 未設定(mosaic_json が NULL)は null。クライアントは `normalizeMosaicRegions(page.mosaic)` を通して使う。
+   */
+  mosaic?: MosaicRegion[] | null;
   createdAt: string;
   updatedAt: string;
 }

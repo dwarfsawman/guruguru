@@ -249,6 +249,100 @@
   pointer-events: none;
 }
 
+/* --- 「モザイク」モード(Docs/Feature-CGCollectionSuite.md P6: 非破壊リージョン編集) --- */
+
+/* リージョン本体。実ピクセル化はしない(preview.png/書き出しで確認)ので、選択/被覆範囲が分かる
+   半透明のハッチ塗り+枠で表す。 */
+.page-mosaic-region {
+  fill: color-mix(in srgb, var(--warn, #d97706) 22%, transparent);
+  stroke: color-mix(in srgb, var(--warn, #d97706) 70%, transparent);
+  cursor: pointer;
+  transition: fill 0.15s ease, stroke 0.15s ease;
+}
+
+.page-mosaic-region:hover {
+  fill: color-mix(in srgb, var(--warn, #d97706) 32%, transparent);
+}
+
+.page-mosaic-region.is-selected {
+  fill: color-mix(in srgb, var(--warn, #d97706) 38%, transparent);
+  stroke: var(--warn, #d97706);
+}
+
+.page-mosaic-handles {
+  touch-action: none;
+}
+
+.page-mosaic-vertex-handle,
+.page-mosaic-rect-handle {
+  fill: var(--warn, #d97706);
+  stroke: #fff;
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+  cursor: grab;
+  pointer-events: auto;
+}
+
+.page-mosaic-vertex-handle:active,
+.page-mosaic-rect-handle:active {
+  cursor: grabbing;
+}
+
+.page-mosaic-vertex-handle.is-selected {
+  fill: var(--accent-strong, var(--accent));
+}
+
+.page-mosaic-edge-handle,
+.page-mosaic-rect-edge-handle {
+  fill: color-mix(in srgb, var(--warn, #d97706) 45%, transparent);
+  stroke: #fff;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  cursor: copy;
+  pointer-events: auto;
+}
+
+.page-mosaic-edge-handle:hover,
+.page-mosaic-rect-edge-handle:hover {
+  fill: var(--warn, #d97706);
+}
+
+.page-mosaic-draft-preview {
+  stroke: var(--accent);
+  stroke-width: 2px;
+  stroke-dasharray: 5 3;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.page-mosaic-draft-rect {
+  fill: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.page-mosaic-draft-line {
+  fill: none;
+}
+
+.page-mosaic-draft-vertex {
+  fill: var(--accent);
+  stroke: #fff;
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.page-mosaic-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+
+.page-mosaic-toolbar .button-secondary.is-active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 /* --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1) --- */
 
 .page-object-shape {

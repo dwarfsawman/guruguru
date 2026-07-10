@@ -28,7 +28,8 @@ const jsonColumnNames = new Map<string, string>([
   ["last_error_json", "lastError"],
   ["layout_json", "layout"],
   ["crop_json", "crop"],
-  ["objects_json", "objects"]
+  ["objects_json", "objects"],
+  ["mosaic_json", "mosaic"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -276,6 +277,9 @@ export function initializeDb() {
   // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1): テキスト/吹き出し/ボックスの配列(JSON)。
   // 未設定は NULL(toApiRow は `objects: null` を返す。normalizePageObjects(null) は空配列)。
   ensureColumn("pages", "objects_json", "TEXT");
+  // モザイクリージョン(Docs/Feature-CGCollectionSuite.md P6): 非破壊リージョンの配列(JSON)。
+  // 未設定は NULL(toApiRow は `mosaic: null` を返す。normalizeMosaicRegions(null) は空配列)。
+  ensureColumn("pages", "mosaic_json", "TEXT");
   // コマ内生成(Docs/Feature-PanelGeneration.md): この Round がどのコマ向けの生成かを示す。
   // 通常の(コマを対象としない)生成/single モードでは NULL。
   ensureColumn("generation_rounds", "target_panel_id", "TEXT");

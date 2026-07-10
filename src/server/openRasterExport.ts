@@ -21,6 +21,7 @@ import {
   type TextContent,
   type TextObject
 } from "../shared/pageObjects";
+import { mosaicBlockSizePx, regionBoundsPage, type MosaicRegion, type MosaicShape } from "../shared/mosaicRegion";
 import { balloonContentMaxWidth, renderBalloonSvg } from "../shared/balloonShape";
 import { renderTextSvg } from "../shared/textSvg";
 import { getRow, getRows, toApiRow } from "./db";
@@ -218,6 +219,7 @@ export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Pro
       }
     ];
     await appendObjectsLayer(layers, page, null, canvas);
+    await appendMosaicLayer(layers, page, null, canvas);
     return layers;
   }
 
@@ -252,6 +254,8 @@ export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Pro
   }
   // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1)。コマ枠より前面、配列順(先頭=背面)。
   await appendObjectsLayer(layers, page, layout, canvas);
+  // モザイク(Docs/Feature-CGCollectionSuite.md P6)。最前面・必須で最後。
+  await appendMosaicLayer(layers, page, layout, canvas);
   return layers;
 }
 
@@ -283,6 +287,154 @@ function resolveObjectsPageHeight(page: PageRow): number {
     return asset.height / asset.width;
   }
   return FALLBACK_OBJECTS_PAGE_HEIGHT;
+}
+
+/**
+ * モザイク(Docs/Feature-CGCollectionSuite.md P6)レイヤーを最前面に追加する。リージョンが1つも無ければ
+ * 何もしない(空の透明レイヤーを作って合成コストをかけない、`appendObjectsLayer` と同じ規約)。
+ * モザイク化には「そのページの下層(Paper〜Objects)を合成した結果」が要る(透明レイヤーをモザイク化
+ * しても無意味なため) -- ここまでに積んだ `layers` を一度 `renderMergedImage` でマージしてから使う。
+ */
+async function appendMosaicLayer(layers: RasterLayer[], page: PageRow, layout: PageLayout | null, canvas: ExportCanvas): Promise<void> {
+  const regions = page.mosaic ?? [];
+  if (regions.length === 0) {
+    return;
+  }
+  const pageHeight = resolvePageHeight(page, layout);
+  const merged = await renderMergedImage(layers, canvas);
+  const png = await renderMosaicLayerPng(merged, regions, pageHeight, canvas);
+  if (png) {
+    layers.push({ name: "Mosaic", src: "", png });
+  }
+}
+
+/** リージョンの外接矩形(page 座標)を canvas ピクセル矩形へ変換する。canvas 範囲内に収まらなければ null。 */
+function regionPixelBox(
+  region: MosaicRegion,
+  pageHeight: number,
+  canvas: ExportCanvas
+): { left: number; top: number; width: number; height: number } | null {
+  const [minX, minY, maxX, maxY] = regionBoundsPage(region);
+  const [x1, y1] = mapPoint([minX, minY], pageHeight, canvas);
+  const [x2, y2] = mapPoint([maxX, maxY], pageHeight, canvas);
+  const left = Math.max(0, Math.floor(Math.min(x1, x2)));
+  const top = Math.max(0, Math.floor(Math.min(y1, y2)));
+  const right = Math.min(canvas.width, Math.ceil(Math.max(x1, x2)));
+  const bottom = Math.min(canvas.height, Math.ceil(Math.max(y1, y2)));
+  const width = right - left;
+  const height = bottom - top;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  return { left, top, width, height };
+}
+
+/**
+ * モザイクレイヤーの本体。リージョンごとに「下層の合成結果」から bbox を切り出し、ブロック単位で
+ * 平均色に量子化(`pixelateRegionBuffer`) → 形状マスクで dest-in(rect は bbox=形状なので実質無効化、
+ * polygon は bbox 内の形状外を透明化)→ 透明キャンバスへ合成、を積み重ねる。何も描けなければ null。
+ */
+async function renderMosaicLayerPng(
+  mergedSoFar: Buffer,
+  regions: MosaicRegion[],
+  pageHeight: number,
+  canvas: ExportCanvas
+): Promise<Buffer | null> {
+  let composed: Buffer | null = null;
+  const longSide = Math.max(canvas.width, canvas.height);
+  for (const region of regions) {
+    const bbox = regionPixelBox(region, pageHeight, canvas);
+    if (!bbox) {
+      continue;
+    }
+    const blockSize = mosaicBlockSizePx(longSide, region.granularity);
+    const pixelated = await pixelateRegionBuffer(mergedSoFar, bbox, blockSize);
+    const maskExtract = await sharp(Buffer.from(renderMosaicMaskSvg(region, pageHeight, canvas)))
+      .extract(bbox)
+      .png()
+      .toBuffer();
+    const masked = await sharp(pixelated)
+      .composite([{ input: maskExtract, blend: "dest-in" }])
+      .png()
+      .toBuffer();
+    const base: Buffer = composed ?? (await transparentPng(canvas));
+    composed = await sharp(base)
+      .composite([{ input: masked, left: bbox.left, top: bbox.top }])
+      .png()
+      .toBuffer();
+  }
+  return composed;
+}
+
+/**
+ * `bbox` 範囲を `blockSize`px 四方のブロックへ量子化する(各ブロックは平均色で塗り潰す)。sharp の
+ * resize(縮小)→resize(拡大, nearest) ではブロック境界が非整数倍率で±1px ずれ得るため、規定の
+ * 「1粒 ≧ 規定値」を確実に満たすよう生ピクセルを直接処理する(末端の欠けブロックのみ規定サイズ未満になり得るが、
+ * それは bbox 境界の必然的な端数であり規定違反ではない)。
+ */
+async function pixelateRegionBuffer(
+  source: Buffer,
+  bbox: { left: number; top: number; width: number; height: number },
+  blockSize: number
+): Promise<Buffer> {
+  const { data, info } = await sharp(source).extract(bbox).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const out = Buffer.alloc(data.length);
+  const block = Math.max(1, Math.round(blockSize));
+  for (let by = 0; by < height; by += block) {
+    const cellH = Math.min(block, height - by);
+    for (let bx = 0; bx < width; bx += block) {
+      const cellW = Math.min(block, width - bx);
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      const count = cellW * cellH;
+      for (let y = 0; y < cellH; y += 1) {
+        const rowOffset = (by + y) * width * channels;
+        for (let x = 0; x < cellW; x += 1) {
+          const idx = rowOffset + (bx + x) * channels;
+          r += data[idx]!;
+          g += data[idx + 1]!;
+          b += data[idx + 2]!;
+          a += data[idx + 3]!;
+        }
+      }
+      const avgR = Math.round(r / count);
+      const avgG = Math.round(g / count);
+      const avgB = Math.round(b / count);
+      const avgA = Math.round(a / count);
+      for (let y = 0; y < cellH; y += 1) {
+        const rowOffset = (by + y) * width * channels;
+        for (let x = 0; x < cellW; x += 1) {
+          const idx = rowOffset + (bx + x) * channels;
+          out[idx] = avgR;
+          out[idx + 1] = avgG;
+          out[idx + 2] = avgB;
+          out[idx + 3] = avgA;
+        }
+      }
+    }
+  }
+  return sharp(out, { raw: { width, height, channels } }).png().toBuffer();
+}
+
+/** モザイクリージョン形状のマスク SVG(白塗り・背景透明)。canvas フルサイズで描き、呼び出し側が bbox で extract する。 */
+function renderMosaicMaskSvg(region: MosaicRegion, pageHeight: number, canvas: ExportCanvas): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}" viewBox="0 0 ${canvas.width} ${canvas.height}">${renderMosaicShapeElement(region.shape, pageHeight, canvas, `fill="#fff" stroke="none"`)}</svg>`;
+}
+
+function renderMosaicShapeElement(shape: MosaicShape, pageHeight: number, canvas: ExportCanvas, attrs: string): string {
+  if (shape.type === "rect") {
+    const [x, y, w, h] = shape.bounds;
+    const [x1, y1] = mapPoint([x, y], pageHeight, canvas);
+    const [x2, y2] = mapPoint([x + w, y + h], pageHeight, canvas);
+    const left = Math.min(x1, x2);
+    const top = Math.min(y1, y2);
+    return `<rect x="${fmt(left)}" y="${fmt(top)}" width="${fmt(Math.abs(x2 - x1))}" height="${fmt(Math.abs(y2 - y1))}" ${attrs}/>`;
+  }
+  const points = shape.points.map((point) => mapPoint(point, pageHeight, canvas).map(fmt).join(",")).join(" ");
+  return `<polygon points="${points}" ${attrs}/>`;
 }
 
 /**
