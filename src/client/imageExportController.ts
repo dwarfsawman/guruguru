@@ -6,6 +6,9 @@
  * を共用する(bookController との循環 import を避けるため、この3関数は downloadUtils 側に切り出してある)。
  * data-action は `registerActions`、フォーム内の非 click イベント(JPEG品質行の表示切替・
  * 解像度プリセット)は `registerEventBinder` で登録する(AGENTS.md 規約)。
+ *
+ * format は "png" | "jpeg" | "pptx"(Docs/Feature-PptxExport.md)。PPTX 埋め込みは常に JPEG なので
+ * 品質行は jpeg/pptx どちらでも表示する。既定は "png" のため、モーダル初期表示では品質行は hidden のまま。
  */
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
@@ -42,12 +45,29 @@ function setImageExportWidthPreset(pixelWidth: string) {
   }
 }
 
+function readImageExportFormat(value: unknown): "png" | "jpeg" | "pptx" {
+  if (value === "jpeg" || value === "pptx") {
+    return value;
+  }
+  return "png";
+}
+
+function fallbackImageExportName(format: "png" | "jpeg" | "pptx", blobType: string): string {
+  if (format === "pptx") {
+    return "guruguru-book.pptx";
+  }
+  if (blobType === "application/zip") {
+    return "guruguru-images.zip";
+  }
+  return format === "jpeg" ? "page.jpg" : "page.png";
+}
+
 async function submitImageExport() {
   if (!state.currentProjectId || state.imageExportBusy) {
     return;
   }
   const values = readForm("image-export-form");
-  const format = values.format === "jpeg" ? "jpeg" : "png";
+  const format = readImageExportFormat(values.format);
   const quality = Number(values.quality) || 90;
   const pixelWidth = Number(values.pixelWidth) || 1280;
   const pageIds = state.imageExportPageIds;
@@ -63,10 +83,14 @@ async function submitImageExport() {
       throw new Error(await responseErrorMessage(response));
     }
     const blob = await response.blob();
-    const fallbackName = blob.type === "application/zip" ? "guruguru-images.zip" : `page.${format === "jpeg" ? "jpg" : "png"}`;
+    const fallbackName = fallbackImageExportName(format, blob.type);
     const filename = filenameFromContentDisposition(response.headers.get("content-disposition")) ?? fallbackName;
     downloadBlob(blob, filename);
-    pushToast(pageIds && pageIds.length === 1 ? "ページを画像として書き出しました。" : "画像を書き出しました。", "info");
+    if (format === "pptx") {
+      pushToast("PPTXを書き出しました。", "info");
+    } else {
+      pushToast(pageIds && pageIds.length === 1 ? "ページを画像として書き出しました。" : "画像を書き出しました。", "info");
+    }
     state.imageExportOpen = false;
     state.imageExportPageIds = null;
   } catch (error) {
@@ -77,7 +101,7 @@ async function submitImageExport() {
   }
 }
 
-/** JPEG 選択時だけ品質スライダー行を表示する(state を介さない純 DOM 操作)。 */
+/** JPEG/PPTX 選択時だけ品質スライダー行を表示する(埋め込みが常に JPEG の PPTX も対象。state を介さない純 DOM 操作)。 */
 function bindImageExportEvents(app: HTMLElement) {
   app.addEventListener("change", (event) => {
     const target = event.target;
@@ -87,7 +111,7 @@ function bindImageExportEvents(app: HTMLElement) {
     const form = target.closest<HTMLFormElement>("#image-export-form");
     const qualityRow = form?.querySelector<HTMLElement>("[data-image-export-quality-row]");
     if (qualityRow) {
-      qualityRow.hidden = target.value !== "jpeg";
+      qualityRow.hidden = target.value !== "jpeg" && target.value !== "pptx";
     }
   });
 }

@@ -316,6 +316,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
 
   // 完成品の画像一括書き出し(Docs/Feature-CGCollectionSuite.md P4)。PNG/JPEG 連番(単ページは画像単体)。
+  // format="pptx"(Docs/Feature-PptxExport.md)は同じエンドポイントで、常に単一 .pptx を返す。
   const imageExportMatch = path.match(/^\/api\/projects\/([^/]+)\/export-images$/);
   if (method === "POST" && imageExportMatch) {
     const result = await createImageExport(imageExportMatch[1]!, await readJson(req));

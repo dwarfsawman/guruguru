@@ -5,6 +5,9 @@
  * `#image-export-form` から `readForm`(FormData)で読む(state との双方向同期は持たない)。
  * JPEG 品質行の表示切替とプリセット幅ボタンは `imageExportController.ts` の
  * `bindImageExportEvents`/`registerActions` が DOM 操作のみで完結させる。
+ *
+ * 形式に PPTX(Docs/Feature-PptxExport.md)を追加済み。PPTX 埋め込みも常に JPEG なので、
+ * JPEG 品質行は format が jpeg/pptx どちらでも表示する(`bindImageExportEvents` 側で判定)。
  */
 import { escapeHtml } from "../format";
 import { iconClose, iconImage } from "../icons";
@@ -33,6 +36,7 @@ export function renderImageExportModal(
             <div class="image-export-format-options">
               <label class="image-export-radio"><input type="radio" name="format" value="png" checked /> PNG</label>
               <label class="image-export-radio"><input type="radio" name="format" value="jpeg" /> JPEG</label>
+              <label class="image-export-radio"><input type="radio" name="format" value="pptx" /> PPTX</label>
             </div>
           </fieldset>
           <div class="image-export-field range-control image-export-quality-row" data-image-export-quality-row hidden>
@@ -51,6 +55,7 @@ export function renderImageExportModal(
             </div>
           </fieldset>
           <p class="image-export-hint">生成される画像は「Paper → コマ画像 → 画像オブジェクト(背面帯) → コマ枠 → 画像オブジェクト/テキスト/吹き出し/ボックス(前面帯) → モザイク」の順に平坦化されます。フォントのライセンスは頒布前にご確認ください。</p>
+          <p class="image-export-hint">PPTXは1ページ=1スライドで、複数ページでも1つの.pptxになります。</p>
         </form>
         <footer class="image-export-footer">
           <button class="button-secondary compact" type="button" data-action="close-image-export" ${busy ? "disabled" : ""}>キャンセル</button>

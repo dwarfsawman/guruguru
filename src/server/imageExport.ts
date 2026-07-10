@@ -6,31 +6,39 @@
  * ORA と違い、ここでは「ページごとに指定 pixelWidth を満たす解像度」で `createPageLayers` を呼ぶ
  * (= project の canvas_width/height は使わない)。これにより SVG 由来のテキスト/形状は常に
  * 目標解像度で直接描かれる(小さい canvas を後から拡大しない)。
+ *
+ * PPTX(Docs/Feature-PptxExport.md)は同じ `/export-images` エンドポイントの format 選択肢の1つ
+ * (エンドポイント新設はしない)。`format === "pptx"` のときはこのファイルではなく `pptxExport.ts` の
+ * `createPptxExport` へ丸ごと委譲する(1ページ=1スライドの OOXML デッキを組み立てる処理は性質が
+ * 異なるため分離)。
  */
 import sharp from "sharp";
 import JSZip from "jszip";
 import type { PageRow } from "../shared/apiTypes";
 import {
+  JPEG_FLATTEN_BACKGROUND,
+  computeExportCanvas,
   createPageLayers,
   loadExportPages,
   renderMergedImage,
   requireProject,
   resolvePageHeight,
-  safeAsciiName,
-  type ExportCanvas
+  safeAsciiName
 } from "./openRasterExport";
+import { createPptxExport } from "./pptxExport";
 import { HttpError } from "./http";
 import { objectBody } from "./validate";
 
-export type ImageExportFormat = "png" | "jpeg";
+// computeExportCanvas は openRasterExport.ts で定義(pptxExport.ts との共用のため)。既存テスト
+// (imageExport.test.ts)が `from "./imageExport.ts"` で import しているのでここで re-export する。
+export { computeExportCanvas };
+
+export type ImageExportFormat = "png" | "jpeg" | "pptx";
 
 export const DEFAULT_PIXEL_WIDTH = 1280;
 export const MIN_PIXEL_WIDTH = 256;
 export const MAX_PIXEL_WIDTH = 4096;
 export const DEFAULT_JPEG_QUALITY = 90;
-
-/** JPEG 書き出しのフラット化背景色(白)。透過は使えないため合成前にこの色で塗り潰す。 */
-const JPEG_FLATTEN_BACKGROUND = { r: 255, g: 255, b: 255 };
 
 export interface ImageExportResult {
   filename: string;
@@ -52,6 +60,11 @@ export async function createImageExport(projectId: string, body: unknown): Promi
   const pages = loadExportPages(projectId, requestedPageIds);
   if (pages.length === 0) {
     throw new HttpError(400, "Image export target pages were not found.");
+  }
+
+  if (format === "pptx") {
+    // PPTX は常に単一デッキ(複数ページでも zip 化しない)。OOXML 手組みは pptxExport.ts に分離。
+    return createPptxExport(project, pages, quality, pixelWidth);
   }
 
   const extension = format === "jpeg" ? "jpg" : "png";
@@ -107,12 +120,12 @@ function contentTypeFor(format: ImageExportFormat): string {
   return format === "jpeg" ? "image/jpeg" : "image/png";
 }
 
-/** `format` の妥当性検証。png/jpeg 以外は 400。 */
+/** `format` の妥当性検証。png/jpeg/pptx 以外は 400。 */
 export function parseImageExportFormat(value: unknown): ImageExportFormat {
-  if (value === "png" || value === "jpeg") {
+  if (value === "png" || value === "jpeg" || value === "pptx") {
     return value;
   }
-  throw new HttpError(400, `format must be "png" or "jpeg"`);
+  throw new HttpError(400, `format must be "png", "jpeg", or "pptx"`);
 }
 
 /** JPEG の quality(1-100 整数)。未指定/不正値は既定 90。 */
@@ -125,14 +138,6 @@ export function clampJpegQuality(value: unknown): number {
 export function clampPixelWidth(value: unknown): number {
   const n = typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_PIXEL_WIDTH;
   return Math.min(MAX_PIXEL_WIDTH, Math.max(MIN_PIXEL_WIDTH, Math.round(n)));
-}
-
-/**
- * pixelWidth(幅) と pageHeightRatio(ページ座標系での高さ。page-width=1 単位)から、
- * その比率を保った書き出し用 canvas 解像度を計算する(高さは切り上げ最小1px)。
- */
-export function computeExportCanvas(pixelWidth: number, pageHeightRatio: number): ExportCanvas {
-  return { width: pixelWidth, height: Math.max(1, Math.round(pixelWidth * pageHeightRatio)) };
 }
 
 /** ページ連番のファイル名本体(拡張子なし)。page_index+1 を3桁ゼロ詰め(例: 0 → "001")。 */

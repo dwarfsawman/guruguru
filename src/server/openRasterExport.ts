@@ -51,6 +51,22 @@ export interface ExportCanvas {
   height: number;
 }
 
+/**
+ * JPEG 書き出しのフラット化背景色(白)。透過は使えないため合成前にこの色で塗り潰す。
+ * imageExport.ts(P4 画像一括書き出し)と pptxExport.ts で共用する(PPTX に埋め込む画像は常に JPEG)。
+ */
+export const JPEG_FLATTEN_BACKGROUND = { r: 255, g: 255, b: 255 };
+
+/**
+ * pixelWidth(幅) と pageHeightRatio(ページ座標系での高さ。page-width=1 単位)から、
+ * その比率を保った書き出し用 canvas 解像度を計算する(高さは切り上げ最小1px)。
+ * imageExport.ts(P4)と pptxExport.ts が共用する(pptxExport.ts が imageExport.ts を import すると
+ * createImageExport→createPptxExport の呼び出しと循環 import になるため、共用先はここに置く)。
+ */
+export function computeExportCanvas(pixelWidth: number, pageHeightRatio: number): ExportCanvas {
+  return { width: pixelWidth, height: Math.max(1, Math.round(pixelWidth * pageHeightRatio)) };
+}
+
 interface ExportAssetRow {
   id: string;
   image_path: string;
@@ -970,7 +986,7 @@ export function safeAsciiName(value: string, fallback: string): string {
   return safe || fallback;
 }
 
-function escapeXml(value: unknown): string {
+export function escapeXml(value: unknown): string {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
