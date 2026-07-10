@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
 import JSZip from "jszip";
 import sharp from "sharp";
 import type { PageRow } from "../shared/apiTypes";
@@ -16,6 +18,7 @@ import {
   contentMaxWidth,
   type BalloonObject,
   type BoxObject,
+  type ImageObject,
   type PageObject,
   type PageVec,
   type TextContent,
@@ -218,7 +221,10 @@ export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Pro
         png: representative ? await renderFullImageLayer(representative, canvas) : await transparentPng(canvas)
       }
     ];
-    await appendObjectsLayer(layers, page, null, canvas);
+    // 描画順(Docs/Feature-ScriptToManga.md S2、全経路共通): Paper → コマ画像 → [image back帯] →
+    // コマ枠(レイアウト無しページには無い)→ [front帯] → Mosaic。
+    await appendObjectsLayer(layers, page, null, canvas, "back");
+    await appendObjectsLayer(layers, page, null, canvas, "front");
     await appendMosaicLayer(layers, page, null, canvas);
     return layers;
   }
@@ -245,6 +251,10 @@ export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Pro
     }
   }
 
+  // image オブジェクトの back 帯(Docs/Feature-ScriptToManga.md S2): コマ画像の後・コマ枠の前
+  // (ぶち抜き立ち絵がコマ枠に隠れず、コマ画像より手前に見える)。
+  await appendObjectsLayer(layers, page, layout, canvas, "back");
+
   const frameLayer = await renderPanelFrameLayer(layout, canvas);
   if (frameLayer) {
     layers.push({ name: "Panels", src: "", png: frameLayer });
@@ -253,21 +263,34 @@ export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Pro
     layers.push({ name: "Blank page", src: "", png: await transparentPng(canvas) });
   }
   // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1)。コマ枠より前面、配列順(先頭=背面)。
-  await appendObjectsLayer(layers, page, layout, canvas);
+  await appendObjectsLayer(layers, page, layout, canvas, "front");
   // モザイク(Docs/Feature-CGCollectionSuite.md P6)。最前面・必須で最後。
   await appendMosaicLayer(layers, page, layout, canvas);
   return layers;
 }
 
+/** image オブジェクトのうち back 帯に属するか(既定は front)。 */
+function isBackBandObject(object: PageObject): boolean {
+  return object.kind === "image" && object.band === "back";
+}
+
 /**
- * ページオブジェクト(P1: box のみ)レイヤーを最前面に追加する。box が1つも無ければ何もしない
- * (空の透明レイヤーを作って合成コストをかけない)。
+ * ページオブジェクトレイヤーを帯(back/front、Docs/Feature-ScriptToManga.md S2)でフィルタして最大2回
+ * 追加する。何も描く物が無ければ何もしない(空の透明レイヤーを作って合成コストをかけない)。
+ * レイヤー名は back 帯が "Objects (back)"、front 帯(text/balloon/box は常にここ)が "Objects"。
  */
-async function appendObjectsLayer(layers: RasterLayer[], page: PageRow, layout: PageLayout | null, canvas: ExportCanvas): Promise<void> {
+async function appendObjectsLayer(
+  layers: RasterLayer[],
+  page: PageRow,
+  layout: PageLayout | null,
+  canvas: ExportCanvas,
+  band: "back" | "front"
+): Promise<void> {
   const pageHeight = resolvePageHeight(page, layout);
-  const png = await renderObjectsLayer(page.objects, pageHeight, canvas);
+  const list = (page.objects ?? []).filter((object) => (band === "back" ? isBackBandObject(object) : !isBackBandObject(object)));
+  const png = await renderObjectsLayer(list, pageHeight, canvas, layout);
   if (png) {
-    layers.push({ name: "Objects", src: "", png });
+    layers.push({ name: band === "back" ? "Objects (back)" : "Objects", src: "", png });
   }
 }
 
@@ -439,18 +462,25 @@ function renderMosaicShapeElement(shape: MosaicShape, pageHeight: number, canvas
 
 /**
  * ページオブジェクトを SVG でラスタライズしたレイヤー。何も描く物が無ければ null
- * (パネル枠と同じ「無ければ null」規約)。box は P1、text は P2、balloon(本体+しっぽ+content)は P3。
+ * (パネル枠と同じ「無ければ null」規約)。box は P1、text は P2、balloon(本体+しっぽ+content)は P3、
+ * image は S2(Docs/Feature-ScriptToManga.md)。image は asset 読み込みが async なので、事前に
+ * mediaId→dataURI マップを解決してから(`resolveImageMediaDataUris`)同期レンダリングに渡す。
  */
 async function renderObjectsLayer(
   objects: PageObject[] | null | undefined,
   pageHeight: number,
-  canvas: ExportCanvas
+  canvas: ExportCanvas,
+  layout: PageLayout | null
 ): Promise<Buffer | null> {
   const list = objects ?? [];
   if (list.length === 0) {
     return null;
   }
-  const elements = list.map((object) => renderPageObjectElement(object, pageHeight, canvas)).filter(Boolean).join("");
+  const mediaDataUris = await resolveImageMediaDataUris(list);
+  const elements = list
+    .map((object) => renderPageObjectElement(object, pageHeight, canvas, layout, mediaDataUris))
+    .filter(Boolean)
+    .join("");
   if (!elements) {
     return null;
   }
@@ -458,14 +488,102 @@ async function renderObjectsLayer(
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
-function renderPageObjectElement(object: PageObject, pageHeight: number, canvas: ExportCanvas): string {
+function renderPageObjectElement(
+  object: PageObject,
+  pageHeight: number,
+  canvas: ExportCanvas,
+  layout: PageLayout | null,
+  mediaDataUris: Map<string, string | null>
+): string {
   if (object.kind === "box") {
     return renderBoxObjectElement(object, pageHeight, canvas) + renderContentElement(object.content, object.position, object.rotation, object.size, pageHeight, canvas);
   }
   if (object.kind === "text") {
     return renderTextObjectElement(object, pageHeight, canvas);
   }
+  if (object.kind === "image") {
+    return renderImageObjectElement(object, pageHeight, canvas, layout, mediaDataUris);
+  }
   return renderBalloonObjectElement(object, pageHeight, canvas);
+}
+
+/**
+ * `page.objects` が参照する mediaId を dataURI へ解決する(Docs/Feature-ScriptToManga.md S2)。
+ * page_media 行が無い/ファイルが読めない場合は null を入れ、警告ログを出してスキップする
+ * (`renderImageObjectElement` が null なら要素を描かない)。黙って落とさない。
+ */
+async function resolveImageMediaDataUris(objects: PageObject[]): Promise<Map<string, string | null>> {
+  const mediaIds = new Set<string>();
+  for (const object of objects) {
+    if (object.kind === "image") {
+      mediaIds.add(object.mediaId);
+    }
+  }
+  const map = new Map<string, string | null>();
+  for (const mediaId of mediaIds) {
+    const row = getRow<{ file_path: string }>("SELECT file_path FROM page_media WHERE id = ?", [mediaId]);
+    if (!row) {
+      console.warn(`[openRasterExport] page_media row not found for mediaId=${mediaId}; skipping ImageObject`);
+      map.set(mediaId, null);
+      continue;
+    }
+    try {
+      const bytes = await readFile(row.file_path);
+      map.set(mediaId, `data:${mimeTypeFor(row.file_path)};base64,${bytes.toString("base64")}`);
+    } catch {
+      console.warn(`[openRasterExport] page_media file missing for mediaId=${mediaId} (${row.file_path}); skipping ImageObject`);
+      map.set(mediaId, null);
+    }
+  }
+  return map;
+}
+
+function mimeTypeFor(filePath: string): string {
+  const ext = extname(filePath).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") {
+    return "image/jpeg";
+  }
+  if (ext === ".webp") {
+    return "image/webp";
+  }
+  return "image/png";
+}
+
+/**
+ * 画像オブジェクト1件(Docs/Feature-ScriptToManga.md S2)。data URI 埋め込み `<image>`
+ * (前例: renderRotatedPanelImageLayer)。clipPanelId があればコマ形状の clipPath を defs に出し、
+ * 外側 g=clip / 内側 image=rotate の二層にする(renderAssignmentImage と同じ理由)。
+ * mediaDataUris に無い(欠損)場合は空文字を返す(呼び出し側が既に警告ログを出している)。
+ */
+function renderImageObjectElement(
+  object: ImageObject,
+  pageHeight: number,
+  canvas: ExportCanvas,
+  layout: PageLayout | null,
+  mediaDataUris: Map<string, string | null>
+): string {
+  const dataUri = mediaDataUris.get(object.mediaId);
+  if (!dataUri) {
+    return "";
+  }
+  const [x1, y1] = mapPoint([object.position.x - object.size.x / 2, object.position.y - object.size.y / 2], pageHeight, canvas);
+  const [x2, y2] = mapPoint([object.position.x + object.size.x / 2, object.position.y + object.size.y / 2], pageHeight, canvas);
+  const x = Math.min(x1, x2);
+  const y = Math.min(y1, y2);
+  const width = Math.abs(x2 - x1);
+  const height = Math.abs(y2 - y1);
+  const [cx, cy] = mapPoint([object.position.x, object.position.y], pageHeight, canvas);
+  const deg = (object.rotation * 180) / Math.PI;
+  const opacity = object.opacity ?? 1;
+  const transform = deg ? ` transform="rotate(${fmt(deg)} ${fmt(cx)} ${fmt(cy)})"` : "";
+  const image = `<image href="${dataUri}" x="${fmt(x)}" y="${fmt(y)}" width="${fmt(width)}" height="${fmt(height)}" preserveAspectRatio="none" opacity="${fmt(opacity)}"${transform} />`;
+
+  const clipPanel = object.clipPanelId && layout ? layout.panels.find((panel) => panel.id === object.clipPanelId) : null;
+  if (!clipPanel) {
+    return image;
+  }
+  const clipId = `image-object-clip-${object.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  return `<defs><clipPath id="${clipId}">${renderShapeElement(clipPanel.shape, layout!, canvas, `fill="#fff"`)}</clipPath></defs><g clip-path="url(#${clipId})">${image}</g>`;
 }
 
 /**

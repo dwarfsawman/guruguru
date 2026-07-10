@@ -50,7 +50,7 @@ export function renderImageExportModal(
               <input type="number" name="pixelWidth" min="256" max="4096" step="1" value="1280" class="image-export-width-input" aria-label="解像度(幅px)" />
             </div>
           </fieldset>
-          <p class="image-export-hint">生成される画像は「Paper → コマ画像 → コマ枠 → テキスト/吹き出し/ボックス」の順に平坦化されます。フォントのライセンスは頒布前にご確認ください。</p>
+          <p class="image-export-hint">生成される画像は「Paper → コマ画像 → 画像オブジェクト(背面帯) → コマ枠 → 画像オブジェクト/テキスト/吹き出し/ボックス(前面帯) → モザイク」の順に平坦化されます。フォントのライセンスは頒布前にご確認ください。</p>
         </form>
         <footer class="image-export-footer">
           <button class="button-secondary compact" type="button" data-action="close-image-export" ${busy ? "disabled" : ""}>キャンセル</button>
