@@ -43,6 +43,7 @@ import {
 } from "./pageObjectsController";
 import { consumeShapeEditDirtyFlag, flushShapeEditSave, resetShapeEditSession } from "./panelShapeController";
 import { consumeMosaicDirtyFlag, flushMosaicEditSave, resetMosaicEditSession } from "./pageMosaicController";
+import { closeChronicle, openChronicleForPage } from "./chronicleController";
 
 /** レイアウト/代表アセットどちらからも解決できない時のページ高さフォールバック(A4 縦比に近い値。pageLayout.ts の resolveHeight と同じ値)。 */
 const FALLBACK_PAGE_HEIGHT = 1.4142;
@@ -73,7 +74,8 @@ function findPanel(page: PageSummary | null | undefined, panelId: string | null)
  */
 export async function openPagePanelLightbox(pageId: string) {
   const page = state.book?.pages.find((item) => item.id === pageId);
-  if (!page || !state.currentProjectId) {
+  const projectId = state.currentProjectId;
+  if (!page || !projectId) {
     return;
   }
   state.pagePanelLightbox = {
@@ -113,8 +115,9 @@ export async function openPagePanelLightbox(pageId: string) {
     ensureFontsLoaded();
   }
   requestRender();
+  void openChronicleForPage(projectId, pageId);
   try {
-    const detail = await api<PageDetail>(`/api/projects/${state.currentProjectId}/pages/${pageId}`);
+    const detail = await api<PageDetail>(`/api/projects/${projectId}/pages/${pageId}`);
     // 取得中に閉じられた/別ページへ切り替わっていたら結果を捨てる。
     if (state.pagePanelLightbox?.pageId !== pageId) {
       return;
@@ -187,6 +190,7 @@ export function closePagePanelLightbox() {
   state.dialogueProposals = [];
   state.dialogueProposalBusy = false;
   state.dialogueProposalRequestPageId = null;
+  closeChronicle();
   requestRender();
   // クロップ/オブジェクト/コマ形状/モザイク編集があった場合だけ、ページ一覧の preview.png?v=... を
   // 最新化するため再取得する。dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に

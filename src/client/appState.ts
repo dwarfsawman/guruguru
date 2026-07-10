@@ -17,6 +17,7 @@ import type {
   RecentReferenceImage,
   ScriptRevision
 } from "../shared/apiTypes";
+import type { ChronicleBeat, ChronicleLineSummary, ChroniclePageSummary, DialogueLayoutPreview } from "../shared/chronicle";
 import type { PageLayout, PanelCrop } from "../shared/pageLayout";
 import type { PageObject } from "../shared/pageObjects";
 import type { MosaicRegion } from "../shared/mosaicRegion";
@@ -70,6 +71,37 @@ export interface PagePanelLightboxState {
 export interface PanelGenerationTarget {
   pageId: string;
   panelId: string;
+}
+
+/**
+ * Chronicle バー(Docs/Feature-ChroniclePageFlow.md §4)。ページ編集 lightbox 下部の脚本タイムライン。
+ * `status`/`collapsed`/`scriptId`/`revisionId`/`beats`/`selectedBeatIds`/`preview`/`busyAction` は
+ * 設計書 §4 に明示された型のまま(`selectedBeatIds`/`preview`/`busyAction` はフェーズII以降で使う
+ * フィールドで、フェーズIでは型だけ用意し初期値のみ)。`lines`/`pages`/`scripts`/`pageId`/`previewBeatId`/
+ * `errorMessage` はフェーズIの表示(状態導出・複数脚本セレクタ・Beat クリック内容プレビュー・非同期完了
+ * ガード)に必要なため実装上追加した(設計書からの逸脱)。
+ */
+export interface ChronicleUiState {
+  status: "idle" | "loading" | "ready" | "error";
+  collapsed: boolean;
+  scriptId: string | null;
+  revisionId: string | null;
+  beats: ChronicleBeat[];
+  selectedBeatIds: string[];
+  preview: DialogueLayoutPreview | null;
+  busyAction: null | "assign" | "preview" | "apply" | "reflow";
+  /** そのプロジェクトの脚本一覧(複数脚本セレクタ用)。表示条件判定(1件以上か)にも使う。 */
+  scripts: MangaScript[];
+  /** GET /chronicle が返した行の状態導出用サマリ(Beat の状態色分け・内容プレビューに使う)。 */
+  lines: ChronicleLineSummary[];
+  /** GET /chronicle が返したページ別の行 id 一覧(現在ページの割り当て範囲強調・自動スクロールに使う)。 */
+  pages: ChroniclePageSummary[];
+  /** このデータを取得した時点の lightbox.pageId(非同期完了後の state 書き込みガード。既知の罠6と同型)。 */
+  pageId: string | null;
+  /** Beat クリックで開いている内容プレビューの対象 Beat id。null=非表示。 */
+  previewBeatId: string | null;
+  /** status="error" 時のエラーメッセージ。 */
+  errorMessage: string | null;
 }
 
 export interface ConfirmDialogState {
@@ -253,6 +285,26 @@ export function setSidebarWidth(px: number) {
   state.sidebarWidth = clampSidebarWidth(px);
   try {
     window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(state.sidebarWidth));
+  } catch {
+    // localStorage が使えない環境では次回起動時に既定値へ戻る。
+  }
+}
+
+const CHRONICLE_COLLAPSED_STORAGE_KEY = "guruguru:chronicleCollapsed";
+
+/** Chronicle バーの折り畳み状態(localStorage 記憶、設計書 §2.1)。既定は展開(false)。 */
+function loadChronicleCollapsedPreference(): boolean {
+  try {
+    return window.localStorage.getItem(CHRONICLE_COLLAPSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setChronicleCollapsed(collapsed: boolean) {
+  state.chronicle.collapsed = collapsed;
+  try {
+    window.localStorage.setItem(CHRONICLE_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
   } catch {
     // localStorage が使えない環境では次回起動時に既定値へ戻る。
   }
@@ -486,6 +538,11 @@ export interface AppState {
   dialogueProposalBusy: boolean;
   /** 直近の提案リクエストを発行した pageId(非同期完了後の state 書き込みガード。既知の罠6)。 */
   dialogueProposalRequestPageId: string | null;
+
+  // --- Chronicle Page Flow(Docs/Feature-ChroniclePageFlow.md S5) ---
+
+  /** Chronicle バー(ページ編集 lightbox 下部の脚本タイムライン)。 */
+  chronicle: ChronicleUiState;
 }
 
 export const state: AppState = {
@@ -601,5 +658,21 @@ export const state: AppState = {
   pagePanelLightboxDialogueLines: [],
   dialogueProposals: [],
   dialogueProposalBusy: false,
-  dialogueProposalRequestPageId: null
+  dialogueProposalRequestPageId: null,
+  chronicle: {
+    status: "idle",
+    collapsed: loadChronicleCollapsedPreference(),
+    scriptId: null,
+    revisionId: null,
+    beats: [],
+    selectedBeatIds: [],
+    preview: null,
+    busyAction: null,
+    scripts: [],
+    lines: [],
+    pages: [],
+    pageId: null,
+    previewBeatId: null,
+    errorMessage: null
+  }
 };

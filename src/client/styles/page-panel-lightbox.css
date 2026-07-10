@@ -6,9 +6,12 @@
  */
 
 .page-panel-dialog {
-  /* 行 = ヘッダー / モードタブ / ステージ / ツールバー の4行。タブ行を数えず3行定義のままにすると、
-     タブが minmax(0,1fr) 行に入って高さ0に潰れ、ステージが暗黙 auto 行で溢れる。 */
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* 行 = ヘッダー / モードタブ / ステージ / ツールバー / Chronicle バー の5行。既存の罠(タブ行を
+     数えず3行定義のままにすると、タブが minmax(0,1fr) 行に入って高さ0に潰れ、ステージが暗黙 auto 行
+     で溢れる)と同型のため、Chronicle バー追加時も行数を必ず更新すること
+     (Docs/Feature-ChroniclePageFlow.md フェーズI)。バー非表示時(脚本0件)は空文字列を返すので
+     5行目は auto で 0 高さに落ちる。 */
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   width: min(760px, calc(100vw - 48px));
   max-height: calc(100vh - 48px);
 }

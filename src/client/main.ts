@@ -104,6 +104,7 @@ import {
   handlePagePanelLightboxKeydown,
   syncPagePanelCropGizmo
 } from "./pagePanelLightboxController";
+import { syncChronicleBarScroll } from "./chronicleController";
 import {
   handlePageObjectsKeydown,
   handlePageObjectsPointerCancel,
@@ -882,6 +883,7 @@ function render(_options: RenderOptions = {}) {
   syncGridPasteCanvases();
   syncPagePanelCropGizmo();
   syncPageObjectsGizmo();
+  syncChronicleBarScroll();
 }
 
 /**
@@ -1095,6 +1097,18 @@ function renderPagePanelLightboxView(): string {
       llmConfigured: Boolean(state.llmSettings?.baseUrl.trim() && state.llmSettings?.model.trim()),
       proposals: state.dialogueProposals,
       busy: state.dialogueProposalBusy
+    },
+    {
+      status: state.chronicle.status,
+      errorMessage: state.chronicle.errorMessage,
+      collapsed: state.chronicle.collapsed,
+      scripts: state.chronicle.scripts,
+      scriptId: state.chronicle.scriptId,
+      beats: state.chronicle.beats,
+      lines: state.chronicle.lines,
+      pages: state.chronicle.pages,
+      currentPageId: lightbox.pageId,
+      previewBeatId: state.chronicle.previewBeatId
     }
   );
 }
