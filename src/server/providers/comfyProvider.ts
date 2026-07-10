@@ -23,6 +23,7 @@ import type {
   ProviderCollectContext,
   ProviderCollectedImage,
   ProviderInterruptResult,
+  ProviderJobStatus,
   ProviderSubmitContext,
   ProviderSubmittedJob,
   ProviderValidation,
@@ -33,7 +34,39 @@ export type HistoryImage = { nodeId: string; filename: string; subfolder?: strin
 
 const modelFamily = "chroma";
 
-async function getCapabilities(): Promise<ProviderCapabilities> {
+/** comfy の providerOptions として許可されるキー(S1 v2: providerOptions の規律)。 */
+interface ComfyProviderOptions {
+  generationMode?: string;
+  templateId?: string;
+}
+
+/**
+ * `intent.providerOptions.comfy` を正規化する。汎用オーケストレータ(rounds.ts)はこの中身を
+ * 一切読まないため、未知キーの除去や型の取り違えはここ(Provider 境界)だけの責務になる
+ * (Docs/Feature-ScriptToManga.md S1「providerOptions の規律」)。
+ */
+export function normalizeComfyProviderOptions(raw: unknown): ComfyProviderOptions {
+  if (!isJsonObject(raw)) {
+    return {};
+  }
+  const normalized: ComfyProviderOptions = {};
+  if (typeof raw.generationMode === "string") {
+    normalized.generationMode = raw.generationMode;
+  }
+  if (typeof raw.templateId === "string") {
+    normalized.templateId = raw.templateId;
+  }
+  return normalized;
+}
+
+/**
+ * recipe(workflow_templates.id + version)単位で能力を解決する(S1 v2: `resolveCapabilities(recipe)`)。
+ * ComfyProvider は v1 時点では recipe ごとの差異を持たない(単一モデルファミリー "chroma")ため、
+ * recipe 引数は結果の `recipe` に反映されず、記録用の受け口として温存する(将来テンプレごとに
+ * 能力が変わる場合はここで分岐する)。
+ */
+async function resolveCapabilities(recipe: { recipeId: string; revision?: string }): Promise<ProviderCapabilities> {
+  void recipe;
   const checkedAt = new Date().toISOString();
   const status = await getComfyStatus();
   if (!status.ok) {
@@ -42,15 +75,16 @@ async function getCapabilities(): Promise<ProviderCapabilities> {
       displayName: "ComfyUI",
       modelFamily,
       features: {
-        img2img: null,
+        transform: null,
         inpaint: null,
         controlPose: null,
         controlEdge: null,
         identityReference: null,
         styles: null,
-        transparentOutput: false,
         pageGeneration: false
       },
+      alpha: "none",
+      seed: "reproducible",
       checkedAt
     };
   }
@@ -61,15 +95,16 @@ async function getCapabilities(): Promise<ProviderCapabilities> {
     displayName: "ComfyUI",
     modelFamily,
     features: {
-      img2img: true,
+      transform: true,
       inpaint: true,
       controlPose: availability.controlnet,
       controlEdge: null,
       identityReference: availability.pulid,
       styles: true,
-      transparentOutput: false,
       pageGeneration: false
     },
+    alpha: "none",
+    seed: "reproducible",
     checkedAt
   };
 }
@@ -77,7 +112,7 @@ async function getCapabilities(): Promise<ProviderCapabilities> {
 /**
  * 事前検証。実際の実行可否ゲート(featureAvailability によるフラグメント剪定等)は
  * submit() 側(patchWorkflow/patchUnifiedSwitchWorkflow)に既存のまま残る。ここでは
- * ComfyProvider が構造的にサポートしない Intent 形状だけを弾く。
+ * ComfyProvider が構造的にサポートしない Intent 形状と、providerOptions.comfy の形を検証する。
  */
 async function validateIntent(intent: GenerationIntent): Promise<ProviderValidation> {
   const issues: string[] = [];
@@ -90,8 +125,13 @@ async function validateIntent(intent: GenerationIntent): Promise<ProviderValidat
   if (intent.control?.some((control) => control.kind === "edge")) {
     issues.push("edge control is not supported by the comfy provider yet");
   }
-  if (intent.output?.transparent) {
-    issues.push("transparent output is not supported by the comfy provider yet");
+  if (intent.output?.alpha === "required") {
+    issues.push("alpha output is not supported by the comfy provider yet");
+  }
+  const providerOptions = isJsonObject(intent.providerOptions) ? intent.providerOptions : {};
+  const normalizedComfyOptions = normalizeComfyProviderOptions(providerOptions.comfy);
+  if (!normalizedComfyOptions.templateId) {
+    issues.push("providerOptions.comfy.templateId is required");
   }
   return { ok: issues.length === 0, issues };
 }
@@ -195,6 +235,43 @@ async function collectImages(jobRef: string, ctx: ProviderCollectContext): Promi
     });
   }
   return collected;
+}
+
+/**
+ * ポーリングフォールバック(S1 v2 修正一覧 #7): history に完了エントリがあれば completed(status_str
+ * が "error" なら failed)、無ければ queue と照合して running/pending、どちらの手がかりも得られなければ
+ * unknown を返す薄い実装。watch(WebSocket)が張れない/切れた場合のみ呼ばれる想定。
+ */
+async function getStatus(jobRef: string): Promise<ProviderJobStatus> {
+  try {
+    const history = await getHistory(jobRef);
+    const entry = extractHistoryEntry(history, jobRef);
+    if (entry && typeof entry === "object") {
+      const status = (entry as { status?: unknown }).status;
+      const statusStr = isJsonObject(status) ? status.status_str : undefined;
+      return statusStr === "error" ? "failed" : "completed";
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("404")) {
+      return "unknown";
+    }
+  }
+
+  try {
+    const queue = await getQueue();
+    const jobRefSet = new Set([jobRef]);
+    if (promptIdsInQueueSections(queue, ["queue_running", "currently_running", "running"], jobRefSet).length > 0) {
+      return "running";
+    }
+    if (promptIdsInQueueSections(queue, ["queue_pending", "pending"], jobRefSet).length > 0) {
+      return "pending";
+    }
+  } catch {
+    // queue も取得できない: unknown へフォールスルー。
+  }
+
+  return "unknown";
 }
 
 async function interrupt(jobRefs: string[], hasLocallyRunningJob: boolean): Promise<ProviderInterruptResult> {
@@ -485,9 +562,10 @@ function addRoleNodeId(nodeIds: Set<string>, rawNodeId: unknown) {
 
 export const comfyProvider: GenerationProvider = {
   id: "comfy",
-  getCapabilities,
+  resolveCapabilities,
   validateIntent,
   submit,
+  getStatus,
   collectImages,
   interrupt,
   watchProgress,
