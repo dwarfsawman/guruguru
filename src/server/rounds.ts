@@ -1,26 +1,12 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import type { ServerResponse } from "node:http";
-import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
-import {
-  deleteQueuedPrompts,
-  ensureDummyComfyImage,
-  fetchViewImage,
-  getHistory,
-  getQueue,
-  interruptComfy,
-  openComfyWebSocket,
-  queuePrompt,
-  uploadImageToComfy
-} from "./comfy";
+import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
+import { deleteQueuedPrompts, fetchViewImage, getHistory, interruptComfy } from "./comfy";
 import { readImageSize, storeCompositeImage, storeControlImage, storeImage, storeMaskImage, storeReferenceImage } from "./storage";
 import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
 import { HttpError } from "./http";
 import { isJsonObject, numberOr, objectBody, stringOrNull, stringOr } from "./validate";
-import { isUnifiedSwitchWorkflow, patchWorkflow, resolveSeed, type FeatureAvailabilityFlags } from "./workflow";
-import { resolveFeatureAvailability } from "./modelCheck";
+import { resolveSeed } from "./workflow";
 import { decorateAsset } from "./assets";
-import { streamFile } from "./files";
 import { branchAssignmentForRound, nextRoundIndex } from "./roundBranches";
 import {
   readRoundTrashSnapshot,
@@ -35,12 +21,17 @@ import {
   relationForGenerationMode,
   requiresParentAsset
 } from "../shared/generationMode";
-import { nodeIdFromRolePath } from "../shared/workflowRolePath";
-import { isPathInside } from "./paths";
+import { findProvider, getProvider } from "./providers/registry";
+import { extractHistoryEntry, extractImages, selectFinalImages } from "./providers/comfyProvider";
+import { resolveIntentArtifacts } from "./providers/types";
+import type { GenerationProvider, ProviderJobSubmission, ProviderSubmittedJob } from "./providers/types";
+import { toGenerationIntent } from "../shared/generationIntent";
 import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ReferenceImageOptions } from "../shared/types";
 import type { Asset, PageRow, Round } from "../shared/apiTypes";
 
-type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
+export type { RoundAttachmentKind } from "./roundAttachments";
+export { roundAttachmentPathFromRequest, resolveRoundAttachmentPath, serveRoundAttachment } from "./roundAttachments";
+
 type GenerationJobStatus = "pending" | "queued" | "running" | "completed" | "failed" | "interrupted" | "cancelled";
 type GenerationJob = {
   id: string;
@@ -48,13 +39,13 @@ type GenerationJob = {
   round_id: string;
   batch_index: number;
   prompt_id?: string | null;
+  provider_job_ref?: string | null;
   client_id: string;
   seed?: number | null;
   status: GenerationJobStatus;
   last_error_json?: string | null;
 };
 type CollectRoundResult = { statusCode: number; body: Record<string, unknown> };
-export type RoundAttachmentKind = "mask" | "pose" | "reference";
 type JobStats = {
   total: number;
   pending: number;
@@ -71,7 +62,6 @@ type JobStats = {
 const terminalJobStatuses = new Set<GenerationJobStatus>(["completed", "failed", "interrupted", "cancelled"]);
 const activeJobStatuses = new Set<GenerationJobStatus>(["pending", "queued", "running"]);
 const terminalRoundStatuses = new Set(["completed", "failed", "interrupted"]);
-const activeRoundMonitors = new Map<string, { socket: WebSocket; clientId: string }>();
 const roundCollectionLocks = new Map<string, Promise<CollectRoundResult>>();
 /** ComfyUI の `type: "progress"` メッセージ(現在のサンプラー step)を Round 単位で保持する(DB化しない)。 */
 const roundProgress = new Map<string, { value: number; max: number }>();
@@ -79,43 +69,6 @@ const roundProgress = new Map<string, { value: number; max: number }>();
 /** UX改善#5: `pollCollectRound` の collect レスポンスに乗せる現在の生成進捗。 */
 export function getRoundProgress(roundId: string): { value: number; max: number } | null {
   return roundProgress.get(roundId) ?? null;
-}
-
-export function roundAttachmentPathFromRequest(request: GenerationRequest, kind: RoundAttachmentKind): string | null {
-  const path =
-    kind === "mask"
-      ? request.inpaint?.maskPath
-      : kind === "pose"
-        ? request.controlnet?.poseImagePath
-        : request.reference?.imagePath;
-  return typeof path === "string" && path.trim() !== "" ? path : null;
-}
-
-function resolveRoundAttachmentPath(roundId: string, kind: RoundAttachmentKind): string {
-  const round = getRow<{ request_json: string }>("SELECT request_json FROM generation_rounds WHERE id = ?", [roundId]);
-  if (!round) {
-    throw new HttpError(404, "Round was not found");
-  }
-  let request: GenerationRequest;
-  try {
-    request = JSON.parse(round.request_json) as GenerationRequest;
-  } catch {
-    throw new HttpError(404, "Round attachment was not found");
-  }
-  const path = roundAttachmentPathFromRequest(request, kind);
-  const resolved = path ? resolve(path) : "";
-  if (!resolved || !isPathInside(resolved, resolve(dataRoot))) {
-    throw new HttpError(404, "Round attachment was not found");
-  }
-  return resolved;
-}
-
-export function serveRoundAttachment(res: ServerResponse, roundId: string, kind: RoundAttachmentKind) {
-  try {
-    streamFile(res, resolveRoundAttachmentPath(roundId, kind));
-  } catch (error) {
-    throw error;
-  }
 }
 
 function getRoundForApi(roundId: string): Round | null {
@@ -130,6 +83,12 @@ function getRoundForApi(roundId: string): Round | null {
       [roundId]
     )
   ) as unknown as Round | null;
+}
+
+/** Round が使う Provider の id。旧行を含め常に非 NULL(db.ts の ensureColumn 既定値 'comfy')。 */
+function providerIdForRound(roundId: string): string {
+  const row = getRow<{ provider_id: string | null }>("SELECT provider_id FROM generation_rounds WHERE id = ?", [roundId]);
+  return row?.provider_id ?? "comfy";
 }
 
 export async function createGenerationRound(
@@ -200,11 +159,24 @@ export async function createGenerationRound(
   request = await prepareReferenceRequest(projectId, roundId, requestBody, request);
   const branch = branchAssignmentForRound(projectId, parentAsset, roundId, "txt2img_root");
 
+  // S1(Docs/Feature-ScriptToManga.md): 通常は "comfy" 固定。`providerId` は契約テスト
+  // (FakeProvider)専用の隠しフックで、クライアントは送らない(省略時 'comfy')。
+  const providerId = stringOrNull((requestBody as unknown as Record<string, unknown>).providerId) ?? "comfy";
+  const intentCtx = {
+    roundId,
+    providerId,
+    recipeRevision: typeof template.version === "number" || typeof template.version === "string" ? String(template.version) : undefined,
+    pageId: resolvedPageId,
+    panelId: resolvedTargetPanelId
+  };
+  const initialIntent = toGenerationIntent(request, intentCtx);
+
   runSql(
     `INSERT INTO generation_rounds
       (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
-       branch_color_index, branch_reason, branch_key, page_id, target_panel_id, request_json)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
+       branch_color_index, branch_reason, branch_key, page_id, target_panel_id, request_json,
+       provider_id, intent_json)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       roundId,
       projectId,
@@ -217,43 +189,16 @@ export async function createGenerationRound(
       branch.key,
       resolvedPageId,
       resolvedTargetPanelId,
-      JSON.stringify(request)
+      JSON.stringify(request),
+      providerId,
+      JSON.stringify(initialIntent)
     ]
   );
 
-  const queuedPromptIds: string[] = [];
+  let provider: GenerationProvider | null = null;
+  let submitted: ProviderSubmittedJob[] = [];
   try {
-    const workflow = JSON.parse(String(template.workflow_json));
-    const roleMap = JSON.parse(String(template.role_map_json));
-    // 貼り付け込み合成があればそれを img2img 入力に使う(親アセット・ツリーは不変。
-    // 「エッジに添付」モデル: 合成はラウンドの入力素材としてのみ記録される)。
-    const uploaded = request.pasteComposite?.compositePath && requiresParentAsset(request.generationMode)
-      ? await uploadImageToComfy(request.pasteComposite.compositePath)
-      : parentAsset && requiresParentAsset(request.generationMode)
-        ? await uploadImageToComfy(String(parentAsset.image_path))
-        : null;
-    const uploadedMask = request.inpaint?.maskPath
-      ? await uploadImageToComfy(request.inpaint.maskPath)
-      : null;
-    const uploadedControlImage = request.controlnet?.poseImagePath
-      ? await uploadImageToComfy(request.controlnet.poseImagePath)
-      : null;
-    const uploadedReferenceImage = request.reference?.imagePath
-      ? await uploadImageToComfy(request.reference.imagePath)
-      : null;
-    // Unified-switch templates keep every branch's LoadImage nodes in the graph; unused image
-    // inputs are pointed at a pre-uploaded 1px dummy so ComfyUI's graph-wide filename validation
-    // passes (lazy evaluation never actually reads it).
-    const isUnifiedSwitch = isUnifiedSwitchWorkflow(workflow);
-    const dummyImageName = isUnifiedSwitch ? await ensureDummyComfyImage() : null;
-    // Consistent Character (Docs/Feature-ConsistentCharacter.md): resolved once per round (not
-    // per batch job) and shared by every job's PatchContext, so a round's batch of images never
-    // hits ComfyUI's /object_info once per job. Only meaningful for the unified-switch path --
-    // the legacy dynamic-patch templates do not support fragment injection.
-    const featureAvailability: FeatureAvailabilityFlags | null = isUnifiedSwitch
-      ? await resolveFeatureAvailability()
-      : null;
-    const clientId = createId("comfy_client");
+    provider = getProvider(providerId);
     const jobCount = clampInteger(request.batchSize, 1, maxBatchSize);
     const firstSeed = typeof request.seed === "number" ? request.seed : resolveSeed(request, typeof parentAsset?.seed === "number" ? parentAsset.seed : null);
     request = {
@@ -261,67 +206,82 @@ export async function createGenerationRound(
       batchSize: jobCount,
       seed: firstSeed
     };
-    runSql("UPDATE generation_rounds SET request_json = ? WHERE id = ?", [JSON.stringify(request), roundId]);
+    const finalIntent = toGenerationIntent(request, intentCtx);
+    runSql("UPDATE generation_rounds SET request_json = ?, intent_json = ? WHERE id = ?", [JSON.stringify(request), JSON.stringify(finalIntent), roundId]);
+    runSql("UPDATE generation_rounds SET status = 'running' WHERE id = ?", [roundId]);
 
-    runSql(
-      "UPDATE generation_rounds SET status = 'running' WHERE id = ?",
-      [roundId]
-    );
-
-    let firstPromptId: string | null = null;
-    let firstPatchedWorkflow: unknown = null;
-    for (let batchIndex = 0; batchIndex < jobCount; batchIndex += 1) {
-      const jobId = createId("job");
-      const jobRequest = requestForBatchJob(request, batchIndex);
-      const patchedWorkflow = patchWorkflow(workflow, roleMap, {
-        projectId,
-        roundIndex,
-        batchIndex,
-        request: jobRequest,
-        uploadedImageName: uploaded?.name ?? null,
-        uploadedMaskName: uploadedMask?.name ?? null,
-        uploadedControlImageName: uploadedControlImage?.name ?? null,
-        uploadedReferenceImageName: uploadedReferenceImage?.name ?? null,
-        featureAvailability,
-        dummyImageName
-      });
-
-      if (!firstPatchedWorkflow) {
-        firstPatchedWorkflow = patchedWorkflow;
-      }
-
-      runSql(
-        `INSERT INTO generation_jobs
-          (id, project_id, round_id, batch_index, client_id, seed, status)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-        [jobId, projectId, roundId, batchIndex, clientId, jobRequest.seed]
-      );
-
-      const promptId = await queuePrompt(patchedWorkflow, clientId);
-      queuedPromptIds.push(promptId);
-      if (!firstPromptId) {
-        firstPromptId = promptId;
-      }
-      runSql(
-        "UPDATE generation_jobs SET prompt_id = ?, status = 'queued', queued_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [promptId, jobId]
-      );
-      if (batchIndex === 0) {
-        ensureRoundMonitor(roundId);
-      }
+    // Intent がこの Provider/recipe で実行可能かの事前検証(S1 v2: providerOptions の規律含む)。
+    const validation = await provider.validateIntent(finalIntent);
+    if (!validation.ok) {
+      throw new HttpError(400, `Generation intent is not valid for provider "${providerId}": ${validation.issues.join(", ")}`);
     }
 
+    const jobSubmissions: ProviderJobSubmission[] = [];
+    for (let batchIndex = 0; batchIndex < jobCount; batchIndex += 1) {
+      const jobRequest = requestForBatchJob(request, batchIndex);
+      jobSubmissions.push({
+        batchIndex,
+        seed: jobRequest.seed,
+        request: jobRequest
+      });
+    }
+
+    submitted = await provider.submit({
+      projectId,
+      roundId,
+      roundIndex,
+      templateId: request.templateId,
+      parentAssetImagePath: parentImagePathForRequest(parentAsset, request),
+      intent: resolveIntentArtifacts(finalIntent),
+      jobs: jobSubmissions
+    });
+
+    // provider.submit は ctx.jobs と同じ順序で結果を返す契約(providers/types.ts 参照)。
+    submitted.forEach((job, index) => {
+      const batchIndex = jobSubmissions[index]!.batchIndex;
+      runSql(
+        `INSERT INTO generation_jobs
+          (id, project_id, round_id, batch_index, prompt_id, provider_job_ref, client_id, seed, status, queued_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', CURRENT_TIMESTAMP)`,
+        [createId("job"), projectId, roundId, batchIndex, job.jobRef, job.jobRef, job.watchRef ?? job.jobRef, job.seed]
+      );
+    });
+
+    const first = submitted[0] ?? null;
     runSql(
       "UPDATE generation_rounds SET prompt_id = ?, patched_workflow_json = ?, status = 'running' WHERE id = ?",
-      [firstPromptId, JSON.stringify(firstPatchedWorkflow), roundId]
+      [first?.jobRef ?? null, first ? JSON.stringify(first.nativeSubmission) : null, roundId]
     );
-    ensureRoundMonitor(roundId);
+    if (submitted.length > 0) {
+      ensureRoundMonitor(roundId);
+    }
+
+    // S1 レビュー指摘5: capability スナップショットの解決(/object_info 等)は HTTP レスポンスを
+    // 遅延させないよう非同期化する(await しない)。失敗しても round 自体は失敗させない。
+    void provider
+      .resolveCapabilities({ recipeId: request.templateId, revision: intentCtx.recipeRevision })
+      .then((capabilities) => {
+        runSql("UPDATE generation_rounds SET provider_snapshot_json = ? WHERE id = ?", [JSON.stringify(capabilities), roundId]);
+      })
+      .catch(() => {
+        // Capability スナップショットはベストエフォートのメタデータ。
+      });
 
     return {
       round: toApiRow(getRow("SELECT * FROM generation_rounds WHERE id = ?", [roundId])) as unknown as Round | null,
-      promptId: firstPromptId
+      promptId: first?.jobRef ?? null
     };
   } catch (error) {
+    // S1 レビュー指摘4: submit 成功後(ComfyUI へのキュー投入は完了)に後続の DB 書き込み等が
+    // 失敗した場合、キューに残った native ジョブをベストエフォートで後始末する(main の
+    // deleteQueuedPrompts 後始末に相当。失敗しても元のエラーを優先して投げる)。
+    if (submitted.length > 0 && provider) {
+      try {
+        await provider.interrupt(submitted.map((job) => job.jobRef), false);
+      } catch (cleanupError) {
+        console.warn(`Failed to clean up queued jobs for round ${roundId} after a submit-time error:`, cleanupError);
+      }
+    }
     runSql(
       "UPDATE generation_rounds SET status = 'failed', last_error_json = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
       [JSON.stringify(errorToJson(error)), roundId]
@@ -330,13 +290,13 @@ export async function createGenerationRound(
       "UPDATE generation_jobs SET status = 'failed', last_error_json = ?, completed_at = CURRENT_TIMESTAMP WHERE round_id = ? AND status IN ('pending', 'queued', 'running')",
       [JSON.stringify(errorToJson(error)), roundId]
     );
-    try {
-      await deleteQueuedPrompts(queuedPromptIds);
-    } catch {
-      // The original queuing error is more useful for the caller.
-    }
     throw error;
   }
+}
+
+/** requiresParentAsset なモードで pasteComposite が無い場合に Provider へ渡す親アセットの画像パス。 */
+function parentImagePathForRequest(parentAsset: Record<string, unknown> | null, request: GenerationRequest): string | null {
+  return parentAsset && requiresParentAsset(request.generationMode) ? String(parentAsset.image_path) : null;
 }
 
 async function prepareInpaintRequest(
@@ -602,8 +562,15 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
   }
 
   const jobs = getGenerationJobs(roundId);
-  if (jobs.length === 0) {
+  // S1 レビュー指摘3: submit() が jobs 行を 1 件も作れずに失敗した Round(intent_json はある)は、
+  // ComfyUI の history/prompt_id を前提とするレガシー経路(旧 Round)へ誤分類してはいけない。
+  // レガシー判定は「jobs 0 件『かつ』intent_json が無い」に限定する。
+  const isLegacyRound = jobs.length === 0 && !round.intent_json;
+  if (isLegacyRound) {
     return collectLegacyRound(round);
+  }
+  if (jobs.length === 0) {
+    return zeroJobRoundCollectResult(round);
   }
 
   const template = getRow<Record<string, unknown>>("SELECT * FROM workflow_templates WHERE id = ?", [round.template_id]);
@@ -615,13 +582,15 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
   const roleMap = parseStoredJsonObject(template.role_map_json);
   const workflowForOutputSelection =
     parseStoredJsonObject(round.patched_workflow_json) ?? parseStoredJsonObject(template.workflow_json);
+  const provider = getProvider(providerIdForRound(roundId));
   const createdAssets: Asset[] = [];
 
   for (const job of jobs) {
-    if (!job.prompt_id || job.status === "cancelled" || job.status === "failed") {
+    const nativeRef = jobNativeRef(job);
+    if (!nativeRef || job.status === "cancelled" || job.status === "failed") {
       continue;
     }
-    if (hasAssetsForPrompt(roundId, job.prompt_id)) {
+    if (hasAssetsForPrompt(roundId, nativeRef)) {
       if (job.status !== "completed") {
         runSql(
           "UPDATE generation_jobs SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP) WHERE id = ?",
@@ -631,7 +600,12 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
       continue;
     }
 
-    const images = await historyImagesForPrompt(job.prompt_id, roleMap, workflowForOutputSelection);
+    const images = await provider.collectImages(nativeRef, {
+      projectId: String(round.project_id),
+      roundId,
+      roleMap,
+      workflow: workflowForOutputSelection
+    });
     if (images.length === 0) {
       continue;
     }
@@ -641,8 +615,10 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
         round,
         template,
         request,
-        image,
-        promptId: job.prompt_id ?? null,
+        imageBytes: image.bytes,
+        filename: image.filename,
+        outputNodeId: image.outputNodeId,
+        promptId: nativeRef,
         seed: typeof job.seed === "number" ? job.seed : request.seed
       });
       createdAssets.push(asset);
@@ -681,6 +657,32 @@ async function collectRoundUnlocked(roundId: string): Promise<CollectRoundResult
   };
 }
 
+/**
+ * S1 レビュー指摘3: submit() が(intent_json の保存は済んだが)jobs 行を 1 件も作れずに失敗した
+ * Round の collect レスポンス。ComfyUI の prompt_id を要求するレガシー経路には委譲せず、Round の
+ * 現在の終端状態(通常は 'failed')をそのまま 200 + jobStats で返す(main の挙動に合わせる)。
+ */
+function zeroJobRoundCollectResult(round: Record<string, unknown>): CollectRoundResult {
+  const roundId = String(round.id);
+  const isTerminal = typeof round.status === "string" && terminalRoundStatuses.has(round.status);
+  return {
+    statusCode: isTerminal ? 200 : 202,
+    body: {
+      round: getRoundForApi(roundId),
+      assets: [],
+      jobStats: jobStats(roundId),
+      progress: getRoundProgress(roundId),
+      message: isTerminal
+        ? "This round did not produce any generation jobs."
+        : "No new generated images are available yet."
+    }
+  };
+}
+
+// TODO(S1 フォローアップ, Docs/Feature-ScriptToManga.md S1): generation_jobs 行を持たない旧 Round は
+// provider.collectImages ではなくここで直接 comfy.ts の history パースを呼んでいる。404 時の挙動
+// (このレガシー経路は投げっぱなし、provider.collectImages は空配列で握りつぶす)が異なるため、
+// 挙動保持を優先して現状維持している。
 async function collectLegacyRound(round: Record<string, unknown>): Promise<CollectRoundResult> {
   const roundId = String(round.id);
   const existingCount =
@@ -725,11 +727,14 @@ async function collectLegacyRound(round: Record<string, unknown>): Promise<Colle
   const createdAssets: Asset[] = [];
 
   for (const image of images) {
+    const imageBytes = await fetchViewImage(image);
     const asset = await storeGeneratedAsset({
       round,
       template,
       request,
-      image,
+      imageBytes,
+      filename: image.filename,
+      outputNodeId: image.nodeId ?? null,
       promptId: typeof round.prompt_id === "string" ? round.prompt_id : null,
       seed: request.seed
     });
@@ -751,43 +756,28 @@ async function collectLegacyRound(round: Record<string, unknown>): Promise<Colle
   };
 }
 
-async function historyImagesForPrompt(
-  promptId: string,
-  roleMap: Record<string, unknown> | null,
-  workflow: Record<string, unknown> | null
-) {
-  try {
-    const history = await getHistory(promptId);
-    const entry = extractHistoryEntry(history, promptId);
-    return selectFinalImages(extractImages(entry), roleMap, workflow);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("404")) {
-      return [];
-    }
-    throw error;
-  }
-}
-
 async function storeGeneratedAsset({
   round,
   template,
   request,
-  image,
+  imageBytes,
+  filename,
+  outputNodeId,
   promptId,
   seed
 }: {
   round: Record<string, unknown>;
   template: Record<string, unknown>;
   request: GenerationRequest;
-  image: HistoryImage;
+  imageBytes: Buffer;
+  filename: string;
+  outputNodeId: string | null;
   promptId: string | null;
   seed: number | null;
 }) {
   const roundId = String(round.id);
   const batchIndex = nextAssetBatchIndex(roundId);
-  const bytes = await fetchViewImage(image);
-  const stored = await storeImage(String(round.project_id), roundId, batchIndex, image.filename, bytes);
+  const stored = await storeImage(String(round.project_id), roundId, batchIndex, filename, imageBytes);
   const assetId = createId("asset");
 
   runSql(
@@ -818,7 +808,7 @@ async function storeGeneratedAsset({
       template.id,
       template.version,
       template.workflow_hash,
-      image.nodeId
+      outputNodeId
     ]
   );
 
@@ -858,6 +848,15 @@ function getGenerationJobs(roundId: string) {
     "SELECT * FROM generation_jobs WHERE round_id = ? ORDER BY batch_index ASC",
     [roundId]
   );
+}
+
+/**
+ * このジョブの不透明な native 参照(S1 v2: `generation_jobs.provider_job_ref`)。旧行(v2 導入前に
+ * 作成された行)は `provider_job_ref` が NULL のため `prompt_id`(comfy レガシー列)へ後方互換フォール
+ * バックする(Docs/Feature-ScriptToManga.md S1 DB(v2方針))。
+ */
+function jobNativeRef(job: GenerationJob): string | null {
+  return job.provider_job_ref ?? job.prompt_id ?? null;
 }
 
 function requestForBatchJob(request: GenerationRequest, batchIndex: number): GenerationRequest {
@@ -953,13 +952,24 @@ export async function interruptRound(roundId: string) {
   }
 
   const jobs = getGenerationJobs(roundId);
-  if (jobs.length === 0) {
+  // S1 レビュー指摘3: submit() が jobs 行を作れずに失敗した Round(intent_json はある)は、
+  // interruptLegacyRound へ委譲すると「すでに 'failed' な Round のステータスを問答無用で
+  // 'interrupted' に上書きしてしまう」ため、collect と同じ判定でレガシー経路を限定する。
+  const isLegacyRound = jobs.length === 0 && !round.intent_json;
+  if (isLegacyRound) {
     return interruptLegacyRound(round);
+  }
+  if (jobs.length === 0) {
+    return {
+      round: toApiRow(round) as unknown as Round | null,
+      interrupted: false,
+      deletedPromptIds: []
+    };
   }
 
   const activeJobs = jobs.filter((job) => activeJobStatuses.has(job.status));
   const activePromptIds = activeJobs
-    .map((job) => job.prompt_id)
+    .map((job) => jobNativeRef(job))
     .filter((promptId): promptId is string => typeof promptId === "string" && promptId.length > 0);
   if (activeJobs.length === 0) {
     return {
@@ -969,45 +979,19 @@ export async function interruptRound(roundId: string) {
     };
   }
 
-  let queue: unknown = null;
-  let queueError: string | null = null;
-  try {
-    queue = await getQueue();
-  } catch (error) {
-    queueError = error instanceof Error ? error.message : String(error);
-  }
+  const provider = getProvider(providerIdForRound(roundId));
+  const result = await provider.interrupt(activePromptIds, activeJobs.some((job) => job.status === "running"));
 
-  const activePromptSet = new Set(activePromptIds);
-  const runningPromptIds = promptIdsInQueueSections(queue, ["queue_running", "currently_running", "running"], activePromptSet);
-  const shouldInterruptRunning = runningPromptIds.length > 0 || activeJobs.some((job) => job.status === "running");
-  let interruptError: string | null = null;
-  let interrupted = false;
-  if (shouldInterruptRunning) {
-    try {
-      await interruptComfy();
-      interrupted = true;
-    } catch (error) {
-      interruptError = error instanceof Error ? error.message : String(error);
-    }
-  }
-
-  let deleteError: string | null = null;
-  try {
-    await deleteQueuedPrompts(activePromptIds);
-  } catch (error) {
-    deleteError = error instanceof Error ? error.message : String(error);
-  }
-
-  const runningSet = new Set(runningPromptIds);
+  const runningSet = new Set(result.runningJobRefs);
   for (const job of activeJobs) {
-    const promptId = typeof job.prompt_id === "string" ? job.prompt_id : null;
-    if (job.status === "running" && !interrupted) {
+    const promptId = jobNativeRef(job);
+    if (job.status === "running" && !result.interruptedRunning) {
       continue;
     }
-    if (job.status !== "running" && deleteError && promptId) {
+    if (job.status !== "running" && result.deleteError && promptId) {
       continue;
     }
-    const status: GenerationJobStatus = interrupted && (job.status === "running" || (promptId && runningSet.has(promptId)))
+    const status: GenerationJobStatus = result.interruptedRunning && (job.status === "running" || (promptId ? runningSet.has(promptId) : false))
       ? "interrupted"
       : "cancelled";
     runSql(
@@ -1020,15 +1004,18 @@ export async function interruptRound(roundId: string) {
 
   return {
     round: toApiRow(updatedRound) as unknown as Round | null,
-    interrupted,
+    interrupted: result.interruptedRunning,
     deletedPromptIds: activePromptIds,
-    queueError,
-    deleteError,
-    interruptError,
+    queueError: result.queueError,
+    deleteError: result.deleteError,
+    interruptError: result.interruptError,
     jobStats: jobStats(roundId)
   };
 }
 
+// TODO(S1 フォローアップ, Docs/Feature-ScriptToManga.md S1): このレガシー経路(generation_jobs 行を
+// 持たない旧 Round)は queue 照合を行わず常に interruptComfy を試みる、より単純な既存挙動を保つため
+// provider.interrupt を通さず comfy.ts を直接呼ぶ据え置きとしている。
 async function interruptLegacyRound(round: Record<string, unknown>) {
   const promptId = typeof round.prompt_id === "string" ? round.prompt_id : null;
   let interrupted = false;
@@ -1060,110 +1047,36 @@ async function interruptLegacyRound(round: Record<string, unknown>) {
   };
 }
 
-function promptIdsInQueueSections(queue: unknown, sectionNames: string[], promptIds: Set<string>) {
-  const found = new Set<string>();
-  if (!queue || typeof queue !== "object") {
-    return [];
-  }
-  for (const [key, value] of Object.entries(queue as Record<string, unknown>)) {
-    if (sectionNames.includes(key)) {
-      collectPromptIds(value, promptIds, found);
-    }
-  }
-  return [...found];
-}
-
-function collectPromptIds(value: unknown, promptIds: Set<string>, found: Set<string>) {
-  if (typeof value === "string") {
-    if (promptIds.has(value)) {
-      found.add(value);
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectPromptIds(item, promptIds, found);
-    }
-    return;
-  }
-  if (value && typeof value === "object") {
-    for (const item of Object.values(value)) {
-      collectPromptIds(item, promptIds, found);
-    }
-  }
-}
-
+/**
+ * Round の進捗監視を開始する。実体は Provider(comfy: WebSocket)。ジョブ状態の DB 反映は
+ * `onRoundJobUpdate` へコールバックで返してもらう(中立: rounds.ts はジョブ状態機械のまま残る)。
+ */
 export function ensureRoundMonitor(roundId: string) {
-  if (activeRoundMonitors.has(roundId)) {
-    return;
-  }
-  const job = getRow<{ client_id: string }>(
-    `SELECT client_id
-     FROM generation_jobs
-     WHERE round_id = ? AND prompt_id IS NOT NULL AND status IN ('pending', 'queued', 'running')
-     ORDER BY batch_index ASC
-     LIMIT 1`,
-    [roundId]
-  );
-  if (!job?.client_id) {
-    return;
-  }
-
-  let socket: WebSocket;
-  try {
-    socket = openComfyWebSocket(job.client_id);
-  } catch (error) {
-    console.warn(`Failed to open ComfyUI WebSocket for round ${roundId}:`, error);
-    return;
-  }
-
-  activeRoundMonitors.set(roundId, { socket, clientId: job.client_id });
-  socket.addEventListener("message", (event) => {
-    void handleComfySocketMessage(roundId, event.data);
-  });
-  socket.addEventListener("close", () => {
-    const current = activeRoundMonitors.get(roundId);
-    if (current?.socket === socket) {
-      activeRoundMonitors.delete(roundId);
-    }
-  });
-  socket.addEventListener("error", (event) => {
-    console.warn(`ComfyUI WebSocket error for round ${roundId}:`, event);
+  const provider = getProvider(providerIdForRound(roundId));
+  provider.watchProgress?.({
+    roundId,
+    onJobUpdate: (jobRef, status, error) => onRoundJobUpdate(roundId, jobRef, status, error),
+    onProgress: (value, max) => roundProgress.set(roundId, { value, max })
   });
 }
 
-async function handleComfySocketMessage(roundId: string, rawData: unknown) {
-  if (typeof rawData !== "string") {
-    return;
-  }
-
-  let message: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(rawData);
-    if (!isJsonObject(parsed)) {
-      return;
-    }
-    message = parsed;
-  } catch {
-    return;
-  }
-
-  const type = typeof message.type === "string" ? message.type : "";
-  const data = isJsonObject(message.data) ? message.data : {};
-  const promptId = typeof data.prompt_id === "string" ? data.prompt_id : null;
-  if (!promptId) {
-    return;
-  }
-
+function onRoundJobUpdate(
+  roundId: string,
+  jobRef: string,
+  status: "running" | "collectable" | "interrupted" | "failed",
+  error?: unknown
+) {
+  // S1 v2: `provider_job_ref`(新)と `prompt_id`(comfy レガシー)のどちらでも一致させる
+  // (`jobNativeRef` の書き込み側は常に両方へ jobRef を書くが、旧データは provider_job_ref が NULL)。
   const job = getRow<GenerationJob>(
-    "SELECT * FROM generation_jobs WHERE round_id = ? AND prompt_id = ?",
-    [roundId, promptId]
+    "SELECT * FROM generation_jobs WHERE round_id = ? AND (provider_job_ref = ? OR prompt_id = ?)",
+    [roundId, jobRef, jobRef]
   );
   if (!job) {
     return;
   }
 
-  if (type === "execution_start" || (type === "executing" && data.node !== null)) {
+  if (status === "running") {
     // ノード(またはプロンプト)が切り替わったタイミングなので、直前ノードの進捗を持ち越さない。
     roundProgress.delete(roundId);
     runSql(
@@ -1174,55 +1087,43 @@ async function handleComfySocketMessage(roundId: string, rawData: unknown) {
     return;
   }
 
-  if (type === "progress") {
-    const value = Number(data.value);
-    const max = Number(data.max);
-    if (Number.isFinite(value) && Number.isFinite(max) && max > 0) {
-      roundProgress.set(roundId, { value, max });
-    }
-    return;
-  }
-
-  if (type === "executed" || type === "execution_success" || (type === "executing" && data.node === null)) {
+  if (status === "collectable") {
     roundProgress.delete(roundId);
-    await collectRound(roundId);
+    void collectRound(roundId);
     return;
   }
 
-  if (type === "execution_interrupted") {
+  if (status === "interrupted") {
     roundProgress.delete(roundId);
     runSql(
       "UPDATE generation_jobs SET status = 'interrupted', completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status != 'completed'",
       [job.id]
     );
     updateRoundStatusFromJobs(roundId);
-    await collectRound(roundId);
+    void collectRound(roundId);
     return;
   }
 
-  if (type === "execution_error") {
+  if (status === "failed") {
     roundProgress.delete(roundId);
     runSql(
       "UPDATE generation_jobs SET status = 'failed', last_error_json = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ? AND status != 'completed'",
-      [JSON.stringify(data), job.id]
+      [JSON.stringify(error ?? null), job.id]
     );
     updateRoundStatusFromJobs(roundId);
-    await collectRound(roundId);
+    void collectRound(roundId);
   }
 }
 
+/**
+ * S1 レビュー指摘1 [critical]: `deleteRoundTree` はツリー内の全 Round(provider_id='manual' の
+ * アップロード由来 Round を含みうる)に対してこれを呼ぶ。`getProvider` は未登録 provider_id で
+ * HttpError(400) を投げるため、`manual` ラウンドが混じるとサブツリー削除全体が ROLLBACK して
+ * ページ削除が失敗する(実測再現済み)。未知 provider は監視対象がそもそも無いので黙って無視する。
+ */
 function stopRoundMonitor(roundId: string) {
   roundProgress.delete(roundId);
-  const monitor = activeRoundMonitors.get(roundId);
-  if (!monitor) {
-    return;
-  }
-  activeRoundMonitors.delete(roundId);
-  try {
-    monitor.socket.close();
-  } catch {
-    // Ignore close failures; polling collection remains the fallback.
-  }
+  findProvider(providerIdForRound(roundId))?.stopWatch?.(roundId);
 }
 
 /**
@@ -1369,105 +1270,6 @@ export function restoreRounds(body: unknown) {
     roundIds: snapshot.rounds.map((row) => String(row.id)),
     restoredCount: snapshot.rounds.length
   };
-}
-
-function extractHistoryEntry(history: unknown, promptId: string) {
-  if (history && typeof history === "object" && promptId in history) {
-    return (history as Record<string, unknown>)[promptId];
-  }
-  return history;
-}
-
-function extractImages(entry: unknown): HistoryImage[] {
-  const output = entry && typeof entry === "object" ? (entry as Record<string, unknown>).outputs : null;
-  if (!output || typeof output !== "object") {
-    return [];
-  }
-
-  const images: HistoryImage[] = [];
-  for (const [nodeId, nodeOutput] of Object.entries(output as Record<string, unknown>)) {
-    if (!nodeOutput || typeof nodeOutput !== "object") {
-      continue;
-    }
-    const rawImages = (nodeOutput as { images?: unknown }).images;
-    if (!Array.isArray(rawImages)) {
-      continue;
-    }
-
-    for (const raw of rawImages) {
-      if (!raw || typeof raw !== "object") {
-        continue;
-      }
-      const image = raw as Record<string, unknown>;
-      if (typeof image.filename !== "string") {
-        continue;
-      }
-      images.push({
-        nodeId,
-        filename: image.filename,
-        subfolder: typeof image.subfolder === "string" ? image.subfolder : undefined,
-        type: typeof image.type === "string" ? image.type : "output"
-      });
-    }
-  }
-
-  return images;
-}
-
-function selectFinalImages(images: HistoryImage[], roleMap: Record<string, unknown> | null, workflow: Record<string, unknown> | null): HistoryImage[] {
-  if (images.length <= 1) {
-    return images;
-  }
-
-  const finalNodeIds = finalImageNodeIds(roleMap, workflow);
-  const finalNodeImages = images.filter((image) => finalNodeIds.has(image.nodeId));
-  if (finalNodeImages.length > 0) {
-    return finalNodeImages;
-  }
-
-  const outputImages = images.filter((image) => (image.type ?? "output") === "output");
-  if (outputImages.length > 0) {
-    return outputImages;
-  }
-
-  const nonTempImages = images.filter((image) => image.type !== "temp");
-  return nonTempImages.length > 0 ? nonTempImages : images;
-}
-
-function finalImageNodeIds(roleMap: Record<string, unknown> | null, workflow: Record<string, unknown> | null): Set<string> {
-  const nodeIds = new Set<string>();
-  addRoleNodeId(nodeIds, roleMap?.save_image_node);
-  addRoleNodeId(nodeIds, nodeIdFromRolePath(roleMap?.save_prefix_input));
-
-  if (!workflow) {
-    return nodeIds;
-  }
-
-  for (const [nodeId, rawNode] of Object.entries(workflow)) {
-    if (!isJsonObject(rawNode)) {
-      continue;
-    }
-    const classType = typeof rawNode.class_type === "string" ? rawNode.class_type : "";
-    if (isFinalImageOutputClass(classType)) {
-      nodeIds.add(nodeId);
-    }
-  }
-
-  return nodeIds;
-}
-
-function isFinalImageOutputClass(classType: string): boolean {
-  const normalized = classType.replace(/[\s_-]+/g, "").toLowerCase();
-  if (normalized.includes("preview")) {
-    return false;
-  }
-  return normalized.includes("saveimage") || (normalized.includes("image") && normalized.includes("save"));
-}
-
-function addRoleNodeId(nodeIds: Set<string>, rawNodeId: unknown) {
-  if (typeof rawNodeId === "string" && rawNodeId.trim()) {
-    nodeIds.add(rawNodeId.trim());
-  }
 }
 
 function parseStoredJsonObject(value: unknown): Record<string, unknown> | null {

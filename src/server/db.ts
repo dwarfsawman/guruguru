@@ -29,7 +29,9 @@ const jsonColumnNames = new Map<string, string>([
   ["layout_json", "layout"],
   ["crop_json", "crop"],
   ["objects_json", "objects"],
-  ["mosaic_json", "mosaic"]
+  ["mosaic_json", "mosaic"],
+  ["intent_json", "intent"],
+  ["provider_snapshot_json", "providerSnapshot"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -87,13 +89,16 @@ export function initializeDb() {
       deleted_at TEXT
     );
 
+    -- S1 v2 (Docs/Feature-ScriptToManga.md): prompt_id / patched_workflow_json は ComfyProvider の
+    -- レガシー列(ComfyProvider だけが書く。他 Provider は触らない)。汎用列は provider_id/intent_json/
+    -- provider_snapshot_json(ensureColumn で追記、下記参照)。
     CREATE TABLE IF NOT EXISTS generation_rounds (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       template_id TEXT NOT NULL,
       parent_round_id TEXT,
       round_index INTEGER NOT NULL,
-      prompt_id TEXT,
+      prompt_id TEXT, -- レガシー(comfy のみ書く)
       status TEXT NOT NULL,
       generation_mode TEXT NOT NULL,
       branch_color_index INTEGER NOT NULL DEFAULT 0,
@@ -101,7 +106,7 @@ export function initializeDb() {
       branch_key TEXT,
       preset_id TEXT,
       request_json TEXT NOT NULL,
-      patched_workflow_json TEXT,
+      patched_workflow_json TEXT, -- レガシー(comfy のみ書く)
       last_error_json TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       completed_at TEXT,
@@ -110,13 +115,15 @@ export function initializeDb() {
       FOREIGN KEY (parent_round_id) REFERENCES generation_rounds(id)
     );
 
+    -- S1 v2: prompt_id / client_id は ComfyProvider のレガシー列。汎用列は provider_job_ref
+    -- (ensureColumn で追記、下記参照)。読み側は rounds.ts の jobNativeRef(provider_job_ref ?? prompt_id)。
     CREATE TABLE IF NOT EXISTS generation_jobs (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       round_id TEXT NOT NULL,
       batch_index INTEGER NOT NULL,
-      prompt_id TEXT,
-      client_id TEXT NOT NULL,
+      prompt_id TEXT, -- レガシー(comfy のみ書く)
+      client_id TEXT NOT NULL, -- レガシー(comfy のみ書く)
       seed INTEGER,
       status TEXT NOT NULL,
       last_error_json TEXT,
@@ -151,7 +158,7 @@ export function initializeDb() {
       workflow_template_id TEXT NOT NULL,
       workflow_template_version INTEGER NOT NULL,
       workflow_snapshot_hash TEXT NOT NULL,
-      comfy_output_node_id TEXT,
+      comfy_output_node_id TEXT, -- S1 v2: ComfyProvider のレガシー列(他 Provider は触らない)
       status TEXT NOT NULL DEFAULT 'generated',
       rating INTEGER,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -283,6 +290,17 @@ export function initializeDb() {
   // コマ内生成(Docs/Feature-PanelGeneration.md): この Round がどのコマ向けの生成かを示す。
   // 通常の(コマを対象としない)生成/single モードでは NULL。
   ensureColumn("generation_rounds", "target_panel_id", "TEXT");
+  // GenerationIntent/Provider 抽象化(Docs/Feature-ScriptToManga.md S1): この Round を実行した
+  // Provider の id。既存行は全て ComfyUI 実行だったため 'comfy' を既定値とする。
+  ensureColumn("generation_rounds", "provider_id", "TEXT NOT NULL DEFAULT 'comfy'");
+  // 導出済みの GenerationIntent(モデル中立の生成意図)。再現性・将来の re-run 用。旧行は NULL。
+  ensureColumn("generation_rounds", "intent_json", "TEXT");
+  // submit() 時点の ProviderCapabilities スナップショット。旧行は NULL。
+  ensureColumn("generation_rounds", "provider_snapshot_json", "TEXT");
+  // S1 v2: Provider 中立のネイティブジョブ参照。comfy は prompt_id と同値を二重書きする
+  // (レガシー列の宣言は下記コメント参照)。読み側は `provider_job_ref ?? prompt_id` を読み、
+  // v2 導入前の旧行(NULL)にも後方互換で動く(rounds.ts の jobNativeRef)。
+  ensureColumn("generation_jobs", "provider_job_ref", "TEXT");
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {

@@ -6,6 +6,7 @@
  */
 import type { Json } from "./json";
 import type { GenerationRequest } from "./types";
+import type { GenerationIntent } from "./generationIntent";
 import type { PastedObject } from "./pasteAttachments";
 import type { PageLayout, PanelCrop } from "./pageLayout";
 import type { PageObject, TextContent } from "./pageObjects";
@@ -238,6 +239,12 @@ export interface Round {
   /** コマ内生成(Docs/Feature-PanelGeneration.md): この Round が対象とするコマ id。対象外は null。 */
   targetPanelId?: string | null;
   request: GenerationRequest;
+  /** この Round を実行した GenerationProvider の id(Docs/Feature-ScriptToManga.md S1)。旧行/manual アップロードも含め常に非 NULL。 */
+  providerId?: string;
+  /** 導出済みの GenerationIntent(モデル中立の生成意図)。旧行は null。 */
+  intent?: GenerationIntent | null;
+  /** submit() 時点の ProviderCapabilities スナップショット(recipe 単位)。server 専用型のため緩く保持する。旧行は null。 */
+  providerSnapshot?: Record<string, unknown> | null;
   createdAt: string;
   completedAt?: string | null;
   assetCount?: number;
