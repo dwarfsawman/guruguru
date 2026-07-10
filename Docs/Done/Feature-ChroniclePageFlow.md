@@ -228,6 +228,67 @@ seed 更新再配置、手動編集での自動ロック、ロック除外、個
 - LLM ページ分割・Beat 分割、話者位置推定と尻尾追従、GenerationIntent 自動構築(元計画 §2.11, §2.14, §9 順序6〜8)
 - サイズ超過時の自動分割・次ページ送り
 
+## 9. 実装結果(2026-07-11、フェーズI〜V 完了・main マージ済み)
+
+各フェーズの main マージコミット:
+
+| フェーズ | Feature commit | Merge commit |
+|---|---|---|
+| I(Chronicle 表示) | `ee915f9` | `8dea8eb` |
+| II(ページ割り当て) | `8489bd6` | `cd056fd` |
+| III(吹き出し一括配置) | `54c111e` | `b87449e` |
+| III 品質修正(SFXページ全体フォールバック+サイズバリアント+中点配分) | `3bf898f` | `6f2598f` |
+| IV(再配置とロック) | `7b68a41` | `2020cdc` |
+| V(仕上げ) | 本コミット | 本コミット |
+
+### 実装上の主要判断(フェーズV)
+
+- **reflow の担当コマ固定緩和**: ソルバー(`runDialogueAutoLayout`)は元々「担当コマに空きが無ければ即
+  unplaced」だった。2×2 グリッドでロック済み吹き出しが担当コマを占有していると、乱数はスコア同点の
+  tie-break にしか使われないため seed を変えても解消しない(全滅)構造的な問題があった。発話順とコマ順の
+  単調性(order_index 昇順で panelId のコマ順が逆転しない)を壊さない範囲(直前に panel ベースで配置した
+  発話のコマ index の次〜担当 index+2)で後続コマへフォールバックするよう修正した。sfx の既存ページ全体
+  フォールバックとは独立に動作する(sfx は対象外、従来どおり)。詳細は
+  [`Docs/Reference-DialogueAutoLayout.md`](Reference-DialogueAutoLayout.md) §6。
+- **オブジェクト id 衝突の修正**: `nextObjectId` は seed をまたいだグローバルカウンタを持たない設計のため、
+  reflow を同じ seed で複数回叩く等で `existingObjects`(ロック済みオブジェクト含む)の id と衝突しうることが
+  判明した(`normalizePageObjects` の `_dup` リネームに巻き込まれ、ロック済みオブジェクトの id が変わって
+  `balloon_object_id` 参照が浮く)。ソルバー内で使用済み id 集合を追跡し、衝突する id を避けて `localIndex` を
+  進める形で修正(決定性は維持)。詳細は [`Docs/Reference-DialogueAutoLayout.md`](Reference-DialogueAutoLayout.md) §7。
+- **Fountain 再取り込み・整合性ルール(§2.7・§3)は S3〜S4 の既存実装のまま**で要件を満たしていることを
+  フェーズVで確認した(新規ロジックはほぼ不要だった、設計書の想定どおり)。`getChronicle` は常に最新
+  revision を参照し(`resolveLatestRevision`)、orphaned 行も Chronicle 上に残る。`updatePageObjects` は
+  objects_json 保存時に浮いた `balloon_object_id` を自動で NULL 化する(`reconcileOrphanedPlacementBalloonIds`)。
+- **ページ削除時の dialogue_placements cascade**は `dialogue_placements.page_id` の
+  `FOREIGN KEY ... ON DELETE CASCADE`(`db.ts`)+ `PRAGMA foreign_keys = ON` で DB レベルに任せている
+  (アプリコードで明示的な削除は不要)。フェーズVで動作確認済み
+  (`src/server/dialogueAllocation.test.ts` 「ページ削除時に dialogue_placements が残らない(FK CASCADE)」)。
+- **PNG/ORA 書き出し**は `openRasterExport.ts` の `renderPageObjectElement` が box(P1)/text(P2)/balloon(P3、
+  thought 含む)を既に描画しており、画像一括書き出し(`imageExport.ts`)も同じ `createPageLayers`/
+  `renderMergedImage` を再利用するため、一括配置由来のオブジェクトも自動的に反映される。フェーズVで
+  「実際に非透明ピクセルとして描画される」ことまで確認する回帰テストを追加した
+  (`src/server/openRasterExport.test.ts`)。
+- **非同期完了ガード(ページ移動中)**: `chronicleController.ts` の全 API 呼び出し(load/assign/preview/apply/
+  reflow/unlock)は `await` 直後に必ず `state.pagePanelLightbox?.pageId !== context.pageId` を確認しており、
+  ページ切替/lightbox クローズ後に応答が着弾しても state を書き換えない。フェーズVのコードレビューで
+  既存実装が要件を満たしていることを確認した(修正不要)。
+- **1680×920 / 1600×900 での編集領域確保**: `.page-panel-dialog` の `grid-template-rows` は
+  `auto auto minmax(0, 1fr) auto auto` の5行(ヘッダー/タブ/ステージ/ツールバー/Chronicle バー)で、
+  ステージ行のみ `minmax(0, 1fr)` で可変、Chronicle バーは `max-height: 128px`(折り畳み時はヘッダーのみ)。
+  ダイアログ全体は `max-height: calc(100vh - 48px)` に収まるため、1600×900 でもステージが 0 に潰れることは
+  ない(CSS レビューで確認。ブラウザでの実測未実施 -- 環境上ブラウザ確認ツールは利用可能だが本タスクでは
+  CSS の根拠確認に留めた)。
+
+### 既知の制限(設計書§8のとおり、フェーズVでも変更なし)
+
+- 楽観ロック(expectedPageUpdatedAt)は未実装。lightbox を開いている本人だけが操作する前提(last-write-wins)。
+- LLM ページ分割・Beat 分割、話者位置推定と尻尾追従は MVP 外のまま。
+- サイズ超過時の自動分割・次ページ送りは警告文言のみ(自動対処なし)。
+- 後続コマへのフォールバック範囲は「担当 index+2」までの固定値。それ以上離れたコマへは逃がさない
+  (行きすぎた再配置による読み順崩壊を避けるための意図的な制限)。
+
 ## 変更履歴
 
+- 2026-07-11: フェーズI〜V 完了。§9 に実装結果(merge commit・主要判断・既知の制限)を追記し、
+  `Docs/Done/` へ移動。
 - 2026-07-11: 初版。元計画を既存コード調査と決定事項(ドロワー併存・楽観ロック省略・I〜V 実施)で改訂。

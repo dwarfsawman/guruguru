@@ -200,7 +200,7 @@ function currentSnapshot() {
 }
 
 /**
- * Chronicle 一括配置(Docs/Feature-ChroniclePageFlow.md §2.3 フェーズIII)。apply 直前のスナップショットを
+ * Chronicle 一括配置(Docs/Done/Feature-ChroniclePageFlow.md §2.3 フェーズIII)。apply 直前のスナップショットを
  * 呼び出し側(`chronicleController.ts`)が取得し、apply 成功後に `pushPageObjectHistorySnapshot` で1エントリ
  * として積む -- Undo 一回で一括配置前へ戻せるようにする(このモジュール外からの確定操作は他に無いため専用に公開する)。
  */
@@ -1073,7 +1073,7 @@ function commitObjectMutation(objectId: string, updated: EditableObject): void {
   state.pageObjectsDraft = next;
   requestRender();
   scheduleSave();
-  // Chronicle Page Flow(Docs/Feature-ChroniclePageFlow.md §2.6): 回転ハンドルのダブルクリックリセットも
+  // Chronicle Page Flow(Docs/Done/Feature-ChroniclePageFlow.md §2.6): 回転ハンドルのダブルクリックリセットも
   // 「回転」の手動編集にあたるため、対応する自動生成 placement をロックする。
   notifyChroniclePageObjectManualEdit(objectId);
 }

@@ -1,5 +1,5 @@
 /**
- * Chronicle バー(S5、Docs/Feature-ChroniclePageFlow.md)の controller。フェーズI: 表示
+ * Chronicle バー(S5、Docs/Done/Feature-ChroniclePageFlow.md)の controller。フェーズI: 表示
  * (取得・折り畳み・複数脚本セレクタ・Beat クリックでの内容プレビュー)。フェーズII: 範囲選択
  * (Shift+クリック)・一括割り当て/解除・「次の未配置区間へ」を追加(§2.3・§6)。自動配置(preview/apply)
  * はフェーズIII 以降。ページ編集 lightbox(`pagePanelLightboxController.ts`)のライフサイクルに

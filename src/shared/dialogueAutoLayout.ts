@@ -1,5 +1,5 @@
 /**
- * Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §2.5・§4 フェーズIII)。
+ * Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md §2.5・§4 フェーズIII)。
  * 吹き出し一括配置の配置ソルバー(純ロジック、DOM・db 非依存)。サイズ計算(`computeTextLayoutForContent`
  * の呼び出し)はサーバー側(`dialogueAutoLayoutApi.ts`)の役目 -- ここは「必要サイズ・semanticKind・
  * order_index が渡されれば決定的に配置を組む」ことだけをやる。
@@ -447,7 +447,22 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
   const unplacedPlacementIds: string[] = [];
   let placedCount = existingObjects.length;
   let localIndex = 0;
+  /**
+   * 既に使われている id 集合(既存オブジェクト+今回生成済み分)。`nextObjectId` は `seed` を
+   * またいだグローバルカウンタを持たないため、reflow のように「同じ seed を使い回す」呼び出しで
+   * 既存(ロック済みなど)オブジェクトの id と衝突しうる。衝突すると `normalizePageObjects` が
+   * 新オブジェクト側へ元の id を渡し既存オブジェクトを `_dup` へ追いやってしまい、ロック済み
+   * placement の balloon_object_id 参照が浮く重大なバグになるため、ここで事前に空き id まで
+   * localIndex を進めて回避する。
+   */
+  const usedObjectIds = new Set<string>(existingObjects.map((object) => object.id));
   const lastPositionBySpeaker = new Map<string, PageVec>();
+  /**
+   * 直近で panel ベースに配置できたアイテムの実際のコマ index(-1 = まだ無し)。担当コマへのフォール
+   * バック探索(下記)の起点として使い、発話順とコマ順の単調性(order_index 昇順で panelId のコマ順が
+   * 逆転しない)を壊さないようにする。
+   */
+  let lastAssignedPanelIndex = -1;
 
   for (const { item, panelIndex } of distributed) {
     if (placedCount >= PAGE_OBJECTS_MAX_COUNT) {
@@ -525,6 +540,7 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
       const panelWidth = Math.max(1e-6, bx1 - bx0);
       const panelHeight = Math.max(1e-6, by1 - by0);
       const insidePanelCheck = (point: [number, number]) => pointInPanelShape(point, targetPanel!.shape);
+      let placedPanelIndex = index;
 
       for (const variant of variants) {
         if (variant.x > panelWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || variant.y > panelHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
@@ -546,6 +562,53 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
           size = variant;
           break;
         }
+      }
+
+      if (!position && !allowsPageWideFallback) {
+        // 担当コマに空きが無い場合のフォールバック: 発話順とコマ順の単調性(order_index 昇順で
+        // panelId のコマ順が逆転しない)を壊さない範囲で後続コマへの配置を試みる -- 探索範囲は
+        // 「直前に panel ベースで配置した発話のコマ index の次」以降、かつ「担当 index+2」まで。
+        // sfx は既存のページ全体フォールバック(担当コマ近傍優先)を維持するため対象外にする。
+        const fallbackStart = Math.max(index + 1, lastAssignedPanelIndex + 1);
+        const fallbackEnd = Math.min(orderedPanels.length - 1, index + 2);
+        for (let fbIndex = fallbackStart; fbIndex <= fallbackEnd && !position; fbIndex += 1) {
+          const fbPanel = orderedPanels[fbIndex];
+          const fbBounds = panelBoundsList[fbIndex];
+          if (!fbPanel || !fbBounds) {
+            continue;
+          }
+          const [fbx0, fby0, fbx1, fby1] = fbBounds;
+          const fbWidth = Math.max(1e-6, fbx1 - fbx0);
+          const fbHeight = Math.max(1e-6, fby1 - fby0);
+          const fbInsidePanelCheck = (point: [number, number]) => pointInPanelShape(point, fbPanel.shape);
+          for (const variant of variants) {
+            if (variant.x > fbWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || variant.y > fbHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
+              continue;
+            }
+            anyVariantFitsPanelRatio = true;
+            const found = searchBestCandidate({
+              bounds: fbBounds,
+              size: variant,
+              direction: layout.readingDirection,
+              obstacles,
+              pageBounds,
+              insidePanelCheck: fbInsidePanelCheck,
+              anchorHint,
+              random
+            });
+            if (found) {
+              position = found;
+              size = variant;
+              targetPanel = fbPanel;
+              placedPanelIndex = fbIndex;
+              break;
+            }
+          }
+        }
+      }
+
+      if (position) {
+        lastAssignedPanelIndex = placedPanelIndex;
       }
 
       if (!position && allowsPageWideFallback) {
@@ -588,8 +651,13 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
       continue;
     }
 
-    const objectId = nextObjectId(seed, localIndex);
+    let objectId = nextObjectId(seed, localIndex);
     localIndex += 1;
+    while (usedObjectIds.has(objectId)) {
+      objectId = nextObjectId(seed, localIndex);
+      localIndex += 1;
+    }
+    usedObjectIds.add(objectId);
     let object: PageObject;
     if (item.semanticKind === "dialogue" || item.semanticKind === "monologue") {
       object = buildBalloonObject(objectId, item, position, size);

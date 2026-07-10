@@ -80,7 +80,7 @@ export interface PanelGenerationTarget {
 }
 
 /**
- * Chronicle バー(Docs/Feature-ChroniclePageFlow.md §4)。ページ編集 lightbox 下部の脚本タイムライン。
+ * Chronicle バー(Docs/Done/Feature-ChroniclePageFlow.md §4)。ページ編集 lightbox 下部の脚本タイムライン。
  * `status`/`collapsed`/`scriptId`/`revisionId`/`beats`/`selectedBeatIds`/`preview`/`busyAction` は
  * 設計書 §4 に明示された型のまま(`selectedBeatIds`/`preview`/`busyAction` はフェーズII以降で使う
  * フィールドで、フェーズIでは型だけ用意し初期値のみ)。`lines`/`pages`/`scripts`/`pageId`/`previewBeatId`/
@@ -551,7 +551,7 @@ export interface AppState {
   /** 直近の提案リクエストを発行した pageId(非同期完了後の state 書き込みガード。既知の罠6)。 */
   dialogueProposalRequestPageId: string | null;
 
-  // --- Chronicle Page Flow(Docs/Feature-ChroniclePageFlow.md S5) ---
+  // --- Chronicle Page Flow(Docs/Done/Feature-ChroniclePageFlow.md S5) ---
 
   /** Chronicle バー(ページ編集 lightbox 下部の脚本タイムライン)。 */
   chronicle: ChronicleUiState;

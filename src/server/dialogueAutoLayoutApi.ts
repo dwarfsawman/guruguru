@@ -1,5 +1,5 @@
 /**
- * Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §3・§4 フェーズIII)。
+ * Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md §3・§4 フェーズIII)。
  * 吹き出し一括配置の preview/apply。サイズ計算(`computeTextLayoutForContent` の結線)・
  * トランザクション(`pages.ts` の `reorderPages` が手本)はここが担当し、候補探索・スコアリング
  * 自体は `../shared/dialogueAutoLayout.ts`(純ロジック)に委ねる。

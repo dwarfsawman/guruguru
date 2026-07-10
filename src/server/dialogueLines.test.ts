@@ -165,7 +165,7 @@ test("updateDialoguePlacement: panelId/renderKind をメタデータ更新でき
   assert.throws(() => updateDialoguePlacement(created.placement.id, { panelId: "panel_missing" }), HttpError);
 });
 
-test("updateDialoguePlacement: autoLayoutLocked を設定/解除できる(Docs/Feature-ChroniclePageFlow.md §2.6・フェーズIV)", () => {
+test("updateDialoguePlacement: autoLayoutLocked を設定/解除できる(Docs/Done/Feature-ChroniclePageFlow.md §2.6・フェーズIV)", () => {
   const projectId = createTestProject();
   const page = createPage(projectId);
   const line = createDialogueLine(projectId, { text: "ロック対象", speakerLabel: "太郎" });

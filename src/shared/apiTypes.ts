@@ -416,7 +416,7 @@ export interface DialoguePlacement {
   renderKind: DialogueRenderKind;
   balloonObjectId: string | null;
   /**
-   * Chronicle Page Flow(Docs/Feature-ChroniclePageFlow.md §2.4・§2.6 フェーズIII)。
+   * Chronicle Page Flow(Docs/Done/Feature-ChroniclePageFlow.md §2.4・§2.6 フェーズIII)。
    * autoLayoutLocked=true は手動編集済みで再配置対象外(フェーズIVで使う)。
    * autoLayoutSeed/autoLayoutVersion は apply 時の再現用(未配置/手動配置は null)。
    */

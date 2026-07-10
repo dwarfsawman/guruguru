@@ -1,5 +1,5 @@
 /**
- * Chronicle バー(S5、Docs/Feature-ChroniclePageFlow.md)の描画。ページ編集 lightbox 下部の
+ * Chronicle バー(S5、Docs/Done/Feature-ChroniclePageFlow.md)の描画。ページ編集 lightbox 下部の
  * 折り畳み可能な脚本タイムライン。フェーズI: 横スクロール一覧・状態色分け・現在ページ範囲強調・
  * Beat クリックでの内容プレビュー表示。フェーズII: 範囲選択(Shift+クリック)のハイライト・
  * 選択サマリ(文字数・発話数・推定吹き出し数)・他ページ配置の警告・一括割り当て/解除ボタン・

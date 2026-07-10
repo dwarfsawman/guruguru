@@ -731,7 +731,7 @@ function renderObjectsStageContent(
 }
 
 /**
- * Chronicle 一括配置(Docs/Feature-ChroniclePageFlow.md §2.3 フェーズIII)の配置案プレビュー。
+ * Chronicle 一括配置(Docs/Done/Feature-ChroniclePageFlow.md §2.3 フェーズIII)の配置案プレビュー。
  * DB へは保存しない仮の PageObject 群を、半透明・破線のゴーストとしてステージ最前面へ重ねて描く
  * (`pointer-events: none` -- クリック/ドラッグは既存オブジェクトへ素通しする)。正確な吹き出し曲線
  * (`renderBalloonSvg`)ではなく簡易矩形で近似する(ゴーストは「だいたいの位置・サイズ」を見せれば十分、
