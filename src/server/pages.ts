@@ -251,7 +251,7 @@ export function updatePagePanelAssignment(projectId: string, pageId: string, pan
  * `pages.updated_at` を更新することで、`listPagesWithProject` のプレビューキャッシュバスタ
  * (`panel_preview_version`)がこの保存を拾って preview.png / grid サムネ(レイアウトページのみ)を最新化する。
  *
- * Chronicle Page Flow(Docs/Feature-ChroniclePageFlow.md §3 整合性ルール・フェーズIV §5): 保存後の
+ * Chronicle Page Flow(Docs/Done/Feature-ChroniclePageFlow.md §3 整合性ルール・フェーズIV §5): 保存後の
  * objects_json に存在しなくなった `balloon_object_id` を持つ dialogue_placements は
  * `balloon_object_id=NULL`(+ロック解除)へ戻す。Undo でオブジェクトが消えた場合・手動削除の両方に効く
  * (`reconcileOrphanedPlacementBalloonIds`)。objects 更新と同一トランザクションで行う。

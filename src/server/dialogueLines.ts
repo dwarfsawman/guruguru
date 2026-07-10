@@ -320,7 +320,7 @@ export function clearOrphanedPlacementPanelIds(pageId: string, validPanelIds: Re
 }
 
 /**
- * 整合性ルール(Docs/Feature-ChroniclePageFlow.md §3): ページの objects 保存時(`pages.ts` の
+ * 整合性ルール(Docs/Done/Feature-ChroniclePageFlow.md §3): ページの objects 保存時(`pages.ts` の
  * `updatePageObjects`)に、`balloon_object_id` が保存後の objects_json に存在しない placement は
  * `balloon_object_id=NULL`(assigned 状態へ復帰)へ戻す。Undo でオブジェクトが消えた場合・手動削除の
  * 両方をこれ1本でカバーする。`auto_layout_seed`/`auto_layout_version`/`auto_layout_locked` も

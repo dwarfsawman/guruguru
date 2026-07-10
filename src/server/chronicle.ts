@@ -1,5 +1,5 @@
 /**
- * Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §3)。フェーズI: GET のみ
+ * Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md §3)。フェーズI: GET のみ
  * (取得・Beat 構築の配線)。一括割り当て/自動配置はフェーズII 以降。
  */
 import type { ChronicleApiResponse, ChroniclePageSummary, ChroniclePlacementSummary } from "../shared/chronicle";

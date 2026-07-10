@@ -1,5 +1,5 @@
 /**
- * Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md)。API 型・Beat 型・状態型・Preview 型。
+ * Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md)。API 型・Beat 型・状態型・Preview 型。
  * フェーズI では GET /chronicle と Beat 表示のみ実装する(§6)。Preview 型はフェーズIII の
  * `dialogue-layout/preview` API 用に先出しした型のみで、フェーズI では未使用。
  */

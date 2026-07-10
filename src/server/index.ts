@@ -624,7 +624,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
-  // Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §3)。dialogue-lines と同じブロックに置く
+  // Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md §3)。dialogue-lines と同じブロックに置く
   // (`/api/projects/:id/scripts` 等、他の projectId 系ルートとの前方一致衝突は起きない -- 末尾 $ で完全一致)。
   const chronicleMatch = path.match(/^\/api\/projects\/([^/]+)\/chronicle$/);
   if (method === "GET" && chronicleMatch) {

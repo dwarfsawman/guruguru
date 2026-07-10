@@ -1,5 +1,5 @@
 /**
- * Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §3・§6 フェーズII)。
+ * Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md §3・§6 フェーズII)。
  * Chronicle バーで選択した行をページへ一括 placement 化する/解除する。既存の個別配置 API
  * (`dialogueLines.ts` の `createDialoguePlacement`/`deleteDialoguePlacement`)とは別経路 --
  * こちらは常に `balloon_object_id=NULL` の placement だけを作る(吹き出し生成はフェーズIIIの apply)。

@@ -1,5 +1,5 @@
 /**
- * Chronicle Page Flow(S5、Docs/Feature-ChroniclePageFlow.md §2.2)。純ロジック(DB/HTTP 非依存)。
+ * Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md §2.2)。純ロジック(DB/HTTP 非依存)。
  * dialogue_lines(order_index 順)から Beat(会話のまとまり)を決定的に構築し、
  * lines/placements の要約から Beat の表示状態(色分け)を導出する。
  */
