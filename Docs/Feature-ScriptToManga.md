@@ -71,10 +71,13 @@
 「何を作りたいか(Intent)」と「そのモデルでどう実行するか(Provider)」を分離する。最初の実装は既存
 ComfyUI 実行を包む ComfyProvider のみ。**HTTP API(POST /rounds、collect、interrupt)とクライアントは無改修。**
 
-### 実装状況メモ(v1 実装済み分)
-`s1-generation-provider` ブランチに v1 実装済み: providers/{types,registry,comfyProvider}.ts、
-shared/generationIntent.ts、rounds.ts の Provider 経由化、rounds への provider_id/intent_json/
-provider_snapshot_json。**v2 での修正点は下記「v2 修正一覧」参照。**
+### 実装状況メモ(**S1 完了 — 2026-07-10 main マージ済み、merge commit 183bb6b**)
+v2 修正一覧 7 項目+レビュー確定指摘 5 件(critical の manual ラウンド削除不能を含む)をすべて反映済み。
+providers/{types,registry,comfyProvider,fakeProvider}.ts、shared/generationIntent.ts(v2 形)、
+roundAttachments.ts、rounds.ts の Provider 経由化、generation_jobs.provider_job_ref。559 テスト緑。
+実装判断のうちレビュー未確定なのは「ipadapter モードの親画像 → identity へ写像」(resolveIdentity の
+JSDoc に経緯記載)。ComfyProvider.submit は確定判断どおり GenerationRequest 駆動のまま
+(ctx.intent は受け取るが未消費)。
 
 実装上の確定判断(v1 で妥当と確認済み):
 - `GenerationRequest` はクライアント wire 型 兼 Comfy 実行時の詳細パラメータとして温存。GenerationIntent は
