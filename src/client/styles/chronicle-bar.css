@@ -11,8 +11,14 @@
   padding: 8px 10px;
   border-top: 1px solid var(--line);
   background: var(--panel);
-  max-height: 128px;
+  /* 実測の自然高 = ヘッダー28 + ツールバー28 + チップ2行トラック約54 + gap/padding ≈ 140px。
+     旧上限 128px は これより小さく、flex 圧縮でトラックが約43pxへ潰れてチップ下半分が
+     ダイアログの overflow:hidden に切られていた(2026-07-11 報告)。上限は Beat プレビュー
+     パネル展開まで想定した値にし、超過分はバー内スクロールで逃がす(ダイアログ外へは
+     描画しない)。ステージ行は minmax(0,1fr) なのでバーが伸びた分は自動で縮む。 */
+  max-height: min(38vh, 300px);
   min-height: 0;
+  overflow-y: auto;
 }
 
 .chronicle-bar.is-collapsed {
@@ -87,6 +93,9 @@
 .chronicle-bar-track {
   display: flex;
   gap: 6px;
+  /* flex 圧縮でチップが縦に潰れないよう自然高を維持する(バー全体が overflow-y:auto で
+     スクロールするので、ここで縮ませる必要はない)。 */
+  flex: 0 0 auto;
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: 4px;
