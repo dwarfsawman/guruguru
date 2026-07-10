@@ -13,6 +13,7 @@ import type { PageObject, TextContent } from "./pageObjects";
 import type { MosaicRegion } from "./mosaicRegion";
 import type { TextLayoutResult } from "./textLayout";
 import type { FeatureKey, ModelKind } from "./workflowModels";
+import type { FountainDoc } from "./fountain";
 
 export interface ComfyStatus {
   ok: boolean;
@@ -330,6 +331,105 @@ export interface PageDetail extends ProjectDetail {
    * (Docs/Feature-ScriptToManga.md S2)。編集画面はこれを見てプレースホルダ(破線枠+media id)を表示する。
    */
   missingPageMediaIds: string[];
+}
+
+// --- 脚本ドメイン(Docs/Feature-ScriptToManga.md S3) ---
+
+/** Character 本体(Provider 中立: name/aliases/notes/color)。 */
+export interface Character {
+  id: string;
+  projectId: string;
+  name: string;
+  aliases: string[] | null;
+  notes: string;
+  color: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * `GET/PUT /api/characters/:id/bindings/:providerId` の応答。`binding_json.faceImagePath` は
+ * サーバ内部のローカル絶対パスであり API では返さない -- 存在フラグ + 配信 URL に変換して返す
+ * (Docs/Feature-ScriptToManga.md 既知の罠11)。
+ */
+export interface CharacterBindingView {
+  providerId: string;
+  hasFaceImage: boolean;
+  faceImageUrl: string | null;
+  loraName: string | null;
+  loraStrength: number | null;
+  updatedAt: string;
+}
+
+export interface MangaScript {
+  id: string;
+  projectId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 脚本原文と parse 結果は不変保存。revision は 1 始まり連番。 */
+export interface ScriptRevision {
+  id: string;
+  scriptId: string;
+  revision: number;
+  fountainSource: string;
+  parsed: FountainDoc;
+  warnings: string[] | null;
+  createdAt: string;
+}
+
+export type DialogueSemanticKind = "dialogue" | "monologue" | "narration" | "sfx";
+export type DialogueLineStatus = "active" | "orphaned";
+export type DialogueLineSource = "fountain" | "manual" | "llm";
+
+/** DialogueLine(物語上の台詞)。DialoguePlacement(ページ上の配置)とは1対多。 */
+export interface DialogueLine {
+  id: string;
+  projectId: string;
+  scriptId: string | null;
+  characterId: string | null;
+  speakerLabel: string;
+  text: string;
+  semanticKind: DialogueSemanticKind;
+  emotion: string | null;
+  orderIndex: number;
+  sceneIndex: number | null;
+  sourceHash: string | null;
+  status: DialogueLineStatus;
+  source: DialogueLineSource;
+  proposalId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DialogueRenderKind = "balloon" | "caption" | "freeText";
+
+/** DialoguePlacement(ページ上の配置)。1 DialogueLine を複数吹き出しへ分割配置できる(part_index)。 */
+export interface DialoguePlacement {
+  id: string;
+  lineId: string;
+  pageId: string;
+  panelId: string | null;
+  partIndex: number;
+  renderKind: DialogueRenderKind;
+  balloonObjectId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `POST /api/projects/:id/scripts` / `POST /api/scripts/:id/revisions` の応答。 */
+export interface ScriptImportResult {
+  script: MangaScript;
+  revision: ScriptRevision;
+  lines: DialogueLine[];
+}
+
+/** `POST /api/dialogue-lines/:id/placements` の応答(吹き出し生成と対で作成)。 */
+export interface CreatePlacementResult {
+  placement: DialoguePlacement;
+  objects: PageObject[];
 }
 
 export interface CollectRoundResponse {

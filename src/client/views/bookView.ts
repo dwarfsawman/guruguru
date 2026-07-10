@@ -14,6 +14,7 @@ import {
   iconMangaPanelImport,
   iconOpenBook,
   iconPlus,
+  iconScript,
   iconSettings,
   iconSparkle,
   iconTrash
@@ -36,6 +37,7 @@ export function renderBookView(book: BookPages, selectionMode = false, selectedP
           <div class="book-heading-actions-shell">
             <div class="book-heading-actions">
               <span class="panel-count"><b>${pages.length}</b> pages</span>
+              <button class="button-secondary compact book-action-button" type="button" data-action="open-script-screen" aria-label="脚本" title="Fountain脚本の取り込み・キャラクター管理・セリフ配置">${iconScript()}${renderBookActionLabel("脚本", "")}</button>
               <button class="button-secondary compact book-action-button" type="button" data-action="open-book-settings" aria-label="Book共通設定" title="新規ページの既定設定(LoRA/プロンプト/生成パラメータ)を設定">${iconSettings()}${renderBookActionLabel("Book共通", "設定")}</button>
               <button class="button-secondary compact book-action-button" type="button" data-action="export-book-openraster" aria-label="Book全体をOpenRasterでエクスポート" title="Book全体をOpenRasterでエクスポート" ${pages.length === 0 ? "disabled" : ""}>${iconDownload()}${renderBookActionLabel("Book全体", "ORA")}</button>
               <button class="button-secondary compact book-action-button" type="button" data-action="export-book-images" aria-label="全ページを画像として書き出し" title="全ページを画像(PNG/JPEG)として書き出し" ${pages.length === 0 ? "disabled" : ""}>${iconImage()}${renderBookActionLabel("画像", "書き出し")}</button>

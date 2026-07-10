@@ -2,13 +2,18 @@ import type { ComfySettings, LlmSettings } from "../shared/types";
 import type {
   Asset,
   BookPages,
+  Character,
+  CharacterBindingView,
+  DialogueLine,
   FontSummary,
   LayoutTemplateSummary,
+  MangaScript,
   ModelCheckResult,
   PagePanelAssignment,
   ProjectDetail,
   ProjectSummary,
-  RecentReferenceImage
+  RecentReferenceImage,
+  ScriptRevision
 } from "../shared/apiTypes";
 import type { PageLayout, PanelCrop } from "../shared/pageLayout";
 import type { PageObject } from "../shared/pageObjects";
@@ -429,6 +434,43 @@ export interface AppState {
     status: "idle" | "loading" | "ready" | "error";
     names: string[];
   };
+
+  // --- 脚本ドメイン(Docs/Feature-ScriptToManga.md S3) ---
+
+  /** 脚本画面(Book レベルの新スクリーン)を開いているか(book grid の上に重ねて表示、bookSettingsOpen と同型)。 */
+  scriptScreenOpen: boolean;
+  /** そのプロジェクトの脚本一覧(通常は0〜1件)。脚本画面を開いた時に取得する。 */
+  scripts: MangaScript[];
+  /** 脚本画面で選択中の脚本 id。null=未取り込み(脚本ゼロ件)。 */
+  activeScriptId: string | null;
+  /** 選択中脚本の最新 revision(パース結果+警告表示用)。未取得/脚本なしは null。 */
+  activeScriptRevision: ScriptRevision | null;
+  /** 選択中脚本のセリフ行一覧(シーン/セリフ一覧・ページ割当 UI に使う)。 */
+  scriptDialogueLines: DialogueLine[];
+  /** Fountain テキストエリアの編集ドラフト(取り込み/再取り込みの送信元)。 */
+  scriptFountainDraft: string;
+  /** 取り込み/再取り込みの送信中フラグ(ボタン disabled + スピナー表示に使う)。 */
+  scriptImportBusy: boolean;
+  /** そのプロジェクトのキャラクタ一覧。脚本画面を開いた時に取得する。 */
+  characters: Character[];
+  /** キャラクタ一覧で選択中(編集対象)の id。null=未選択。 */
+  selectedCharacterId: string | null;
+  /** 選択中キャラクタの comfy binding(顔参照/LoRA)。未取得/キャラ未選択は null。 */
+  selectedCharacterBinding: CharacterBindingView | null;
+  /** キャラクタ編集: LoRA 名ドラフト(保存前の一時値)。 */
+  characterLoraNameDraft: string;
+  /** キャラクタ編集: LoRA 強度ドラフト。 */
+  characterLoraStrengthDraft: number;
+  /** キャラクタ編集: 「最近使った画像」ピッカーを開いているか(顔参照の選択用)。 */
+  characterFacePickerOpen: boolean;
+  /**
+   * 配置ドロワー(lightbox objects モードの「セリフ」ドロワー、S3 UI 2)。開閉状態。
+   * true の間、`pagePanelLightboxDialogueLines` を一覧表示し、クリックで `dialogue_placements`
+   * 作成+吹き出し生成を行う(1行を複数回クリックすれば分割配置になる)。
+   */
+  dialogueDrawerOpen: boolean;
+  /** 配置ドロワー: そのプロジェクトの active なセリフ行(ドロワーを開いた時に取得)。lightbox 非開時は空配列。 */
+  pagePanelLightboxDialogueLines: DialogueLine[];
 }
 
 export const state: AppState = {
@@ -526,5 +568,20 @@ export const state: AppState = {
   modelInstallFamily: null,
   modelCheck: { status: "idle", result: null },
   loraDraft: [],
-  loraChoices: { status: "idle", names: [] }
+  loraChoices: { status: "idle", names: [] },
+  scriptScreenOpen: false,
+  scripts: [],
+  activeScriptId: null,
+  activeScriptRevision: null,
+  scriptDialogueLines: [],
+  scriptFountainDraft: "",
+  scriptImportBusy: false,
+  characters: [],
+  selectedCharacterId: null,
+  selectedCharacterBinding: null,
+  characterLoraNameDraft: "",
+  characterLoraStrengthDraft: 1,
+  characterFacePickerOpen: false,
+  dialogueDrawerOpen: false,
+  pagePanelLightboxDialogueLines: []
 };

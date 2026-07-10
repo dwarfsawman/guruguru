@@ -1,0 +1,280 @@
+/* 脚本画面(Docs/Feature-ScriptToManga.md S3)。book.css の .panel/.book-layout トークンを流用し、
+   脚本固有の最小限のスタイルだけをここに置く。色は全て var() を使う。 */
+
+.script-body {
+  padding: 4px 4px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.script-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.script-tab.is-active {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.script-import-card {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.script-fountain-textarea {
+  font-family: var(--mono);
+  min-height: 160px;
+}
+
+.script-import-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.script-revision-badge {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.script-warnings {
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: 4px;
+  color: var(--warn);
+  font-size: 11.5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.script-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .script-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.script-panel {
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.script-panel h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.script-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.script-panel-heading h2 {
+  margin: 0;
+}
+
+.script-empty-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.script-scene-group + .script-scene-group {
+  margin-top: 14px;
+}
+
+.script-scene-heading {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-transform: none;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
+
+.script-line-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.script-line-row.is-orphaned {
+  opacity: 0.55;
+}
+
+.script-line-speaker-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin-top: 4px;
+  flex: 0 0 auto;
+}
+
+.script-line-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.script-line-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.script-line-speaker {
+  font-weight: 600;
+}
+
+.script-line-kind {
+  color: var(--muted);
+}
+
+.script-line-orphan-badge {
+  color: var(--warn);
+}
+
+.script-line-text {
+  margin: 4px 0 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.script-line-page-assign {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: 160px;
+}
+
+.script-character-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.script-character-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-soft);
+  color: var(--ink);
+  font-size: 11.5px;
+}
+
+.script-character-chip.is-active {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.script-character-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.script-character-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.script-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.script-field input[type="color"] {
+  width: 48px;
+  height: 28px;
+  padding: 2px;
+}
+
+.script-character-binding,
+.script-character-lora {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.script-character-binding h3,
+.script-character-lora h3 {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.script-face-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.script-face-preview img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+
+.script-face-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.script-face-picker-item {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--panel-soft);
+}
+
+.script-face-picker-item img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+}
+
+.script-character-editor .button-danger {
+  align-self: flex-start;
+}

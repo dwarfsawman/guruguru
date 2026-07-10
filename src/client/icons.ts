@@ -134,3 +134,8 @@ export function iconExpand() {
 export function iconLayers() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"></path><path d="m3 13 9 5 9-5"></path></svg>`;
 }
+
+/** 脚本画面(Docs/Feature-ScriptToManga.md S3)の入口ボタン用アイコン(セリフ入り原稿)。 */
+export function iconScript() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2h9l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z"></path><path d="M14 2v5h5"></path><path d="M8 13h8M8 17h5"></path></svg>`;
+}
