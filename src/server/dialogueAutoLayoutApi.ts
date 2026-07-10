@@ -140,7 +140,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
       semanticKind: line.semantic_kind,
       speakerLabel: line.speaker_label,
       orderIndex: line.order_index,
-      size: requiredSizeFor(line.text, line.semantic_kind)
+      sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind)
     };
   });
 
@@ -154,31 +154,55 @@ const MIN_BALLOON_HEIGHT = 0.06;
 /**
  * 折返し無し(`maxWidth=undefined`)で `computeTextLayoutForContent` を呼ぶと、縦書きは「1列がどこまでも
  * 伸びる」形になり吹き出しとして非現実的な bbox になる(既知の落とし穴)。文字数の平方根に比例した
- * 列高さを与え、概ね正方形に近いブロックへ折り返させてから実測する(バルーンらしいサイズ推定)。
+ * 列高さ目安を計算し、`cap`(列高さの上限)で頭打ちにしてから折り返させる。
  */
-function estimateWrapWidth(text: string, style: TextContent["style"]): number {
+function estimateWrapWidth(text: string, style: TextContent["style"], cap: number): number {
   const length = Math.max(1, text.length);
   const target = Math.sqrt(length) * style.size * (style.lineSpacing ?? 1.6) * 1.15;
-  return Math.min(0.24, Math.max(style.size * 2.4, target));
+  return Math.min(cap, Math.max(style.size * 2.4, target));
 }
 
-function requiredSizeFor(text: string, semanticKind: DialogueSemanticKind): PageVec {
+/**
+ * サイズ候補生成に使う列高さの上限(page 単位)。大きい値ほど「1列に収めた縦長(タワー型)」の吹き出し
+ * になり、小さい値ほど「列数の多い横長」になる。**縦長優先の順**(大きい cap から)で並べる -- 漫画の
+ * 吹き出しは縦長が自然で、四半ページ程度のコマでも収まりやすいため。短文で全 cap が同じ bbox になる
+ * 場合は重複候補を除去する(§2.5 のバリアント探索、決定的で PRNG は消費しない)。
+ */
+const WRAP_HEIGHT_CAPS: readonly number[] = [0.36, 0.28, 0.2];
+
+/**
+ * 行のサイズ候補(縦長優先の順)を算出する。ソルバー(`runDialogueAutoLayout`)は先頭から順に
+ * 「コマに収まる/空きがある」候補を試し、最初に成功したものを採用する(全滅時のみ unplaced)。
+ */
+function requiredSizeVariantsFor(text: string, semanticKind: DialogueSemanticKind): PageVec[] {
   const style =
     semanticKind === "sfx"
       ? { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE }
       : { ...DEFAULT_TEXT_STYLE };
   const content: TextContent = { text: text || " ", style };
-  const layout = computeTextLayoutForContent(content, estimateWrapWidth(text, style));
-  const rawWidth = Math.max(PAGE_OBJECT_MIN_SIZE, layout.bbox.maxX - layout.bbox.minX);
-  const rawHeight = Math.max(PAGE_OBJECT_MIN_SIZE, layout.bbox.maxY - layout.bbox.minY);
-  // CONTENT_PADDING_RATIO は「形状サイズ→折返し幅」の比率(pageObjects.ts の contentMaxWidth)。
-  // ここでは逆に「必要な折返し幅→形状サイズ」を求めるため、その逆数で割り戻す。
-  const width = rawWidth / (1 - CONTENT_PADDING_RATIO);
-  const height = rawHeight / (1 - CONTENT_PADDING_RATIO);
-  if (semanticKind === "sfx") {
-    return { x: Math.max(PAGE_OBJECT_MIN_SIZE, width), y: Math.max(PAGE_OBJECT_MIN_SIZE, height) };
+
+  const variants: PageVec[] = [];
+  const seenKeys = new Set<string>();
+  for (const cap of WRAP_HEIGHT_CAPS) {
+    const layout = computeTextLayoutForContent(content, estimateWrapWidth(text, style, cap));
+    const rawWidth = Math.max(PAGE_OBJECT_MIN_SIZE, layout.bbox.maxX - layout.bbox.minX);
+    const rawHeight = Math.max(PAGE_OBJECT_MIN_SIZE, layout.bbox.maxY - layout.bbox.minY);
+    // CONTENT_PADDING_RATIO は「形状サイズ→折返し幅」の比率(pageObjects.ts の contentMaxWidth)。
+    // ここでは逆に「必要な折返し幅→形状サイズ」を求めるため、その逆数で割り戻す。
+    const width = rawWidth / (1 - CONTENT_PADDING_RATIO);
+    const height = rawHeight / (1 - CONTENT_PADDING_RATIO);
+    const size: PageVec =
+      semanticKind === "sfx"
+        ? { x: Math.max(PAGE_OBJECT_MIN_SIZE, width), y: Math.max(PAGE_OBJECT_MIN_SIZE, height) }
+        : { x: Math.max(MIN_BALLOON_WIDTH, width), y: Math.max(MIN_BALLOON_HEIGHT, height) };
+    const key = `${size.x.toFixed(6)}x${size.y.toFixed(6)}`;
+    if (seenKeys.has(key)) {
+      continue;
+    }
+    seenKeys.add(key);
+    variants.push(size);
   }
-  return { x: Math.max(MIN_BALLOON_WIDTH, width), y: Math.max(MIN_BALLOON_HEIGHT, height) };
+  return variants;
 }
 
 /** FNV-1a ベースの簡易ハッシュ。preview で seed 省略時に使う(決定的である必要は無いが、結果は返却必須)。 */

@@ -43,8 +43,12 @@ export interface DialogueAutoLayoutItem {
   speakerLabel: string;
   /** dialogue_lines.order_index。コマ順との単調性判定・文字量比配分のソートキー。 */
   orderIndex: number;
-  /** 必要サイズ(page 単位、既にパディング込み)。サーバー側で `computeTextLayoutForContent` から算出。 */
-  size: PageVec;
+  /**
+   * サイズ候補(page 単位、既にパディング込み)。サーバー側で `computeTextLayoutForContent` から複数の
+   * 折返し高さで算出し、縦長(タワー型)優先の順で並べる。ソルバーは先頭から順に「入る候補」を試し、
+   * 最初に配置できたものを採用する(全滅時のみ unplaced)。空配列は不可(呼び出し側で最低1件保証)。
+   */
+  sizeVariants: PageVec[];
 }
 
 /** 障害物(既存オブジェクト・ロック済み placement に対応する PageObject)。座標系は page 座標。 */
@@ -242,8 +246,14 @@ function distributeItemsToPanels(items: DialogueAutoLayoutItem[], panelCount: nu
       result.push({ item, panelIndex: null });
       continue;
     }
+    // バケット境界判定は「その行を足した後の累積」ではなく「その行の中点」で行う。足した後の累積で
+    // 判定すると、平均よりわずかに重いだけの1行目が最初のバケット境界を自分の重みだけで越えてしまい、
+    // 先頭コマが1件も割り当てられないまま丸ごと飛ばされる偏り(既知の不具合)が起きる。中点判定なら
+    // 各行はその行が実際に占める区間の中心がどのバケットに属するかで決まり、より均等に配分される。
+    const start = cumulative;
     cumulative += weightOf(item);
-    while (panelIndex < panelCount - 1 && cumulative > (panelIndex + 1) * targetPerPanel) {
+    const mid = (start + cumulative) / 2;
+    while (panelIndex < panelCount - 1 && mid > (panelIndex + 1) * targetPerPanel) {
       panelIndex += 1;
     }
     result.push({ item, panelIndex });
@@ -446,33 +456,64 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
       continue;
     }
 
-    const needsPanel = item.semanticKind !== "narration";
-    if (needsPanel && (panelIndex === null || orderedPanels.length === 0)) {
-      unplacedPlacementIds.push(item.placementId);
-      warnings.push(`「${truncate(item.text)}」: このページにコマが無いため配置できませんでした。`);
-      continue;
-    }
-
-    const size = clampItemSize(item.size);
+    const variants = (item.sizeVariants.length > 0 ? item.sizeVariants : [DEFAULT_BALLOON_SIZE]).map(clampItemSize);
     const anchorHint = lastPositionBySpeaker.get(item.speakerLabel) ?? null;
+    // narration/sfx はページ全体候補も許可(§2.5)。sfx はまず担当コマ内で試し、コマ比率超過/空き無しの
+    // 場合のみページ全体へフォールバックする(担当コマ近傍を優先するスコアリング付き)。
+    const allowsPageWideFallback = item.semanticKind === "sfx";
 
     let position: PageVec | null = null;
+    let size: PageVec | null = null;
     let targetPanel: LayoutPanel | null = null;
+    let anyVariantFitsPanelRatio = false;
 
     if (item.semanticKind === "narration") {
       // ページ全体候補(コマ非依存)。コマの上に極力被らないようスコアで回避する。
-      position = searchBestCandidate({
-        bounds: pageBounds,
-        size,
-        direction: layout.readingDirection,
-        obstacles,
-        pageBounds,
-        avoidPanelBoxes: panelBoundsList,
-        anchorHint,
-        random
-      });
+      for (const variant of variants) {
+        const found = searchBestCandidate({
+          bounds: pageBounds,
+          size: variant,
+          direction: layout.readingDirection,
+          obstacles,
+          pageBounds,
+          avoidPanelBoxes: panelBoundsList,
+          anchorHint,
+          random
+        });
+        if (found) {
+          position = found;
+          size = variant;
+          break;
+        }
+      }
+    } else if (panelIndex === null || orderedPanels.length === 0) {
+      // dialogue/monologue はコマが無ければ配置不能。sfx はページ全体候補へフォールバックする。
+      if (allowsPageWideFallback) {
+        for (const variant of variants) {
+          const found = searchBestCandidate({
+            bounds: pageBounds,
+            size: variant,
+            direction: layout.readingDirection,
+            obstacles,
+            pageBounds,
+            avoidPanelBoxes: panelBoundsList,
+            anchorHint,
+            random
+          });
+          if (found) {
+            position = found;
+            size = variant;
+            break;
+          }
+        }
+      }
+      if (!position) {
+        unplacedPlacementIds.push(item.placementId);
+        warnings.push(`「${truncate(item.text)}」: このページにコマが無いため配置できませんでした。`);
+        continue;
+      }
     } else {
-      const index = panelIndex as number;
+      const index = panelIndex;
       targetPanel = orderedPanels[index] ?? null;
       const bounds = panelBoundsList[index];
       if (!targetPanel || !bounds) {
@@ -483,25 +524,65 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
       const [bx0, by0, bx1, by1] = bounds;
       const panelWidth = Math.max(1e-6, bx1 - bx0);
       const panelHeight = Math.max(1e-6, by1 - by0);
-      if (size.x > panelWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || size.y > panelHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
+      const insidePanelCheck = (point: [number, number]) => pointInPanelShape(point, targetPanel!.shape);
+
+      for (const variant of variants) {
+        if (variant.x > panelWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || variant.y > panelHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
+          continue;
+        }
+        anyVariantFitsPanelRatio = true;
+        const found = searchBestCandidate({
+          bounds,
+          size: variant,
+          direction: layout.readingDirection,
+          obstacles,
+          pageBounds,
+          insidePanelCheck,
+          anchorHint,
+          random
+        });
+        if (found) {
+          position = found;
+          size = variant;
+          break;
+        }
+      }
+
+      if (!position && allowsPageWideFallback) {
+        // コマ内に入らなかった sfx は、担当コマ近傍を優先しつつページ全体から探す。
+        const panelCenter: PageVec = { x: (bx0 + bx1) / 2, y: (by0 + by1) / 2 };
+        for (const variant of variants) {
+          const found = searchBestCandidate({
+            bounds: pageBounds,
+            size: variant,
+            direction: layout.readingDirection,
+            obstacles,
+            pageBounds,
+            anchorHint: panelCenter,
+            random
+          });
+          if (found) {
+            position = found;
+            size = variant;
+            targetPanel = null; // ページ全体配置扱い(コマ非依存)。
+            break;
+          }
+        }
+      }
+
+      if (!position) {
+        if (!anyVariantFitsPanelRatio && !allowsPageWideFallback) {
+          unplacedPlacementIds.push(item.placementId);
+          warnings.push(`「${truncate(item.text)}」: コマに対して文字量が多すぎるため配置できませんでした(分割/フォント縮小/手動配置をご検討ください)。`);
+          continue;
+        }
         unplacedPlacementIds.push(item.placementId);
-        warnings.push(`「${truncate(item.text)}」: コマに対して文字量が多すぎるため配置できませんでした(分割/フォント縮小/手動配置をご検討ください)。`);
+        warnings.push(`「${truncate(item.text)}」: 空きスペースが見つからず配置できませんでした。`);
         continue;
       }
-      const insidePanelCheck = (point: [number, number]) => pointInPanelShape(point, targetPanel!.shape);
-      position = searchBestCandidate({
-        bounds,
-        size,
-        direction: layout.readingDirection,
-        obstacles,
-        pageBounds,
-        insidePanelCheck,
-        anchorHint,
-        random
-      });
     }
 
-    if (!position) {
+    if (!position || !size) {
       unplacedPlacementIds.push(item.placementId);
       warnings.push(`「${truncate(item.text)}」: 空きスペースが見つからず配置できませんでした。`);
       continue;
