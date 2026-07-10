@@ -17,7 +17,13 @@ import type {
   RecentReferenceImage,
   ScriptRevision
 } from "../shared/apiTypes";
-import type { ChronicleBeat, ChronicleLineSummary, ChroniclePageSummary, DialogueLayoutPreview } from "../shared/chronicle";
+import type {
+  ChronicleBeat,
+  ChronicleLineSummary,
+  ChroniclePageSummary,
+  DialogueLayoutPreview,
+  ExistingPlacementPolicy
+} from "../shared/chronicle";
 import type { PageLayout, PanelCrop } from "../shared/pageLayout";
 import type { PageObject } from "../shared/pageObjects";
 import type { MosaicRegion } from "../shared/mosaicRegion";
@@ -102,6 +108,12 @@ export interface ChronicleUiState {
   previewBeatId: string | null;
   /** status="error" 時のエラーメッセージ。 */
   errorMessage: string | null;
+  /**
+   * フェーズII: 選択範囲を割り当てる際の他ページ配置ポリシー(§3)。設計書に無いが、
+   * 「move/copy の選択 UI は簡素でよい」(§6 フェーズII)を満たすため実装上追加した状態
+   * (タブボタンで選択、既定 "skip")。
+   */
+  allocationPolicy: ExistingPlacementPolicy;
 }
 
 export interface ConfirmDialogState {
@@ -673,6 +685,7 @@ export const state: AppState = {
     pages: [],
     pageId: null,
     previewBeatId: null,
-    errorMessage: null
+    errorMessage: null,
+    allocationPolicy: "skip"
   }
 };

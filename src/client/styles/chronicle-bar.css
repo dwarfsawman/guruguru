@@ -156,6 +156,94 @@
   outline-offset: -1px;
 }
 
+/* フェーズII: 範囲選択(§2.3)。 */
+.chronicle-beat.is-selected {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: -1px;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* 「次の未配置区間へ」のジャンプ先ハイライト(§2.1)。 */
+.chronicle-beat.is-jump-highlight {
+  animation: chronicle-jump-pulse 1.2s ease-out;
+}
+
+@keyframes chronicle-jump-pulse {
+  0% {
+    box-shadow: 0 0 0 4px var(--warn);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.chronicle-bar-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.chronicle-bar-next-unassigned {
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chronicle-bar-next-unassigned:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.chronicle-selection-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+}
+
+.chronicle-selection-stats {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chronicle-selection-warning {
+  font-size: 12px;
+  color: var(--warn);
+}
+
+.chronicle-selection-policy-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.chronicle-selection-policy-tab {
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chronicle-selection-policy-tab.is-active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.chronicle-selection-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .chronicle-beat-preview {
   border-top: 1px solid var(--line);
   padding-top: 6px;
