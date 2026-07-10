@@ -104,7 +104,7 @@ import {
   handlePagePanelLightboxKeydown,
   syncPagePanelCropGizmo
 } from "./pagePanelLightboxController";
-import { syncChronicleBarScroll } from "./chronicleController";
+import { syncChronicleBarScroll, syncChronicleObjectSelectionHighlight } from "./chronicleController";
 import {
   handlePageObjectsKeydown,
   handlePageObjectsPointerCancel,
@@ -884,6 +884,7 @@ function render(_options: RenderOptions = {}) {
   syncPagePanelCropGizmo();
   syncPageObjectsGizmo();
   syncChronicleBarScroll();
+  syncChronicleObjectSelectionHighlight();
 }
 
 /**

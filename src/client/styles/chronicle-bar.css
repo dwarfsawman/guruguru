@@ -180,9 +180,12 @@
 .chronicle-bar-toolbar {
   display: flex;
   justify-content: flex-end;
+  gap: 6px;
 }
 
-.chronicle-bar-next-unassigned {
+.chronicle-bar-next-unassigned,
+.chronicle-bar-reflow,
+.chronicle-bar-unlock-all {
   border: 1px solid var(--line);
   background: var(--panel-strong);
   color: var(--muted);
@@ -192,9 +195,17 @@
   cursor: pointer;
 }
 
-.chronicle-bar-next-unassigned:disabled {
+.chronicle-bar-next-unassigned:disabled,
+.chronicle-bar-reflow:disabled,
+.chronicle-bar-unlock-all:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* フェーズIV(§2.6・§6): 再配置とロック一括解除。 */
+.chronicle-bar-reflow {
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
 }
 
 .chronicle-selection-panel {
@@ -283,6 +294,45 @@
   flex: 0 0 auto;
   color: var(--muted);
   font-size: 11px;
+}
+
+/* フェーズIV(§2.6・§6): Beat プレビュー行から対応吹き出しへのジャンプ+個別ロック解除。 */
+.chronicle-beat-preview-jump {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chronicle-beat-preview-jump:hover {
+  text-decoration: underline;
+}
+
+.chronicle-beat-preview-jump-disabled {
+  cursor: default;
+}
+
+.chronicle-beat-preview-line.is-locked {
+  opacity: 0.85;
+}
+
+.chronicle-beat-preview-unlock {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  background: var(--panel-strong);
+  border-radius: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
 }
 
 /* フェーズIII(§2.3・§3): 吹き出し一括配置の「配置案」「確定」「キャンセル」ボタン列。 */

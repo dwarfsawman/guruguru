@@ -13,7 +13,7 @@ import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout
 import { normalizePageObjects, type PageObject } from "../shared/pageObjects";
 import { normalizeMosaicRegions, type MosaicRegion } from "../shared/mosaicRegion";
 import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
-import { clearOrphanedPlacementPanelIds } from "./dialogueLines";
+import { clearOrphanedPlacementPanelIds, reconcileOrphanedPlacementBalloonIds } from "./dialogueLines";
 import { HttpError } from "./http";
 import { resolveLayoutTemplate } from "./layoutTemplates";
 import { listPanelAssignments, upsertPanelAssignment } from "./panelAssignments";
@@ -250,6 +250,11 @@ export function updatePagePanelAssignment(projectId: string, pageId: string, pan
  * 捨てる/clamp する(`asset_paste_attachments` の「1行に配列」パターンと同じ、競合制御なし)。
  * `pages.updated_at` を更新することで、`listPagesWithProject` のプレビューキャッシュバスタ
  * (`panel_preview_version`)がこの保存を拾って preview.png / grid サムネ(レイアウトページのみ)を最新化する。
+ *
+ * Chronicle Page Flow(Docs/Feature-ChroniclePageFlow.md §3 整合性ルール・フェーズIV §5): 保存後の
+ * objects_json に存在しなくなった `balloon_object_id` を持つ dialogue_placements は
+ * `balloon_object_id=NULL`(+ロック解除)へ戻す。Undo でオブジェクトが消えた場合・手動削除の両方に効く
+ * (`reconcileOrphanedPlacementBalloonIds`)。objects 更新と同一トランザクションで行う。
  */
 export function updatePageObjects(projectId: string, pageId: string, body: unknown): { objects: PageObject[] } {
   requirePage(projectId, pageId);
@@ -258,11 +263,20 @@ export function updatePageObjects(projectId: string, pageId: string, body: unkno
     throw new HttpError(400, "objects must be an array.");
   }
   const objects = normalizePageObjects(input.objects);
-  runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
-    JSON.stringify(objects),
-    pageId,
-    projectId
-  ]);
+  const objectIds = new Set(objects.map((object) => object.id));
+  runSql("BEGIN");
+  try {
+    runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
+      JSON.stringify(objects),
+      pageId,
+      projectId
+    ]);
+    reconcileOrphanedPlacementBalloonIds(pageId, objectIds);
+    runSql("COMMIT");
+  } catch (error) {
+    runSql("ROLLBACK");
+    throw error;
+  }
   return { objects };
 }
 

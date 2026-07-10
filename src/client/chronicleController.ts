@@ -10,6 +10,7 @@ import type {
   DialogueAllocationRemovalResult,
   DialogueAllocationResult,
   DialogueLayoutPreview,
+  DialogueLayoutUnlockResult,
   ExistingPlacementPolicy
 } from "../shared/chronicle";
 import type { MangaScript, PageDetail } from "../shared/apiTypes";
@@ -24,6 +25,7 @@ import {
   markPageObjectsDirty,
   pushPageObjectHistorySnapshotExternal
 } from "./pageObjectsController";
+import { setPagePanelMode } from "./pagePanelLightboxController";
 
 function resetChronicleState() {
   state.chronicle = {
@@ -44,6 +46,7 @@ function resetChronicleState() {
     allocationPolicy: "skip"
   };
   selectionAnchorBeatId = null;
+  lastHighlightedObjectId = null;
 }
 
 /**
@@ -331,6 +334,180 @@ async function applyChronicleLayoutPreview(): Promise<void> {
   }
 }
 
+/**
+ * 「再配置」(§2.6・§3・§6 フェーズIV): 現在ページの materialized かつ auto_layout_locked=0 の
+ * placement 群を新しい seed で配置し直す。`applyChronicleLayoutPreview` と同じ手順(flush→snapshot→
+ * API→pageObjectsDraft 最新化→履歴1エントリ)を踏む -- Undo 1回で reflow 前へ戻せるようにするため。
+ * 選択中の Beat/preview には依存しない(常に「現在ページの対象全部」を再配置する、seed は毎回サーバー生成)。
+ */
+async function reflowChronicleLayout(): Promise<void> {
+  const context = currentAllocationContext();
+  if (!context || state.chronicle.busyAction) {
+    return;
+  }
+  state.chronicle.busyAction = "reflow";
+  requestRender();
+  try {
+    await flushPageObjectsSave();
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    const previousSnapshot = currentPageObjectsSnapshot();
+    const result = await api<DialogueLayoutPreview>(
+      `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/reflow`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    if (result.objects.length === 0) {
+      for (const warning of result.warnings) {
+        pushToast(warning, "info");
+      }
+      return;
+    }
+    pushPageObjectHistorySnapshotExternal(previousSnapshot);
+    const detail = await api<PageDetail>(`/api/projects/${context.projectId}/pages/${context.pageId}`);
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    state.pageObjectsDraft = detail.page.objects ?? [];
+    ensureAllPageObjectTextLayouts(state.pageObjectsDraft);
+    markPageObjectsDirty();
+    for (const warning of result.warnings) {
+      pushToast(warning, "info");
+    }
+    pushToast(`${result.objects.length}件を再配置しました(seed ${result.seed})。`, "info");
+    await loadChronicleData(context.projectId, context.scriptId, context.pageId);
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    if (state.chronicle.busyAction === "reflow") {
+      state.chronicle.busyAction = null;
+    }
+    requestRender();
+  }
+}
+
+/**
+ * 「ロック解除(現在ページ一括)」(§2.6・§6 フェーズIV)。busyAction を専有しない(reflow/apply とは
+ * 独立した軽い操作のため専用の in-flight フラグでガードする)。解除後は再配置対象へ復帰する
+ * (`loadChronicleData` で lines/beats を再取得すれば `autoLayoutLocked` が false に戻って反映される)。
+ */
+let chronicleUnlockAllInFlight = false;
+
+async function unlockAllChroniclePlacementsForCurrentPage(): Promise<void> {
+  const context = currentAllocationContext();
+  if (!context || chronicleUnlockAllInFlight) {
+    return;
+  }
+  chronicleUnlockAllInFlight = true;
+  requestRender();
+  try {
+    const result = await api<DialogueLayoutUnlockResult>(
+      `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/unlock`,
+      { method: "POST", body: JSON.stringify({}) }
+    );
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    pushToast(`${result.unlocked}件のロックを解除しました。`, "info");
+    await loadChronicleData(context.projectId, context.scriptId, context.pageId);
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    chronicleUnlockAllInFlight = false;
+    requestRender();
+  }
+}
+
+/** Beat プレビュー内の個別行の「ロック解除」(§2.6・§6 フェーズIV)。 */
+async function unlockChroniclePlacement(placementId: string): Promise<void> {
+  const context = currentAllocationContext();
+  if (!context) {
+    return;
+  }
+  try {
+    await api(`/api/dialogue-placements/${placementId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ autoLayoutLocked: false })
+    });
+    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+      return;
+    }
+    await loadChronicleData(context.projectId, context.scriptId, context.pageId);
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
+/**
+ * 相互選択ジャンプ(§2.6・§6 フェーズIV): Beat プレビュー内の行クリックで、現在ページに対応する
+ * 吹き出し(balloonObjectId)があればオブジェクトモードへ切り替えて選択+スクロールする。
+ * 対応する吹き出しが無ければ(未配置/他ページ配置/未吹き出し化)何もせず通知するだけ。
+ */
+function selectChronicleLineObject(lineId: string): void {
+  const currentPageId = state.pagePanelLightbox?.pageId ?? null;
+  if (!currentPageId) {
+    return;
+  }
+  const line = state.chronicle.lines.find((item) => item.lineId === lineId);
+  const placement = line?.placements.find((item) => item.pageId === currentPageId && item.balloonObjectId);
+  if (!placement || !placement.balloonObjectId) {
+    pushToast("このページに対応する吹き出しがありません。", "info");
+    return;
+  }
+  const objectId = placement.balloonObjectId;
+  setPagePanelMode("objects");
+  state.selectedPageObjectId = objectId;
+  lastHighlightedObjectId = objectId; // 直後の syncChronicleObjectSelectionHighlight による自己ハイライトを抑止する。
+  requestRender();
+  requestAnimationFrame(() => {
+    const el = document.querySelector<SVGElement>(`[data-page-object="${objectId}"]`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+  });
+}
+
+/**
+ * 手動編集での自動ロック(§2.6): ユーザーが自動生成吹き出し(placement に auto_layout_seed があり
+ * balloon_object_id が一致)を移動/リサイズ/回転/尻尾変更したら、対応 placement の
+ * `auto_layout_locked=1` を自動設定する。`pageObjectsController.ts` のギズモドラッグ確定
+ * (`handlePageObjectsPointerUp`)・回転リセット/尻尾プロパティ変更(`commitObjectMutation`/
+ * `commitFieldChange` 経由)から objectId を渡して呼ぶ。Chronicle バーが開いていない
+ * (`status !== "ready"`)/対象が見つからない/既にロック済みなら何もしない(サイレントに no-op)。
+ */
+export function notifyChroniclePageObjectManualEdit(objectId: string): void {
+  if (state.chronicle.status !== "ready") {
+    return;
+  }
+  const currentPageId = state.pagePanelLightbox?.pageId ?? null;
+  if (!currentPageId) {
+    return;
+  }
+  for (const line of state.chronicle.lines) {
+    for (const placement of line.placements) {
+      if (
+        placement.balloonObjectId === objectId &&
+        placement.pageId === currentPageId &&
+        placement.autoLayoutSeed !== null &&
+        placement.autoLayoutSeed !== undefined &&
+        !placement.autoLayoutLocked
+      ) {
+        // 楽観的にローカル state を更新してから PATCH する(バーのロック表示を即座に反映する)。
+        placement.autoLayoutLocked = true;
+        requestRender();
+        void api(`/api/dialogue-placements/${placement.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ autoLayoutLocked: true })
+        }).catch((error) => {
+          pushToast(error instanceof Error ? error.message : String(error), "error");
+        });
+        return;
+      }
+    }
+  }
+}
+
 /** 「現在ページへ割り当て」(§2.3・§3)。busyAction="assign" でガードする。 */
 async function assignSelectionToCurrentPage(): Promise<void> {
   const context = currentAllocationContext();
@@ -447,7 +624,11 @@ registerActions({
   "jump-chronicle-next-unassigned": () => jumpToNextUnassignedBeat(),
   "preview-chronicle-layout": () => void previewChronicleLayout(),
   "apply-chronicle-layout": () => void applyChronicleLayoutPreview(),
-  "cancel-chronicle-layout": () => cancelChronicleLayoutPreview()
+  "cancel-chronicle-layout": () => cancelChronicleLayoutPreview(),
+  "reflow-chronicle-layout": () => void reflowChronicleLayout(),
+  "unlock-all-chronicle-placements": () => void unlockAllChroniclePlacementsForCurrentPage(),
+  "unlock-chronicle-placement": (id) => void unlockChroniclePlacement(id),
+  "select-chronicle-line-object": (id) => selectChronicleLineObject(id)
 });
 
 /** ページ切替時(=lightbox 再オープン)ごとに1回だけ自動スクロールする(ユーザーの手動スクロールを尊重)。 */
@@ -472,6 +653,53 @@ export function syncChronicleBarScroll(): void {
   lastAutoScrollKey = key;
   const target = track.querySelector<HTMLElement>(".chronicle-beat.is-current-page");
   target?.scrollIntoView({ inline: "center", block: "nearest" });
+}
+
+/**
+ * 相互選択ジャンプの逆方向(§2.6・§6 フェーズIV): ページ上で自動生成吹き出しを選択したら、対応する
+ * Beat を Chronicle 上で強調+スクロールする。`state.selectedPageObjectId` の変化を検知して1回だけ
+ * 処理する(無限ループ防止 -- `selectChronicleLineObject` は選択直後に `lastHighlightedObjectId` を
+ * 先回りで更新するので、Beat→オブジェクト方向のジャンプがこの関数を再度発火させることはない)。
+ */
+let lastHighlightedObjectId: string | null = null;
+
+export function syncChronicleObjectSelectionHighlight(): void {
+  if (state.chronicle.status !== "ready" || !state.pagePanelLightbox) {
+    lastHighlightedObjectId = null;
+    return;
+  }
+  const selectedId = state.selectedPageObjectId;
+  if (selectedId === lastHighlightedObjectId) {
+    return;
+  }
+  lastHighlightedObjectId = selectedId;
+  if (!selectedId) {
+    return;
+  }
+  const currentPageId = state.pagePanelLightbox.pageId;
+  let targetLineId: string | null = null;
+  for (const line of state.chronicle.lines) {
+    if (line.placements.some((placement) => placement.pageId === currentPageId && placement.balloonObjectId === selectedId)) {
+      targetLineId = line.lineId;
+      break;
+    }
+  }
+  if (!targetLineId) {
+    return;
+  }
+  const beat = state.chronicle.beats.find((item) => item.lineIds.includes(targetLineId!));
+  if (!beat) {
+    return;
+  }
+  requestAnimationFrame(() => {
+    const chip = document.querySelector<HTMLElement>(`.chronicle-beat[data-id="${beat.id}"]`);
+    if (!chip) {
+      return;
+    }
+    chip.scrollIntoView({ inline: "center", block: "nearest" });
+    chip.classList.add("is-jump-highlight");
+    window.setTimeout(() => chip.classList.remove("is-jump-highlight"), 1200);
+  });
 }
 
 /** Shift+ホイールでの横スクロール(§2.1)。app 全体へ委譲し、`.chronicle-bar-track` 内だけ処理する。 */

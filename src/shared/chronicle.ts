@@ -47,6 +47,11 @@ export interface ChroniclePlacementSummary {
   balloonObjectId: string | null;
   /** フェーズIII で追加される `auto_layout_locked` 列の値。フェーズI では常に undefined(未配線)。 */
   autoLayoutLocked?: boolean;
+  /**
+   * フェーズIV(§2.6): `auto_layout_seed` 列の値(null=自動配置未実施の手動配置)。クライアントの
+   * 手動編集での自動ロック判定(「placement に auto_layout_seed があり balloon_object_id が一致」)に使う。
+   */
+  autoLayoutSeed?: number | null;
 }
 
 /**
@@ -129,6 +134,18 @@ export interface DialogueLayoutPreview {
   assignments: DialogueLayoutAssignment[];
   warnings: string[];
   unplacedPlacementIds: string[];
+}
+
+// --- フェーズIV: 再配置とロック(§2.6・§3・§6) ---
+
+/** `POST /api/projects/:projectId/pages/:pageId/dialogue-layout/reflow` のリクエストボディ。seed 省略時はサーバーが新規生成する。 */
+export interface DialogueLayoutReflowRequest {
+  seed?: number;
+}
+
+/** `POST /api/projects/:projectId/pages/:pageId/dialogue-layout/unlock` の結果。 */
+export interface DialogueLayoutUnlockResult {
+  unlocked: number;
 }
 
 /** Chronicle バーで選択中 Beat の内容プレビュー(§2.3「Beat クリック」)。 */
