@@ -58,6 +58,8 @@ interface PlacementRow {
   line_id: string;
   page_id: string;
   balloon_object_id: string | null;
+  auto_layout_locked: number;
+  auto_layout_seed: number | null;
 }
 
 /**
@@ -80,12 +82,18 @@ export function getChronicle(projectId: string, scriptId: string | undefined): C
   if (lineIds.length > 0) {
     const placeholders = lineIds.map(() => "?").join(",");
     const placementRows = getRows<PlacementRow>(
-      `SELECT id, line_id, page_id, balloon_object_id FROM dialogue_placements WHERE line_id IN (${placeholders})`,
+      `SELECT id, line_id, page_id, balloon_object_id, auto_layout_locked, auto_layout_seed FROM dialogue_placements WHERE line_id IN (${placeholders})`,
       lineIds
     );
     for (const row of placementRows) {
       const list = placementsByLine.get(row.line_id) ?? [];
-      list.push({ id: row.id, pageId: row.page_id, balloonObjectId: row.balloon_object_id });
+      list.push({
+        id: row.id,
+        pageId: row.page_id,
+        balloonObjectId: row.balloon_object_id,
+        autoLayoutLocked: Boolean(row.auto_layout_locked),
+        autoLayoutSeed: row.auto_layout_seed
+      });
       placementsByLine.set(row.line_id, list);
     }
   }

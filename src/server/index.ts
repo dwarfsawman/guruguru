@@ -76,7 +76,7 @@ import {
 } from "./dialogueProposals";
 import { getChronicle } from "./chronicle";
 import { allocateDialoguePages, removeDialogueAllocation } from "./dialogueAllocation";
-import { applyDialogueLayout, previewDialogueLayout } from "./dialogueAutoLayoutApi";
+import { applyDialogueLayout, previewDialogueLayout, reflowDialogueLayout, unlockAllDialoguePlacementsForPage } from "./dialogueAutoLayoutApi";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
   GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
@@ -663,6 +663,19 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const dialogueLayoutApplyMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/apply$/);
   if (method === "POST" && dialogueLayoutApplyMatch) {
     sendJson(res, 200, applyDialogueLayout(dialogueLayoutApplyMatch[1]!, dialogueLayoutApplyMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  // Chronicle Page Flow フェーズIV(§2.6・§3・§6): 再配置(seed 変更)とロック一括解除。
+  const dialogueLayoutReflowMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/reflow$/);
+  if (method === "POST" && dialogueLayoutReflowMatch) {
+    sendJson(res, 200, reflowDialogueLayout(dialogueLayoutReflowMatch[1]!, dialogueLayoutReflowMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  const dialogueLayoutUnlockMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/unlock$/);
+  if (method === "POST" && dialogueLayoutUnlockMatch) {
+    sendJson(res, 200, unlockAllDialoguePlacementsForPage(dialogueLayoutUnlockMatch[1]!, dialogueLayoutUnlockMatch[2]!));
     return;
   }
 

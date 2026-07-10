@@ -252,6 +252,11 @@ export function createDialoguePlacement(lineId: string, body: unknown): CreatePl
   return { placement: placementRow(placementId), objects: nextObjects };
 }
 
+/**
+ * `PATCH /api/dialogue-placements/:id`。フェーズIV(§2.6・§3)で `autoLayoutLocked` を受け付けるよう拡張。
+ * body に含まれていれば(`undefined` でなければ)真偽値へ強制して更新する -- 手動編集時の自動ロック
+ * (`chronicleController.ts`)・個別/一括解除の両方がこの1エンドポイントを使う。
+ */
 export function updateDialoguePlacement(placementId: string, body: unknown): DialoguePlacement {
   const existing = placementRow(placementId);
   const input = objectBody(body);
@@ -268,9 +273,10 @@ export function updateDialoguePlacement(placementId: string, body: unknown): Dia
   const renderKind: DialogueRenderKind = RENDER_KINDS.has(input.renderKind as DialogueRenderKind)
     ? (input.renderKind as DialogueRenderKind)
     : existing.renderKind;
+  const autoLayoutLocked = typeof input.autoLayoutLocked === "boolean" ? input.autoLayoutLocked : existing.autoLayoutLocked;
   runSql(
-    "UPDATE dialogue_placements SET panel_id = ?, render_kind = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-    [panelId, renderKind, placementId]
+    "UPDATE dialogue_placements SET panel_id = ?, render_kind = ?, auto_layout_locked = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [panelId, renderKind, autoLayoutLocked ? 1 : 0, placementId]
   );
   return placementRow(placementId);
 }
@@ -309,6 +315,31 @@ export function clearOrphanedPlacementPanelIds(pageId: string, validPanelIds: Re
   for (const row of rows) {
     if (row.panel_id && !validPanelIds.has(row.panel_id)) {
       runSql("UPDATE dialogue_placements SET panel_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [row.id]);
+    }
+  }
+}
+
+/**
+ * 整合性ルール(Docs/Feature-ChroniclePageFlow.md §3): ページの objects 保存時(`pages.ts` の
+ * `updatePageObjects`)に、`balloon_object_id` が保存後の objects_json に存在しない placement は
+ * `balloon_object_id=NULL`(assigned 状態へ復帰)へ戻す。Undo でオブジェクトが消えた場合・手動削除の
+ * 両方をこれ1本でカバーする。`auto_layout_seed`/`auto_layout_version`/`auto_layout_locked` も
+ * 「もう自動配置された吹き出しではない」ため未配置相当(0/NULL)へ戻す。
+ */
+export function reconcileOrphanedPlacementBalloonIds(pageId: string, validObjectIds: ReadonlySet<string>): void {
+  const rows = getRows<{ id: string; balloon_object_id: string | null }>(
+    "SELECT id, balloon_object_id FROM dialogue_placements WHERE page_id = ? AND balloon_object_id IS NOT NULL",
+    [pageId]
+  );
+  for (const row of rows) {
+    if (row.balloon_object_id && !validObjectIds.has(row.balloon_object_id)) {
+      runSql(
+        `UPDATE dialogue_placements
+         SET balloon_object_id = NULL, auto_layout_locked = 0, auto_layout_seed = NULL, auto_layout_version = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [row.id]
+      );
     }
   }
 }

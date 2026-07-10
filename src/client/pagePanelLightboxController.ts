@@ -203,8 +203,12 @@ export function closePagePanelLightbox() {
   })();
 }
 
-/** ページ編集モードタブ(コマ/オブジェクト/コマ枠/モザイク)の切り替え。 */
-function setPagePanelMode(mode: string) {
+/**
+ * ページ編集モードタブ(コマ/オブジェクト/コマ枠/モザイク)の切り替え。`chronicleController.ts` の
+ * 「Beat から対応吹き出しへジャンプ」(§2.6 フェーズIV相互選択ジャンプ)がオブジェクトモードへ
+ * 強制切替するために export する。
+ */
+export function setPagePanelMode(mode: string) {
   const lightbox = state.pagePanelLightbox;
   if (!lightbox || (mode !== "panels" && mode !== "objects" && mode !== "shapes" && mode !== "mosaic") || lightbox.mode === mode) {
     return;

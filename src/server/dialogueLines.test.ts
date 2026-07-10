@@ -165,6 +165,64 @@ test("updateDialoguePlacement: panelId/renderKind をメタデータ更新でき
   assert.throws(() => updateDialoguePlacement(created.placement.id, { panelId: "panel_missing" }), HttpError);
 });
 
+test("updateDialoguePlacement: autoLayoutLocked を設定/解除できる(Docs/Feature-ChroniclePageFlow.md §2.6・フェーズIV)", () => {
+  const projectId = createTestProject();
+  const page = createPage(projectId);
+  const line = createDialogueLine(projectId, { text: "ロック対象", speakerLabel: "太郎" });
+  const created = createDialoguePlacement(line.id, { pageId: page.id });
+  assert.equal(created.placement.autoLayoutLocked, false);
+
+  const locked = updateDialoguePlacement(created.placement.id, { autoLayoutLocked: true });
+  assert.equal(locked.autoLayoutLocked, true);
+  // 未指定フィールド(panelId/renderKind)は既存値を維持する。
+  assert.equal(locked.panelId, created.placement.panelId);
+  assert.equal(locked.renderKind, created.placement.renderKind);
+
+  const unlocked = updateDialoguePlacement(created.placement.id, { autoLayoutLocked: false });
+  assert.equal(unlocked.autoLayoutLocked, false);
+});
+
+test("updatePageObjects: objects_json から消えた balloon_object_id を持つ placement は NULL 化+ロック解除される(§3 整合性ルール)", () => {
+  const projectId = createTestProject();
+  const page = createPage(projectId);
+  const line = createDialogueLine(projectId, { text: "整合性テスト", speakerLabel: "太郎" });
+  const created = createDialoguePlacement(line.id, { pageId: page.id });
+  assert.ok(created.placement.balloonObjectId);
+
+  // このオブジェクトを自動生成扱いにしてロックする(手動編集での自動ロックと同じ状態を再現)。
+  updateDialoguePlacement(created.placement.id, { autoLayoutLocked: true });
+  const rowBefore = getRow<{ auto_layout_locked: number }>("SELECT auto_layout_locked FROM dialogue_placements WHERE id = ?", [
+    created.placement.id
+  ]);
+  assert.equal(rowBefore?.auto_layout_locked, 1);
+
+  // Undo/手動削除を模して、対応する PageObject を含まない objects 配列で丸ごと保存する。
+  updatePageObjects(projectId, page.id, { objects: [] });
+
+  const row = getRow<{ balloon_object_id: string | null; auto_layout_locked: number; auto_layout_seed: number | null }>(
+    "SELECT balloon_object_id, auto_layout_locked, auto_layout_seed FROM dialogue_placements WHERE id = ?",
+    [created.placement.id]
+  );
+  assert.equal(row?.balloon_object_id, null, "balloon_object_id は NULL へ戻る(assigned 状態へ復帰)");
+  assert.equal(row?.auto_layout_locked, 0, "auto_layout_locked も解除される");
+  assert.equal(row?.auto_layout_seed, null);
+});
+
+test("updatePageObjects: objects_json に残っている balloon_object_id は影響を受けない", () => {
+  const projectId = createTestProject();
+  const page = createPage(projectId);
+  const line = createDialogueLine(projectId, { text: "維持されるべき台詞", speakerLabel: "花子" });
+  const created = createDialoguePlacement(line.id, { pageId: page.id });
+  const balloon = created.objects.find((object) => object.id === created.placement.balloonObjectId)!;
+
+  updatePageObjects(projectId, page.id, { objects: [balloon] });
+
+  const row = getRow<{ balloon_object_id: string | null }>("SELECT balloon_object_id FROM dialogue_placements WHERE id = ?", [
+    created.placement.id
+  ]);
+  assert.equal(row?.balloon_object_id, created.placement.balloonObjectId);
+});
+
 test("listDialogueLines: scriptId/status/pageId で絞り込める", () => {
   const projectId = createTestProject();
   const page = createPage(projectId);

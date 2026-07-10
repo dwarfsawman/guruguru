@@ -4,7 +4,8 @@
  * トランザクション(`pages.ts` の `reorderPages` が手本)はここが担当し、候補探索・スコアリング
  * 自体は `../shared/dialogueAutoLayout.ts`(純ロジック)に委ねる。
  */
-import type { DialogueLayoutPreview } from "../shared/chronicle";
+import { randomInt } from "node:crypto";
+import type { DialogueLayoutPreview, DialogueLayoutUnlockResult } from "../shared/chronicle";
 import type { DialogueSemanticKind } from "../shared/apiTypes";
 import { runDialogueAutoLayout, AUTO_LAYOUT_SFX_FONT_SCALE, type DialogueAutoLayoutItem } from "../shared/dialogueAutoLayout";
 import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
@@ -288,4 +289,166 @@ export function applyDialogueLayout(projectId: string, pageId: string, body: unk
   }
 
   return { seed, objects: result.objects, assignments: result.assignments, warnings: result.warnings, unplacedPlacementIds: [] };
+}
+
+// --- フェーズIV(§2.6・§3・§6): 再配置(reflow)とロック解除 ---
+
+interface ReflowTargetRow {
+  id: string;
+  line_id: string;
+  balloon_object_id: string;
+}
+
+interface ReflowContext {
+  layout: PageLayout;
+  /** ロック済み balloon・その他の既存オブジェクト(再配置対象を除いた残り)。再配置ソルバーの障害物になる。 */
+  remainingObjects: PageObject[];
+  targets: ReflowTargetRow[];
+  items: DialogueAutoLayoutItem[];
+}
+
+/**
+ * 再配置(reflow)対象を読み込む: 現在ページの「materialized(balloon_object_id 有り)かつ
+ * auto_layout_locked=0」の placement 群(§6 フェーズIV)。対象の PageObject を objects_json から
+ * 除去した残りを障害物として返す(除去した分はソルバーが新しい位置・サイズで作り直す)。
+ */
+function loadReflowContext(projectId: string, pageId: string): ReflowContext {
+  requireProject(projectId);
+  const page = requirePageRow(projectId, pageId);
+  if (!page.layout_json) {
+    throw new HttpError(400, "このページにはコマ割りが無いため、再配置は使えません。");
+  }
+  const layout = normalizeEditedPageLayout(JSON.parse(page.layout_json));
+  if (!layout) {
+    throw new HttpError(400, "このページのレイアウトが不正です。");
+  }
+
+  const targets = getRows<ReflowTargetRow>(
+    `SELECT id, line_id, balloon_object_id FROM dialogue_placements
+     WHERE page_id = ? AND balloon_object_id IS NOT NULL AND auto_layout_locked = 0`,
+    [pageId]
+  );
+  const allObjects = normalizePageObjects(page.objects_json ? JSON.parse(page.objects_json) : []);
+  if (targets.length === 0) {
+    return { layout, remainingObjects: allObjects, targets: [], items: [] };
+  }
+  const targetObjectIds = new Set(targets.map((row) => row.balloon_object_id));
+  const remainingObjects = allObjects.filter((object) => !targetObjectIds.has(object.id));
+
+  const lineIds = targets.map((row) => row.line_id);
+  const linePlaceholders = lineIds.map(() => "?").join(",");
+  const lineRows = getRows<LineRow>(
+    `SELECT id, text, semantic_kind, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
+    lineIds
+  );
+  const lineById = new Map(lineRows.map((row) => [row.id, row]));
+
+  const items: DialogueAutoLayoutItem[] = targets.map((row) => {
+    const line = lineById.get(row.line_id);
+    if (!line) {
+      throw new HttpError(404, `Dialogue line was not found for placement ${row.id}`);
+    }
+    return {
+      placementId: row.id,
+      lineId: line.id,
+      text: line.text,
+      semanticKind: line.semantic_kind,
+      speakerLabel: line.speaker_label,
+      orderIndex: line.order_index,
+      sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind)
+    };
+  });
+
+  return { layout, remainingObjects, targets, items };
+}
+
+/**
+ * `POST /api/projects/:projectId/pages/:pageId/dialogue-layout/reflow`(§6 フェーズIV)。
+ * seed 省略時はサーバーが新規生成する(`node:crypto` の `randomInt` -- ソルバー自体の PRNG 制約
+ * 「Math.random 不使用」とは別の関心事: これは「毎回違う seed を選ぶ」ためだけの1回きりの乱数)。
+ * トランザクション: 対象 placement の既存 PageObject を除去 → ロック済み/その他を障害物として
+ * ソルバー再実行(テキスト・placement は維持、位置とサイズのみ変更)→ 新 PageObject 書き込み →
+ * balloon_object_id/panel_id/auto_layout_seed 更新。1件でも配置不能なら 422(BEGIN 前に判定するため
+ * 実際には何も書き込まれず、既存配置は無傷のまま)。対象が0件(全ロック済み/未配置)なら何もせず返す。
+ */
+export function reflowDialogueLayout(projectId: string, pageId: string, body: unknown): DialogueLayoutPreview {
+  const input = objectBody(body);
+  const context = loadReflowContext(projectId, pageId);
+  if (context.items.length === 0) {
+    return {
+      seed: parseSeed(input) ?? 0,
+      objects: [],
+      assignments: [],
+      warnings: ["再配置の対象(ロックされていない吹き出し)がありません。"],
+      unplacedPlacementIds: []
+    };
+  }
+
+  const seed = parseSeed(input) ?? randomInt(0, 0xffffffff);
+  const result = runDialogueAutoLayout({
+    layout: context.layout,
+    existingObjects: context.remainingObjects,
+    items: context.items,
+    seed
+  });
+  if (result.unplacedPlacementIds.length > 0) {
+    throw new HttpError(
+      422,
+      `一部の行を再配置できなかったため中止しました(${result.unplacedPlacementIds.length}件)。seed を変えて再試行するか、手動配置してください。`
+    );
+  }
+
+  runSql("BEGIN");
+  try {
+    const nextObjects = normalizePageObjects([...context.remainingObjects, ...result.objects]);
+    if (nextObjects.length > PAGE_OBJECTS_MAX_COUNT || nextObjects.length !== context.remainingObjects.length + result.objects.length) {
+      throw new HttpError(422, `ページオブジェクトの上限(${PAGE_OBJECTS_MAX_COUNT})を超えるため再配置できません。`);
+    }
+    runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
+      JSON.stringify(nextObjects),
+      pageId,
+      projectId
+    ]);
+    for (const assignment of result.assignments) {
+      runSql(
+        `UPDATE dialogue_placements
+         SET balloon_object_id = ?, panel_id = ?, auto_layout_seed = ?, auto_layout_version = 1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [assignment.objectId, assignment.panelId, seed, assignment.placementId]
+      );
+    }
+    runSql("COMMIT");
+  } catch (error) {
+    runSql("ROLLBACK");
+    throw error;
+  }
+
+  return { seed, objects: result.objects, assignments: result.assignments, warnings: result.warnings, unplacedPlacementIds: [] };
+}
+
+/**
+ * `POST /api/projects/:projectId/pages/:pageId/dialogue-layout/unlock`(§6 フェーズIV)。
+ * 現在ページの `auto_layout_locked=1` の placement を一括で解除する(個別解除は既存の
+ * `PATCH /api/dialogue-placements/:id { autoLayoutLocked: false }` を使う)。
+ */
+export function unlockAllDialoguePlacementsForPage(projectId: string, pageId: string): DialogueLayoutUnlockResult {
+  requireProject(projectId);
+  requirePageRow(projectId, pageId);
+  const rows = getRows<{ id: string }>("SELECT id FROM dialogue_placements WHERE page_id = ? AND auto_layout_locked = 1", [
+    pageId
+  ]);
+  if (rows.length === 0) {
+    return { unlocked: 0 };
+  }
+  runSql("BEGIN");
+  try {
+    for (const row of rows) {
+      runSql("UPDATE dialogue_placements SET auto_layout_locked = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [row.id]);
+    }
+    runSql("COMMIT");
+  } catch (error) {
+    runSql("ROLLBACK");
+    throw error;
+  }
+  return { unlocked: rows.length };
 }

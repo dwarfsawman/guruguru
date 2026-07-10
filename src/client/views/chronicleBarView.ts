@@ -94,6 +94,26 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
     </button>
   `;
 
+  // フェーズIV(§2.6・§6): 現在ページの materialized かつ auto_layout_locked=0 の placement 数(再配置対象)・
+  // auto_layout_locked=1 の placement 数(一括解除対象)をバー全体のトグルボタン用に集計する。
+  const currentPagePlacements = view.lines.flatMap((line) => line.placements.filter((placement) => placement.pageId === view.currentPageId));
+  const reflowEligibleCount = currentPagePlacements.filter((placement) => placement.balloonObjectId && !placement.autoLayoutLocked).length;
+  const lockedCount = currentPagePlacements.filter((placement) => placement.autoLayoutLocked).length;
+  const busy = view.busyAction !== null;
+  const reflowButton = `
+    <button type="button" class="chronicle-bar-reflow" data-action="reflow-chronicle-layout"
+      ${busy || reflowEligibleCount === 0 ? "disabled" : ""}
+      title="現在ページの未ロック吹き出し(${reflowEligibleCount}件)を新しい seed で再配置します">
+      ${view.busyAction === "reflow" ? "再配置中…" : "再配置"}
+    </button>
+  `;
+  const unlockAllButton = `
+    <button type="button" class="chronicle-bar-unlock-all" data-action="unlock-all-chronicle-placements"
+      ${lockedCount === 0 ? "disabled" : ""} title="現在ページのロックを一括解除します(${lockedCount}件)">
+      ロック解除(${lockedCount})
+    </button>
+  `;
+
   const body = view.collapsed
     ? ""
     : view.status === "loading"
@@ -102,7 +122,7 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
         ? `<div class="chronicle-bar-message chronicle-bar-message-error">${escapeHtml(view.errorMessage ?? "Chronicle の取得に失敗しました。")}</div>`
         : view.beats.length === 0
           ? `<div class="chronicle-bar-message">セリフがまだありません。</div>`
-          : `<div class="chronicle-bar-toolbar">${nextUnassignedButton}</div>
+          : `<div class="chronicle-bar-toolbar">${nextUnassignedButton}${reflowButton}${unlockAllButton}</div>
             <div class="chronicle-bar-track">
               ${view.beats.map((beat) => renderBeatChip(beat, lineSummaryById, view.currentPageId, view.selectedBeatIds)).join("")}
             </div>
@@ -266,6 +286,10 @@ function renderLayoutPreviewPanel(view: ChronicleBarViewState): string {
   `;
 }
 
+/**
+ * フェーズIV(§2.6・§6): Beat プレビューの各行に「対応吹き出しへジャンプ」(クリック、現在ページ配置済み
+ * かつ吹き出し化済みの行のみ)と「ロック解除」(現在ページでロック済みの行のみ)を出す。
+ */
 function renderBeatPreview(view: ChronicleBarViewState, lineSummaryById: Map<string, ChronicleLineSummary>): string {
   const beat = view.beats.find((item) => item.id === view.previewBeatId);
   if (!beat) {
@@ -276,15 +300,32 @@ function renderBeatPreview(view: ChronicleBarViewState, lineSummaryById: Map<str
     <div class="chronicle-beat-preview">
       <ul class="chronicle-beat-preview-lines">
         ${preview.lines
-          .map(
-            (line) => `
-              <li class="chronicle-beat-preview-line">
-                <span class="chronicle-beat-preview-speaker">${escapeHtml(line.speakerLabel || "(話者未設定)")}</span>
-                <span class="chronicle-beat-preview-text">${escapeHtml(line.text)}</span>
-                <span class="chronicle-beat-preview-page">${line.pageIndex === null ? "未配置" : `${line.pageIndex + 1}ページ`}</span>
+          .map((line) => {
+            const summary = lineSummaryById.get(line.lineId);
+            const currentPagePlacement = summary?.placements.find((placement) => placement.pageId === view.currentPageId);
+            const jumpable = Boolean(currentPagePlacement?.balloonObjectId);
+            const locked = Boolean(currentPagePlacement?.autoLayoutLocked);
+            return `
+              <li class="chronicle-beat-preview-line${locked ? " is-locked" : ""}">
+                ${
+                  jumpable
+                    ? `<button type="button" class="chronicle-beat-preview-jump" data-action="select-chronicle-line-object"
+                        data-id="${escapeAttr(line.lineId)}" title="対応する吹き出しを選択">`
+                    : `<span class="chronicle-beat-preview-jump chronicle-beat-preview-jump-disabled">`
+                }
+                  <span class="chronicle-beat-preview-speaker">${escapeHtml(line.speakerLabel || "(話者未設定)")}</span>
+                  <span class="chronicle-beat-preview-text">${escapeHtml(line.text)}</span>
+                  <span class="chronicle-beat-preview-page">${line.pageIndex === null ? "未配置" : `${line.pageIndex + 1}ページ`}</span>
+                ${jumpable ? "</button>" : "</span>"}
+                ${
+                  locked && currentPagePlacement
+                    ? `<button type="button" class="chronicle-beat-preview-unlock" data-action="unlock-chronicle-placement"
+                        data-id="${escapeAttr(currentPagePlacement.id)}" title="このロックを解除">🔓</button>`
+                    : ""
+                }
               </li>
-            `
-          )
+            `;
+          })
           .join("")}
       </ul>
     </div>

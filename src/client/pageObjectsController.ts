@@ -68,6 +68,7 @@ import type { FontSummary } from "../shared/apiTypes";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
+import { notifyChroniclePageObjectManualEdit } from "./chronicleController";
 import { clampNumber } from "./clientUtils";
 import { isTextEntryTarget } from "./clientUtils";
 import { ensureTextLayout } from "./textLayoutClient";
@@ -738,6 +739,12 @@ export function updatePageObjectFieldFromControl(target: HTMLInputElement | HTML
     const updated = updateBalloonOwnField(object, field, target);
     if (updated) {
       commitFieldChange(index, updated);
+      // Chronicle Page Flow(§2.6): プロパティパネルでの尻ぽ変更(トグル/幅)も「手動編集」に数える。
+      // shape/fill/strokeColor 等の見た目変更はロック対象外(仕様書 §2.6 の「移動/リサイズ/回転/
+      // 尻尾変更」に厳密に合わせる判断)。
+      if (field === "tailEnabled" || field === "tailWidth") {
+        notifyChroniclePageObjectManualEdit(object.id);
+      }
     }
     return;
   }
@@ -1066,6 +1073,9 @@ function commitObjectMutation(objectId: string, updated: EditableObject): void {
   state.pageObjectsDraft = next;
   requestRender();
   scheduleSave();
+  // Chronicle Page Flow(Docs/Feature-ChroniclePageFlow.md §2.6): 回転ハンドルのダブルクリックリセットも
+  // 「回転」の手動編集にあたるため、対応する自動生成 placement をロックする。
+  notifyChroniclePageObjectManualEdit(objectId);
 }
 
 export function handlePageObjectsPointerUp(event: PointerEvent): boolean {
@@ -1085,6 +1095,9 @@ export function handlePageObjectsPointerUp(event: PointerEvent): boolean {
     } else if (current.kind === "balloon" && current.content) {
       void ensureTextLayout(current.content, balloonContentMaxWidth(current.shape, current.size, current.content.style.direction));
     }
+    // Chronicle Page Flow(§2.6): move/scale/rotate/tail のいずれのドラッグも「手動編集」として
+    // 対応する自動生成 placement をロックする(drag.kind で絞らず、実変化があった時だけ呼ぶ)。
+    notifyChroniclePageObjectManualEdit(current.id);
   }
   return true;
 }
