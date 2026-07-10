@@ -92,7 +92,33 @@ export interface BoxObject extends PageObjectBase {
   content?: TextContent | null;
 }
 
-export type PageObject = TextObject | BalloonObject | BoxObject;
+/**
+ * レイヤー帯(Docs/Feature-ScriptToManga.md S2)。"back" = コマ枠より後ろ(コマ画像より前、
+ * ぶち抜き立ち絵用)、"front" = コマ枠より前(既定、text/balloon/box と同じ帯)。
+ * 帯内の重なりは配列順(先頭=背面)。任意の全体 zIndex は導入しない(枠・吹き出しの規則を壊さないため)。
+ */
+export type ImageObjectBand = "back" | "front";
+
+/**
+ * 画像オブジェクト(Docs/Feature-ScriptToManga.md S2: コマぶち抜き立ち絵の土台)。`mediaId` は
+ * `page_media.id` を参照する(`assetId` を直接参照しない -- Round/Asset 削除で ImageObject が
+ * 壊れないよう、配置時に `page_media` へファイルをコピーする方式にしている)。
+ */
+export interface ImageObject extends PageObjectBase {
+  kind: "image";
+  /** page_media.id。 */
+  mediaId: string;
+  /** 幅・高さ(page 単位)。追加時はメディアのアスペクト比で初期化する(`defaultImageObjectSize`)。 */
+  size: PageVec;
+  /** 0..1、既定 1。 */
+  opacity?: number;
+  /** 既定 "front"(省略時は front として扱う)。 */
+  band?: ImageObjectBand;
+  /** コマ形状でクリップする対象パネル id。null/省略 = ぶち抜き(クリップしない)。 */
+  clipPanelId?: string | null;
+}
+
+export type PageObject = TextObject | BalloonObject | BoxObject | ImageObject;
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -310,6 +336,34 @@ function normalizeBoxObject(raw: Record<string, unknown>, fallbackId: string): B
   return object;
 }
 
+const IMAGE_BANDS = new Set<ImageObjectBand>(["back", "front"]);
+
+/**
+ * 画像オブジェクトの正規化。**全フィールドを保持する**(正規化往復で opacity/band/clipPanelId が
+ * 消えると保存 1 秒後に編集が巻き戻るため -- Docs/Feature-ScriptToManga.md S2 既知の罠1)。
+ */
+function normalizeImageObject(raw: Record<string, unknown>, fallbackId: string): ImageObject | null {
+  const base = normalizeBase(raw, fallbackId);
+  const size = normalizeSize(raw.size);
+  const mediaId = typeof raw.mediaId === "string" ? raw.mediaId.trim() : "";
+  if (!base || !size || !mediaId) {
+    return null;
+  }
+  const object: ImageObject = { id: base.id, kind: "image", position: base.position, rotation: base.rotation, mediaId, size };
+  if (isFiniteNumber(raw.opacity)) {
+    object.opacity = clampNumber(raw.opacity, 0, 1, 1);
+  }
+  if (typeof raw.band === "string" && IMAGE_BANDS.has(raw.band as ImageObjectBand)) {
+    object.band = raw.band as ImageObjectBand;
+  }
+  if (raw.clipPanelId === null) {
+    object.clipPanelId = null;
+  } else if (typeof raw.clipPanelId === "string" && raw.clipPanelId.trim()) {
+    object.clipPanelId = raw.clipPanelId.trim();
+  }
+  return object;
+}
+
 function normalizeOne(raw: unknown, fallbackId: string): PageObject | null {
   if (!isJsonObject(raw)) {
     return null;
@@ -321,6 +375,8 @@ function normalizeOne(raw: unknown, fallbackId: string): PageObject | null {
       return normalizeBalloonObject(raw, fallbackId);
     case "box":
       return normalizeBoxObject(raw, fallbackId);
+    case "image":
+      return normalizeImageObject(raw, fallbackId);
     default:
       // 未知 kind は捨てる(将来フェーズや壊れたデータに対して寛容に無視する)。
       return null;
@@ -396,6 +452,35 @@ export function createBalloonObject(id: string, center: PageVec, size: PageVec =
     strokeColor: DEFAULT_BOX_STROKE_COLOR,
     strokeWidth: DEFAULT_BOX_STROKE_WIDTH,
     content: { text: "", style: { ...DEFAULT_TEXT_STYLE } }
+  };
+}
+
+/** 画像オブジェクト追加時の既定高さ(page 単位)。幅はメディアのアスペクト比から決める。 */
+export const DEFAULT_IMAGE_OBJECT_HEIGHT = 0.4;
+
+/**
+ * 画像オブジェクト追加時の既定サイズ(page 単位)。メディアの width/height が取れれば
+ * そのアスペクト比で高さ `DEFAULT_IMAGE_OBJECT_HEIGHT` の外接矩形を作り、取れなければ正方形にする。
+ */
+export function defaultImageObjectSize(mediaWidth: number | null | undefined, mediaHeight: number | null | undefined): PageVec {
+  const aspect = mediaWidth && mediaHeight && mediaWidth > 0 && mediaHeight > 0 ? mediaWidth / mediaHeight : 1;
+  const y = DEFAULT_IMAGE_OBJECT_HEIGHT;
+  const x = clampNumber(y * aspect, PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE, y);
+  return { x, y };
+}
+
+/** 新規画像オブジェクトを作る(既定: front 帯・不透明度1・クリップなし)。位置・サイズは呼び出し側が決める。 */
+export function createImageObject(id: string, center: PageVec, mediaId: string, size: PageVec): ImageObject {
+  return {
+    id,
+    kind: "image",
+    position: { ...center },
+    rotation: 0,
+    mediaId,
+    size: { ...size },
+    opacity: 1,
+    band: "front",
+    clipPanelId: null
   };
 }
 
