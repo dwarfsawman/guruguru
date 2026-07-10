@@ -154,3 +154,77 @@ test("applyDialogueLayout: 既に吹き出し化済みの placement を対象に
   const created = createDialoguePlacement(taroLine.id, { pageId });
   assert.throws(() => applyDialogueLayout(projectId, pageId, { placementIds: [created.placement.id], seed: 1 }), HttpError);
 });
+
+// --- 回帰テスト: サイズバリアントで従来 unplaced だった長めの行が配置できる(問題2) ---
+
+const FOUR_GRID_LAYOUT: PageLayout = {
+  version: 1,
+  page: { aspectRatio: [182, 257], height: 257 / 182 },
+  readingDirection: "rtl",
+  panels: [
+    { id: "r1c2", order: 1, shape: { type: "rect", bounds: [0.51, 0.04, 0.96, 0.696044] } },
+    { id: "r1c1", order: 2, shape: { type: "rect", bounds: [0.04, 0.04, 0.49, 0.696044] } },
+    { id: "r2c2", order: 3, shape: { type: "rect", bounds: [0.51, 0.716044, 0.96, 1.372088] } },
+    { id: "r2c1", order: 4, shape: { type: "rect", bounds: [0.04, 0.716044, 0.49, 1.372088] } }
+  ]
+};
+
+const LONG_DIALOGUE_SOURCE = [
+  "INT. 教室 - 昼",
+  "",
+  "@ソラ",
+  "(M)",
+  "……寒い。まだ着いたはずがない。どうして私だけ起こされた?",
+  "",
+  "@アマネ",
+  "おはようございます、ソラ。緊急事態です。起こしてしまってごめんなさい。",
+  "",
+  "@ソラ",
+  "アマネ? 船のAIが謝るなんて、プログラムにあったかしら。"
+].join("\n");
+
+test("previewDialogueLayout: four-grid の四半ページに26〜35字の会話が『コマに対して文字量が多すぎる』で誤って弾かれない(回帰)", () => {
+  const projectId = createTestProject();
+  const script = createScript(projectId, { title: "回帰テスト", fountainSource: LONG_DIALOGUE_SOURCE });
+  const page = createPage(projectId);
+  updatePageLayout(projectId, page.id, { layout: FOUR_GRID_LAYOUT });
+  const lineIds = script.lines.map((line) => line.id);
+  allocateDialoguePages(projectId, page.id, { lineIds });
+  const placementRows = getRows<{ id: string }>("SELECT id FROM dialogue_placements WHERE page_id = ?", [page.id]);
+
+  const preview = previewDialogueLayout(projectId, page.id, { placementIds: placementRows.map((row) => row.id), seed: 1234 });
+
+  // 修正前は「コマに対して文字量が多すぎる」判定で全滅していた3行構成。修正後は全て配置できる
+  // (このレイアウト・行数では各行が別コマへ収まる)。
+  assert.equal(preview.unplacedPlacementIds.length, 0, JSON.stringify(preview.warnings));
+  assert.equal(preview.objects.length, placementRows.length);
+  for (const warning of preview.warnings) {
+    assert.ok(!warning.includes("文字量が多すぎる"), `unexpected size-rejection warning: ${warning}`);
+  }
+});
+
+test("previewDialogueLayout: six-panel で26字程度のセリフが配置できる(受け入れ基準)", () => {
+  const sixPanelLayout: PageLayout = {
+    version: 1,
+    page: { aspectRatio: [182, 257], height: 257 / 182 },
+    readingDirection: "rtl",
+    panels: [
+      { id: "r1c2", order: 1, shape: { type: "rect", bounds: [0.51, 0.04, 0.96, 0.45] } },
+      { id: "r1c1", order: 2, shape: { type: "rect", bounds: [0.04, 0.04, 0.49, 0.45] } },
+      { id: "r2c2", order: 3, shape: { type: "rect", bounds: [0.51, 0.47, 0.96, 0.9] } },
+      { id: "r2c1", order: 4, shape: { type: "rect", bounds: [0.04, 0.47, 0.49, 0.9] } },
+      { id: "r3c2", order: 5, shape: { type: "rect", bounds: [0.51, 0.92, 0.96, 1.372088] } },
+      { id: "r3c1", order: 6, shape: { type: "rect", bounds: [0.04, 0.92, 0.49, 1.372088] } }
+    ]
+  };
+  const projectId = createTestProject();
+  const source = ["INT. 教室 - 昼", "", "@太郎", "おはようございます、今日はいい天気ですね元気にしていますか。"].join("\n");
+  const script = createScript(projectId, { title: "six-panel", fountainSource: source });
+  const page = createPage(projectId);
+  updatePageLayout(projectId, page.id, { layout: sixPanelLayout });
+  allocateDialoguePages(projectId, page.id, { lineIds: script.lines.map((line) => line.id) });
+  const placementRows = getRows<{ id: string }>("SELECT id FROM dialogue_placements WHERE page_id = ?", [page.id]);
+
+  const preview = previewDialogueLayout(projectId, page.id, { placementIds: placementRows.map((row) => row.id), seed: 7 });
+  assert.equal(preview.unplacedPlacementIds.length, 0, JSON.stringify(preview.warnings));
+});

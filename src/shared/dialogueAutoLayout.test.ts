@@ -6,7 +6,7 @@ import {
   type DialogueAutoLayoutItem
 } from "./dialogueAutoLayout.ts";
 import type { LayoutPanel, PageLayout } from "./pageLayout.ts";
-import type { PageObject } from "./pageObjects.ts";
+import type { PageObject, PageVec } from "./pageObjects.ts";
 
 function rectPanel(id: string, order: number, bounds: [number, number, number, number]): LayoutPanel {
   return { id, order, shape: { type: "rect", bounds } };
@@ -22,13 +22,21 @@ function twoPanelLayout(direction: "rtl" | "ltr" = "rtl"): PageLayout {
   };
 }
 
-function item(overrides: Partial<DialogueAutoLayoutItem> & Pick<DialogueAutoLayoutItem, "placementId" | "lineId" | "orderIndex">): DialogueAutoLayoutItem {
+/**
+ * テスト用ビルダー。`size` を渡すと単一候補の sizeVariants として扱う(便宜上のショートハンド)。
+ * `sizeVariants` を直接渡すことも可能(複数候補を試すケース用)。
+ */
+function item(
+  overrides: Partial<Omit<DialogueAutoLayoutItem, "sizeVariants">> &
+    Pick<DialogueAutoLayoutItem, "placementId" | "lineId" | "orderIndex"> & { size?: PageVec; sizeVariants?: PageVec[] }
+): DialogueAutoLayoutItem {
+  const { size, sizeVariants, ...rest } = overrides;
   return {
     text: "テスト",
     semanticKind: "dialogue",
     speakerLabel: "太郎",
-    size: { x: 0.1, y: 0.1 },
-    ...overrides
+    sizeVariants: sizeVariants ?? [size ?? { x: 0.1, y: 0.1 }],
+    ...rest
   };
 }
 
@@ -239,4 +247,120 @@ test("runDialogueAutoLayout: コマの無いページで dialogue は unplaced",
   const items: DialogueAutoLayoutItem[] = [item({ placementId: "p1", lineId: "l1", orderIndex: 0 })];
   const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 1 });
   assert.deepEqual(result.unplacedPlacementIds, ["p1"]);
+});
+
+// --- 回帰テスト: sfx のページ全体フォールバック(問題1) ---
+
+test("runDialogueAutoLayout: sfx はコマに対して大きすぎてもページ全体候補へフォールバックして配置できる(narrationと同様)", () => {
+  const layout = twoPanelLayout();
+  // コマ比率(0.8)を超える大きさの sfx。dialogue なら unplaced になるサイズ。
+  const items: DialogueAutoLayoutItem[] = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, semanticKind: "sfx", text: "ドドドド", size: { x: 0.9, y: 0.2 } })
+  ];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 1 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  assert.equal(result.objects.length, 1);
+  assert.equal(result.objects[0]!.kind, "text");
+  // ページ全体配置(コマ非依存)として扱われる。
+  assert.equal(result.assignments[0]!.panelId, null);
+});
+
+test("runDialogueAutoLayout: 同じ大きさなら dialogue は unplaced のまま(sfx だけがフォールバック対象)", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, semanticKind: "dialogue", size: { x: 0.9, y: 0.2 } })
+  ];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 1 });
+  assert.deepEqual(result.unplacedPlacementIds, ["p1"]);
+});
+
+test("runDialogueAutoLayout: sfx はコマに無関係な既存オブジェクトで担当コマが埋まっていてもページ全体から空きを見つける", () => {
+  const layout = twoPanelLayout();
+  // 右コマ(RTL の担当コマ)全域を覆う既存 box。sfx は右コマに入れず、ページ全体から探すはず。
+  const existingObjects: PageObject[] = [
+    {
+      id: "existing_box",
+      kind: "box",
+      position: { x: 0.76, y: 0.7 },
+      rotation: 0,
+      size: { x: 0.48, y: 1.4 },
+      fill: "#ffffff",
+      strokeColor: "#000000",
+      strokeWidth: 0.004
+    }
+  ];
+  const items: DialogueAutoLayoutItem[] = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, semanticKind: "sfx", size: { x: 0.1, y: 0.1 } })
+  ];
+  const result = runDialogueAutoLayout({ layout, existingObjects, items, seed: 1 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  assert.equal(result.assignments[0]!.panelId, null);
+});
+
+test("runDialogueAutoLayout: コマの無いページでも sfx はページ全体に配置できる(dialogueとの非対称の確認)", () => {
+  const layout: PageLayout = { version: 1, page: { aspectRatio: [1, 1.4], height: 1.4 }, readingDirection: "rtl", panels: [] };
+  const items: DialogueAutoLayoutItem[] = [item({ placementId: "p1", lineId: "l1", orderIndex: 0, semanticKind: "sfx" })];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 1 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  assert.equal(result.assignments[0]!.panelId, null);
+});
+
+// --- 回帰テスト: サイズバリアント(問題2) ---
+
+test("runDialogueAutoLayout: 先頭候補がコマに対して大きすぎても、より小さい候補で配置できる(従来 unplaced だったケース)", () => {
+  const layout = twoPanelLayout();
+  // 先頭候補はコマ比率を超える横長サイズ、2番目候補はコマに収まる縦長サイズ。
+  const items: DialogueAutoLayoutItem[] = [
+    item({
+      placementId: "p1",
+      lineId: "l1",
+      orderIndex: 0,
+      text: "おはようございます、今日はいい天気ですね",
+      sizeVariants: [
+        { x: 0.9, y: 0.2 }, // 収まらない(横長すぎる)
+        { x: 0.3, y: 0.5 } // コマに収まる(縦長)
+      ]
+    })
+  ];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 1 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  const object = result.objects[0]! as { size: { x: number; y: number } };
+  assert.deepEqual(object.size, { x: 0.3, y: 0.5 });
+});
+
+test("runDialogueAutoLayout: 全バリアントが入らなければ unplaced(全滅時のみ unplaced の確認)", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = [
+    item({
+      placementId: "p1",
+      lineId: "l1",
+      orderIndex: 0,
+      sizeVariants: [
+        { x: 0.9, y: 0.9 },
+        { x: 0.95, y: 0.95 }
+      ]
+    })
+  ];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 1 });
+  assert.deepEqual(result.unplacedPlacementIds, ["p1"]);
+});
+
+test("runDialogueAutoLayout: 同 seed ならバリアント探索でも同じ結果(決定性維持)", () => {
+  const layout = twoPanelLayout();
+  const items: DialogueAutoLayoutItem[] = [
+    item({
+      placementId: "p1",
+      lineId: "l1",
+      orderIndex: 0,
+      sizeVariants: [
+        { x: 0.9, y: 0.2 },
+        { x: 0.3, y: 0.5 },
+        { x: 0.1, y: 0.1 }
+      ]
+    }),
+    item({ placementId: "p2", lineId: "l2", orderIndex: 1, speakerLabel: "花子", sizeVariants: [{ x: 0.15, y: 0.15 }] })
+  ];
+  const a = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 99 });
+  const b = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 99 });
+  assert.deepEqual(a, b);
 });
