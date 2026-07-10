@@ -64,7 +64,8 @@ export async function createImageExport(projectId: string, body: unknown): Promi
 
   if (format === "pptx") {
     // PPTX は常に単一デッキ(複数ページでも zip 化しない)。OOXML 手組みは pptxExport.ts に分離。
-    return createPptxExport(project, pages, quality, pixelWidth);
+    // 埋め込みは PNG なので quality は不要(jpeg 用の clamp 済み quality はここでは使わない)。
+    return createPptxExport(project, pages, pixelWidth);
   }
 
   const extension = format === "jpeg" ? "jpg" : "png";

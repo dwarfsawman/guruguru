@@ -6,8 +6,8 @@
  * JPEG 品質行の表示切替とプリセット幅ボタンは `imageExportController.ts` の
  * `bindImageExportEvents`/`registerActions` が DOM 操作のみで完結させる。
  *
- * 形式に PPTX(Docs/Feature-PptxExport.md)を追加済み。PPTX 埋め込みも常に JPEG なので、
- * JPEG 品質行は format が jpeg/pptx どちらでも表示する(`bindImageExportEvents` 側で判定)。
+ * 形式に PPTX(Docs/Feature-PptxExport.md)を追加済み。PPTX 埋め込みは PNG なので、
+ * JPEG 品質行は format="jpeg" のときだけ表示する(`bindImageExportEvents` 側で判定)。
  */
 import { escapeHtml } from "../format";
 import { iconClose, iconImage } from "../icons";
