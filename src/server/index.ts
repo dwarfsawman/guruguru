@@ -26,6 +26,7 @@ import {
 } from "./pages";
 import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
 import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport";
+import { createPageMedia, servePageMedia } from "./pageMedia";
 import { createImageExport } from "./imageExport";
 import { listFonts } from "./fonts";
 import { computeTextLayout } from "./textLayoutApi";
@@ -357,6 +358,19 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const pageObjectsMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/objects$/);
   if (method === "PATCH" && pageObjectsMatch) {
     sendJson(res, 200, updatePageObjects(pageObjectsMatch[1]!, pageObjectsMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  // ImageObject(Docs/Feature-ScriptToManga.md S2): 配置時に Asset 画像を page_media へコピーする。
+  const pageMediaCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/page-media$/);
+  if (method === "POST" && pageMediaCreateMatch) {
+    sendJson(res, 201, await createPageMedia(pageMediaCreateMatch[1]!, await readJson(req)));
+    return;
+  }
+
+  const pageMediaServeMatch = path.match(/^\/api\/page-media\/([^/]+)$/);
+  if (method === "GET" && pageMediaServeMatch) {
+    servePageMedia(res, pageMediaServeMatch[1]!);
     return;
   }
 

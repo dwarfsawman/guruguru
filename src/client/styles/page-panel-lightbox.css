@@ -505,3 +505,48 @@
      当たり判定が抜けるのを避けるため)。本体パス自体はクリックを拾わない。 */
   pointer-events: none;
 }
+
+/* --- 画像オブジェクト + コマ非活性背景(Docs/Feature-ScriptToManga.md S2) --- */
+
+.page-object-image-el {
+  pointer-events: none;
+}
+
+/* file/media 行欠損時のプレースホルダ(破線枠+media id)。黙って落とさない。 */
+.page-object-image-missing {
+  stroke: var(--warn, #c77b1f);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.page-object-image-missing-label {
+  fill: var(--warn, #c77b1f);
+}
+
+.page-object-image-missing-hint {
+  color: var(--warn, #c77b1f);
+}
+
+/* objects モードの非活性背景(コマ画像+コマ枠)。ぶち抜き位置を見ながら編集できるよう薄く表示する。 */
+.page-object-panel-background,
+.page-object-panel-frame {
+  pointer-events: none;
+}
+
+.page-object-panel-bg-image {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.page-object-panel-bg-outline {
+  fill: none;
+  stroke: color-mix(in srgb, var(--layout-koma, #17140f) 35%, transparent);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.page-object-image-picker {
+  margin-top: 4px;
+}

@@ -1032,6 +1032,11 @@ function renderPagePanelLightboxView(): string {
       addMode: state.mosaicAddMode,
       rectDraft: state.mosaicRectDraft,
       polygonDraft: state.mosaicPolygonDraft
+    },
+    {
+      pickerAssets: state.pagePanelLightboxAssets,
+      missingMediaIds: state.pagePanelLightboxMissingMediaIds,
+      picker: state.pageObjectImagePicker
     }
   );
 }

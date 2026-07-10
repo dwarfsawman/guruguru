@@ -1,5 +1,6 @@
 import type { ComfySettings, LlmSettings } from "../shared/types";
 import type {
+  Asset,
   BookPages,
   FontSummary,
   LayoutTemplateSummary,
@@ -347,6 +348,22 @@ export interface AppState {
    */
   pageObjectFonts: { status: "idle" | "loading" | "ready" | "error"; fonts: FontSummary[] };
   /**
+   * 画像オブジェクト(Docs/Feature-ScriptToManga.md S2): 開いている lightbox のページに属する Asset 一覧
+   * (「画像追加」ピッカーの候補)。`openPagePanelLightbox` が取得する PageDetail.assets から都度セットする
+   * (state.detail は別ページのものである可能性があるため専用に持つ)。lightbox 非開時は空配列。
+   */
+  pagePanelLightboxAssets: Asset[];
+  /**
+   * 画像オブジェクト: そのページの ImageObject が参照する mediaId のうち page_media 行/ファイルが
+   * 欠損しているものの id(PageDetail.missingPageMediaIds)。編集画面のプレースホルダ表示に使う。
+   */
+  pagePanelLightboxMissingMediaIds: string[];
+  /**
+   * 画像オブジェクト: 「画像追加」/「メディア差し替え」ピッカーの開閉状態。"add" は新規オブジェクト追加、
+   * "replace" は選択中オブジェクトの mediaId 差し替え。null=閉。
+   */
+  pageObjectImagePicker: { mode: "add" | "replace" } | null;
+  /**
    * コマ形状編集(Docs/Feature-CGCollectionSuite.md P5): 開いている lightbox のページのレイアウト・ドラフト。
    * lightbox を開いた時に `page.layout` のディープコピーを持ち、頂点編集/分割はこれを直接書き換えて
    * `panelShapeController.ts` が 1s debounce(分割は即時)で PATCH する。レイアウト無しページは null。
@@ -476,6 +493,9 @@ export const state: AppState = {
   pageObjectsDraft: [],
   selectedPageObjectId: null,
   pageObjectFonts: { status: "idle", fonts: [] },
+  pagePanelLightboxAssets: [],
+  pagePanelLightboxMissingMediaIds: [],
+  pageObjectImagePicker: null,
   pageLayoutDraft: null,
   shapeSelectedPanelId: null,
   shapeSelectedVertexIndex: null,

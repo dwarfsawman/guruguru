@@ -77,6 +77,9 @@ export async function openPagePanelLightbox(pageId: string) {
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
   state.selectedPageObjectId = null;
+  state.pagePanelLightboxAssets = [];
+  state.pagePanelLightboxMissingMediaIds = [];
+  state.pageObjectImagePicker = null;
   state.pageLayoutDraft = page.layout ? clonePageLayout(page.layout) : null;
   state.shapeSelectedPanelId = null;
   state.shapeSelectedVertexIndex = null;
@@ -104,6 +107,8 @@ export async function openPagePanelLightbox(pageId: string) {
     state.pagePanelAssignments = detail.panelAssignments;
     state.pageObjectsDraft = detail.page.objects ?? [];
     state.pageMosaicDraft = detail.page.mosaic ?? [];
+    state.pagePanelLightboxAssets = detail.assets;
+    state.pagePanelLightboxMissingMediaIds = detail.missingPageMediaIds;
     if (detail.page.layout) {
       state.pageLayoutDraft = clonePageLayout(detail.page.layout);
     }
@@ -148,6 +153,9 @@ export function closePagePanelLightbox() {
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
   state.selectedPageObjectId = null;
+  state.pagePanelLightboxAssets = [];
+  state.pagePanelLightboxMissingMediaIds = [];
+  state.pageObjectImagePicker = null;
   state.pageLayoutDraft = null;
   state.shapeSelectedPanelId = null;
   state.shapeSelectedVertexIndex = null;

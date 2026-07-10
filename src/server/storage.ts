@@ -1,5 +1,5 @@
 import { createReadStream, mkdirSync } from "node:fs";
-import { copyFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { dataRoot } from "./db";
 import { isPathInside } from "./paths";
@@ -42,7 +42,8 @@ export function ensureProjectStorage(projectId: string) {
     workflows: join(projectRoot, "workflows"),
     exports: join(projectRoot, "exports"),
     pasteSources: join(projectRoot, "paste_sources"),
-    composites: join(projectRoot, "composites")
+    composites: join(projectRoot, "composites"),
+    pageMedia: join(projectRoot, "page_media")
   };
 
   for (const path of Object.values(paths)) {
@@ -174,6 +175,31 @@ export async function storeCompositeImage(projectId: string, roundId: string, by
   await writeFile(compositePath, bytes);
   const size = readImageSize(bytes);
   return { compositePath, width: size?.width ?? null, height: size?.height ?? null };
+}
+
+export interface StoredPageMedia {
+  filePath: string;
+  width: number | null;
+  height: number | null;
+}
+
+/**
+ * ページオブジェクトの ImageObject が参照する page 所有メディアへコピーする
+ * (Docs/Feature-ScriptToManga.md S2: Asset 寿命問題対策)。`page_media/<mediaId><ext>` へ、
+ * 元アセットのバイト列をそのまま複製する(以後 Round/Asset が削除されてもこのファイルは独立して残る)。
+ */
+export async function storePageMediaImage(projectId: string, mediaId: string, sourceImagePath: string): Promise<StoredPageMedia> {
+  const storage = ensureProjectStorage(projectId);
+  const ext = normalizeImageExtension(sourceImagePath);
+  const baseName = `${sanitizeBaseName(mediaId)}${ext}`;
+  const filePath = resolve(join(storage.pageMedia, baseName));
+  if (!isPathInside(filePath, resolve(storage.projectRoot))) {
+    throw new Error("Page media storage path is outside the project directory");
+  }
+  const bytes = await readFile(sourceImagePath);
+  await writeFile(filePath, bytes);
+  const size = readImageSize(bytes);
+  return { filePath, width: size?.width ?? null, height: size?.height ?? null };
 }
 
 export function safeFileStream(path: string) {
