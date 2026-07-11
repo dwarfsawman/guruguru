@@ -702,16 +702,22 @@ export function syncChronicleObjectSelectionHighlight(): void {
   });
 }
 
-/** Shift+ホイールでの横スクロール(§2.1)。app 全体へ委譲し、`.chronicle-bar-track` 内だけ処理する。 */
+/**
+ * トラック上のホイールでの横スクロール(§2.1)。app 全体へ委譲し、`.chronicle-bar-track` 内だけ
+ * 処理する。スクロールバーは非表示(chronicle-bar.css、2026-07-11 要望)のため、Shift 修飾なしの
+ * 縦ホイールも横スクロールへ変換する。横に溢れていない場合は素通しし(preventDefault しない)、
+ * バー自体の縦スクロール(overflow-y:auto)を妨げない。トラックパッドの横方向(deltaX)は
+ * ブラウザ既定の横スクロールに任せる。
+ */
 function bindChronicleEvents(app: HTMLElement) {
   app.addEventListener(
     "wheel",
     (event) => {
-      if (!event.shiftKey || event.deltaY === 0) {
+      if (event.deltaY === 0) {
         return;
       }
       const track = (event.target as HTMLElement | null)?.closest<HTMLElement>(".chronicle-bar-track");
-      if (!track) {
+      if (!track || track.scrollWidth <= track.clientWidth) {
         return;
       }
       track.scrollLeft += event.deltaY;
