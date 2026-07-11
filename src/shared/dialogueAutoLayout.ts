@@ -376,7 +376,7 @@ function buildBalloonObject(id: string, item: DialogueAutoLayoutItem, position: 
     kind: "balloon",
     position,
     rotation: 0,
-    shape: isThought ? "thought" : "ellipse",
+    shape: isThought ? "thought" : item.text.replace(/\s+/g, "").length >= 34 ? "compound" : "ellipse",
     size,
     fill: DEFAULT_BOX_FILL,
     strokeColor: DEFAULT_BOX_STROKE_COLOR,

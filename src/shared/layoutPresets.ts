@@ -97,18 +97,47 @@ function threeHeroTopPanels(): LayoutPanel[] {
   ];
 }
 
+/** 右の縦大ゴマを先に読み、左上→左下へ落とす。人物対決や移動の方向感に向く。 */
+function threeSideHeroPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroLeft = 0.49;
+  const splitY = MARGIN + (bottom - MARGIN - GUTTER) * 0.47;
+  return [
+    rectPanel("hero-right", 1, heroLeft, MARGIN, right, bottom),
+    rectPanel("left-top", 2, left, MARGIN, heroLeft - GUTTER, splitY),
+    rectPanel("left-bottom", 3, left, splitY + GUTTER, heroLeft - GUTTER, bottom)
+  ];
+}
+
+/** 上段の短い2コマで溜め、下段の横長大ゴマで決める。 */
+function threeHeroBottomPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const topBottom = MARGIN + 0.43;
+  const half = (right - left - GUTTER) / 2;
+  return [
+    rectPanel("setup-right", 1, left + half + GUTTER, MARGIN, right, topBottom),
+    rectPanel("setup-left", 2, left, MARGIN, left + half, topBottom),
+    rectPanel("payoff", 3, left, topBottom + GUTTER, right, bottom)
+  ];
+}
+
 /** 小さな導入3コマから下段の大ゴマへ落とす、アクション/発見向け。 */
 function fourHeroBottomPanels(): LayoutPanel[] {
   const left = MARGIN;
   const right = 1 - MARGIN;
   const bottom = PAGE_HEIGHT - MARGIN;
-  const topBottom = MARGIN + 0.43;
-  const cell = (right - left - GUTTER * 2) / 3;
+  const topBottom = MARGIN + 0.3;
+  const middleBottom = topBottom + GUTTER + 0.22;
+  const half = (right - left - GUTTER) / 2;
   return [
-    rectPanel("setup-right", 1, left + (cell + GUTTER) * 2, MARGIN, right, topBottom),
-    rectPanel("setup-center", 2, left + cell + GUTTER, MARGIN, left + cell * 2 + GUTTER, topBottom),
-    rectPanel("setup-left", 3, left, MARGIN, left + cell, topBottom),
-    rectPanel("payoff", 4, left, topBottom + GUTTER, right, bottom)
+    rectPanel("setup-right", 1, left + half + GUTTER, MARGIN, right, topBottom),
+    rectPanel("setup-left", 2, left, MARGIN, left + half, topBottom),
+    rectPanel("bridge", 3, left, topBottom + GUTTER, right, middleBottom),
+    rectPanel("payoff", 4, left, middleBottom + GUTTER, right, bottom)
   ];
 }
 
@@ -135,6 +164,8 @@ export const LAYOUT_PRESETS: BuiltinLayoutTemplate[] = [
   preset("two-vertical", "2コマ(左右)", gridPanels(1, 2)),
   preset("three-horizontal", "3コマ(3段)", gridPanels(3, 1)),
   preset("three-hero-top", "3コマ(上段大ゴマ)", threeHeroTopPanels()),
+  preset("three-side-hero", "3コマ(右縦大ゴマ)", threeSideHeroPanels()),
+  preset("three-hero-bottom", "3コマ(下段大ゴマ)", threeHeroBottomPanels()),
   preset("four-grid", "4コマ(2×2)", gridPanels(2, 2)),
   preset("four-hero-bottom", "4コマ(下段大ゴマ)", fourHeroBottomPanels()),
   preset("four-vertical-hero", "4コマ(右縦大ゴマ)", fourVerticalHeroPanels()),

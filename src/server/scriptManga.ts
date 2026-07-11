@@ -1,7 +1,7 @@
 import type { FountainDoc } from "../shared/fountain";
 import { planScriptManga, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
 import { panelBounds, panelBoundsSize, type PageLayout } from "../shared/pageLayout";
-import type { GenerationRequest } from "../shared/types";
+import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import { updateAssetStatus } from "./assets";
 import { createId, getRow, getRows, runSql } from "./db";
 import { allocateDialoguePages } from "./dialogueAllocation";
@@ -12,6 +12,9 @@ import { createGenerationRound } from "./rounds";
 import { objectBody, requiredString, stringOr } from "./validate";
 import { planScriptMangaWithDirector } from "./scriptMangaDirector";
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
+import { fitPageBalloonText } from "./balloonTextFit";
+import { initialBalloonTailTip } from "../shared/balloonTailAim";
+import { normalizePageObjects } from "../shared/pageObjects";
 
 interface RunRow {
   id: string;
@@ -164,6 +167,19 @@ function applyDialogueLayoutWithFallback(projectId: string, pageId: string, plac
   }
 }
 
+/** 顔検出前でも真下固定に見えないよう、読書方向に沿う斜めの仮しっぽを付ける。 */
+function aimInitialBalloonTails(pageId: string): void {
+  const row = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
+  const objects = normalizePageObjects(row?.objects_json ? JSON.parse(row.objects_json) : []);
+  let order = 0;
+  for (const object of objects) {
+    if (object.kind !== "balloon" || !object.tail) continue;
+    object.tail.tip = initialBalloonTailTip(object.position, object.size, order);
+    order += 1;
+  }
+  runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [JSON.stringify(objects), pageId]);
+}
+
 /**
  * Fountain revision からページ/コマを作り、台詞を吹き出し化して各コマの ComfyUI generation を投入する。
  * 画像は batch=1、長辺768px固定。進捗と各 round の対応は DB に永続化する。
@@ -189,12 +205,26 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     throw new HttpError(400, 'planningMode must be "heuristic", "llm", or "provided"');
   }
   const doc = latestDoc(scriptId);
-  const plan = planningMode === "llm"
+  const fullPlan = planningMode === "llm"
     ? await planScriptMangaWithDirector(doc, { ...planOptions, characterBible: stringOr(input.characterBible, "") || undefined })
     : planningMode === "provided"
       ? validateProvidedScriptMangaPlan(doc, input.directorPlan)
       : planScriptManga(doc, planOptions);
-  if (!plan) throw new HttpError(400, "directorPlan is invalid or does not preserve every dialogue exactly once");
+  if (!fullPlan) throw new HttpError(400, "directorPlan is invalid or does not preserve every dialogue exactly once");
+  const pageLimit = typeof input.pageLimit === "number" ? Math.max(1, Math.min(fullPlan.pages.length, Math.trunc(input.pageLimit))) : fullPlan.pages.length;
+  const limitedPages = fullPlan.pages.slice(0, pageLimit);
+  const plan = {
+    ...fullPlan,
+    pages: limitedPages,
+    panelCount: limitedPages.reduce((sum, page) => sum + page.panels.length, 0),
+    dialogueCount: new Set(limitedPages.flatMap((page) => page.panels.flatMap((panel) => panel.dialogueOrderIndexes))).size
+  };
+  const loras: StyleLoraSelection[] = Array.isArray(input.loras)
+    ? input.loras.flatMap((raw) => raw && typeof raw === "object"
+      ? [{ name: stringOr((raw as Record<string, unknown>).name, ""), strength: typeof (raw as Record<string, unknown>).strength === "number" ? (raw as Record<string, number>).strength : 1 }]
+      : []).filter((item) => item.name.trim()).slice(0, 4)
+    : [];
+  const generateImages = input.generateImages !== false;
   removeUnusedStarterPage(projectId);
   const runId = createId("manga");
   const config = {
@@ -202,6 +232,9 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     providerId,
     batchSize: 1,
     planningMode,
+    pageLimit,
+    loras,
+    generateImages,
     longEdge: typeof input.longEdge === "number" ? input.longEdge : 1024,
     steps: typeof input.steps === "number" ? input.steps : 20,
     cfg: typeof input.cfg === "number" ? input.cfg : 5,
@@ -242,6 +275,10 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
         ).map((row) => row.id);
         if (placementIds.length > 0) {
           applyDialogueLayoutWithFallback(projectId, page.id, placementIds, pagePlan.index + 1);
+          // ページを開いた直後から読める状態にする。完了時/PPTX直前まで後回しにすると、
+          // 自動生成中のUIでは縦書きが吹き出し外へはみ出したまま見えてしまう。
+          fitPageBalloonText(projectId, page.id);
+          aimInitialBalloonTails(page.id);
         }
       }
 
@@ -249,6 +286,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
         const panelPlan = pagePlan.panels[index]!;
         const layoutPanel = layoutPanels[index];
         if (!layoutPanel) throw new HttpError(500, `Page ${page.id} has fewer panels than planned`);
+        if (!generateImages) continue;
         const taskId = createId("manga_task");
         runSql(
           `INSERT INTO script_manga_tasks (id, run_id, page_id, panel_id, prompt, status)
@@ -259,7 +297,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
         const request: GenerationRequest & { providerId?: string } = {
           templateId,
           prompt: panelPlan.prompt,
-          negativePrompt: "text, letters, speech bubble, watermark, logo, low quality, blurry, deformed",
+          negativePrompt: "text, letters, words, typography, captions, subtitles, speech bubbles, manga sound effects, signage, labels, logos, watermarks, UI overlays, model sheet, character sheet, reference sheet, split screen, multiple views, collage, comic page inside panel, low quality, blurry, deformed",
           seed: null,
           seedMode: "random",
           batchSize: 1,
@@ -271,6 +309,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
           width: size.width,
           height: size.height,
           generationMode: "txt2img",
+          loras,
           providerId
         };
         try {
@@ -288,7 +327,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
         }
       }
     }
-    runSql("UPDATE script_manga_runs SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [runId]);
+    runSql("UPDATE script_manga_runs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [generateImages ? "running" : "prepared", runId]);
   } catch (error) {
     runSql(
       "UPDATE script_manga_runs SET status = 'failed', last_error_json = ?, updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP WHERE id = ?",

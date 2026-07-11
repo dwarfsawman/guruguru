@@ -96,6 +96,22 @@ function roundedRectPath(rx: number, ry: number): string {
   ].join(" ");
 }
 
+/** 上の小島と下の大島が中央でつながる、長台詞向けの連結吹き出し。 */
+function compoundPath(rx: number, ry: number): string {
+  const upperY = -ry * 0.3;
+  const lowerY = ry * 0.3;
+  return [
+    `M 0 ${fmt(-ry)}`,
+    `C ${fmt(rx * 0.72)} ${fmt(-ry)}, ${fmt(rx)} ${fmt(-ry * 0.72)}, ${fmt(rx * 0.91)} ${fmt(upperY)}`,
+    `C ${fmt(rx * 0.84)} ${fmt(-ry * 0.08)}, ${fmt(rx * 0.88)} ${fmt(ry * 0.04)}, ${fmt(rx)} ${fmt(lowerY)}`,
+    `C ${fmt(rx)} ${fmt(ry * 0.76)}, ${fmt(rx * 0.68)} ${fmt(ry)}, 0 ${fmt(ry)}`,
+    `C ${fmt(-rx * 0.72)} ${fmt(ry)}, ${fmt(-rx)} ${fmt(ry * 0.72)}, ${fmt(-rx * 0.94)} ${fmt(lowerY)}`,
+    `C ${fmt(-rx * 0.84)} ${fmt(ry * 0.04)}, ${fmt(-rx * 0.86)} ${fmt(-ry * 0.08)}, ${fmt(-rx * 0.94)} ${fmt(upperY)}`,
+    `C ${fmt(-rx)} ${fmt(-ry * 0.72)}, ${fmt(-rx * 0.68)} ${fmt(-ry)}, 0 ${fmt(-ry)}`,
+    "Z"
+  ].join(" ");
+}
+
 /** cloud/thought のバンプ膨らみ係数(バンプ制御点 = 中点×この係数)。 */
 const CLOUD_BUMP_OUT = 1.32;
 
@@ -158,6 +174,8 @@ export function balloonBodyPath(shape: BalloonShape, size: PageVec): string {
       return cloudPath(rx, ry, balloonBumpCount(size));
     case "jagged":
       return jaggedPath(rx, ry, balloonSpikeCount(size));
+    case "compound":
+      return compoundPath(rx, ry);
     case "ellipse":
     default:
       return ellipsePath(rx, ry);
@@ -215,6 +233,16 @@ function tailGap(rx: number, ry: number, tail: BalloonTail): TailGap {
   const halfWidth = Math.max(1e-6, tail.width) / 2;
   const alpha = clamp(Math.asin(clamp(halfWidth / rootLen, 0, 0.95)), Math.PI / 36, Math.PI / 3);
   return { phi: Math.atan2(dir.y, dir.x), alpha, tip: { x: tail.tip.x, y: tail.tip.y } };
+}
+
+function compoundTailPath(size: PageVec, tail: BalloonTail): string {
+  const rx = Math.max(1e-6, size.x / 2);
+  const ry = Math.max(1e-6, size.y / 2);
+  const dir = tailDirection(tail.tip);
+  const root = ellipseBoundaryPoint(rx, ry, dir.x, dir.y);
+  const px = -dir.y * tail.width * 0.5;
+  const py = dir.x * tail.width * 0.5;
+  return `M ${fmt(root.x + px)} ${fmt(root.y + py)} L ${fmt(tail.tip.x)} ${fmt(tail.tip.y)} L ${fmt(root.x - px)} ${fmt(root.y - py)} Z`;
 }
 
 /**
@@ -406,6 +434,8 @@ export function balloonUnionPath(shape: BalloonShape, size: PageVec, tail: Ballo
       return cloudUnionPath(rx, ry, balloonBumpCount(size), gap);
     case "jagged":
       return jaggedUnionPath(rx, ry, balloonSpikeCount(size), gap);
+    case "compound":
+      return compoundPath(rx, ry);
     case "ellipse":
     default:
       return ellipseUnionPath(rx, ry, gap);
@@ -440,7 +470,8 @@ const BALLOON_INSCRIBED_FACTOR: Record<BalloonShape, number> = {
   rounded: 0.86,
   cloud: (1 / Math.SQRT2) * 0.8,
   jagged: (1 / Math.SQRT2) * 0.8,
-  thought: (1 / Math.SQRT2) * 0.8
+  thought: (1 / Math.SQRT2) * 0.8,
+  compound: 0.68
 };
 
 /** 形状内へ文字矩形を安全に収めるための内接係数。自動サイズ/自動フィットでも描画と同じ値を使う。 */
@@ -472,7 +503,10 @@ export function renderBalloonSvg(object: BalloonSvgInput, anchor: PageVec, rotat
   const pathAttrs = `fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" stroke-linejoin="round"`;
 
   let shapes: string;
-  if (object.tail && object.shape !== "thought") {
+  if (object.tail && object.shape === "compound") {
+    // しっぽを先に描き、連結本体を重ねて根元の内側線を隠す。
+    shapes = `<path d="${compoundTailPath(object.size, object.tail)}" ${pathAttrs} /><path d="${balloonBodyPath(object.shape, object.size)}" ${pathAttrs} />`;
+  } else if (object.tail && object.shape !== "thought") {
     shapes = `<path d="${balloonUnionPath(object.shape, object.size, object.tail)}" ${pathAttrs} />`;
   } else {
     shapes = `<path d="${balloonBodyPath(object.shape, object.size)}" ${pathAttrs} />`;

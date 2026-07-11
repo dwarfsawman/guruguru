@@ -25,7 +25,7 @@ interface DirectedBatch { pages: DirectedPage[] }
 const LAYOUTS_BY_COUNT: Record<number, string[]> = {
   1: ["builtin:splash"],
   2: ["builtin:two-horizontal", "builtin:two-vertical"],
-  3: ["builtin:three-horizontal", "builtin:three-hero-top"],
+  3: ["builtin:three-horizontal", "builtin:three-hero-top", "builtin:three-side-hero", "builtin:three-hero-bottom"],
   4: ["builtin:four-grid", "builtin:four-hero-bottom", "builtin:four-vertical-hero"]
 };
 

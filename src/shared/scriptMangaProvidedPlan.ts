@@ -8,6 +8,8 @@ const LAYOUT_PANEL_COUNTS: Record<string, number> = {
   "builtin:two-vertical": 2,
   "builtin:three-horizontal": 3,
   "builtin:three-hero-top": 3,
+  "builtin:three-side-hero": 3,
+  "builtin:three-hero-bottom": 3,
   "builtin:four-grid": 4,
   "builtin:four-hero-bottom": 4,
   "builtin:four-vertical-hero": 4

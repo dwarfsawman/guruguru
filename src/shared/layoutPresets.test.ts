@@ -5,6 +5,8 @@ import { findLayoutPreset } from "./layoutPresets.ts";
 test("dramatic manga presets keep the advertised panel count and RTL order", () => {
   const cases = [
     ["builtin:three-hero-top", 3],
+    ["builtin:three-side-hero", 3],
+    ["builtin:three-hero-bottom", 3],
     ["builtin:four-hero-bottom", 4],
     ["builtin:four-vertical-hero", 4]
   ] as const;

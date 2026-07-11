@@ -1235,7 +1235,8 @@ const BALLOON_SHAPE_LABELS: Record<BalloonShape, string> = {
   rounded: "角丸",
   cloud: "雲形",
   jagged: "フラッシュ",
-  thought: "思考"
+  thought: "思考",
+  compound: "連結(長台詞)"
 };
 
 /** balloon オブジェクトのプロパティパネル(形状/塗り/線/しっぽ トグル+幅、content は box と共通)。 */

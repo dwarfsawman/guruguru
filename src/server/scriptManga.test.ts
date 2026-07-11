@@ -48,6 +48,7 @@ test("createScriptMangaRun builds pages, balloons and batch-1 panel generations,
     scriptId: imported.script.id,
     templateId,
     providerId: "fake",
+    loras: [{ name: "anime-style.safetensors", strength: 0.65 }],
     panelsPerPage: 2,
     maxElementsPerPanel: 2,
     maxDialoguesPerPanel: 1
@@ -65,8 +66,11 @@ test("createScriptMangaRun builds pages, balloons and batch-1 panel generations,
       task.round_id
     ]);
     assert.ok(round);
-    assert.equal(JSON.parse(round!.request_json).batchSize, 1);
-    assert.equal(Math.max(JSON.parse(round!.request_json).width, JSON.parse(round!.request_json).height), 1024);
+    const request = JSON.parse(round!.request_json);
+    assert.equal(request.batchSize, 1);
+    assert.equal(Math.max(request.width, request.height), 1024);
+    assert.deepEqual(request.loras, [{ name: "anime-style.safetensors", strength: 0.65 }]);
+    assert.match(request.negativePrompt, /typography/);
     assert.equal(round!.target_panel_id, task.panel_id);
     await collectRound(task.round_id);
   }

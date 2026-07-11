@@ -12,8 +12,8 @@ import {
 } from "./balloonShape.ts";
 import { PAGE_OBJECT_MIN_SIZE, type BalloonShape } from "./pageObjects.ts";
 
-const SHAPES: BalloonShape[] = ["ellipse", "rounded", "cloud", "jagged", "thought"];
-const UNION_SHAPES = SHAPES.filter((s) => s !== "thought");
+const SHAPES: BalloonShape[] = ["ellipse", "rounded", "cloud", "jagged", "thought", "compound"];
+const UNION_SHAPES = SHAPES.filter((s) => s !== "thought" && s !== "compound");
 const SIZE = { x: 0.35, y: 0.22 };
 const TAIL = { tip: { x: 0, y: 0.3 }, width: 0.05 };
 
@@ -175,6 +175,16 @@ test("renderBalloonSvg: tail 無しでは本体のみ描画する", () => {
   );
   const pathCount = (svg.match(/<path/g) ?? []).length;
   assert.equal(pathCount, 1);
+});
+
+test("renderBalloonSvg: compound はしっぽを本体の背面へ重ねる2パス", () => {
+  const svg = renderBalloonSvg(
+    { shape: "compound", size: SIZE, tail: TAIL, fill: "#ffffff", strokeColor: "#000000", strokeWidth: 0.004 },
+    { x: 0.5, y: 0.4 },
+    0
+  );
+  assert.equal((svg.match(/<path/g) ?? []).length, 2);
+  assert.ok(svg.includes(`L ${TAIL.tip.x} ${TAIL.tip.y}`));
 });
 
 test("renderBalloonSvg: thought は本体 path + circle 列になる", () => {
