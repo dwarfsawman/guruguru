@@ -77,6 +77,8 @@ import {
 import { getChronicle } from "./chronicle";
 import { allocateDialoguePages, removeDialogueAllocation } from "./dialogueAllocation";
 import { applyDialogueLayout, previewDialogueLayout, reflowDialogueLayout, unlockAllDialoguePlacementsForPage } from "./dialogueAutoLayoutApi";
+import { createScriptMangaRun, getScriptMangaRun } from "./scriptManga";
+import { applySpeakerAnchors } from "./speakerAnchors";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
   GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
@@ -407,6 +409,11 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     sendJson(res, 200, updatePageObjects(pageObjectsMatch[1]!, pageObjectsMatch[2]!, await readJson(req)));
     return;
   }
+  const speakerAnchorsMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/speaker-anchors$/);
+  if (method === "POST" && speakerAnchorsMatch) {
+    sendJson(res, 200, applySpeakerAnchors(speakerAnchorsMatch[1]!, speakerAnchorsMatch[2]!, await readJson(req)));
+    return;
+  }
 
   // ImageObject(Docs/Feature-ScriptToManga.md S2): 配置時に Asset 画像を page_media へコピーする。
   const pageMediaCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/page-media$/);
@@ -453,6 +460,18 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       201,
       await createGenerationRound(generateMatch[1]!, roundBody, roundBody.pageId ?? null, roundBody.targetPanelId ?? null)
     );
+    return;
+  }
+
+  // Fountain → 自動コマ割り → コマ別画像生成 → 吹き出し完成の一括実行。
+  const scriptMangaCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-runs$/);
+  if (method === "POST" && scriptMangaCreateMatch) {
+    sendJson(res, 201, await createScriptMangaRun(scriptMangaCreateMatch[1]!, await readJson(req)));
+    return;
+  }
+  const scriptMangaRunMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)$/);
+  if (method === "GET" && scriptMangaRunMatch) {
+    sendJson(res, 200, getScriptMangaRun(scriptMangaRunMatch[1]!));
     return;
   }
 

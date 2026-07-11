@@ -386,6 +386,44 @@ export function initializeDb() {
       FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE SET NULL
     );
 
+    -- Fountain → page/panel → image → balloon の一括実行。run は再起動後も進捗を再構成でき、
+    -- task は各コマの generation_round と page/panel を結ぶ。
+    CREATE TABLE IF NOT EXISTS script_manga_runs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      script_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'preparing',
+      page_count INTEGER NOT NULL DEFAULT 0,
+      panel_count INTEGER NOT NULL DEFAULT 0,
+      completed_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      config_json TEXT NOT NULL,
+      last_error_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      completed_at TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS script_manga_tasks (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      page_id TEXT NOT NULL,
+      panel_id TEXT NOT NULL,
+      round_id TEXT,
+      prompt TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      asset_id TEXT,
+      last_error_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (run_id) REFERENCES script_manga_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE,
+      FOREIGN KEY (round_id) REFERENCES generation_rounds(id) ON DELETE SET NULL,
+      FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL
+    );
+
     CREATE UNIQUE INDEX IF NOT EXISTS idx_character_bindings_char_provider ON character_bindings(character_id, provider_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_script_revisions_script_rev ON script_revisions(script_id, revision);
     CREATE INDEX IF NOT EXISTS idx_characters_project ON characters(project_id);
@@ -396,6 +434,8 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_dialogue_placements_page ON dialogue_placements(page_id);
     CREATE INDEX IF NOT EXISTS idx_dialogue_proposals_project ON dialogue_proposals(project_id);
     CREATE INDEX IF NOT EXISTS idx_dialogue_proposals_page ON dialogue_proposals(page_id);
+    CREATE INDEX IF NOT EXISTS idx_script_manga_runs_project ON script_manga_runs(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_script_manga_tasks_run ON script_manga_tasks(run_id, status);
 
     CREATE INDEX IF NOT EXISTS idx_paste_sources_project ON paste_sources(project_id);
     CREATE INDEX IF NOT EXISTS idx_page_media_project ON page_media(project_id);

@@ -96,6 +96,9 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
   }
 
   const input = objectBody(body);
+  const fontScale = typeof input.fontScale === "number" && Number.isFinite(input.fontScale)
+    ? Math.min(1, Math.max(0.5, input.fontScale))
+    : 1;
   const placementIds = parsePlacementIds(input);
   const placeholders = placementIds.map(() => "?").join(",");
   const placements = getRows<PlacementRow>(
@@ -141,7 +144,8 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
       semanticKind: line.semantic_kind,
       speakerLabel: line.speaker_label,
       orderIndex: line.order_index,
-      sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind)
+      fontScale,
+      sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind, fontScale)
     };
   });
 
@@ -175,11 +179,11 @@ const WRAP_HEIGHT_CAPS: readonly number[] = [0.36, 0.28, 0.2];
  * 行のサイズ候補(縦長優先の順)を算出する。ソルバー(`runDialogueAutoLayout`)は先頭から順に
  * 「コマに収まる/空きがある」候補を試し、最初に成功したものを採用する(全滅時のみ unplaced)。
  */
-function requiredSizeVariantsFor(text: string, semanticKind: DialogueSemanticKind): PageVec[] {
+function requiredSizeVariantsFor(text: string, semanticKind: DialogueSemanticKind, fontScale = 1): PageVec[] {
   const style =
     semanticKind === "sfx"
-      ? { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE }
-      : { ...DEFAULT_TEXT_STYLE };
+      ? { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE * fontScale }
+      : { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * fontScale };
   const content: TextContent = { text: text || " ", style };
 
   const variants: PageVec[] = [];

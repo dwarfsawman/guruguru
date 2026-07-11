@@ -43,6 +43,8 @@ export interface DialogueAutoLayoutItem {
   speakerLabel: string;
   /** dialogue_lines.order_index。コマ順との単調性判定・文字量比配分のソートキー。 */
   orderIndex: number;
+  /** 自動漫画など密度が高いページ向けの文字倍率。通常UIは1。 */
+  fontScale?: number;
   /**
    * サイズ候補(page 単位、既にパディング込み)。サーバー側で `computeTextLayoutForContent` から複数の
    * 折返し高さで算出し、縦長(タワー型)優先の順で並べる。ソルバーは先頭から順に「入る候補」を試し、
@@ -380,7 +382,7 @@ function buildBalloonObject(id: string, item: DialogueAutoLayoutItem, position: 
     strokeColor: DEFAULT_BOX_STROKE_COLOR,
     strokeWidth: DEFAULT_BOX_STROKE_WIDTH,
     tail: isThought ? null : defaultBalloonTail(size),
-    content: { text: item.text, style: { ...DEFAULT_TEXT_STYLE } },
+    content: { text: item.text, style: { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * (item.fontScale ?? 1) } },
     sourceDialogueLineId: item.lineId
   };
   return object;
@@ -397,7 +399,7 @@ function buildNarrationObject(id: string, item: DialogueAutoLayoutItem, position
     fill: DEFAULT_BOX_FILL,
     strokeColor: DEFAULT_BOX_STROKE_COLOR,
     strokeWidth: DEFAULT_BOX_STROKE_WIDTH,
-    content: { text: item.text, style: { ...DEFAULT_TEXT_STYLE } },
+    content: { text: item.text, style: { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * (item.fontScale ?? 1) } },
     sourceDialogueLineId: item.lineId
   };
 }
@@ -410,7 +412,7 @@ function buildSfxObject(id: string, item: DialogueAutoLayoutItem, position: Page
     rotation: 0,
     content: {
       text: item.text,
-      style: { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE }
+      style: { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE * (item.fontScale ?? 1) }
     },
     sourceDialogueLineId: item.lineId
   };
