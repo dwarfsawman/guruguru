@@ -181,12 +181,19 @@ export function listFonts(): FontSummary[] {
   return loadFontCache().fonts.map(({ id, familyName, subfamilyName, source }) => ({ id, familyName, subfamilyName, source }));
 }
 
-function pickDefaultFont(fonts: FontCacheEntry[]): FontCacheEntry | null {
+export function pickDefaultFont<T extends FontSummary>(fonts: T[]): T | null {
   for (const needle of DEFAULT_FONT_FAMILY_PRIORITY) {
-    const found = fonts.find((font) => font.familyName.toLowerCase().includes(needle));
-    if (found) {
-      return found;
-    }
+    const matches = fonts.filter((font) => font.familyName.toLowerCase().includes(needle));
+    if (matches.length === 0) continue;
+    // 漫画本文はRegularだと細く見えるため、同じ日本語ファミリーのBoldを既定にする。
+    // "Noto Sans JP Black" のように太さがfamily名へ入った別faceより、標準familyのBoldを優先。
+    const exactFamily = matches.filter((font) => font.familyName.toLowerCase() === needle);
+    const candidates = exactFamily.length > 0 ? exactFamily : matches;
+    return candidates.find((font) => font.subfamilyName.toLowerCase() === "bold")
+      ?? candidates.find((font) => font.subfamilyName.toLowerCase().includes("semibold"))
+      ?? candidates.find((font) => font.subfamilyName.toLowerCase().includes("medium"))
+      ?? candidates.find((font) => font.subfamilyName.toLowerCase() === "regular")
+      ?? candidates[0]!;
   }
   return fonts[0] ?? null;
 }

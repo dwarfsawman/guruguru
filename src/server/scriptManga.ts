@@ -43,6 +43,9 @@ interface TaskRow {
   asset_id: string | null;
 }
 
+/** 商業漫画の本文に近い視認性を確保する自動漫画専用倍率(基準0.04→0.0352 page-width)。 */
+const SCRIPT_MANGA_FONT_SCALE = 0.88;
+
 export interface ScriptMangaRunView {
   id: string;
   projectId: string;
@@ -142,7 +145,7 @@ function applyDialogueLayoutWithFallback(projectId: string, pageId: string, plac
   let lastError: unknown;
   for (let attempt = 0; attempt < 16; attempt += 1) {
     try {
-      applyDialogueLayout(projectId, pageId, { placementIds, seed: baseSeed * 100 + attempt, fontScale: 0.68 });
+      applyDialogueLayout(projectId, pageId, { placementIds, seed: baseSeed * 100 + attempt, fontScale: SCRIPT_MANGA_FONT_SCALE });
       return;
     } catch (error) {
       lastError = error;
@@ -156,7 +159,7 @@ function applyDialogueLayoutWithFallback(projectId: string, pageId: string, plac
     let placed = false;
     for (let attempt = 0; attempt < 64; attempt += 1) {
       try {
-        applyDialogueLayout(projectId, pageId, { placementIds: group, seed: baseSeed * 1000 + offset * 31 + attempt, fontScale: 0.68 });
+        applyDialogueLayout(projectId, pageId, { placementIds: group, seed: baseSeed * 1000 + offset * 31 + attempt, fontScale: SCRIPT_MANGA_FONT_SCALE });
         placed = true;
         break;
       } catch (error) {

@@ -81,6 +81,10 @@ test("createScriptMangaRun builds pages, balloons and batch-1 panel generations,
   assert.equal(completed.failedCount, 0);
   assert.equal(getRows("SELECT * FROM page_panel_assignments WHERE page_id = ?", [tasks[0]!.page_id]).length, 2);
   assert.equal(getRows("SELECT * FROM dialogue_placements WHERE page_id = ? AND balloon_object_id IS NOT NULL", [tasks[0]!.page_id]).length, 2);
+  const pageObjects = JSON.parse(getRow<{ objects_json: string }>("SELECT objects_json FROM pages WHERE id = ?", [tasks[0]!.page_id])!.objects_json);
+  const balloonFontSizes = pageObjects.filter((object: { kind: string }) => object.kind === "balloon")
+    .map((object: { content: { style: { size: number } } }) => object.content.style.size);
+  assert.ok(balloonFontSizes.every((size: number) => size >= 0.035), `unexpected auto manga font sizes: ${balloonFontSizes.join(", ")}`);
 });
 
 test("createScriptMangaRun assigns directed prompts to the same RTL panels as their dialogues", async () => {

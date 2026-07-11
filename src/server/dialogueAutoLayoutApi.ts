@@ -7,6 +7,7 @@
 import { randomInt } from "node:crypto";
 import type { DialogueLayoutPreview, DialogueLayoutUnlockResult } from "../shared/chronicle";
 import type { DialogueSemanticKind } from "../shared/apiTypes";
+import { balloonInscribedFactor } from "../shared/balloonShape";
 import { runDialogueAutoLayout, AUTO_LAYOUT_SFX_FONT_SCALE, type DialogueAutoLayoutItem } from "../shared/dialogueAutoLayout";
 import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
 import {
@@ -100,6 +101,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
   const fontScale = typeof input.fontScale === "number" && Number.isFinite(input.fontScale)
     ? Math.min(1, Math.max(0.5, input.fontScale))
     : 1;
+  const preserveBalloonFontSize = typeof input.fontScale === "number" && Number.isFinite(input.fontScale);
   const placementIds = parsePlacementIds(input);
   const placeholders = placementIds.map(() => "?").join(",");
   const placements = getRows<PlacementRow>(
@@ -147,7 +149,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
       orderIndex: line.order_index,
       preferredPanelId: placement.panel_id,
       fontScale,
-      sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind, fontScale)
+      sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind, fontScale, preserveBalloonFontSize)
     };
   });
 
@@ -181,7 +183,12 @@ const WRAP_HEIGHT_CAPS: readonly number[] = [0.36, 0.28, 0.2];
  * 行のサイズ候補(縦長優先の順)を算出する。ソルバー(`runDialogueAutoLayout`)は先頭から順に
  * 「コマに収まる/空きがある」候補を試し、最初に成功したものを採用する(全滅時のみ unplaced)。
  */
-function requiredSizeVariantsFor(text: string, semanticKind: DialogueSemanticKind, fontScale = 1): PageVec[] {
+function requiredSizeVariantsFor(
+  text: string,
+  semanticKind: DialogueSemanticKind,
+  fontScale = 1,
+  preserveBalloonFontSize = false
+): PageVec[] {
   const style =
     semanticKind === "sfx"
       ? { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE * fontScale }
@@ -194,10 +201,12 @@ function requiredSizeVariantsFor(text: string, semanticKind: DialogueSemanticKin
     const layout = computeTextLayoutForContent(content, estimateWrapWidth(text, style, cap));
     const rawWidth = Math.max(PAGE_OBJECT_MIN_SIZE, layout.bbox.maxX - layout.bbox.minX);
     const rawHeight = Math.max(PAGE_OBJECT_MIN_SIZE, layout.bbox.maxY - layout.bbox.minY);
-    // CONTENT_PADDING_RATIO は「形状サイズ→折返し幅」の比率(pageObjects.ts の contentMaxWidth)。
-    // ここでは逆に「必要な折返し幅→形状サイズ」を求めるため、その逆数で割り戻す。
-    const width = rawWidth / (1 - CONTENT_PADDING_RATIO);
-    const height = rawHeight / (1 - CONTENT_PADDING_RATIO);
+    // balloonは外接矩形全体を文字に使えない。実描画/自動フィットと同じ内接係数まで逆算しないと、
+    // 配置直後のfitでフォントが約0.7倍へ縮み、設定した本文サイズが維持されない。
+    const balloonShape = semanticKind === "monologue" ? "thought" : text.replace(/\s+/g, "").length >= 34 ? "compound" : "ellipse";
+    const inscribedFactor = preserveBalloonFontSize && semanticKind !== "sfx" ? balloonInscribedFactor(balloonShape) : 1;
+    const width = rawWidth / ((1 - CONTENT_PADDING_RATIO) * inscribedFactor);
+    const height = rawHeight / ((1 - CONTENT_PADDING_RATIO) * inscribedFactor);
     const size: PageVec =
       semanticKind === "sfx"
         ? { x: Math.max(PAGE_OBJECT_MIN_SIZE, width), y: Math.max(PAGE_OBJECT_MIN_SIZE, height) }
