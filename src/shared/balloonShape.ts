@@ -197,8 +197,15 @@ function thoughtCircles(root: PageVec, tip: PageVec, width: number): { cx: numbe
 /**
  * しっぽの形状。ellipse/rounded/cloud/jagged は本体境界〜tip の三角形、thought は
  * 本体から tip へ向かって小さくなる円 3 個(本体と重ならない想定なので継ぎ目処理は不要)。
+ *
+ * 根本2点は「root±接線方向オフセット」ではなく、**楕円境界上の点をさらに中心側へ押し込んだ位置**にする。
+ * 接線上に置くと三角形が本体と1点でしか接せず(接線は凸形状の外側)、継ぎ目消しの
+ * 「しっぽ fill 再重ね」が本体 stroke を覆えない -- 根本エッジと本体輪郭の両方が線として
+ * 見えてしまう(2026-07-11 報告)。三角形の根本側を本体内部へ食い込ませることで、
+ * 本体 stroke の交差部分が tailFront の fill で確実に覆われるようにする。
+ * strokeWidth は食い込み量の下限(stroke の外側半分まで覆う)に使う。
  */
-export function balloonTailPath(shape: BalloonShape, size: PageVec, tail: BalloonTail): BalloonTailShape {
+export function balloonTailPath(shape: BalloonShape, size: PageVec, tail: BalloonTail, strokeWidth = 0): BalloonTailShape {
   const rx = Math.max(1e-6, size.x / 2);
   const ry = Math.max(1e-6, size.y / 2);
   const dir = tailDirection(tail.tip);
@@ -208,8 +215,24 @@ export function balloonTailPath(shape: BalloonShape, size: PageVec, tail: Balloo
   }
   const perp = { x: -dir.y, y: dir.x };
   const halfWidth = Math.max(1e-6, tail.width) / 2;
-  const baseA: PageVec = { x: root.x + perp.x * halfWidth, y: root.y + perp.y * halfWidth };
-  const baseB: PageVec = { x: root.x - perp.x * halfWidth, y: root.y - perp.y * halfWidth };
+  const cornerFor = (sign: number): PageVec => {
+    // 接線上の仮点(root±perp·halfWidth)の方向で楕円境界へ投影し直す(接線の外側ズレを消す)。
+    const px = root.x + perp.x * halfWidth * sign;
+    const py = root.y + perp.y * halfWidth * sign;
+    const len = Math.hypot(px, py);
+    const boundary = len > 1e-9 ? ellipseBoundaryPoint(rx, ry, px / len, py / len) : root;
+    const boundaryLen = Math.hypot(boundary.x, boundary.y);
+    // 中心側への食い込み: stroke 幅+しっぽ幅比例のマージン。jagged は内径 0.78 の凹みが
+    // 楕円近似より内側に来るため、追加で境界距離の 1/4 を食い込ませる。中心を跨がないよう上限あり。
+    const bite = Math.min(
+      boundaryLen * 0.6,
+      strokeWidth * 1.5 + halfWidth * 0.25 + (shape === "jagged" ? boundaryLen * 0.25 : 0)
+    );
+    const scale = boundaryLen > 1e-9 ? (boundaryLen - bite) / boundaryLen : 1;
+    return { x: boundary.x * scale, y: boundary.y * scale };
+  };
+  const baseA = cornerFor(1);
+  const baseB = cornerFor(-1);
   const tip: PageVec = { x: tail.tip.x, y: tail.tip.y };
   const d = `M ${fmt(baseA.x)} ${fmt(baseA.y)} L ${fmt(tip.x)} ${fmt(tip.y)} L ${fmt(baseB.x)} ${fmt(baseB.y)} Z`;
   return { kind: "triangle", points: [baseA, tip, baseB], d };
@@ -251,7 +274,7 @@ export function renderBalloonSvg(object: BalloonSvgInput, anchor: PageVec, rotat
   const fill = escapeAttr(object.fill);
   const stroke = escapeAttr(object.strokeColor);
   const strokeWidth = fmt(object.strokeWidth);
-  const tailShape = object.tail ? balloonTailPath(object.shape, object.size, object.tail) : null;
+  const tailShape = object.tail ? balloonTailPath(object.shape, object.size, object.tail, object.strokeWidth) : null;
 
   let tailBack = "";
   let tailFront = "";

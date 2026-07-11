@@ -21,6 +21,14 @@
   overflow-y: auto;
 }
 
+.chronicle-bar > * {
+  /* バーは overflow-y:auto の縦 flex。子が flex 圧縮されると scrollHeight が clientHeight を
+     超えないため「下端が潰れているのにスクロールも出ない」状態になる(2026-07-11 報告:
+     配置案ボタンの下の Beat プレビューが高さ数px に潰れていた)。子は自然高を維持し、
+     超過分はバー自体の縦スクロールで逃がす。 */
+  flex-shrink: 0;
+}
+
 .chronicle-bar.is-collapsed {
   max-height: none;
 }
