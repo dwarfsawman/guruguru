@@ -421,15 +421,17 @@ function objectRect(position: { x: number; y: number }, size: { x: number; y: nu
   };
 }
 
-function shapeXml(id: number, name: string, geometry: string, box: SlideRect, fill: string, stroke: string, strokeWidth: number, rotation = 0): string {
+function shapeXml(id: number, name: string, geometry: string, box: SlideRect, fill: string, stroke: string, strokeWidth: number, rotation = 0, adjustments: Array<[string, number]> = []): string {
   const rot = Math.round((rotation * 180 / Math.PI) * 60000);
   const lineWidth = Math.max(1, Math.round(strokeWidth * box.cx));
-  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXml(name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm${rot ? ` rot="${rot}"` : ""}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm><a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${colorHex(fill, "FFFFFF")}"/></a:solidFill><a:ln w="${lineWidth}"><a:solidFill><a:srgbClr val="${colorHex(stroke, "000000")}"/></a:solidFill></a:ln></p:spPr></p:sp>`;
+  const avLst = adjustments.length ? `<a:avLst>${adjustments.map(([key, value]) => `<a:gd name="${key}" fmla="val ${Math.round(value)}"/>`).join("")}</a:avLst>` : "<a:avLst/>";
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXml(name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm${rot ? ` rot="${rot}"` : ""}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm><a:prstGeom prst="${geometry}">${avLst}</a:prstGeom><a:solidFill><a:srgbClr val="${colorHex(fill, "FFFFFF")}"/></a:solidFill><a:ln w="${lineWidth}"><a:solidFill><a:srgbClr val="${colorHex(stroke, "000000")}"/></a:solidFill></a:ln></p:spPr></p:sp>`;
 }
 
-function textXml(id: number, name: string, content: TextContent, box: SlideRect, rotation = 0): string {
+function textXml(id: number, name: string, content: TextContent, box: SlideRect, pageWidthEmu: number, rotation = 0): string {
   const rot = Math.round((rotation * 180 / Math.PI) * 60000);
-  const fontSize = Math.max(500, Math.round((content.style.size * box.cx / 12700) * 100));
+  // guruguru の TextStyle.size は「ページ幅比」。テキスト枠幅ではなくページ配置幅から pt へ変換する。
+  const fontSize = Math.max(500, Math.round((content.style.size * pageWidthEmu / 12700) * 100));
   const vertical = content.style.direction === "vertical" ? ` vert="eaVert"` : "";
   const align = content.style.align === "start" ? "l" : content.style.align === "end" ? "r" : "ctr";
   const lines = content.text.split(/\r?\n/).map((line) => `<a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="ja-JP" sz="${fontSize}"><a:solidFill><a:srgbClr val="${colorHex(content.style.color, "000000")}"/></a:solidFill></a:rPr><a:t>${escapeXml(line)}</a:t></a:r><a:endParaRPr lang="ja-JP" sz="${fontSize}"/></a:p>`).join("");
@@ -443,29 +445,24 @@ function editableObjectsXml(objects: PageObject[], pageHeight: number, rect: Sli
     if (object.kind === "balloon") {
       const balloon = object as BalloonObject;
       const box = objectRect(balloon.position, balloon.size, pageHeight, rect);
-      if (balloon.tail) {
-        const cos = Math.cos(balloon.rotation), sin = Math.sin(balloon.rotation);
-        const tx = balloon.position.x + balloon.tail.tip.x * cos - balloon.tail.tip.y * sin;
-        const ty = balloon.position.y + balloon.tail.tip.x * sin + balloon.tail.tip.y * cos;
-        const tailSize = { x: Math.max(balloon.tail.width, 0.012), y: Math.max(Math.abs(ty - balloon.position.y), 0.012) };
-        const tailBox = objectRect({ x: (tx + balloon.position.x) / 2, y: (ty + balloon.position.y) / 2 }, tailSize, pageHeight, rect);
-        xml.push(shapeXml(id++, `${balloon.id} tail`, "triangle", tailBox, balloon.fill, balloon.strokeColor, balloon.strokeWidth, Math.atan2(ty - balloon.position.y, tx - balloon.position.x) + Math.PI / 2));
-      }
-      const geometry = balloon.shape === "rounded" ? "roundRect" : balloon.shape === "cloud" || balloon.shape === "thought" ? "cloud" : balloon.shape === "jagged" ? "irregularSeal1" : "ellipse";
-      xml.push(shapeXml(id++, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation));
+      const geometry = balloon.tail
+        ? balloon.shape === "rounded" ? "wedgeRoundRectCallout" : balloon.shape === "cloud" || balloon.shape === "thought" ? "cloudCallout" : balloon.shape === "jagged" ? "wedgeRectCallout" : "wedgeEllipseCallout"
+        : balloon.shape === "rounded" ? "roundRect" : balloon.shape === "cloud" || balloon.shape === "thought" ? "cloud" : balloon.shape === "jagged" ? "irregularSeal1" : "ellipse";
+      const adjustments: Array<[string, number]> = balloon.tail ? [["adj1", balloon.tail.tip.x / balloon.size.x * 100000], ["adj2", balloon.tail.tip.y / balloon.size.y * 100000]] : [];
+      xml.push(shapeXml(id++, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation, adjustments));
       if (balloon.content?.text) {
         const textBox = objectRect(balloon.position, { x: balloon.size.x * 0.78, y: balloon.size.y * 0.72 }, pageHeight, rect);
-        xml.push(textXml(id++, `${balloon.id} text`, balloon.content, textBox, balloon.rotation));
+        xml.push(textXml(id++, `${balloon.id} text`, balloon.content, textBox, rect.cx, balloon.rotation));
       }
     } else if (object.kind === "box") {
       const boxObject = object as BoxObject;
       const box = objectRect(boxObject.position, boxObject.size, pageHeight, rect);
       xml.push(shapeXml(id++, `${boxObject.id} box`, boxObject.cornerRadius ? "roundRect" : "rect", box, boxObject.fill, boxObject.strokeColor, boxObject.strokeWidth, boxObject.rotation));
-      if (boxObject.content?.text) xml.push(textXml(id++, `${boxObject.id} text`, boxObject.content, objectRect(boxObject.position, { x: boxObject.size.x * 0.88, y: boxObject.size.y * 0.82 }, pageHeight, rect), boxObject.rotation));
+      if (boxObject.content?.text) xml.push(textXml(id++, `${boxObject.id} text`, boxObject.content, objectRect(boxObject.position, { x: boxObject.size.x * 0.88, y: boxObject.size.y * 0.82 }, pageHeight, rect), rect.cx, boxObject.rotation));
     } else if (object.kind === "text") {
       const textObject = object as TextObject;
       const size = { x: textObject.maxWidth ?? Math.max(0.08, textObject.content.style.size * 4), y: Math.max(0.08, textObject.content.style.size * 6) };
-      xml.push(textXml(id++, `${textObject.id} text`, textObject.content, objectRect(textObject.position, size, pageHeight, rect), textObject.rotation));
+      xml.push(textXml(id++, `${textObject.id} text`, textObject.content, objectRect(textObject.position, size, pageHeight, rect), rect.cx, textObject.rotation));
     }
   }
   return xml.join("\n      ");

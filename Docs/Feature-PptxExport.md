@@ -15,7 +15,8 @@ Book の完成品を PowerPoint(.pptx)デッキとして書き出す機能。既
   PPTX への埋め込みは `renderMergedImage` が返す PNG バッファをそのまま使う(再エンコード・
   フラット化なし)— ページは Paper 層で不透明なので透過ロスの心配はない。これにより
   背景画像・コマ枠・画像オブジェクトは背景 PNG にまとめ、balloon/box/text は PowerPoint の
-  編集可能な図形とテキストとして重ねる。吹き出し本体・しっぽ・文字は別オブジェクトになる。
+  編集可能な図形とテキストとして重ねる。しっぽ付き吹き出しは PowerPoint 標準の
+  `wedgeEllipseCallout` 等を使い、本体としっぽが一体の調整可能な吹き出し図形になる。文字は別オブジェクト。
   `pixelWidth` は `imageExport.ts` の `clampPixelWidth` で既に clamp 済みの値を渡す。
 - **循環 import 回避**: `computeExportCanvas` は元々 `imageExport.ts` にあったが、`pptxExport.ts`
   からも使うために `openRasterExport.ts` へ移設した(`imageExport.ts` は後方互換のため
@@ -96,6 +97,7 @@ E2E スタイル)で検証:
 
 ## 変更履歴
 
+- 2026-07-11: 三角形と本体の重ね合わせをPowerPoint標準の吹き出し図形へ変更。文字サイズをページ幅比で算出するよう修正。
 - 2026-07-11: 背景の平坦画像と、編集可能な吹き出し本体・しっぽ・文字を分離して出力する方式へ変更。
 
 - 2026-07-11: PPTX への埋め込み形式を JPEG から PNG に変更(`renderMergedImage` の出力をそのまま
