@@ -1,0 +1,39 @@
+name: guruguru-sandbox
+
+services:
+  comfyui:
+    build:
+      context: .
+      dockerfile: comfyui/Dockerfile
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - type: bind
+        source: ${GURUGURU_MODELS_DIR:?Set GURUGURU_MODELS_DIR in sandbox/.env}
+        target: /models
+        read_only: true
+      - comfy-input:/data/input
+      - comfy-output:/data/output
+      - comfy-temp:/data/temp
+      - comfy-user:/data/user
+    ports:
+      - "127.0.0.1:8288:8188"
+    healthcheck:
+      test: ["CMD", "python", "/opt/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+volumes:
+  comfy-input:
+  comfy-output:
+  comfy-temp:
+  comfy-user:

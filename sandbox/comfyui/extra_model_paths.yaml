@@ -1,0 +1,29 @@
+sandbox_models:
+  base_path: /models
+  checkpoints: checkpoints
+  classifiers: classifiers
+  clip_vision: clip_vision
+  configs: configs
+  controlnet: |
+    controlnet
+    t2i_adapter
+  diffusers: diffusers
+  diffusion_models: diffusion_models
+  embeddings: embeddings
+  gligen: gligen
+  hypernetworks: hypernetworks
+  loras: loras
+  model_patches: model_patches
+  audio_encoders: audio_encoders
+  photomaker: photomaker
+  style_models: style_models
+  text_encoders: text_encoders
+  upscale_models: upscale_models
+  vae: vae
+  vae_approx: vae_approx
+  insightface: insightface
+  pulid: pulid
+  xlabs: xlabs
+  clip: clip
+  unet: unet
+

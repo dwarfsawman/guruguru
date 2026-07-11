@@ -1,0 +1,43 @@
+const baseUrl = (process.argv[2] ?? "http://127.0.0.1:8288").replace(/\/$/, "");
+
+async function json(path) {
+  const response = await fetch(`${baseUrl}${path}`, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+  return response.json();
+}
+
+const stats = await json("/system_stats");
+const devices = stats.devices ?? stats.system?.devices ?? [];
+if (!devices.some((device) => /cuda/i.test(String(device.type ?? device.name ?? "")))) {
+  throw new Error(`CUDA device not reported: ${JSON.stringify(devices)}`);
+}
+
+const objectInfo = await json("/object_info");
+const pulidNodes = Object.keys(objectInfo).filter((name) => /pulid/i.test(name));
+if (pulidNodes.length === 0) throw new Error("PuLID custom nodes are not registered");
+
+const filenames = [];
+for (const node of Object.values(objectInfo)) {
+  const required = node?.input?.required ?? {};
+  for (const value of Object.values(required)) {
+    if (Array.isArray(value?.[0])) filenames.push(...value[0].map(String));
+  }
+}
+const modelPatterns = {
+  diffusion: /(chroma|flux).*\.(safetensors|gguf)$/i,
+  textEncoder: /(t5|clip).*\.(safetensors|gguf|bin)$/i,
+  vae: /(?:vae|ae).*\.(safetensors|pt|bin)$/i,
+};
+const recognition = Object.fromEntries(
+  Object.entries(modelPatterns).map(([key, pattern]) => [key, filenames.some((name) => pattern.test(name))]),
+);
+
+console.log(JSON.stringify({
+  ok: true,
+  comfyui: baseUrl,
+  devices,
+  pulidNodes,
+  modelRecognition: recognition,
+}, null, 2));
+
+if (Object.values(recognition).some((available) => !available)) process.exitCode = 2;

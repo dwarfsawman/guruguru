@@ -7,6 +7,7 @@
   "scripts": {
     "build": "bun scripts/build.mjs",
     "start": "bun ./dist/server/index.js",
+    "start:test": "bun run build && bun scripts/start-test.mjs",
     "dev": "bun scripts/dev-hot.mjs",
     "dev:once": "bun run build && bun run start",
     "check": "bun scripts/check.mjs",
