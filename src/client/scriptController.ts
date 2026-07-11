@@ -18,6 +18,11 @@ import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
+import {
+  clearScriptMangaRunState,
+  clearScriptMangaUiState,
+  initializeScriptMangaUiState
+} from "./scriptMangaController";
 
 /** 脚本画面を開く(book grid の上に重ねて表示)。脚本一覧+キャラクタ一覧を取得する。 */
 export async function openScriptScreen() {
@@ -33,6 +38,7 @@ export async function openScriptScreen() {
   state.sidebarOpen = false;
   state.maskEditMode = false;
   state.paintEditMode = false;
+  initializeScriptMangaUiState();
   requestRender();
 
   const projectId = state.currentProjectId;
@@ -73,6 +79,7 @@ function closeScriptScreen() {
   state.selectedCharacterId = null;
   state.selectedCharacterBinding = null;
   state.characterFacePickerOpen = false;
+  clearScriptMangaUiState();
   requestRender();
 }
 
@@ -90,6 +97,7 @@ async function refreshScriptDialogueLines(scriptId: string) {
 
 /** 脚本を切り替える。最新 revision + セリフ一覧を取得する。 */
 export async function selectScript(scriptId: string) {
+  clearScriptMangaRunState();
   state.activeScriptId = scriptId;
   requestRender();
   try {
@@ -130,6 +138,7 @@ async function importOrReimportScript() {
     pushToast("Fountain テキストを入力してください。", "error");
     return;
   }
+  clearScriptMangaRunState();
   state.scriptImportBusy = true;
   requestRender();
   try {

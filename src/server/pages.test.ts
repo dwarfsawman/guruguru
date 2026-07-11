@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPage, deletePage, mergeRecentImages } from "./pages.ts";
+import { createPage, deletePage, mergeRecentImages, updatePageLayout } from "./pages.ts";
 import { createProject } from "./projects.ts";
 import { createSourceAsset } from "./sourceAssets.ts";
 import { createId, getRow, initializeDb, runSql } from "./db.ts";
 import type { RecentReferenceImage } from "../shared/apiTypes.ts";
+import { HttpError } from "./http.ts";
 
 // 「最近使った画像」の混在マージ(重複排除は呼び出し側で済ませる前提)の純関数を pin する。
 // See Docs/Feature-BookCommonSettings.md / Part 1。
@@ -66,6 +67,73 @@ function createDummyWorkflowTemplate(): string {
   );
   return id;
 }
+
+function attachScriptMangaRunOwnership(projectId: string, pageId: string): string {
+  initializeDb();
+  const scriptId = createId("script");
+  const revisionId = createId("revision");
+  const planId = createId("plan");
+  const runId = createId("run");
+  runSql("INSERT INTO manga_scripts (id, project_id, title) VALUES (?, ?, 'Owned page test')", [scriptId, projectId]);
+  runSql(
+    `INSERT INTO script_revisions (id, script_id, revision, fountain_source, parsed_json, warnings_json)
+     VALUES (?, ?, 1, '', '{}', '[]')`,
+    [revisionId, scriptId]
+  );
+  runSql(
+    `INSERT INTO script_manga_plans
+       (id, project_id, script_id, script_revision_id, plan_version, planner_version,
+        prompt_compiler_version, dialogue_policy, status, plan_json, validation_json)
+     VALUES (?, ?, ?, ?, 2, 'test-planner', 'test-compiler', 'preserve', 'draft', '{}', '{"ok":true,"issues":[]}')`,
+    [planId, projectId, scriptId, revisionId]
+  );
+  runSql(
+    `INSERT INTO script_manga_runs
+       (id, project_id, script_id, script_revision_id, plan_id, plan_version, planner_version,
+        prompt_compiler_version, status, phase, approval_status, page_count, panel_count,
+        config_json, generation_budget_json)
+     VALUES (?, ?, ?, ?, ?, 2, 'test-planner', 'test-compiler', 'prepared', 'awaiting_approval',
+             'pending', 1, 1, '{}', '{}')`,
+    [runId, projectId, scriptId, revisionId, planId]
+  );
+  runSql(
+    `INSERT INTO script_manga_run_pages (run_id, page_id, page_index, layout_template_id)
+     VALUES (?, ?, 0, 'builtin:splash')`,
+    [runId, pageId]
+  );
+  return runId;
+}
+
+function isConflict(error: unknown): boolean {
+  return error instanceof HttpError && error.statusCode === 409;
+}
+
+test("updatePageLayout: rejects layout mutation for a script manga run-owned page", () => {
+  initializeDb();
+  const project = createProject({ name: "Owned layout", mode: "book" });
+  assert.ok(project);
+  const projectId = project!.id as string;
+  const page = createPage(projectId, { layoutTemplateId: "builtin:splash" });
+  assert.ok(page.layout);
+  const runId = attachScriptMangaRunOwnership(projectId, page.id);
+
+  assert.throws(() => updatePageLayout(projectId, page.id, { layout: page.layout }), isConflict);
+  assert.ok(getRow("SELECT page_id FROM script_manga_run_pages WHERE run_id = ?", [runId]));
+  assert.ok(getRow("SELECT id FROM pages WHERE id = ?", [page.id]));
+});
+
+test("deletePage: rejects deletion of a script manga run-owned page", () => {
+  initializeDb();
+  const project = createProject({ name: "Owned delete", mode: "book" });
+  assert.ok(project);
+  const projectId = project!.id as string;
+  const page = createPage(projectId, { layoutTemplateId: "builtin:splash" });
+  const runId = attachScriptMangaRunOwnership(projectId, page.id);
+
+  assert.throws(() => deletePage(projectId, page.id), isConflict);
+  assert.ok(getRow("SELECT page_id FROM script_manga_run_pages WHERE run_id = ?", [runId]));
+  assert.ok(getRow("SELECT id FROM pages WHERE id = ?", [page.id]));
+});
 
 // S1 レビュー指摘1(critical, Docs/Feature-ScriptToManga.md S1): provider_id='manual' の Round
 // (ソースアセットのアップロード)を含むページの削除が、以前は stopRoundMonitor 内の

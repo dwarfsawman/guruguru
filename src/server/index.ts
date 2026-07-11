@@ -4,6 +4,7 @@ import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
 import { checkModels, listAvailableLoras } from "./modelCheck";
 import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection, toLlmSettingsView } from "./llm";
+import { getVlmAuditSettings, getVlmAuditStatus } from "./vlmAudit";
 import { serveStatic } from "./files";
 import { HttpError, readJson, sendJson } from "./http";
 import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
@@ -77,7 +78,20 @@ import {
 import { getChronicle } from "./chronicle";
 import { allocateDialoguePages, removeDialogueAllocation } from "./dialogueAllocation";
 import { applyDialogueLayout, previewDialogueLayout, reflowDialogueLayout, unlockAllDialoguePlacementsForPage } from "./dialogueAutoLayoutApi";
-import { createScriptMangaRun, getScriptMangaRun } from "./scriptManga";
+import {
+  approveScriptMangaRun,
+  auditScriptMangaTask,
+  cancelScriptMangaRun,
+  createScriptMangaRun,
+  createScriptMangaRunExport,
+  getScriptMangaPlan,
+  getScriptMangaRun,
+  resumeScriptMangaRun,
+  retryScriptMangaTask,
+  selectScriptMangaTaskCandidate,
+  startScriptMangaRun,
+  updateScriptMangaPlan
+} from "./scriptManga";
 import { applySpeakerAnchors } from "./speakerAnchors";
 import { fitPageBalloonText } from "./balloonTextFit";
 import {
@@ -86,7 +100,7 @@ import {
   GITHUB_POSE_RELEASE_API_URL,
   GITHUB_WEB_SAM_RELEASE_API_URL
 } from "../shared/constants";
-import type { ComfySettings, GenerationRequest, LlmSettings } from "../shared/types";
+import type { ComfySettings, GenerationRequest, LlmSettings, VlmAuditSettings } from "../shared/types";
 
 const port = Number(process.env.PORT ?? 5177);
 let isShuttingDown = false;
@@ -232,6 +246,40 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "GET" && path === "/api/llm/status") {
     sendJson(res, 200, await getLlmStatus());
+    return;
+  }
+
+  if (method === "GET" && path === "/api/settings/vlm-audit") {
+    sendJson(res, 200, getVlmAuditSettings());
+    return;
+  }
+
+  if (method === "PUT" && path === "/api/settings/vlm-audit") {
+    const body = await readJson<Partial<VlmAuditSettings>>(req);
+    const current = getVlmAuditSettings();
+    const settings: VlmAuditSettings = {
+      baseUrl: stringOr(body.baseUrl, current.baseUrl).trim().replace(/\/+$/, ""),
+      model: stringOr(body.model, current.model).trim(),
+      transport: body.transport === "openai-compatible" || body.transport === "lmstudio-native"
+        ? body.transport
+        : current.transport ?? "lmstudio-native",
+      modelKey: stringOr(body.modelKey, current.modelKey ?? current.model).trim(),
+      temperature: Math.min(2, Math.max(0, numberOr(body.temperature, current.temperature))),
+      timeoutSeconds: Math.min(600, Math.max(5, numberOr(body.timeoutSeconds, current.timeoutSeconds))),
+      maxReferenceImages: Math.min(6, Math.max(0, Math.trunc(numberOr(body.maxReferenceImages, current.maxReferenceImages)))),
+      passThreshold: Math.min(1, Math.max(0, numberOr(body.passThreshold, current.passThreshold))),
+      contextLength: Math.min(32768, Math.max(1024, Math.trunc(numberOr(body.contextLength, current.contextLength ?? 4096)))),
+      manageModelLifecycle: typeof body.manageModelLifecycle === "boolean" ? body.manageModelLifecycle : current.manageModelLifecycle,
+      releaseComfyBeforeAudit: typeof body.releaseComfyBeforeAudit === "boolean" ? body.releaseComfyBeforeAudit : current.releaseComfyBeforeAudit,
+      unloadAfterAudit: typeof body.unloadAfterAudit === "boolean" ? body.unloadAfterAudit : current.unloadAfterAudit
+    };
+    setSetting("vlm_audit", settings);
+    sendJson(res, 200, settings);
+    return;
+  }
+
+  if (method === "GET" && path === "/api/vlm-audit/status") {
+    sendJson(res, 200, await getVlmAuditStatus());
     return;
   }
 
@@ -478,6 +526,52 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const scriptMangaRunMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)$/);
   if (method === "GET" && scriptMangaRunMatch) {
     sendJson(res, 200, getScriptMangaRun(scriptMangaRunMatch[1]!));
+    return;
+  }
+  const scriptMangaPlanMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)$/);
+  if (method === "GET" && scriptMangaPlanMatch) {
+    sendJson(res, 200, getScriptMangaPlan(scriptMangaPlanMatch[1]!));
+    return;
+  }
+  if (method === "PATCH" && scriptMangaPlanMatch) {
+    sendJson(res, 200, updateScriptMangaPlan(scriptMangaPlanMatch[1]!, await readJson(req)));
+    return;
+  }
+  const scriptMangaRunExportMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)\/export$/);
+  if (method === "POST" && scriptMangaRunExportMatch) {
+    const result = await createScriptMangaRunExport(scriptMangaRunExportMatch[1]!, await readJson(req));
+    res.writeHead(200, {
+      "content-type": result.contentType,
+      "content-length": String(result.buffer.byteLength),
+      "content-disposition": `attachment; filename="${result.filename}"`
+    });
+    res.end(result.buffer);
+    return;
+  }
+  const scriptMangaRunActionMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)\/(approve|start|resume|cancel)$/);
+  if (method === "POST" && scriptMangaRunActionMatch) {
+    const [, runId, action] = scriptMangaRunActionMatch;
+    const result = action === "approve"
+      ? approveScriptMangaRun(runId!)
+      : action === "start"
+        ? await startScriptMangaRun(runId!)
+        : action === "resume"
+          ? await resumeScriptMangaRun(runId!)
+          : await cancelScriptMangaRun(runId!);
+    sendJson(res, 200, result);
+    return;
+  }
+  const scriptMangaTaskActionMatch = path.match(/^\/api\/script-manga-tasks\/([^/]+)\/(retry|select|audit)$/);
+  if (method === "POST" && scriptMangaTaskActionMatch) {
+    sendJson(
+      res,
+      200,
+      scriptMangaTaskActionMatch[2] === "retry"
+        ? await retryScriptMangaTask(scriptMangaTaskActionMatch[1]!)
+        : scriptMangaTaskActionMatch[2] === "audit"
+          ? await auditScriptMangaTask(scriptMangaTaskActionMatch[1]!)
+          : selectScriptMangaTaskCandidate(scriptMangaTaskActionMatch[1]!, await readJson(req))
+    );
     return;
   }
 

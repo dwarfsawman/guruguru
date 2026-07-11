@@ -1,50 +1,74 @@
 import type { FountainDoc } from "./fountain";
-import { planScriptManga, type ScriptMangaPanelPlan, type ScriptMangaPlan } from "./scriptMangaPlan";
+import { builtinLayoutPanelCount } from "./layoutPresets";
+import {
+  planScriptManga,
+  type ScriptMangaPanelDirection,
+  type ScriptMangaPanelPlan,
+  type ScriptMangaPlan
+} from "./scriptMangaPlan";
 import { isJsonObject } from "./json";
 
-const LAYOUT_PANEL_COUNTS: Record<string, number> = {
-  "builtin:splash": 1,
-  "builtin:two-horizontal": 2,
-  "builtin:two-vertical": 2,
-  "builtin:three-horizontal": 3,
-  "builtin:three-hero-top": 3,
-  "builtin:three-side-hero": 3,
-  "builtin:three-hero-bottom": 3,
-  "builtin:four-grid": 4,
-  "builtin:four-hero-bottom": 4,
-  "builtin:four-vertical-hero": 4
-};
+export type ScriptMangaLayoutPanelCountResolver = (layoutTemplateId: string) => number | null | undefined;
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function identityForPanel(plan: Record<string, unknown>, panel: Record<string, unknown>): string {
+function stringList(value: unknown): string[] {
+  if (typeof value === "string") return value.trim() ? [value.trim()] : [];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => typeof entry === "string" && entry.trim() ? [entry.trim()] : []);
+}
+
+function identityNames(key: string, value: unknown): string[] {
+  const names = [key];
+  if (!isJsonObject(value)) return names;
+  names.push(...stringList(value.name), ...stringList(value.names), ...stringList(value.alias), ...stringList(value.aliases));
+  return names;
+}
+
+function identityForPanel(plan: Record<string, unknown>, subject: string): string {
   if (!isJsonObject(plan.characterBible)) return "";
   const bible = plan.characterBible;
-  const subject = text(panel.subject).toLowerCase();
-  const aliases: Array<[string[], string]> = [
-    [["adult alice", "アリス"], "アリス・キサラギ（現在）"],
-    [["16-year-old alice", "young alice", "少女アリス"], "少女アリス（8年前）"],
-    [["mira", "ミラ"], "ミラ"], [["kain", "カイン"], "カイン・レイヴン"],
-    [["shido", "シドウ"], "シドウ博士"], [["gen", "ゲン"], "ゲン"],
-    [["white rabbit", "白い機体"], "WHITE RABBIT"], [["red queen", "赤い少女"], "RED QUEEN"],
-    [["president", "総裁"], "AEGIS総裁"], [["aegis soldier", "兵士"], "AEGIS兵"],
-    [["beast", "獣型"], "獣型兵器"]
-  ];
+  const normalizedSubject = subject.toLocaleLowerCase();
   const entries: string[] = [];
   const continuity = text(bible.visualContinuity);
   if (continuity) entries.push(continuity);
-  for (const [needles, key] of aliases) {
-    if (!needles.some((needle) => subject.includes(needle))) continue;
-    const value = bible[key];
+  for (const [key, value] of Object.entries(bible)) {
+    if (key === "visualContinuity") continue;
+    const matches = identityNames(key, value).some((name) => normalizedSubject.includes(name.toLocaleLowerCase()));
+    if (!matches) continue;
     if (isJsonObject(value)) entries.push(`${key}: ${JSON.stringify(value)}`);
   }
   return entries.length > 0 ? `CHARACTER LOCK — ${entries.join("; ")}. ` : "";
 }
 
+const DIRECTION_KEYS = ["shot", "subject", "action", "emotion", "composition"] as const;
+
+function panelDirection(panel: Record<string, unknown>): ScriptMangaPanelDirection | null | undefined {
+  const hasNested = Object.hasOwn(panel, "direction");
+  const source = hasNested ? panel.direction : panel;
+  if (source === undefined) return undefined;
+  if (!isJsonObject(source)) return null;
+  if (!hasNested && !DIRECTION_KEYS.every((key) => Object.hasOwn(source, key))) return undefined;
+  const values = Object.fromEntries(DIRECTION_KEYS.map((key) => [key, text(source[key])])) as unknown as ScriptMangaPanelDirection;
+  return DIRECTION_KEYS.every((key) => values[key]) ? values : null;
+}
+
+function sourceElementIds(panel: Record<string, unknown>): string[] | null {
+  if (panel.sourceElementIds === undefined) return [];
+  if (!Array.isArray(panel.sourceElementIds)) return null;
+  const ids = panel.sourceElementIds.map(text);
+  if (ids.some((id) => !id) || new Set(ids).size !== ids.length) return null;
+  return ids;
+}
+
 /** 外部LLM/サブエージェントで作ったネームを、全台詞保持とlayout整合を確認して実行可能planへ変換する。 */
-export function validateProvidedScriptMangaPlan(doc: FountainDoc, raw: unknown): ScriptMangaPlan | null {
+export function validateProvidedScriptMangaPlan(
+  doc: FountainDoc,
+  raw: unknown,
+  resolveLayoutPanelCount: ScriptMangaLayoutPanelCountResolver = builtinLayoutPanelCount
+): ScriptMangaPlan | null {
   if (!isJsonObject(raw) || !Array.isArray(raw.pages) || raw.pages.length === 0 || raw.pages.length > 200) return null;
   const expectedDialogueCount = planScriptManga(doc).dialogueCount;
   const dialogueSeen = new Set<number>();
@@ -54,7 +78,7 @@ export function validateProvidedScriptMangaPlan(doc: FountainDoc, raw: unknown):
   const pages = raw.pages.flatMap((rawPage, pageIndex) => {
     if (!isJsonObject(rawPage) || (rawPage.index !== pageIndex && rawPage.index !== pageIndex + 1) || !Array.isArray(rawPage.panels)) return [];
     const layoutTemplateId = text(rawPage.layoutTemplateId);
-    if (LAYOUT_PANEL_COUNTS[layoutTemplateId] !== rawPage.panels.length) return [];
+    if (resolveLayoutPanelCount(layoutTemplateId) !== rawPage.panels.length) return [];
     const panels: ScriptMangaPanelPlan[] = [];
     for (const rawPanel of rawPage.panels) {
       if (!isJsonObject(rawPanel)) return [];
@@ -63,6 +87,9 @@ export function validateProvidedScriptMangaPlan(doc: FountainDoc, raw: unknown):
       const sourceText = text(rawPanel.sourceText);
       const sceneIndex = typeof rawPanel.sceneIndex === "number" ? Math.trunc(rawPanel.sceneIndex) : -1;
       if (!id || panelIds.has(id) || !prompt || !sourceText || sceneIndex < 0 || sceneIndex >= doc.scenes.length) return [];
+      const sourceIds = sourceElementIds(rawPanel);
+      const direction = panelDirection(rawPanel);
+      if (sourceIds === null || direction === null) return [];
       if (!Array.isArray(rawPanel.dialogueOrderIndexes)) return [];
       const indexes: number[] = [];
       for (const value of rawPanel.dialogueOrderIndexes) {
@@ -75,13 +102,22 @@ export function validateProvidedScriptMangaPlan(doc: FountainDoc, raw: unknown):
         id,
         sceneIndex,
         sceneHeading: text(rawPanel.sceneHeading),
-        prompt: `${identityForPanel(raw, rawPanel)}${prompt}`,
+        sourceElementIds: sourceIds,
+        prompt: `${identityForPanel(raw, direction?.subject ?? text(rawPanel.subject))}${prompt}`,
         sourceText,
-        dialogueOrderIndexes: indexes
+        dialogueOrderIndexes: indexes,
+        ...(direction ? { direction } : {})
       });
     }
     panelCount += panels.length;
-    return [{ index: pageIndex, title: text(rawPage.title) || `Page ${pageIndex + 1}`, layoutTemplateId, panels }];
+    const pageIntent = text(rawPage.pageIntent);
+    return [{
+      index: pageIndex,
+      title: text(rawPage.title) || `Page ${pageIndex + 1}`,
+      layoutTemplateId,
+      panels,
+      ...(pageIntent ? { pageIntent } : {})
+    }];
   });
   if (pages.length !== raw.pages.length || panelCount === 0 || panelCount > 800 || dialogueSeen.size !== expectedDialogueCount) return null;
   for (let index = 0; index < expectedDialogueCount; index += 1) if (!dialogueSeen.has(index)) return null;

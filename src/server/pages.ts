@@ -47,6 +47,19 @@ function requirePage(projectId: string, pageId: string): PageRow {
   return page;
 }
 
+function requirePageNotOwnedByScriptMangaRun(pageId: string): void {
+  const ownership = getRow<{ run_id: string }>(
+    "SELECT run_id FROM script_manga_run_pages WHERE page_id = ? LIMIT 1",
+    [pageId]
+  );
+  if (ownership) {
+    throw new HttpError(
+      409,
+      "Script manga run-owned pages cannot be changed or deleted directly; edit the plan before approval"
+    );
+  }
+}
+
 /** ページ一覧(代表サムネ+アセット枚数付き)と、所属プロジェクトのメタを返す。 */
 export function listPagesWithProject(projectId: string): BookPages {
   const project = requireProject(projectId);
@@ -312,6 +325,7 @@ export function updatePageMosaic(projectId: string, pageId: string, body: unknow
  */
 export function updatePageLayout(projectId: string, pageId: string, body: unknown): { layout: PageLayout } {
   requirePage(projectId, pageId);
+  requirePageNotOwnedByScriptMangaRun(pageId);
   const input = objectBody(body);
   const layout = normalizeEditedPageLayout(input.layout);
   if (!layout) {
@@ -347,6 +361,7 @@ export function updatePageLayout(projectId: string, pageId: string, body: unknow
  */
 export function deletePage(projectId: string, pageId: string) {
   requirePage(projectId, pageId);
+  requirePageNotOwnedByScriptMangaRun(pageId);
 
   const rootRounds = getRows<{ id: string }>(
     "SELECT id FROM generation_rounds WHERE project_id = ? AND page_id = ? AND parent_round_id IS NULL",

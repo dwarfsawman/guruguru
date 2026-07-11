@@ -8,6 +8,7 @@ import type { GenerationRequest, MaskedContent } from "./types";
 export type ArtifactRef =
   | { kind: "asset"; assetId: string }
   | { kind: "roundAttachment"; roundId: string; attachment: "mask" | "pose" | "reference" | "composite" }
+  | { kind: "characterBinding"; characterId: string; providerId: string; role: "face" }
   | { kind: "pageMedia"; mediaId: string }; // S2 で導入(前景画像等)。S1 では構築されない。
 
 export type GenerationTask = "create" | "transform" | "inpaint" | "upscale" | "detail";

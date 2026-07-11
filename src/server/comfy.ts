@@ -104,6 +104,26 @@ export async function getQueue() {
   return comfyFetchJson("/queue");
 }
 
+export function isComfyQueueIdle(queue: unknown): boolean {
+  if (!queue || typeof queue !== "object") return false;
+  const value = queue as { queue_running?: unknown; queue_pending?: unknown };
+  return Array.isArray(value.queue_running) && value.queue_running.length === 0 &&
+    Array.isArray(value.queue_pending) && value.queue_pending.length === 0;
+}
+
+/** Explicit VRAM-swap mode only: unload cached ComfyUI models after confirming its global queue is idle. */
+export async function releaseComfyModelsForAudit(): Promise<void> {
+  const queue = await getQueue();
+  if (!isComfyQueueIdle(queue)) {
+    throw new Error("VLM audit is deferred because the ComfyUI queue is not idle");
+  }
+  await comfyFetchJson("/free", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ unload_models: true, free_memory: true })
+  });
+}
+
 /**
  * `/object_info/{classType}` の per-class 版。存在しない class を渡すと
  * ComfyUI は `{}` を返す(= ノード不在の判定を兼ねる)。呼び出し側

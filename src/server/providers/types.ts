@@ -1,6 +1,8 @@
-import { getRow } from "../db";
+import { dataRoot, getRow } from "../db";
 import { HttpError } from "../http";
 import { resolveRoundAttachmentPath } from "../roundAttachments";
+import { isPathInside } from "../paths";
+import { resolve } from "node:path";
 import type { ArtifactRef, GenerationIntent, GenerationTarget } from "../../shared/generationIntent";
 import type { GenerationRequest, MaskedContent } from "../../shared/types";
 
@@ -220,6 +222,23 @@ function resolveArtifactRefPath(ref: ArtifactRef): string {
   }
   if (ref.kind === "roundAttachment") {
     return resolveRoundAttachmentPath(ref.roundId, ref.attachment);
+  }
+  if (ref.kind === "characterBinding") {
+    const row = getRow<{ binding_json: string }>(
+      "SELECT binding_json FROM character_bindings WHERE character_id = ? AND provider_id = ?",
+      [ref.characterId, ref.providerId]
+    );
+    let binding: Record<string, unknown> = {};
+    try {
+      binding = row ? (JSON.parse(row.binding_json) as Record<string, unknown>) : {};
+    } catch {
+      binding = {};
+    }
+    const candidate = typeof binding.faceImagePath === "string" ? resolve(binding.faceImagePath) : "";
+    if (!candidate || !isPathInside(candidate, resolve(dataRoot))) {
+      throw new HttpError(404, `Character binding for "${ref.characterId}" was not found`);
+    }
+    return candidate;
   }
   // "pageMedia" は S2(Docs/Feature-ScriptToManga.md)で導入予定。S1 の toGenerationIntent は構築しない。
   throw new HttpError(400, `Unsupported ArtifactRef kind: ${(ref as { kind: string }).kind}`);

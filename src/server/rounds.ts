@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
-import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
+import { extname, resolve } from "node:path";
+import { createId, dataRoot, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { deleteQueuedPrompts, fetchViewImage, getHistory, interruptComfy } from "./comfy";
 import { readImageSize, storeCompositeImage, storeControlImage, storeImage, storeMaskImage, storeReferenceImage } from "./storage";
 import { clampInteger, maxBatchSize, normalizeGenerationRequest } from "./generationRequest";
@@ -28,6 +29,7 @@ import type { GenerationProvider, ProviderJobSubmission, ProviderSubmittedJob } 
 import { toGenerationIntent } from "../shared/generationIntent";
 import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ReferenceImageOptions } from "../shared/types";
 import type { Asset, PageRow, Round } from "../shared/apiTypes";
+import { isPathInside } from "./paths";
 
 export type { RoundAttachmentKind } from "./roundAttachments";
 export { roundAttachmentPathFromRequest, resolveRoundAttachmentPath, serveRoundAttachment } from "./roundAttachments";
@@ -95,11 +97,25 @@ export async function createGenerationRound(
   projectId: string,
   requestBody: GenerationRequest,
   pageId?: string | null,
-  targetPanelId?: string | null
+  targetPanelId?: string | null,
+  scriptMangaTaskId?: string | null
 ) {
   const project = getRow<Record<string, unknown>>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!project) {
     throw new HttpError(404, "Project was not found");
+  }
+  const resolvedScriptMangaTaskId =
+    typeof scriptMangaTaskId === "string" && scriptMangaTaskId.trim() ? scriptMangaTaskId.trim() : null;
+  if (
+    resolvedScriptMangaTaskId &&
+    !getRow(
+      `SELECT t.id FROM script_manga_tasks t
+       JOIN script_manga_runs r ON r.id = t.run_id
+       WHERE t.id = ? AND r.project_id = ?`,
+      [resolvedScriptMangaTaskId, projectId]
+    )
+  ) {
+    throw new HttpError(404, "Script manga task was not found in this project");
   }
 
   // Book のページに属する生成なら page_id を検証して保存する(single は null)。
@@ -171,29 +187,45 @@ export async function createGenerationRound(
   };
   const initialIntent = toGenerationIntent(request, intentCtx);
 
-  runSql(
-    `INSERT INTO generation_rounds
-      (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
-       branch_color_index, branch_reason, branch_key, page_id, target_panel_id, request_json,
-       provider_id, intent_json)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      roundId,
-      projectId,
-      request.templateId,
-      parentRoundId,
-      roundIndex,
-      request.generationMode,
-      branch.colorIndex,
-      branch.reason,
-      branch.key,
-      resolvedPageId,
-      resolvedTargetPanelId,
-      JSON.stringify(request),
-      providerId,
-      JSON.stringify(initialIntent)
-    ]
-  );
+  runSql("SAVEPOINT generation_round_link");
+  try {
+    runSql(
+      `INSERT INTO generation_rounds
+        (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
+         branch_color_index, branch_reason, branch_key, page_id, target_panel_id, request_json,
+         provider_id, intent_json, script_manga_task_id)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        roundId,
+        projectId,
+        request.templateId,
+        parentRoundId,
+        roundIndex,
+        request.generationMode,
+        branch.colorIndex,
+        branch.reason,
+        branch.key,
+        resolvedPageId,
+        resolvedTargetPanelId,
+        JSON.stringify(request),
+        providerId,
+        JSON.stringify(initialIntent),
+        resolvedScriptMangaTaskId
+      ]
+    );
+    if (resolvedScriptMangaTaskId) {
+      const linked = runSql(
+        "UPDATE script_manga_tasks SET round_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitting'",
+        [roundId, resolvedScriptMangaTaskId]
+      ) as { changes?: number };
+      if (linked.changes !== 1) throw new HttpError(409, "Script manga task is no longer accepting a generation round");
+    }
+    runSql("RELEASE generation_round_link");
+  } catch (error) {
+    runSql("ROLLBACK TO generation_round_link");
+    runSql("RELEASE generation_round_link");
+    throw error;
+  }
 
   let provider: GenerationProvider | null = null;
   let submitted: ProviderSubmittedJob[] = [];
@@ -460,20 +492,51 @@ async function prepareReferenceRequest(
     ? rawRequestRecord.reference as Record<string, unknown>
     : null;
   const hasImageDataUrl = typeof rawReference?.imageDataUrl === "string" && rawReference.imageDataUrl.trim() !== "";
+  const rawBinding = isJsonObject(rawReference?.characterBinding)
+    ? rawReference.characterBinding as Record<string, unknown>
+    : null;
+  const characterId = typeof rawBinding?.characterId === "string" ? rawBinding.characterId.trim() : "";
+  const providerId = typeof rawBinding?.providerId === "string" ? rawBinding.providerId.trim() : "";
 
-  if (!hasImageDataUrl) {
+  if (!hasImageDataUrl && (!characterId || !providerId)) {
     return {
       ...normalizedRequest,
       reference: null
     };
   }
 
-  const { mimeType, bytes } = decodeImageDataUrl(rawReference.imageDataUrl);
-  const stored = await storeReferenceImage(projectId, roundId, pasteSourceExtension(mimeType), bytes);
+  let bytes: Buffer;
+  let extension: string;
+  if (hasImageDataUrl) {
+    const decoded = decodeImageDataUrl(rawReference!.imageDataUrl);
+    bytes = decoded.bytes;
+    extension = pasteSourceExtension(decoded.mimeType);
+  } else {
+    const row = getRow<{ binding_json: string }>(
+      `SELECT cb.binding_json FROM character_bindings cb
+       JOIN characters c ON c.id = cb.character_id
+       WHERE c.project_id = ? AND cb.character_id = ? AND cb.provider_id = ?`,
+      [projectId, characterId, providerId]
+    );
+    let binding: Record<string, unknown> = {};
+    try {
+      binding = row ? (JSON.parse(row.binding_json) as Record<string, unknown>) : {};
+    } catch {
+      binding = {};
+    }
+    const candidate = typeof binding.faceImagePath === "string" ? resolve(binding.faceImagePath) : "";
+    if (!candidate || !isPathInside(candidate, resolve(dataRoot))) {
+      throw new HttpError(404, "Character face binding was not found");
+    }
+    bytes = await readFile(candidate);
+    const sourceExtension = extname(candidate).toLocaleLowerCase();
+    extension = sourceExtension === ".jpg" || sourceExtension === ".jpeg" || sourceExtension === ".webp" ? sourceExtension : ".png";
+  }
+  const stored = await storeReferenceImage(projectId, roundId, extension, bytes);
 
   return {
     ...normalizedRequest,
-    reference: normalizeReferenceOptions(rawReference, stored.referencePath)
+    reference: normalizeReferenceOptions(rawReference ?? {}, stored.referencePath)
   };
 }
 
@@ -1151,6 +1214,15 @@ export function deleteRoundTree(roundId: string) {
   );
   const roundIds = rows.map((row) => row.id);
   const placeholders = roundIds.map(() => "?").join(", ");
+  const scriptMangaHistory = getRow<{ id: string }>(
+    `SELECT id FROM generation_rounds
+     WHERE id IN (${placeholders}) AND script_manga_task_id IS NOT NULL
+     LIMIT 1`,
+    roundIds
+  );
+  if (scriptMangaHistory) {
+    throw new HttpError(409, "Rounds linked to script manga task history cannot be deleted");
+  }
 
   const roundRows = roundIds.map(
     (id) => getRow<SqlRow>("SELECT * FROM generation_rounds WHERE id = ?", [id])!

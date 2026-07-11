@@ -1,14 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createId, getRow, getRows, initializeDb, runSql } from "./db.ts";
+import { writeFile } from "node:fs/promises";
+import { createId, defaultVlmAuditSettings, getRow, getRows, initializeDb, runSql, setSetting } from "./db.ts";
+import { createCharacter, putCharacterBinding } from "./characters.ts";
 import { createProject } from "./projects.ts";
-import { createScript } from "./scripts.ts";
+import { addScriptRevision, createScript } from "./scripts.ts";
 import { collectRound } from "./rounds.ts";
-import { createScriptMangaRun, getScriptMangaRun } from "./scriptManga.ts";
+import {
+  approveScriptMangaRun,
+  auditScriptMangaTask,
+  createScriptMangaRun,
+  createScriptMangaRunExport,
+  getScriptMangaRun,
+  resumeScriptMangaRun,
+  selectScriptMangaTaskCandidate,
+  startScriptMangaRun,
+  updateScriptMangaPlan
+} from "./scriptManga.ts";
 import { fakeProvider, resetFakeProvider } from "./providers/fakeProvider.ts";
 import { registerProvider } from "./providers/registry.ts";
+import { deleteLayoutTemplate, importLayoutTemplate } from "./layoutTemplates.ts";
 
 registerProvider(fakeProvider);
+
+const TINY_PNG_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
 
 function template(): string {
   initializeDb();
@@ -21,7 +37,7 @@ function template(): string {
   return id;
 }
 
-test("createScriptMangaRun builds pages, balloons and batch-1 panel generations, then assigns results", async () => {
+test("createScriptMangaRun awaits candidate review before assigning batch-1 panel results", async () => {
   resetFakeProvider();
   const templateId = template();
   const project = createProject({ name: `script-manga-${createId("test")}`, mode: "book" });
@@ -75,16 +91,129 @@ test("createScriptMangaRun builds pages, balloons and batch-1 panel generations,
     await collectRound(task.round_id);
   }
 
-  const completed = getScriptMangaRun(run.id);
+  const awaitingReview = getScriptMangaRun(run.id);
+  assert.equal(awaitingReview.status, "awaiting_review");
+  assert.equal(awaitingReview.phase, "reviewing");
+  assert.equal(awaitingReview.completedCount, 0);
+  assert.equal(awaitingReview.failedCount, 0);
+  assert.equal(awaitingReview.tasks.length, 2);
+  assert.ok(awaitingReview.tasks.every((task) => task.status === "awaiting_review"));
+  assert.ok(awaitingReview.tasks.every((task) => task.candidateAssetIds.length === 1));
+
+  let completed = awaitingReview;
+  for (const task of awaitingReview.tasks) {
+    completed = selectScriptMangaTaskCandidate(task.id, { assetId: task.candidateAssetIds[0]! });
+  }
   assert.equal(completed.status, "completed");
+  assert.equal(completed.phase, "completed");
   assert.equal(completed.completedCount, 2);
   assert.equal(completed.failedCount, 0);
+  assert.ok(completed.tasks.every((task) => task.status === "completed" && task.selectedAssetId));
   assert.equal(getRows("SELECT * FROM page_panel_assignments WHERE page_id = ?", [tasks[0]!.page_id]).length, 2);
   assert.equal(getRows("SELECT * FROM dialogue_placements WHERE page_id = ? AND balloon_object_id IS NOT NULL", [tasks[0]!.page_id]).length, 2);
   const pageObjects = JSON.parse(getRow<{ objects_json: string }>("SELECT objects_json FROM pages WHERE id = ?", [tasks[0]!.page_id])!.objects_json);
   const balloonFontSizes = pageObjects.filter((object: { kind: string }) => object.kind === "balloon")
     .map((object: { content: { style: { size: number } } }) => object.content.style.size);
   assert.ok(balloonFontSizes.every((size: number) => size >= 0.035), `unexpected auto manga font sizes: ${balloonFontSizes.join(", ")}`);
+
+  for (const asset of getRows<{ image_path: string }>(
+    "SELECT a.image_path FROM assets a JOIN script_manga_tasks t ON t.selected_asset_id = a.id WHERE t.run_id = ?",
+    [run.id]
+  )) {
+    await writeFile(asset.image_path, Buffer.from(TINY_PNG_DATA_URL.split(",")[1]!, "base64"));
+  }
+  const exported = await createScriptMangaRunExport(run.id, { format: "png", pixelWidth: 256 });
+  assert.equal(exported.contentType, "image/png");
+  assert.equal(exported.pageCount, 1);
+  assert.ok(exported.buffer.byteLength > 0);
+  const afterExport = getScriptMangaRun(run.id);
+  assert.equal(afterExport.status, "completed");
+  assert.equal((afterExport.exportManifest as { format?: string })?.format, "png");
+});
+
+test("VLM audit scores generated candidates and still requires a human selection", async () => {
+  resetFakeProvider();
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      assert.equal(new URL(request.url).pathname, "/v1/chat/completions");
+      const body = await request.json() as { messages?: unknown };
+      assert.ok(Array.isArray(body.messages));
+      return Response.json({
+        choices: [{ message: { content: JSON.stringify({
+          score: 0.91,
+          checks: { visualIdentity: "pass", actionAlignment: "pass", fakeText: "pass", continuity: "pass" },
+          violations: []
+        }) } }]
+      });
+    }
+  });
+  setSetting("vlm_audit", {
+    ...defaultVlmAuditSettings,
+    baseUrl: `http://127.0.0.1:${server.port}/v1`,
+    model: "mock-vlm",
+    transport: "openai-compatible",
+    manageModelLifecycle: false,
+    releaseComfyBeforeAudit: false,
+    unloadAfterAudit: false
+  });
+  try {
+    const templateId = template();
+    const project = createProject({ name: `script-manga-vlm-${createId("test")}`, mode: "book" });
+    const projectId = project!.id as string;
+    const imported = createScript(projectId, {
+      title: "VLM audit",
+      fountainSource: ["INT. ROOM - DAY", "", "A red door opens."].join("\n")
+    });
+    const run = await createScriptMangaRun(projectId, {
+      scriptId: imported.script.id,
+      templateId,
+      providerId: "fake",
+      auditMode: "vlm"
+    });
+    assert.equal(run.auditMode, "vlm");
+    await collectRound(run.tasks[0]!.roundId!);
+    const queued = getScriptMangaRun(run.id);
+    assert.equal(queued.status, "auditing");
+    assert.equal(queued.tasks[0]!.status, "auditing");
+
+    const audited = await auditScriptMangaTask(queued.tasks[0]!.id);
+    assert.equal(audited.status, "awaiting_review");
+    assert.equal(audited.phase, "reviewing");
+    assert.equal(audited.tasks[0]!.status, "awaiting_review");
+    const scores = audited.tasks[0]!.scores as {
+      vlmAudit?: { state?: string; reports?: Array<{ score?: number; passed?: boolean; model?: string }> };
+    };
+    assert.equal(scores.vlmAudit?.state, "completed");
+    assert.equal(scores.vlmAudit?.reports?.[0]?.score, 0.91);
+    assert.equal(scores.vlmAudit?.reports?.[0]?.passed, true);
+    assert.equal(scores.vlmAudit?.reports?.[0]?.model, "mock-vlm");
+    const persisted = getRow<{ scores_json: string }>("SELECT scores_json FROM script_manga_tasks WHERE id = ?", [queued.tasks[0]!.id])!.scores_json;
+    assert.doesNotMatch(persisted, /data:image|base64|thumbnail/i);
+  } finally {
+    server.stop(true);
+    setSetting("vlm_audit", defaultVlmAuditSettings);
+  }
+});
+
+test("candidate auto-selection policies are rejected", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-review-gate-${createId("test")}`, mode: "book" });
+  const script = createScript(project!.id as string, {
+    title: "Review gate",
+    fountainSource: ["INT. ROOM - DAY", "", "A chair stands by the wall."].join("\n")
+  });
+  await assert.rejects(
+    createScriptMangaRun(project!.id as string, {
+      scriptId: script.script.id,
+      templateId,
+      providerId: "fake",
+      candidateSelectionPolicy: "metadata"
+    }),
+    /never auto-selected/
+  );
 });
 
 test("createScriptMangaRun assigns directed prompts to the same RTL panels as their dialogues", async () => {
@@ -142,8 +271,327 @@ test("createScriptMangaRun assigns directed prompts to the same RTL panels as th
     [getRow<{ page_id: string }>("SELECT page_id FROM script_manga_tasks WHERE run_id = ? LIMIT 1", [run.id])!.page_id]
   );
 
-  assert.deepEqual(promptPanels.map((task) => task.prompt), ["directed prompt 0", "directed prompt 1", "directed prompt 2"]);
+  promptPanels.forEach((task, index) => {
+    assert.match(task.prompt, new RegExp(`directed prompt ${index}`));
+    assert.match(task.prompt, /(?:extreme-wide|wide|medium|close-up|insert) shot/);
+    assert.match(task.prompt, /must show:/);
+    assert.match(task.prompt, /one coherent moment/);
+    assert.match(task.prompt, /no text, no letters, no speech bubbles/);
+  });
   assert.equal(promptPanels[1]!.panel_id, dialoguePanels[0]!.panel_id);
   assert.equal(promptPanels[2]!.panel_id, dialoguePanels[1]!.panel_id);
   assert.notEqual(promptPanels[0]!.panel_id, dialoguePanels[0]!.panel_id);
+});
+
+test("prepared runs persist their frozen plan, pages and tasks and resume without duplication", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-prepared-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const projectId = project!.id as string;
+  const imported = createScript(projectId, {
+    title: "Prepared episode",
+    fountainSource: [
+      "INT. ROOM - DAY",
+      "",
+      "@Alice",
+      "First line.",
+      "",
+      "Alice opens the door.",
+      "",
+      "@Bob",
+      "Second line."
+    ].join("\n")
+  });
+
+  const prepared = await createScriptMangaRun(projectId, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 2,
+    maxElementsPerPanel: 2,
+    maxDialoguesPerPanel: 1
+  });
+
+  assert.equal(prepared.status, "prepared");
+  assert.equal(prepared.phase, "awaiting_approval");
+  assert.equal(prepared.approvalStatus, "pending");
+  assert.equal(prepared.scriptRevisionId, imported.revision.id);
+  assert.ok(prepared.planId);
+  assert.equal(prepared.plan?.scriptRevisionId, imported.revision.id);
+  assert.equal(prepared.validation?.ok, true);
+  assert.equal(prepared.tasks.length, prepared.panelCount);
+  assert.ok(prepared.tasks.every((task) => task.status === "pending" && task.roundId === null));
+
+  const planRow = getRow<{ script_revision_id: string; plan_json: string }>(
+    "SELECT script_revision_id, plan_json FROM script_manga_plans WHERE id = ?",
+    [prepared.planId]
+  );
+  assert.equal(planRow?.script_revision_id, imported.revision.id);
+  assert.equal(JSON.parse(planRow!.plan_json).version, 2);
+
+  const beforePages = getRows<{ page_id: string }>(
+    "SELECT page_id FROM script_manga_run_pages WHERE run_id = ? ORDER BY page_index ASC",
+    [prepared.id]
+  );
+  const beforeTasks = getRows<{ id: string }>(
+    "SELECT id FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at ASC",
+    [prepared.id]
+  );
+  assert.equal(beforePages.length, prepared.pageCount);
+  assert.equal(beforeTasks.length, prepared.panelCount);
+
+  const approved = approveScriptMangaRun(prepared.id);
+  assert.equal(approved.status, "approved");
+  assert.equal(approved.approvalStatus, "approved");
+  const started = await startScriptMangaRun(prepared.id);
+  assert.equal(started.status, "running");
+  assert.ok(started.tasks.every((task) => task.status === "running" && task.roundId));
+  const resumed = await resumeScriptMangaRun(prepared.id);
+  assert.equal(resumed.status, "running");
+
+  assert.deepEqual(
+    getRows<{ page_id: string }>("SELECT page_id FROM script_manga_run_pages WHERE run_id = ? ORDER BY page_index ASC", [prepared.id]),
+    beforePages
+  );
+  assert.deepEqual(
+    getRows<{ id: string }>("SELECT id FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at ASC", [prepared.id]),
+    beforeTasks
+  );
+});
+
+test("an invalid plan edit rolls back without replacing run-owned pages or tasks", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-plan-rollback-${createId("test")}`, mode: "book" });
+  const projectId = project!.id as string;
+  const script = createScript(projectId, {
+    title: "Plan rollback",
+    fountainSource: ["INT. ROOM - DAY", "", "A clock ticks."].join("\n")
+  });
+  const prepared = await createScriptMangaRun(projectId, {
+    scriptId: script.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false
+  });
+  const planBefore = getRow<{ plan_json: string }>("SELECT plan_json FROM script_manga_plans WHERE id = ?", [prepared.planId])!.plan_json;
+  const pagesBefore = getRows<{ page_id: string }>(
+    "SELECT page_id FROM script_manga_run_pages WHERE run_id = ? ORDER BY page_index",
+    [prepared.id]
+  );
+  const tasksBefore = getRows<{ id: string }>(
+    "SELECT id FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at",
+    [prepared.id]
+  );
+  const invalid = structuredClone(prepared.plan!);
+  invalid.pages[0]!.layoutTemplateId = "missing:layout";
+  assert.throws(() => updateScriptMangaPlan(prepared.planId!, { plan: invalid }), /could not be resolved/);
+  assert.equal(getRow<{ plan_json: string }>("SELECT plan_json FROM script_manga_plans WHERE id = ?", [prepared.planId])!.plan_json, planBefore);
+  assert.deepEqual(
+    getRows<{ page_id: string }>("SELECT page_id FROM script_manga_run_pages WHERE run_id = ? ORDER BY page_index", [prepared.id]),
+    pagesBefore
+  );
+  assert.deepEqual(
+    getRows<{ id: string }>("SELECT id FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at", [prepared.id]),
+    tasksBefore
+  );
+  assert.equal(getScriptMangaRun(prepared.id).status, "prepared");
+});
+
+test("a run remains pinned to its original script revision and MangaPlanV2", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-revision-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const projectId = project!.id as string;
+  const imported = createScript(projectId, {
+    title: "Revision pin",
+    fountainSource: ["INT. ROOM - DAY", "", "@Alice", "Original line."].join("\n")
+  });
+  const run = await createScriptMangaRun(projectId, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false
+  });
+  const frozenPlan = structuredClone(run.plan);
+
+  const newer = addScriptRevision(imported.script.id, {
+    fountainSource: ["EXT. STREET - NIGHT", "", "@Alice", "Replacement line.", "", "@Bob", "New line."].join("\n")
+  });
+  assert.notEqual(newer.revision.id, imported.revision.id);
+
+  const afterRevision = getScriptMangaRun(run.id);
+  assert.equal(afterRevision.scriptRevisionId, imported.revision.id);
+  assert.equal(afterRevision.plan?.scriptRevisionId, imported.revision.id);
+  assert.deepEqual(afterRevision.plan, frozenPlan);
+  assert.ok(afterRevision.plan?.narrativeGraph.sourceElements.some((element) => element.text.includes("Original line")));
+  assert.ok(afterRevision.plan?.narrativeGraph.sourceElements.every((element) => !element.text.includes("Replacement line")));
+});
+
+test("five- and six-panel prepared runs use matching layouts and materialize every task", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  for (const panelCount of [5, 6]) {
+    const project = createProject({ name: `script-manga-${panelCount}-panels-${createId("test")}`, mode: "book" });
+    assert.ok(project);
+    const projectId = project!.id as string;
+    const fountainSource = [
+      "INT. TEST CHAMBER - DAY",
+      "",
+      ...Array.from({ length: panelCount }, (_, index) => [`Visual beat ${index + 1}.`, ""]).flat()
+    ].join("\n");
+    const imported = createScript(projectId, { title: `${panelCount} panels`, fountainSource });
+    const run = await createScriptMangaRun(projectId, {
+      scriptId: imported.script.id,
+      templateId,
+      providerId: "fake",
+      generateImages: false,
+      panelsPerPage: panelCount,
+      maxElementsPerPanel: 1
+    });
+
+    const expectedLayout = panelCount === 5 ? "builtin:five-panel" : "builtin:six-panel";
+    assert.equal(run.status, "prepared");
+    assert.equal(run.pageCount, 1);
+    assert.equal(run.panelCount, panelCount);
+    assert.equal(run.plan?.pages[0]?.layoutTemplateId, expectedLayout);
+    assert.equal(
+      getRow<{ layout_template_id: string }>(
+        "SELECT layout_template_id FROM script_manga_run_pages WHERE run_id = ? AND page_index = 0",
+        [run.id]
+      )?.layout_template_id,
+      expectedLayout
+    );
+    const tasks = getRows<{ status: string; round_id: string | null }>(
+      "SELECT status, round_id FROM script_manga_tasks WHERE run_id = ?",
+      [run.id]
+    );
+    assert.equal(tasks.length, panelCount);
+    assert.ok(tasks.every((task) => task.status === "pending" && task.round_id === null));
+  }
+});
+
+test("a prepared run executes from its layout snapshot after an imported template is deleted", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const importedLayout = importLayoutTemplate({
+    name: "Ephemeral one panel",
+    json5: `{
+      schemaVersion: '0.2.0',
+      metadata: { title: 'Ephemeral one panel' },
+      coordinateSystem: { preset: 'width-relative-top-left' },
+      document: { mode: 'single-page', readingDirection: 'rtl', pageProgression: 'rtl' },
+      pages: [{ id: 'page_1', role: 'single', aspectRatio: [1, 1.4], width: 1, height: 1.4, bounds: [0, 0, 1, 1.4] }],
+      panels: [{ id: 'only', pageId: 'page_1', order: 1, shape: { type: 'rect', bounds: [0.04, 0.04, 0.96, 1.36] } }],
+      balloons: [], texts: []
+    }`
+  });
+  const project = createProject({ name: `script-manga-layout-snapshot-${createId("test")}`, mode: "book" });
+  const projectId = project!.id as string;
+  const script = createScript(projectId, {
+    title: "Layout snapshot",
+    fountainSource: ["INT. ROOM - DAY", "", "A door opens."].join("\n")
+  });
+  const prepared = await createScriptMangaRun(projectId, {
+    scriptId: script.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    planningMode: "provided",
+    directorPlan: {
+      title: "Snapshot plan",
+      pages: [{
+        index: 0,
+        title: "Page 1",
+        layoutTemplateId: importedLayout.id,
+        panels: [{
+          id: "snapshot-panel",
+          sceneIndex: 0,
+          sceneHeading: "INT. ROOM - DAY",
+          prompt: "an opening door",
+          sourceText: "A door opens.",
+          dialogueOrderIndexes: []
+        }]
+      }]
+    }
+  });
+  assert.equal(prepared.plan?.pages[0]?.layoutSnapshot.panels[0]?.id, "only");
+  deleteLayoutTemplate(importedLayout.id);
+  approveScriptMangaRun(prepared.id);
+  const started = await startScriptMangaRun(prepared.id);
+  assert.equal(started.status, "running");
+  assert.equal(started.tasks.length, 1);
+  assert.ok(started.tasks[0]!.roundId);
+});
+
+test("character aliases and bindings feed PanelSpec references and the generation request", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-references-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const projectId = project!.id as string;
+  const character = createCharacter(projectId, { name: "Alice Kisaragi", aliases: ["ALICE", "アリス"] });
+  const comfyBinding = await putCharacterBinding(character.id, "comfy", {
+    faceImageDataUrl: TINY_PNG_DATA_URL,
+    loraName: "alice-identity.safetensors",
+    loraStrength: 0.8
+  });
+  assert.equal(comfyBinding.hasFaceImage, true);
+  const storedBinding = getRow<{ binding_json: string }>(
+    "SELECT binding_json FROM character_bindings WHERE character_id = ? AND provider_id = 'comfy'",
+    [character.id]
+  );
+  assert.ok(storedBinding);
+  runSql(
+    "INSERT INTO character_bindings (id, character_id, provider_id, binding_json) VALUES (?, ?, 'fake', ?)",
+    [createId("bind"), character.id, storedBinding!.binding_json]
+  );
+
+  const imported = createScript(projectId, {
+    title: "Bound character",
+    fountainSource: ["INT. LAB - NIGHT", "", "@ALICE", "Are you there?"].join("\n")
+  });
+  assert.equal(
+    getRow<{ character_id: string }>("SELECT character_id FROM dialogue_lines WHERE script_id = ?", [imported.script.id])?.character_id,
+    character.id
+  );
+
+  const run = await createScriptMangaRun(projectId, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: true,
+    loras: [{ name: "global-style.safetensors", strength: 0.5 }]
+  });
+  assert.equal(run.tasks.length, 1);
+  const task = getRow<{
+    round_id: string;
+    panel_spec_json: string;
+    reference_manifest_json: string;
+  }>("SELECT round_id, panel_spec_json, reference_manifest_json FROM script_manga_tasks WHERE id = ?", [run.tasks[0]!.id]);
+  assert.ok(task?.round_id);
+  const panelSpec = JSON.parse(task!.panel_spec_json);
+  const manifest = JSON.parse(task!.reference_manifest_json);
+  assert.ok(panelSpec.cast.some((member: { characterId: string }) => member.characterId === character.id));
+  assert.ok(manifest.some((reference: { entityId: string; role: string }) => reference.entityId === character.id && reference.role === "identity"));
+  assert.ok(manifest.some((reference: { entityId: string; role: string }) => reference.entityId === character.id && reference.role === "style"));
+
+  const round = getRow<{ request_json: string; intent_json: string }>(
+    "SELECT request_json, intent_json FROM generation_rounds WHERE id = ?",
+    [task!.round_id]
+  );
+  const request = JSON.parse(round!.request_json);
+  const intent = JSON.parse(round!.intent_json);
+  assert.deepEqual(request.loras, [
+    { name: "alice-identity.safetensors", strength: 0.8 },
+    { name: "global-style.safetensors", strength: 0.5 }
+  ]);
+  assert.equal(request.reference.face.enabled, true);
+  assert.equal(typeof request.reference.imagePath, "string");
+  assert.ok(request.reference.imagePath.length > 0);
+  assert.equal(intent.identity.face.kind, "roundAttachment");
+  assert.equal(intent.identity.face.attachment, "reference");
 });

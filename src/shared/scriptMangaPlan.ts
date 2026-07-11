@@ -1,12 +1,23 @@
 import type { FountainDoc, FountainElement } from "./fountain";
+import { scriptMangaLayoutCandidates } from "./layoutPresets";
+
+export interface ScriptMangaPanelDirection {
+  shot: string;
+  subject: string;
+  action: string;
+  emotion: string;
+  composition: string;
+}
 
 export interface ScriptMangaPanelPlan {
   id: string;
   sceneIndex: number;
   sceneHeading: string;
+  sourceElementIds: string[];
   prompt: string;
   sourceText: string;
   dialogueOrderIndexes: number[];
+  direction?: ScriptMangaPanelDirection;
 }
 
 export interface ScriptMangaPagePlan {
@@ -14,6 +25,7 @@ export interface ScriptMangaPagePlan {
   title: string;
   layoutTemplateId: string;
   panels: ScriptMangaPanelPlan[];
+  pageIntent?: string;
 }
 
 export interface ScriptMangaPlan {
@@ -21,6 +33,15 @@ export interface ScriptMangaPlan {
   pages: ScriptMangaPagePlan[];
   panelCount: number;
   dialogueCount: number;
+  /** Exact structured-director exchanges used to create this plan (absent for deterministic planning). */
+  plannerProvenance?: {
+    kind: "llm-director";
+    model: string;
+    batches: Array<{
+      rawOutput: string;
+      messages: Array<{ role: string; content: string }>;
+    }>;
+  };
 }
 
 export interface ScriptMangaPlanOptions {
@@ -51,8 +72,12 @@ function visibleText(element: FountainElement): string {
 
 function visualText(element: FountainElement): string {
   switch (element.type) {
-    case "dialogue":
-      return `${element.speaker} is speaking, ${element.text}`;
+    case "dialogue": {
+      const speechAct = /[?？]/.test(element.text) ? "question" : /[!！]/.test(element.text) ? "exclamation" : "statement";
+      const emotion = speechAct === "question" ? "inquisitive" : speechAct === "exclamation" ? "emphatic" : "focused";
+      const delivery = element.parenthetical?.trim() ? `, deliveryDirection=${element.parenthetical.trim()}` : "";
+      return `${element.speaker} speaking, speechAct=${speechAct}, emotion=${emotion}, mouthState=speaking, gazeTarget=conversation partner, gesture=natural conversational gesture${delivery}`;
+    }
     case "action":
     case "synopsis":
       return element.text;
@@ -62,11 +87,14 @@ function visualText(element: FountainElement): string {
   }
 }
 
+function sourceElementId(sceneIndex: number, elementIndex: number): string {
+  return `scene-${sceneIndex}-element-${elementIndex}`;
+}
+
 function layoutForPanelCount(count: number): string {
-  if (count <= 1) return "builtin:splash";
-  if (count === 2) return "builtin:two-horizontal";
-  if (count === 3) return "builtin:three-horizontal";
-  return "builtin:four-grid";
+  const layout = scriptMangaLayoutCandidates(count)[0];
+  if (!layout) throw new Error(`No script manga layout supports ${count} panels.`);
+  return layout;
 }
 
 /**
@@ -85,13 +113,13 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
   let dialogueOrder = 0;
 
   doc.scenes.forEach((scene, sceneIndex) => {
-    let elements: FountainElement[] = [];
+    let elements: Array<{ element: FountainElement; sourceElementId: string }> = [];
     let dialogueIndexes: number[] = [];
     let characterCount = 0;
 
     const flush = () => {
-      const sourceParts = elements.map(visibleText).filter(Boolean);
-      const visualParts = elements.map(visualText).filter(Boolean);
+      const sourceParts = elements.map(({ element }) => visibleText(element)).filter(Boolean);
+      const visualParts = elements.map(({ element }) => visualText(element)).filter(Boolean);
       if (sourceParts.length === 0) {
         elements = [];
         dialogueIndexes = [];
@@ -104,6 +132,7 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
         id: `panel-${panelIndex + 1}`,
         sceneIndex,
         sceneHeading: scene.heading,
+        sourceElementIds: elements.map((entry) => entry.sourceElementId),
         prompt: `${stylePrompt}. ${sceneContext} ${visualParts.join(" ")}`.replace(/\s+/g, " ").trim(),
         sourceText: sourceParts.join("\n"),
         dialogueOrderIndexes: [...dialogueIndexes]
@@ -113,7 +142,7 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
       characterCount = 0;
     };
 
-    for (const element of scene.elements) {
+    for (const [elementIndex, element] of scene.elements.entries()) {
       if (element.type === "section" || element.type === "transition") continue;
       const text = visibleText(element);
       if (!text) continue;
@@ -124,7 +153,7 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
       ) {
         flush();
       }
-      elements.push(element);
+      elements.push({ element, sourceElementId: sourceElementId(sceneIndex, elementIndex) });
       characterCount += text.length;
       if (element.type === "dialogue") {
         dialogueIndexes.push(dialogueOrder);

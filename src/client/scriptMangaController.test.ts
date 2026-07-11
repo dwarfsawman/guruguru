@@ -1,0 +1,102 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { WorkflowTemplate } from "../shared/apiTypes.ts";
+import type { ScriptMangaRunView, ScriptMangaUiSettings } from "../shared/scriptMangaApi.ts";
+import { actionHandlerFor } from "./actionRegistry.ts";
+import { state } from "./appState.ts";
+import {
+  clearScriptMangaRunState,
+  clearScriptMangaUiState,
+  initializeScriptMangaUiState,
+  nextScriptMangaSettings,
+  scriptMangaPrepareRequest
+} from "./scriptMangaController.ts";
+
+const settings: ScriptMangaUiSettings = {
+  templateId: "template-1",
+  planningMode: "heuristic",
+  panelsPerPage: 4,
+  dialoguePolicy: "preserve",
+  auditMode: "vlm"
+};
+
+test("nextScriptMangaSettings applies supported template, planner and panel controls", () => {
+  assert.equal(nextScriptMangaSettings(settings, "templateId", "template-2").templateId, "template-2");
+  assert.equal(nextScriptMangaSettings(settings, "planningMode", "llm").planningMode, "llm");
+  assert.equal(nextScriptMangaSettings(settings, "panelsPerPage", "0").panelsPerPage, 1);
+  assert.equal(nextScriptMangaSettings(settings, "panelsPerPage", "9").panelsPerPage, 6);
+  assert.equal(nextScriptMangaSettings(settings, "panelsPerPage", "3.8").panelsPerPage, 3);
+  assert.equal(nextScriptMangaSettings(settings, "auditMode", "manual").auditMode, "manual");
+  assert.equal(nextScriptMangaSettings(settings, "auditMode", "vlm").auditMode, "vlm");
+});
+
+test("nextScriptMangaSettings keeps unsupported values and future dialogue policies disabled", () => {
+  assert.equal(nextScriptMangaSettings(settings, "planningMode", "provided"), settings);
+  assert.equal(nextScriptMangaSettings(settings, "panelsPerPage", "not-a-number"), settings);
+  assert.equal(nextScriptMangaSettings(settings, "dialoguePolicy", "adapt"), settings);
+  assert.equal(nextScriptMangaSettings(settings, "dialoguePolicy", "preserve").dialoguePolicy, "preserve");
+  assert.equal(nextScriptMangaSettings(settings, "auditMode", "automatic"), settings);
+});
+
+test("scriptMangaPrepareRequest always prepares a review run without generating images", () => {
+  assert.deepEqual(scriptMangaPrepareRequest("script-1", settings), {
+    scriptId: "script-1",
+    ...settings,
+    generateImages: false,
+    candidateSelectionPolicy: "review"
+  });
+});
+
+test("script manga controller registers local retry and completed-run export actions", () => {
+  assert.equal(typeof actionHandlerFor("retry-script-manga-task"), "function");
+  assert.equal(typeof actionHandlerFor("export-script-manga-run"), "function");
+});
+
+test("script manga UI lifecycle clears revision-pinned runs without leaking project settings", () => {
+  const template: WorkflowTemplate = {
+    id: "template-ui",
+    name: "UI template",
+    description: "",
+    type: "txt2img",
+    version: 1,
+    workflowHash: "hash",
+    workflowJson: {},
+    roleMap: {}
+  };
+  state.templates = [template];
+  state.scriptMangaSettings = { ...settings, templateId: "missing-template", panelsPerPage: 6 };
+  state.scriptMangaRun = { id: "old-run" } as ScriptMangaRunView;
+  state.scriptMangaBusy = true;
+  state.scriptMangaVlmStatus = {
+    ok: true,
+    state: "ready",
+    baseUrl: "http://127.0.0.1:1234",
+    model: "audit-model",
+    checkedAt: "2026-07-12T00:00:00.000Z",
+    loadedModelIds: ["audit-model"]
+  };
+
+  initializeScriptMangaUiState();
+  assert.deepEqual(state.scriptMangaTemplates, [template]);
+  assert.equal(state.scriptMangaSettings.templateId, template.id);
+  assert.equal(state.scriptMangaRun, null);
+  assert.equal(state.scriptMangaBusy, false);
+  assert.equal(state.scriptMangaVlmStatus, null);
+
+  state.scriptMangaRun = { id: "revision-run" } as ScriptMangaRunView;
+  clearScriptMangaRunState();
+  assert.equal(state.scriptMangaRun, null);
+  assert.equal(state.scriptMangaSettings.panelsPerPage, 6, "script switch keeps reusable controls");
+
+  clearScriptMangaUiState();
+  assert.deepEqual(state.scriptMangaTemplates, []);
+  assert.deepEqual(state.scriptMangaSettings, {
+    templateId: "",
+    planningMode: "heuristic",
+    panelsPerPage: 4,
+    dialoguePolicy: "preserve",
+    auditMode: "vlm"
+  });
+  assert.equal(state.scriptMangaVlmStatus, null);
+  state.templates = [];
+});

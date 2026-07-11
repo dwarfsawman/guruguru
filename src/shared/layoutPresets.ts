@@ -156,6 +156,24 @@ function fourVerticalHeroPanels(): LayoutPanel[] {
   ];
 }
 
+/** 上段・中段を2コマずつ進め、下段の横長コマで締める5コマ構成。 */
+function fivePanelPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const half = (right - left - GUTTER) / 2;
+  const rowHeight = (bottom - MARGIN - GUTTER * 2) / 3;
+  const middleTop = MARGIN + rowHeight + GUTTER;
+  const bottomTop = middleTop + rowHeight + GUTTER;
+  return [
+    rectPanel("top-right", 1, left + half + GUTTER, MARGIN, right, MARGIN + rowHeight),
+    rectPanel("top-left", 2, left, MARGIN, left + half, MARGIN + rowHeight),
+    rectPanel("middle-right", 3, left + half + GUTTER, middleTop, right, middleTop + rowHeight),
+    rectPanel("middle-left", 4, left, middleTop, left + half, middleTop + rowHeight),
+    rectPanel("payoff", 5, left, bottomTop, right, bottom)
+  ];
+}
+
 /** 内蔵テンプレ一覧(表示順)。 */
 export const LAYOUT_PRESETS: BuiltinLayoutTemplate[] = [
   preset("cover", "表紙(タイトル+大ゴマ)", coverPanels()),
@@ -169,11 +187,32 @@ export const LAYOUT_PRESETS: BuiltinLayoutTemplate[] = [
   preset("four-grid", "4コマ(2×2)", gridPanels(2, 2)),
   preset("four-hero-bottom", "4コマ(下段大ゴマ)", fourHeroBottomPanels()),
   preset("four-vertical-hero", "4コマ(右縦大ゴマ)", fourVerticalHeroPanels()),
+  preset("five-panel", "5コマ(2列+下段大ゴマ)", fivePanelPanels()),
   preset("six-panel", "6コマ(3段×2)", gridPanels(3, 2)),
   preset("yonkoma", "4コマ(縦4段)", gridPanels(4, 1))
 ];
 
+const SCRIPT_MANGA_LAYOUTS_BY_PANEL_COUNT: Readonly<Record<number, readonly string[]>> = {
+  1: ["builtin:splash"],
+  2: ["builtin:two-horizontal", "builtin:two-vertical"],
+  3: ["builtin:three-horizontal", "builtin:three-hero-top", "builtin:three-side-hero", "builtin:three-hero-bottom"],
+  4: ["builtin:four-grid", "builtin:four-hero-bottom", "builtin:four-vertical-hero"],
+  5: ["builtin:five-panel"],
+  6: ["builtin:six-panel"]
+};
+
+/** 自動漫画で選択可能な内蔵レイアウトを、正確なコマ数ごとに返す。 */
+export function scriptMangaLayoutCandidates(panelCount: number): string[] {
+  if (!Number.isInteger(panelCount) || panelCount < 1 || panelCount > 6) return [];
+  return [...(SCRIPT_MANGA_LAYOUTS_BY_PANEL_COUNT[panelCount] ?? [])];
+}
+
 /** id で内蔵テンプレを引く(見つからなければ null)。 */
 export function findLayoutPreset(id: string): BuiltinLayoutTemplate | null {
   return LAYOUT_PRESETS.find((template) => template.id === id) ?? null;
+}
+
+/** 内蔵テンプレートのコマ数を返す。外部テンプレート解決器の既定実装としても使える。 */
+export function builtinLayoutPanelCount(id: string): number | null {
+  return findLayoutPreset(id)?.layout.panels.length ?? null;
 }

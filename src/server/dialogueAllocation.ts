@@ -92,7 +92,7 @@ export function allocateDialoguePages(projectId: string, pageId: string, body: u
   let moved = 0;
   const warnings: string[] = [];
 
-  runSql("BEGIN");
+  runSql("SAVEPOINT dialogue_allocation");
   try {
     for (const lineId of Array.from(new Set(lineIds))) {
       const placements = getRows<PlacementRow>("SELECT * FROM dialogue_placements WHERE line_id = ?", [lineId]);
@@ -153,9 +153,10 @@ export function allocateDialoguePages(projectId: string, pageId: string, body: u
       skipped += 1;
       warnings.push(`行 ${lineId} は他ページに配置済みのためスキップしました。`);
     }
-    runSql("COMMIT");
+    runSql("RELEASE dialogue_allocation");
   } catch (error) {
-    runSql("ROLLBACK");
+    runSql("ROLLBACK TO dialogue_allocation");
+    runSql("RELEASE dialogue_allocation");
     throw error;
   }
 
@@ -179,7 +180,7 @@ export function removeDialogueAllocation(projectId: string, pageId: string, body
   let skipped = 0;
   const warnings: string[] = [];
 
-  runSql("BEGIN");
+  runSql("SAVEPOINT dialogue_allocation_remove");
   try {
     for (const lineId of Array.from(new Set(lineIds))) {
       const placements = getRows<PlacementRow>("SELECT * FROM dialogue_placements WHERE line_id = ? AND page_id = ?", [
@@ -196,9 +197,10 @@ export function removeDialogueAllocation(projectId: string, pageId: string, body
         removed += 1;
       }
     }
-    runSql("COMMIT");
+    runSql("RELEASE dialogue_allocation_remove");
   } catch (error) {
-    runSql("ROLLBACK");
+    runSql("ROLLBACK TO dialogue_allocation_remove");
+    runSql("RELEASE dialogue_allocation_remove");
     throw error;
   }
 

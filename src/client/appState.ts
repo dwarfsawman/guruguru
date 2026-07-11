@@ -36,6 +36,7 @@ import type { PoseDraft } from "./poseTypes";
 import type { StyleLoraSelection } from "../shared/types";
 import type { BookReaderSettings } from "./bookReader";
 import { DEFAULT_BOOK_READER_SETTINGS } from "./bookReader";
+import type { ScriptMangaRunView, ScriptMangaUiSettings, VlmAuditServiceStatus } from "../shared/scriptMangaApi";
 
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。フォームレベルの
@@ -517,6 +518,16 @@ export interface AppState {
   scriptFountainDraft: string;
   /** 取り込み/再取り込みの送信中フラグ(ボタン disabled + スピナー表示に使う)。 */
   scriptImportBusy: boolean;
+  /** MangaPlanV2 一括生成で選択可能な workflow template。脚本画面を開くたび現在の一覧へ同期する。 */
+  scriptMangaTemplates: WorkflowTemplate[];
+  /** MangaPlanV2 の準備時に送る編集可能な設定。 */
+  scriptMangaSettings: ScriptMangaUiSettings;
+  /** 準備済み、または実行中の現在run。脚本切替・再取り込み・画面closeで破棄する。 */
+  scriptMangaRun: ScriptMangaRunView | null;
+  /** run準備・状態遷移・候補採用の多重送信を防ぐ専用busy。 */
+  scriptMangaBusy: boolean;
+  /** VLM監査サービスの非ブロッキング接続状態。脚本画面を開いた時に取得する。 */
+  scriptMangaVlmStatus: VlmAuditServiceStatus | null;
   /** そのプロジェクトのキャラクタ一覧。脚本画面を開いた時に取得する。 */
   characters: Character[];
   /** キャラクタ一覧で選択中(編集対象)の id。null=未選択。 */
@@ -660,6 +671,17 @@ export const state: AppState = {
   scriptDialogueLines: [],
   scriptFountainDraft: "",
   scriptImportBusy: false,
+  scriptMangaTemplates: [],
+  scriptMangaSettings: {
+    templateId: "",
+    planningMode: "heuristic",
+    panelsPerPage: 4,
+    dialoguePolicy: "preserve",
+    auditMode: "vlm"
+  },
+  scriptMangaRun: null,
+  scriptMangaBusy: false,
+  scriptMangaVlmStatus: null,
   characters: [],
   selectedCharacterId: null,
   selectedCharacterBinding: null,

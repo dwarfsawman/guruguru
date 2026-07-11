@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { normalizeInpaintOptions, roundAttachmentPathFromRequest } from "./rounds.ts";
+import { deleteRoundTree, normalizeInpaintOptions, roundAttachmentPathFromRequest } from "./rounds.ts";
 import type { GenerationRequest } from "../shared/types.ts";
+import { createProject } from "./projects.ts";
+import { createId, getRow, initializeDb, runSql } from "./db.ts";
+import { HttpError } from "./http.ts";
+import { removeRoundTrashSnapshot } from "./roundTrash.ts";
 
 // Characterization tests: pin the behavior of normalizeInpaintOptions, including the
 // featherRadius field added by the mask feather feature. See Docs/Feature-MaskFeather.md.
@@ -114,4 +118,63 @@ test("roundAttachmentPathFromRequest: reads stored mask and pose paths", () => {
 test("roundAttachmentPathFromRequest: empty when attachment is absent", () => {
   assert.equal(roundAttachmentPathFromRequest(request(), "mask"), null);
   assert.equal(roundAttachmentPathFromRequest(request(), "pose"), null);
+});
+
+function createRoundDeleteFixture(): { projectId: string; templateId: string } {
+  initializeDb();
+  const project = createProject({ name: "Round deletion guard" });
+  assert.ok(project);
+  const templateId = createId("template");
+  runSql(
+    `INSERT INTO workflow_templates (id, name, description, type, version, workflow_json, role_map_json, workflow_hash)
+     VALUES (?, 'Round deletion guard', '', 'txt2img', 1, '{}', '{}', 'hash')`,
+    [templateId]
+  );
+  return { projectId: project!.id as string, templateId };
+}
+
+function insertRound(input: {
+  projectId: string;
+  templateId: string;
+  parentRoundId?: string | null;
+  scriptMangaTaskId?: string | null;
+  roundIndex: number;
+}): string {
+  const roundId = createId("round");
+  runSql(
+    `INSERT INTO generation_rounds
+       (id, project_id, template_id, parent_round_id, round_index, status, generation_mode,
+        request_json, provider_id, script_manga_task_id)
+     VALUES (?, ?, ?, ?, ?, 'completed', 'txt2img', '{}', 'manual', ?)`,
+    [roundId, input.projectId, input.templateId, input.parentRoundId ?? null, input.roundIndex, input.scriptMangaTaskId ?? null]
+  );
+  return roundId;
+}
+
+test("deleteRoundTree: rejects a tree containing script manga task history", () => {
+  const fixture = createRoundDeleteFixture();
+  const rootId = insertRound({ ...fixture, roundIndex: 0 });
+  const childId = insertRound({
+    ...fixture,
+    parentRoundId: rootId,
+    scriptMangaTaskId: createId("manga_task"),
+    roundIndex: 1
+  });
+
+  assert.throws(
+    () => deleteRoundTree(rootId),
+    (error: unknown) => error instanceof HttpError && error.statusCode === 409
+  );
+  assert.ok(getRow("SELECT id FROM generation_rounds WHERE id = ?", [rootId]));
+  assert.ok(getRow("SELECT id FROM generation_rounds WHERE id = ?", [childId]));
+});
+
+test("deleteRoundTree: still deletes an unlinked round", () => {
+  const fixture = createRoundDeleteFixture();
+  const roundId = insertRound({ ...fixture, roundIndex: 0 });
+
+  const result = deleteRoundTree(roundId);
+  assert.deepEqual(result, { deleted: true, roundIds: [roundId], deletedCount: 1 });
+  assert.equal(getRow("SELECT id FROM generation_rounds WHERE id = ?", [roundId]), null);
+  removeRoundTrashSnapshot(roundId);
 });

@@ -3,8 +3,24 @@
  * book grid の上に重ねて表示)。Fountain 取り込み/再取り込み、シーン/セリフ一覧、キャラクタ管理、
  * セリフ行のページ割当を1画面にまとめる。state は引数で受け取るため main.ts への逆依存を持たない。
  */
-import type { BookPages, Character, CharacterBindingView, DialogueLine, RecentReferenceImage, ScriptRevision } from "../../shared/apiTypes";
+import type {
+  BookPages,
+  Character,
+  CharacterBindingView,
+  DialogueLine,
+  RecentReferenceImage,
+  ScriptRevision,
+  WorkflowTemplate
+} from "../../shared/apiTypes";
 import type { MangaScript } from "../../shared/apiTypes";
+import type {
+  ScriptMangaAuditMode,
+  ScriptMangaRunView,
+  ScriptMangaTaskView,
+  ScriptMangaUiSettings,
+  ScriptMangaVlmAuditView,
+  VlmAuditServiceStatus
+} from "../../shared/scriptMangaApi";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconPlus, iconScript, iconTrash } from "../icons";
 
@@ -31,7 +47,23 @@ export interface ScriptViewProps {
   characterFacePickerOpen: boolean;
   recentImages: RecentReferenceImage[];
   loraChoices: string[];
+  scriptMangaTemplates: WorkflowTemplate[];
+  scriptMangaSettings: ScriptMangaUiSettings;
+  scriptMangaRun: ScriptMangaRunView | null;
+  scriptMangaBusy: boolean;
+  scriptMangaVlmStatus: VlmAuditServiceStatus | null;
 }
+
+export type ScriptMangaControlViewProps = Pick<
+  ScriptViewProps,
+  | "activeScriptId"
+  | "activeScriptRevision"
+  | "scriptMangaTemplates"
+  | "scriptMangaSettings"
+  | "scriptMangaRun"
+  | "scriptMangaBusy"
+  | "scriptMangaVlmStatus"
+>;
 
 export function renderScriptView(props: ScriptViewProps): string {
   const { book } = props;
@@ -51,6 +83,7 @@ export function renderScriptView(props: ScriptViewProps): string {
         <div class="script-body">
           ${renderScriptTabs(props.scripts, props.activeScriptId)}
           ${renderImportCard(props)}
+          ${renderScriptMangaControlCard(props)}
           <div class="script-columns">
             ${renderDialogueLinesPanel(props)}
             ${renderCharactersPanel(props)}
@@ -58,6 +91,326 @@ export function renderScriptView(props: ScriptViewProps): string {
         </div>
       </section>
     </main>
+  `;
+}
+
+function unknownSummary(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function renderRunWarnings(run: ScriptMangaRunView): string {
+  const warnings = [
+    ...(run.validation?.issues ?? []).map((issue) => ({ severity: issue.severity, message: issue.message })),
+    ...(run.plan?.narrativeGraph.warnings ?? []).map((warning) => ({ severity: "warning" as const, message: warning.message }))
+  ];
+  if (warnings.length === 0) return `<p class="script-manga-no-warnings">構造検証の警告はありません。</p>`;
+  return `
+    <ul class="script-manga-warnings">
+      ${warnings.map((warning) => `
+        <li class="is-${warning.severity}">
+          <span>${warning.severity === "error" ? "ERROR" : "WARN"}</span>
+          ${escapeHtml(warning.message)}
+        </li>
+      `).join("")}
+    </ul>
+  `;
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/** DB由来のunknown scoresを、boundedなVLM監査表示モデルへ変換する純関数。 */
+export function scriptMangaVlmAuditFromScores(scores: unknown): ScriptMangaVlmAuditView | null {
+  const scoreObject = jsonRecord(scores);
+  const audit = jsonRecord(scoreObject?.vlmAudit);
+  if (!audit || !["queued", "deferred", "completed", "unavailable"].includes(String(audit.state))) return null;
+  const state = audit.state as ScriptMangaVlmAuditView["state"];
+  const error = typeof audit.error === "string" && audit.error.trim() ? audit.error.trim().slice(0, 500) : null;
+  if (state !== "completed") return { state, reports: [], error };
+
+  const reports = Array.isArray(audit.reports) ? audit.reports.slice(0, 20).flatMap((rawReport) => {
+    const report = jsonRecord(rawReport);
+    if (
+      !report ||
+      typeof report.assetId !== "string" ||
+      !report.assetId.trim() ||
+      typeof report.score !== "number" ||
+      !Number.isFinite(report.score) ||
+      typeof report.passed !== "boolean"
+    ) return [];
+    const checks: Record<string, "pass" | "fail"> = {};
+    for (const [name, result] of Object.entries(jsonRecord(report.checks) ?? {}).slice(0, 16)) {
+      if ((result === "pass" || result === "fail") && name.trim()) checks[name.trim().slice(0, 80)] = result;
+    }
+    const violations = Array.isArray(report.violations)
+      ? report.violations.flatMap((value) => typeof value === "string" && value.trim() ? [value.trim().slice(0, 300)] : []).slice(0, 12)
+      : [];
+    return [{
+      assetId: report.assetId.trim(),
+      score: Math.min(1, Math.max(0, report.score)),
+      passed: report.passed,
+      checks,
+      violations,
+      model: typeof report.model === "string" ? report.model.trim().slice(0, 160) : ""
+    }];
+  }) : [];
+  return { state, reports, error };
+}
+
+function renderVlmServiceStatus(status: VlmAuditServiceStatus | null, auditMode: ScriptMangaAuditMode): string {
+  if (auditMode === "manual") {
+    return `<span class="script-manga-vlm-service is-manual">VLM OFF</span>`;
+  }
+  if (!status) {
+    return `<span class="script-manga-vlm-service is-loading">VLM確認中</span>`;
+  }
+  const model = typeof status.model === "string" ? status.model.trim().slice(0, 160) : "";
+  const error = typeof status.error === "string" ? status.error.trim().slice(0, 300) : "";
+  if (status.state === "ready") {
+    return `<span class="script-manga-vlm-service is-ready"${model ? ` title="${escapeAttr(model)}"` : ""}>VLM ready${model ? ` · ${escapeHtml(model)}` : ""}</span>`;
+  }
+  if (status.state === "model-not-loaded") {
+    return `<span class="script-manga-vlm-service is-on-demand"${model ? ` title="${escapeAttr(model)}"` : ""}>VLM on-demand${model ? ` · ${escapeHtml(model)}` : ""}</span>`;
+  }
+  if (status.state === "unconfigured") {
+    const detail = error || model;
+    return `<span class="script-manga-vlm-service is-unconfigured"${detail ? ` title="${escapeAttr(detail)}"` : ""}>VLM未設定</span>`;
+  }
+  const detail = error || model;
+  return `<span class="script-manga-vlm-service is-unreachable"${detail ? ` title="${escapeAttr(detail)}"` : ""}>VLM unreachable</span>`;
+}
+
+function renderCandidateVlmAudit(task: ScriptMangaTaskView, assetId: string, auditMode: ScriptMangaAuditMode): string {
+  if (auditMode === "manual") {
+    return `<div class="script-manga-vlm-result is-manual"><strong>人間レビュー</strong><span>VLM監査なし</span></div>`;
+  }
+  const audit = scriptMangaVlmAuditFromScores(task.scores);
+  if (!audit) {
+    return `<div class="script-manga-vlm-result is-pending"><strong>VLM結果待ち</strong><span>runを更新してください</span></div>`;
+  }
+  if (audit.state === "queued") {
+    return `<div class="script-manga-vlm-result is-pending"><strong>VLM監査待ち</strong><span>VRAM入替キュー</span></div>`;
+  }
+  if (audit.state === "deferred") {
+    return `
+      <div class="script-manga-vlm-result is-pending">
+        <strong>VLM監査を保留中</strong>
+        <span>${escapeHtml(audit.error ?? "VRAM入替または他panelの完了待ち")}</span>
+      </div>
+    `;
+  }
+  if (audit.state === "unavailable") {
+    return `
+      <div class="script-manga-vlm-result is-unavailable">
+        <strong>VLM利用不可</strong>
+        <span>${escapeHtml(audit.error ?? "監査結果を取得できませんでした")}</span>
+      </div>
+    `;
+  }
+  const report = audit.reports.find((item) => item.assetId === assetId);
+  if (!report) {
+    return `<div class="script-manga-vlm-result is-unavailable"><strong>VLM結果なし</strong><span>この候補のreportがありません</span></div>`;
+  }
+  const checkEntries = Object.entries(report.checks);
+  return `
+    <div class="script-manga-vlm-result ${report.passed ? "is-pass" : "is-fail"}">
+      <div class="script-manga-vlm-score">
+        <strong>VLM ${Math.round(report.score * 100)}%</strong>
+        <span>${report.passed ? "PASS" : "FAIL"}</span>
+      </div>
+      ${checkEntries.length > 0 ? `
+        <div class="script-manga-vlm-checks">
+          ${checkEntries.map(([name, result]) => `<span class="is-${result}">${escapeHtml(name)}: ${result.toUpperCase()}</span>`).join("")}
+        </div>
+      ` : ""}
+      ${report.violations.length > 0
+        ? `<ul class="script-manga-vlm-violations">${report.violations.map((violation) => `<li>${escapeHtml(violation)}</li>`).join("")}</ul>`
+        : `<p class="script-manga-vlm-clean">違反なし</p>`}
+      ${report.model ? `<span class="script-manga-vlm-model" title="${escapeAttr(report.model)}">${escapeHtml(report.model)}</span>` : ""}
+    </div>
+  `;
+}
+
+function renderCandidateTask(task: ScriptMangaTaskView, busy: boolean, auditMode: ScriptMangaAuditMode): string {
+  return `
+    <article class="script-manga-review-task">
+      <div class="script-manga-review-heading">
+        <div>
+          <strong>panel ${escapeHtml(task.panelId)}</strong>
+          <span>attempt ${task.attemptCount}</span>
+        </div>
+        <button class="button-secondary compact" type="button" data-action="retry-script-manga-task"
+          data-id="${escapeAttr(task.id)}" ${busy ? "disabled" : ""}>このコマを再生成</button>
+      </div>
+      <div class="script-manga-candidate-grid">
+        ${task.candidateAssetIds.length > 0
+          ? task.candidateAssetIds.map((assetId) => {
+              const encodedAssetId = encodeURIComponent(assetId);
+              return `
+                <div class="script-manga-candidate">
+                  <a href="/api/assets/${encodedAssetId}/image" target="_blank" rel="noopener" title="原寸画像を開く">
+                    <img src="/api/assets/${encodedAssetId}/thumbnail?size=medium" alt="候補 ${escapeAttr(assetId)}" loading="lazy" />
+                  </a>
+                  <code title="${escapeAttr(assetId)}">${escapeHtml(assetId)}</code>
+                  ${renderCandidateVlmAudit(task, assetId, auditMode)}
+                  <div class="script-manga-candidate-actions">
+                    <a href="/api/assets/${encodedAssetId}/image" target="_blank" rel="noopener">原寸</a>
+                    <button class="button-primary compact" type="button" data-action="select-script-manga-candidate"
+                      data-id="${escapeAttr(task.id)}" data-asset-id="${escapeAttr(assetId)}" ${busy ? "disabled" : ""}>採用</button>
+                  </div>
+                </div>
+              `;
+            }).join("")
+          : `<p class="script-empty-hint">候補assetを取得中です。更新してください。</p>`}
+      </div>
+    </article>
+  `;
+}
+
+function renderVlmAuditProgress(run: ScriptMangaRunView, auditingTasks: ScriptMangaTaskView[]): string {
+  if (run.auditMode !== "vlm" || auditingTasks.length === 0) return "";
+  const deferred = auditingTasks.filter((task) => scriptMangaVlmAuditFromScores(task.scores)?.state === "deferred").length;
+  return `
+    <div class="script-manga-audit-progress" role="status" aria-live="polite">
+      <span class="script-manga-audit-pulse" aria-hidden="true"></span>
+      <div>
+        <strong>VLM監査中 — ${auditingTasks.length} panel</strong>
+        <span>${deferred > 0
+          ? `${deferred} panelは監査再開待ち（VRAM入替待機中）`
+          : "VRAM入替中（ComfyUIモデル解放 → VLM読込・監査）"}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderRunSummary(run: ScriptMangaRunView, busy: boolean): string {
+  const terminal = ["completed", "completed_with_errors", "canceled"].includes(run.status);
+  const canApprove = run.validation?.ok === true && run.approvalStatus !== "approved" && run.status !== "canceled";
+  const canStart = run.approvalStatus === "approved" && run.status === "approved";
+  const canResume = run.approvalStatus === "approved" && !terminal && run.status !== "approved";
+  const reviewTasks = run.tasks.filter((task) => task.status === "awaiting_review");
+  const auditingTasks = run.tasks.filter((task) => task.status === "auditing");
+  return `
+    <div class="script-manga-run" data-run-id="${escapeAttr(run.id)}">
+      <div class="script-manga-run-meta">
+        <div><span>status</span><strong>${escapeHtml(run.status)}</strong></div>
+        <div><span>phase</span><strong>${escapeHtml(run.phase)}</strong></div>
+        <div><span>approval</span><strong>${escapeHtml(run.approvalStatus)}</strong></div>
+        <div><span>pages / panels</span><strong>${run.pageCount} / ${run.panelCount}</strong></div>
+        <div><span>completed / failed</span><strong>${run.completedCount} / ${run.failedCount}</strong></div>
+        <div><span>audit</span><strong>${run.auditMode === "vlm" ? "VLM + review" : "manual review"}</strong></div>
+        <div><span>revision</span><strong title="${escapeAttr(run.scriptRevisionId ?? "")}">${escapeHtml(run.scriptRevisionId ?? "未固定")}</strong></div>
+      </div>
+      <div class="script-manga-run-actions">
+        <button class="button-primary compact" type="button" data-action="approve-script-manga-run" ${busy || !canApprove ? "disabled" : ""}>承認</button>
+        <button class="button-primary compact" type="button" data-action="start-script-manga-run" ${busy || !canStart ? "disabled" : ""}>生成開始</button>
+        <button class="button-secondary compact" type="button" data-action="resume-script-manga-run" ${busy || !canResume ? "disabled" : ""}>再開</button>
+        <button class="button-secondary compact" type="button" data-action="refresh-script-manga-run" ${busy ? "disabled" : ""}>更新</button>
+        <button class="button-danger compact" type="button" data-action="cancel-script-manga-run" ${busy || terminal ? "disabled" : ""}>キャンセル</button>
+      </div>
+      ${run.status === "completed" ? `
+        <div class="script-manga-export-actions" aria-label="完成ページを書き出す">
+          <span>完成ページ</span>
+          <button class="button-secondary compact" type="button" data-action="export-script-manga-run" data-format="png" ${busy ? "disabled" : ""}>PNG</button>
+          <button class="button-secondary compact" type="button" data-action="export-script-manga-run" data-format="pptx" ${busy ? "disabled" : ""}>PPTX</button>
+          <button class="button-secondary compact" type="button" data-action="export-script-manga-run" data-format="ora" ${busy ? "disabled" : ""}>ORA</button>
+        </div>
+      ` : ""}
+      ${renderVlmAuditProgress(run, auditingTasks)}
+      ${renderRunWarnings(run)}
+      ${run.lastError ? `<p class="script-manga-run-error">${escapeHtml(unknownSummary(run.lastError))}</p>` : ""}
+      ${reviewTasks.length > 0 ? `
+        <div class="script-manga-review-list">
+          <h3>候補レビュー <span>${reviewTasks.length} panel</span></h3>
+          ${reviewTasks.map((task) => renderCandidateTask(task, busy, run.auditMode)).join("")}
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+/** MangaPlanV2準備・run状態遷移・候補レビューを描画する純関数。 */
+export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps): string {
+  const settings = props.scriptMangaSettings;
+  const prepareDisabled = props.scriptMangaBusy || !props.activeScriptId || !props.activeScriptRevision || !settings.templateId;
+  return `
+    <section class="script-manga-card" aria-labelledby="script-manga-heading">
+      <div class="script-manga-card-heading">
+        <div>
+          <h2 id="script-manga-heading">MangaPlan V2 / 一括生成</h2>
+          <p>編集可能な計画を準備し、警告を確認してから画像生成を開始します。VLM監査を使っても候補の最終採用は人が行います。</p>
+        </div>
+        <button class="button-primary compact" type="button" data-action="prepare-script-manga-run" ${prepareDisabled ? "disabled" : ""}>
+          ${props.scriptMangaBusy ? "処理中…" : "プラン準備"}
+        </button>
+      </div>
+      <div class="script-manga-controls">
+        <label class="script-field">
+          <span>workflow template</span>
+          <select data-script-manga-setting="templateId" ${props.scriptMangaBusy ? "disabled" : ""}>
+            <option value="">選択してください</option>
+            ${props.scriptMangaTemplates.map((template) => `
+              <option value="${escapeAttr(template.id)}" ${template.id === settings.templateId ? "selected" : ""}>
+                ${escapeHtml(template.name)} (${escapeHtml(template.type)})
+              </option>
+            `).join("")}
+          </select>
+        </label>
+        <label class="script-field">
+          <span>planning mode</span>
+          <select data-script-manga-setting="planningMode" ${props.scriptMangaBusy ? "disabled" : ""}>
+            <option value="heuristic" ${settings.planningMode === "heuristic" ? "selected" : ""}>heuristic</option>
+            <option value="llm" ${settings.planningMode === "llm" ? "selected" : ""}>LLM監督</option>
+          </select>
+        </label>
+        <label class="script-field">
+          <span>panels / page</span>
+          <select data-script-manga-setting="panelsPerPage" ${props.scriptMangaBusy ? "disabled" : ""}>
+            ${Array.from({ length: 6 }, (_, index) => index + 1).map((count) => `
+              <option value="${count}" ${count === settings.panelsPerPage ? "selected" : ""}>${count}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label class="script-field">
+          <span>dialogue policy</span>
+          <select data-script-manga-setting="dialoguePolicy" ${props.scriptMangaBusy ? "disabled" : ""}>
+            <option value="preserve" ${settings.dialoguePolicy === "preserve" ? "selected" : ""}>preserve（原文維持）</option>
+            <option value="adapt" disabled>adapt（今後対応）</option>
+            <option value="fill" disabled>fill（今後対応）</option>
+            <option value="generate" disabled>generate（今後対応）</option>
+          </select>
+        </label>
+        <label class="script-field">
+          <span>画像候補の監査</span>
+          <select data-script-manga-setting="auditMode" ${props.scriptMangaBusy ? "disabled" : ""}>
+            <option value="vlm" ${settings.auditMode === "vlm" ? "selected" : ""}>VLM自動監査 → 人間レビュー</option>
+            <option value="manual" ${settings.auditMode === "manual" ? "selected" : ""}>人間レビューのみ（VLMなし）</option>
+          </select>
+        </label>
+      </div>
+      <div class="script-manga-audit-setting-detail">
+        <p class="script-manga-audit-note">
+          ${settings.auditMode === "vlm"
+            ? "生成完了後にComfyUIモデルを解放してVLMへVRAMを入れ替え、各候補を採点します。監査中は画像生成を待機します。"
+            : "VLMを起動せず、生成された候補をそのまま人が確認します。"}
+        </p>
+        ${renderVlmServiceStatus(props.scriptMangaVlmStatus, settings.auditMode)}
+      </div>
+      ${props.scriptMangaTemplates.length === 0
+        ? `<p class="script-manga-run-error">利用できるworkflow templateがありません。ホームでtemplateを取り込んでください。</p>`
+        : ""}
+      ${props.scriptMangaRun
+        ? renderRunSummary(props.scriptMangaRun, props.scriptMangaBusy)
+        : `<p class="script-empty-hint">プラン準備後にpage/panel数、固定revision、検証警告、run phaseを確認できます。</p>`}
+    </section>
   `;
 }
 

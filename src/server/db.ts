@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { Database } from "bun:sqlite";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
-import type { ComfySettings, LlmSettings } from "../shared/types";
+import type { ComfySettings, LlmSettings, VlmAuditSettings } from "../shared/types";
 import { isPathInsideOrEqual } from "./paths";
 
 const isTestDataMode = process.env.GURUGURU_TEST_DB === "1" || process.env.NODE_ENV === "test";
@@ -36,7 +36,17 @@ const jsonColumnNames = new Map<string, string>([
   ["binding_json", "binding"],
   ["parsed_json", "parsed"],
   ["warnings_json", "warnings"],
-  ["items_json", "items"]
+  ["items_json", "items"],
+  ["plan_json", "plan"],
+  ["validation_json", "validation"],
+  ["evaluation_json", "evaluation"],
+  ["export_manifest_json", "exportManifest"],
+  ["generation_budget_json", "generationBudget"],
+  ["panel_spec_json", "panelSpec"],
+  ["reference_manifest_json", "referenceManifest"],
+  ["candidate_asset_ids_json", "candidateAssetIds"],
+  ["scores_json", "scores"],
+  ["dependency_task_ids_json", "dependencyTaskIds"]
 ]);
 
 export const defaultComfySettings: ComfySettings = {
@@ -54,6 +64,21 @@ export const defaultLlmSettings: LlmSettings = {
   systemPrompt:
     "あなたはComfyUIのプロンプト作成を支援するアシスタントです。画像生成に適した、具体的で効果的なプロンプトを提案してください。",
   temperature: 0.4
+};
+
+export const defaultVlmAuditSettings: VlmAuditSettings = {
+  baseUrl: "http://127.0.0.1:1234/v1",
+  model: "gemma-4-e2b-uncensored-hauhaucs-aggressive",
+  transport: "lmstudio-native",
+  modelKey: "gemma-4-e2b-uncensored-hauhaucs-aggressive",
+  temperature: 0,
+  timeoutSeconds: 180,
+  maxReferenceImages: 3,
+  passThreshold: 0.65,
+  contextLength: 4096,
+  manageModelLifecycle: true,
+  releaseComfyBeforeAudit: true,
+  unloadAfterAudit: true
 };
 
 export function initializeDb() {
@@ -359,6 +384,10 @@ export function initializeDb() {
       part_index INTEGER NOT NULL DEFAULT 0,
       render_kind TEXT NOT NULL DEFAULT 'balloon',
       balloon_object_id TEXT,
+      text_override TEXT,
+      semantic_kind_override TEXT,
+      speaker_label_override TEXT,
+      order_index_override INTEGER,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (line_id) REFERENCES dialogue_lines(id) ON DELETE CASCADE,
@@ -386,24 +415,70 @@ export function initializeDb() {
       FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE SET NULL
     );
 
-    -- Fountain → page/panel → image → balloon の一括実行。run は再起動後も進捗を再構成でき、
-    -- task は各コマの generation_round と page/panel を結ぶ。
+    -- Fountain revision から構築した、編集・検証可能な MangaPlanV2。画像生成より先に必ず保存する。
+    CREATE TABLE IF NOT EXISTS script_manga_plans (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      script_id TEXT NOT NULL,
+      script_revision_id TEXT NOT NULL,
+      plan_version INTEGER NOT NULL DEFAULT 2,
+      planner_version TEXT NOT NULL,
+      prompt_compiler_version TEXT NOT NULL,
+      dialogue_policy TEXT NOT NULL DEFAULT 'preserve',
+      status TEXT NOT NULL DEFAULT 'draft',
+      plan_json TEXT NOT NULL,
+      validation_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      approved_at TEXT,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE CASCADE,
+      FOREIGN KEY (script_revision_id) REFERENCES script_revisions(id) ON DELETE RESTRICT
+    );
+
+    -- Fountain → plan → page/panel → image → audit → balloon の一括実行。run は再起動後も
+    -- 同じ revision/plan から進捗を再構成でき、task は PanelSpec と generation_round を結ぶ。
     CREATE TABLE IF NOT EXISTS script_manga_runs (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       script_id TEXT NOT NULL,
+      script_revision_id TEXT NOT NULL,
+      plan_id TEXT NOT NULL,
+      plan_version INTEGER NOT NULL DEFAULT 2,
+      planner_version TEXT NOT NULL DEFAULT '',
+      prompt_compiler_version TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'preparing',
+      phase TEXT NOT NULL DEFAULT 'parsing',
+      approval_status TEXT NOT NULL DEFAULT 'pending',
       page_count INTEGER NOT NULL DEFAULT 0,
       panel_count INTEGER NOT NULL DEFAULT 0,
       completed_count INTEGER NOT NULL DEFAULT 0,
       failed_count INTEGER NOT NULL DEFAULT 0,
       config_json TEXT NOT NULL,
+      evaluation_json TEXT,
+      export_manifest_json TEXT,
+      generation_budget_json TEXT NOT NULL DEFAULT '{}',
       last_error_json TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       completed_at TEXT,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-      FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE CASCADE
+      FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE CASCADE,
+      FOREIGN KEY (script_revision_id) REFERENCES script_revisions(id) ON DELETE RESTRICT,
+      FOREIGN KEY (plan_id) REFERENCES script_manga_plans(id) ON DELETE RESTRICT
+    );
+
+    -- run が所有するページ。page_index の UNIQUE 制約により resume/retry でページを重複作成しない。
+    CREATE TABLE IF NOT EXISTS script_manga_run_pages (
+      run_id TEXT NOT NULL,
+      page_id TEXT NOT NULL,
+      page_index INTEGER NOT NULL,
+      layout_template_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (run_id, page_index),
+      UNIQUE (page_id),
+      FOREIGN KEY (run_id) REFERENCES script_manga_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS script_manga_tasks (
@@ -413,6 +488,14 @@ export function initializeDb() {
       panel_id TEXT NOT NULL,
       round_id TEXT,
       prompt TEXT NOT NULL,
+      panel_spec_json TEXT,
+      reference_manifest_json TEXT NOT NULL DEFAULT '[]',
+      candidate_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+      selected_asset_id TEXT,
+      scores_json TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      repair_parent_task_id TEXT,
+      dependency_task_ids_json TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'pending',
       asset_id TEXT,
       last_error_json TEXT,
@@ -421,7 +504,9 @@ export function initializeDb() {
       FOREIGN KEY (run_id) REFERENCES script_manga_runs(id) ON DELETE CASCADE,
       FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE CASCADE,
       FOREIGN KEY (round_id) REFERENCES generation_rounds(id) ON DELETE SET NULL,
-      FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL
+      FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL,
+      FOREIGN KEY (selected_asset_id) REFERENCES assets(id) ON DELETE SET NULL,
+      FOREIGN KEY (repair_parent_task_id) REFERENCES script_manga_tasks(id) ON DELETE SET NULL
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_character_bindings_char_provider ON character_bindings(character_id, provider_id);
@@ -435,7 +520,10 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_dialogue_proposals_project ON dialogue_proposals(project_id);
     CREATE INDEX IF NOT EXISTS idx_dialogue_proposals_page ON dialogue_proposals(page_id);
     CREATE INDEX IF NOT EXISTS idx_script_manga_runs_project ON script_manga_runs(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_script_manga_plans_project ON script_manga_plans(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_script_manga_plans_revision ON script_manga_plans(script_revision_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_script_manga_tasks_run ON script_manga_tasks(run_id, status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_script_manga_tasks_panel ON script_manga_tasks(run_id, page_id, panel_id);
 
     CREATE INDEX IF NOT EXISTS idx_paste_sources_project ON paste_sources(project_id);
     CREATE INDEX IF NOT EXISTS idx_page_media_project ON page_media(project_id);
@@ -488,6 +576,48 @@ export function initializeDb() {
   ensureColumn("dialogue_placements", "auto_layout_locked", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("dialogue_placements", "auto_layout_seed", "INTEGER");
   ensureColumn("dialogue_placements", "auto_layout_version", "INTEGER");
+  // Revision-frozen automatic manga lettering. Manual/editor placements leave these NULL and keep
+  // reading the live DialogueLine; run-owned placements retain the exact pinned-revision wording.
+  ensureColumn("dialogue_placements", "text_override", "TEXT");
+  ensureColumn("dialogue_placements", "semantic_kind_override", "TEXT");
+  ensureColumn("dialogue_placements", "speaker_label_override", "TEXT");
+  ensureColumn("dialogue_placements", "order_index_override", "INTEGER");
+  // Links a generation attempt to its owning automatic-manga task before provider submission.
+  ensureColumn("generation_rounds", "script_manga_task_id", "TEXT");
+  // MangaPlanV2/control layer: existing databases receive nullable relationship columns first;
+  // all newly-created runs populate them before any page or generation side effect.
+  ensureColumn("script_manga_runs", "script_revision_id", "TEXT");
+  ensureColumn("script_manga_runs", "plan_id", "TEXT");
+  ensureColumn("script_manga_runs", "plan_version", "INTEGER NOT NULL DEFAULT 1");
+  ensureColumn("script_manga_runs", "planner_version", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("script_manga_runs", "prompt_compiler_version", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("script_manga_runs", "phase", "TEXT NOT NULL DEFAULT 'parsing'");
+  ensureColumn("script_manga_runs", "approval_status", "TEXT NOT NULL DEFAULT 'pending'");
+  ensureColumn("script_manga_runs", "evaluation_json", "TEXT");
+  ensureColumn("script_manga_runs", "export_manifest_json", "TEXT");
+  ensureColumn("script_manga_runs", "generation_budget_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("script_manga_tasks", "panel_spec_json", "TEXT");
+  ensureColumn("script_manga_tasks", "reference_manifest_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn("script_manga_tasks", "candidate_asset_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn("script_manga_tasks", "selected_asset_id", "TEXT");
+  ensureColumn("script_manga_tasks", "scores_json", "TEXT");
+  ensureColumn("script_manga_tasks", "attempt_count", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("script_manga_tasks", "repair_parent_task_id", "TEXT");
+  ensureColumn("script_manga_tasks", "dependency_task_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_generation_rounds_script_manga_task ON generation_rounds(script_manga_task_id, created_at)");
+  // ALTER TABLE cannot add foreign keys on existing SQLite databases. These triggers give upgraded
+  // databases the same SET NULL behavior as the fresh schema for the two optional task links.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_assets_clear_script_manga_selected
+    AFTER DELETE ON assets BEGIN
+      UPDATE script_manga_tasks SET selected_asset_id = NULL, asset_id = NULL
+      WHERE selected_asset_id = OLD.id OR asset_id = OLD.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_script_manga_task_clear_repair_parent
+    AFTER DELETE ON script_manga_tasks BEGIN
+      UPDATE script_manga_tasks SET repair_parent_task_id = NULL WHERE repair_parent_task_id = OLD.id;
+    END;
+  `);
 
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {
@@ -506,6 +636,9 @@ export function initializeDb() {
 
   if (!getSetting<Partial<LlmSettings>>("llm")) {
     setSetting("llm", defaultLlmSettings);
+  }
+  if (!getSetting<Partial<VlmAuditSettings>>("vlm_audit")) {
+    setSetting("vlm_audit", defaultVlmAuditSettings);
   }
 }
 

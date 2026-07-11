@@ -76,6 +76,8 @@ export interface PasteCompositeOptions {
 export interface ReferenceImageOptions {
   imageDataUrl?: string | null;
   imagePath?: string | null;
+  /** Server-resolved Character appearance binding. The client cannot provide a local file path. */
+  characterBinding?: { characterId: string; providerId: string } | null;
   face: { enabled: boolean };
 }
 
@@ -109,6 +111,24 @@ export interface LlmSettings {
    * `LlmSettingsView`(hasApiKey フラグのみ)を返す -- src/shared/apiTypes.ts 参照)。
    */
   apiKey?: string;
+}
+
+/** Dedicated local multimodal auditor; kept separate from prompt/dialogue LLM settings. */
+export interface VlmAuditSettings {
+  baseUrl: string;
+  model: string;
+  /** LM Studio native chat is used for this Gemma 4 build so image input and reasoning=off are explicit. */
+  transport?: "lmstudio-native" | "openai-compatible";
+  /** Downloaded LM Studio model key; `model` may instead be a loaded instance identifier. */
+  modelKey?: string;
+  temperature: number;
+  timeoutSeconds: number;
+  maxReferenceImages: number;
+  passThreshold: number;
+  contextLength?: number;
+  manageModelLifecycle?: boolean;
+  releaseComfyBeforeAudit?: boolean;
+  unloadAfterAudit?: boolean;
 }
 
 export interface GenerationRequest {

@@ -63,6 +63,10 @@ interface PlacementRow {
   page_id: string;
   panel_id: string | null;
   balloon_object_id: string | null;
+  text_override: string | null;
+  semantic_kind_override: DialogueSemanticKind | null;
+  speaker_label_override: string | null;
+  order_index_override: number | null;
 }
 
 interface LineRow {
@@ -105,7 +109,9 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
   const placementIds = parsePlacementIds(input);
   const placeholders = placementIds.map(() => "?").join(",");
   const placements = getRows<PlacementRow>(
-    `SELECT id, line_id, page_id, panel_id, balloon_object_id FROM dialogue_placements WHERE id IN (${placeholders})`,
+    `SELECT id, line_id, page_id, panel_id, balloon_object_id, text_override, semantic_kind_override,
+            speaker_label_override, order_index_override
+     FROM dialogue_placements WHERE id IN (${placeholders})`,
     placementIds
   );
   const foundIds = new Set(placements.map((row) => row.id));
@@ -140,16 +146,18 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
     if (!line) {
       throw new HttpError(404, `Dialogue line was not found for placement ${placement.id}`);
     }
+    const text = placement.text_override ?? line.text;
+    const semanticKind = placement.semantic_kind_override ?? line.semantic_kind;
     return {
       placementId: placement.id,
       lineId: line.id,
-      text: line.text,
-      semanticKind: line.semantic_kind,
-      speakerLabel: line.speaker_label,
-      orderIndex: line.order_index,
+      text,
+      semanticKind,
+      speakerLabel: placement.speaker_label_override ?? line.speaker_label,
+      orderIndex: placement.order_index_override ?? line.order_index,
       preferredPanelId: placement.panel_id,
       fontScale,
-      sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind, fontScale, preserveBalloonFontSize)
+      sizeVariants: requiredSizeVariantsFor(text, semanticKind, fontScale, preserveBalloonFontSize)
     };
   });
 
@@ -278,7 +286,7 @@ export function applyDialogueLayout(projectId: string, pageId: string, body: unk
     );
   }
 
-  runSql("BEGIN");
+  runSql("SAVEPOINT dialogue_layout_apply");
   try {
     const nextObjects = normalizePageObjects([...context.existingObjects, ...result.objects]);
     if (nextObjects.length > PAGE_OBJECTS_MAX_COUNT || nextObjects.length !== context.existingObjects.length + result.objects.length) {
@@ -297,9 +305,10 @@ export function applyDialogueLayout(projectId: string, pageId: string, body: unk
         [assignment.objectId, assignment.panelId, seed, assignment.placementId]
       );
     }
-    runSql("COMMIT");
+    runSql("RELEASE dialogue_layout_apply");
   } catch (error) {
-    runSql("ROLLBACK");
+    runSql("ROLLBACK TO dialogue_layout_apply");
+    runSql("RELEASE dialogue_layout_apply");
     throw error;
   }
 
@@ -312,6 +321,10 @@ interface ReflowTargetRow {
   id: string;
   line_id: string;
   balloon_object_id: string;
+  text_override: string | null;
+  semantic_kind_override: DialogueSemanticKind | null;
+  speaker_label_override: string | null;
+  order_index_override: number | null;
 }
 
 interface ReflowContext {
@@ -339,7 +352,8 @@ function loadReflowContext(projectId: string, pageId: string): ReflowContext {
   }
 
   const targets = getRows<ReflowTargetRow>(
-    `SELECT id, line_id, balloon_object_id FROM dialogue_placements
+    `SELECT id, line_id, balloon_object_id, text_override, semantic_kind_override,
+            speaker_label_override, order_index_override FROM dialogue_placements
      WHERE page_id = ? AND balloon_object_id IS NOT NULL AND auto_layout_locked = 0`,
     [pageId]
   );
@@ -363,14 +377,16 @@ function loadReflowContext(projectId: string, pageId: string): ReflowContext {
     if (!line) {
       throw new HttpError(404, `Dialogue line was not found for placement ${row.id}`);
     }
+    const text = row.text_override ?? line.text;
+    const semanticKind = row.semantic_kind_override ?? line.semantic_kind;
     return {
       placementId: row.id,
       lineId: line.id,
-      text: line.text,
-      semanticKind: line.semantic_kind,
-      speakerLabel: line.speaker_label,
-      orderIndex: line.order_index,
-      sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind)
+      text,
+      semanticKind,
+      speakerLabel: row.speaker_label_override ?? line.speaker_label,
+      orderIndex: row.order_index_override ?? line.order_index,
+      sizeVariants: requiredSizeVariantsFor(text, semanticKind)
     };
   });
 
@@ -413,7 +429,7 @@ export function reflowDialogueLayout(projectId: string, pageId: string, body: un
     );
   }
 
-  runSql("BEGIN");
+  runSql("SAVEPOINT dialogue_layout_reflow");
   try {
     const nextObjects = normalizePageObjects([...context.remainingObjects, ...result.objects]);
     if (nextObjects.length > PAGE_OBJECTS_MAX_COUNT || nextObjects.length !== context.remainingObjects.length + result.objects.length) {
@@ -432,9 +448,10 @@ export function reflowDialogueLayout(projectId: string, pageId: string, body: un
         [assignment.objectId, assignment.panelId, seed, assignment.placementId]
       );
     }
-    runSql("COMMIT");
+    runSql("RELEASE dialogue_layout_reflow");
   } catch (error) {
-    runSql("ROLLBACK");
+    runSql("ROLLBACK TO dialogue_layout_reflow");
+    runSql("RELEASE dialogue_layout_reflow");
     throw error;
   }
 
@@ -455,14 +472,15 @@ export function unlockAllDialoguePlacementsForPage(projectId: string, pageId: st
   if (rows.length === 0) {
     return { unlocked: 0 };
   }
-  runSql("BEGIN");
+  runSql("SAVEPOINT dialogue_layout_unlock");
   try {
     for (const row of rows) {
       runSql("UPDATE dialogue_placements SET auto_layout_locked = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [row.id]);
     }
-    runSql("COMMIT");
+    runSql("RELEASE dialogue_layout_unlock");
   } catch (error) {
-    runSql("ROLLBACK");
+    runSql("ROLLBACK TO dialogue_layout_unlock");
+    runSql("RELEASE dialogue_layout_unlock");
     throw error;
   }
   return { unlocked: rows.length };

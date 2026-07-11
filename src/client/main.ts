@@ -89,6 +89,7 @@ import "./edgePopoutController";
 import "./imageLightboxController";
 import "./modelCheckController";
 import "./confirmDialogController";
+import "./scriptMangaController";
 import { importImagesAsPages } from "./bookController";
 import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
 import { closeImageExport } from "./imageExportController";
@@ -833,7 +834,12 @@ function render(_options: RenderOptions = {}) {
             characterLoraStrengthDraft: state.characterLoraStrengthDraft,
             characterFacePickerOpen: state.characterFacePickerOpen,
             recentImages: state.recentReferenceImages,
-            loraChoices: state.loraChoices.names
+            loraChoices: state.loraChoices.names,
+            scriptMangaTemplates: state.scriptMangaTemplates,
+            scriptMangaSettings: state.scriptMangaSettings,
+            scriptMangaRun: state.scriptMangaRun,
+            scriptMangaBusy: state.scriptMangaBusy,
+            scriptMangaVlmStatus: state.scriptMangaVlmStatus
           })
         : state.book
           ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds)
