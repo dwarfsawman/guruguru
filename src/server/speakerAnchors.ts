@@ -12,6 +12,8 @@ interface PageRow {
 interface FaceInput {
   mouth: PageVec;
   score: number;
+  /** asset 正規化座標。しっぽを唇へ密着させず、顔サイズ比例の余白を取るために使う。 */
+  bbox?: { x: number; y: number; width: number; height: number };
 }
 
 interface PanelFacesInput {
@@ -42,7 +44,11 @@ function parsePanels(value: unknown): PanelFacesInput[] {
       const candidate = face as Record<string, unknown>;
       const mouth = candidate.mouth as Record<string, unknown> | undefined;
       if (!mouth || !finite(mouth.x) || !finite(mouth.y)) return [];
-      return [{ mouth: { x: mouth.x, y: mouth.y }, score: finite(candidate.score) ? candidate.score : 1 }];
+      const rawBbox = candidate.bbox as Record<string, unknown> | undefined;
+      const bbox = rawBbox && finite(rawBbox.x) && finite(rawBbox.y) && finite(rawBbox.width) && finite(rawBbox.height)
+        ? { x: rawBbox.x, y: rawBbox.y, width: rawBbox.width, height: rawBbox.height }
+        : undefined;
+      return [{ mouth: { x: mouth.x, y: mouth.y }, score: finite(candidate.score) ? candidate.score : 1, ...(bbox ? { bbox } : {}) }];
     });
     return [{ panelId: item.panelId, faces }];
   });
@@ -54,6 +60,16 @@ export function assetPointToPage(point: PageVec, bounds: [number, number, number
     x: bounds[0] + ((point.x - crop.x) / crop.width) * (bounds[2] - bounds[0]),
     y: bounds[1] + ((point.y - crop.y) / crop.height) * (bounds[3] - bounds[1])
   };
+}
+
+export function speakerTailTarget(mouth: PageVec, balloonCenter: PageVec, faceExtent: number): PageVec {
+  const dx = balloonCenter.x - mouth.x;
+  const dy = balloonCenter.y - mouth.y;
+  const distance = Math.hypot(dx, dy);
+  const gap = Math.max(0.012, Math.min(0.055, faceExtent * 0.28));
+  return distance > 1e-6
+    ? { x: mouth.x + (dx / distance) * gap, y: mouth.y + (dy / distance) * gap }
+    : mouth;
 }
 
 /**
@@ -84,12 +100,22 @@ export function applySpeakerAnchors(projectId: string, pageId: string, body: unk
     const crop = JSON.parse(assignment.crop_json) as Crop;
     if (!(crop.width > 0 && crop.height > 0)) continue;
     const bounds = panelBounds(panel.shape);
-    const mouths = panelInput.faces
+    const anchors = panelInput.faces
       .filter((face) => face.score >= 0.25)
-      .map((face) => assetPointToPage(face.mouth, bounds, crop))
-      .sort((a, b) => layout.readingDirection === "rtl" ? b.x - a.x : a.x - b.x);
-    detectedFaces += mouths.length;
-    if (mouths.length === 0) continue;
+      .map((face) => {
+        const mouth = assetPointToPage(face.mouth, bounds, crop);
+        if (!face.bbox) return { mouth, faceExtent: 0 };
+        const topLeft = assetPointToPage({ x: face.bbox.x, y: face.bbox.y }, bounds, crop);
+        const bottomRight = assetPointToPage(
+          { x: face.bbox.x + face.bbox.width, y: face.bbox.y + face.bbox.height },
+          bounds,
+          crop
+        );
+        return { mouth, faceExtent: Math.max(Math.abs(bottomRight.x - topLeft.x), Math.abs(bottomRight.y - topLeft.y)) };
+      })
+      .sort((a, b) => layout.readingDirection === "rtl" ? b.mouth.x - a.mouth.x : a.mouth.x - b.mouth.x);
+    detectedFaces += anchors.length;
+    if (anchors.length === 0) continue;
     const lines = getRows<{ line_id: string }>(
       `SELECT dp.line_id FROM dialogue_placements dp JOIN dialogue_lines dl ON dl.id = dp.line_id
        WHERE dp.page_id = ? AND dp.panel_id = ? AND dp.balloon_object_id IS NOT NULL ORDER BY dl.order_index ASC`,
@@ -98,9 +124,11 @@ export function applySpeakerAnchors(projectId: string, pageId: string, body: unk
     lines.forEach((line, index) => {
       const balloon = objectByLine.get(line.line_id);
       if (!balloon || balloon.shape === "thought") return;
-      const mouth = mouths[index % mouths.length]!;
+      const anchor = anchors[index % anchors.length]!;
+      // 唇へ接触させず、顔の大きさに比例した余白を吹き出し側へ取る。極端な遠景でも最低余白を確保。
+      const target = speakerTailTarget(anchor.mouth, balloon.position, anchor.faceExtent);
       balloon.tail = {
-        tip: { x: mouth.x - balloon.position.x, y: mouth.y - balloon.position.y },
+        tip: { x: target.x - balloon.position.x, y: target.y - balloon.position.y },
         width: Math.max(0.008, Math.min(balloon.size.x, balloon.size.y) * 0.16)
       };
       updated += 1;
