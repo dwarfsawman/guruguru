@@ -443,10 +443,15 @@ const BALLOON_INSCRIBED_FACTOR: Record<BalloonShape, number> = {
   thought: (1 / Math.SQRT2) * 0.8
 };
 
+/** 形状内へ文字矩形を安全に収めるための内接係数。自動サイズ/自動フィットでも描画と同じ値を使う。 */
+export function balloonInscribedFactor(shape: BalloonShape): number {
+  return BALLOON_INSCRIBED_FACTOR[shape] ?? 1;
+}
+
 /** balloon.content の折り返し幅(page 単位)。box の `contentMaxWidth` に形状ごとの内接係数を追加で掛ける。 */
 export function balloonContentMaxWidth(shape: BalloonShape, size: PageVec, direction: TextDirection): number {
   const base = contentMaxWidth(size, direction);
-  const factor = BALLOON_INSCRIBED_FACTOR[shape] ?? 1;
+  const factor = balloonInscribedFactor(shape);
   return Math.max(PAGE_OBJECT_MIN_SIZE, base * factor);
 }
 

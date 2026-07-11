@@ -79,6 +79,7 @@ import { allocateDialoguePages, removeDialogueAllocation } from "./dialogueAlloc
 import { applyDialogueLayout, previewDialogueLayout, reflowDialogueLayout, unlockAllDialoguePlacementsForPage } from "./dialogueAutoLayoutApi";
 import { createScriptMangaRun, getScriptMangaRun } from "./scriptManga";
 import { applySpeakerAnchors } from "./speakerAnchors";
+import { fitPageBalloonText } from "./balloonTextFit";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
   GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
@@ -412,6 +413,11 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const speakerAnchorsMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/speaker-anchors$/);
   if (method === "POST" && speakerAnchorsMatch) {
     sendJson(res, 200, applySpeakerAnchors(speakerAnchorsMatch[1]!, speakerAnchorsMatch[2]!, await readJson(req)));
+    return;
+  }
+  const fitBalloonTextMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/fit-balloon-text$/);
+  if (method === "POST" && fitBalloonTextMatch) {
+    sendJson(res, 200, fitPageBalloonText(fitBalloonTextMatch[1]!, fitBalloonTextMatch[2]!));
     return;
   }
 
