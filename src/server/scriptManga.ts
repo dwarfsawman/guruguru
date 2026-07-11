@@ -1,6 +1,6 @@
 import type { FountainDoc } from "../shared/fountain";
 import { planScriptManga, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
-import { panelBounds, panelBoundsSize, type PageLayout } from "../shared/pageLayout";
+import { normalizeEditedPageLayout, panelBounds, panelBoundsSize, type PageLayout } from "../shared/pageLayout";
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import { updateAssetStatus } from "./assets";
 import { createId, getRow, getRows, runSql } from "./db";
@@ -13,7 +13,7 @@ import { objectBody, requiredString, stringOr } from "./validate";
 import { planScriptMangaWithDirector } from "./scriptMangaDirector";
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import { fitPageBalloonText } from "./balloonTextFit";
-import { initialBalloonTailTip } from "../shared/balloonTailAim";
+import { constrainBalloonTailTipToBounds, initialBalloonTailTip } from "../shared/balloonTailAim";
 import { normalizePageObjects } from "../shared/pageObjects";
 
 interface RunRow {
@@ -169,12 +169,25 @@ function applyDialogueLayoutWithFallback(projectId: string, pageId: string, plac
 
 /** 顔検出前でも真下固定に見えないよう、読書方向に沿う斜めの仮しっぽを付ける。 */
 function aimInitialBalloonTails(pageId: string): void {
-  const row = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
+  const row = getRow<{ objects_json: string | null; layout_json: string | null }>("SELECT objects_json, layout_json FROM pages WHERE id = ?", [pageId]);
   const objects = normalizePageObjects(row?.objects_json ? JSON.parse(row.objects_json) : []);
+  const layout = normalizeEditedPageLayout(row?.layout_json ? JSON.parse(row.layout_json) : null);
+  const panelById = new Map(layout?.panels.map((panel) => [panel.id, panel]) ?? []);
+  const assignedPanelByObjectId = new Map(
+    getRows<{ balloon_object_id: string; panel_id: string | null }>(
+      "SELECT balloon_object_id, panel_id FROM dialogue_placements WHERE page_id = ? AND balloon_object_id IS NOT NULL",
+      [pageId]
+    ).map((placement) => [placement.balloon_object_id, placement.panel_id])
+  );
   let order = 0;
   for (const object of objects) {
     if (object.kind !== "balloon" || !object.tail) continue;
-    object.tail.tip = initialBalloonTailTip(object.position, object.size, order);
+    const initialTip = initialBalloonTailTip(object.position, object.size, order);
+    const panelId = assignedPanelByObjectId.get(object.id);
+    const panel = panelId ? panelById.get(panelId) : undefined;
+    object.tail.tip = panel
+      ? constrainBalloonTailTipToBounds(object.position, initialTip, panelBounds(panel.shape))
+      : initialTip;
     order += 1;
   }
   runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [JSON.stringify(objects), pageId]);
