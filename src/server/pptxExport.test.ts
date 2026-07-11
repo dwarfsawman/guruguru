@@ -188,6 +188,19 @@ test("createImageExport(format=pptx): 不正な format は 400", async () => {
   );
 });
 
+test("createImageExport(format=pptx): 吹き出し・しっぽ・文字を個別の編集可能オブジェクトとして出力する", async () => {
+  const { projectId, pageIds } = await setupProject(1);
+  runSql("UPDATE pages SET objects_json = ? WHERE id = ?", [JSON.stringify([{ id: "speech_1", kind: "balloon", position: { x: 0.5, y: 0.45 }, rotation: 0, shape: "ellipse", size: { x: 0.3, y: 0.2 }, tail: { tip: { x: 0.12, y: 0.22 }, width: 0.04 }, fill: "#ffffff", strokeColor: "#000000", strokeWidth: 0.004, content: { text: "編集できます", style: { fontId: "default", size: 0.03, direction: "vertical", color: "#000000" } } }]), pageIds[0]!]);
+  const result = await createImageExport(projectId, { pageIds, format: "pptx" });
+  const zip = await JSZip.loadAsync(result.buffer);
+  const slideXml = await zip.file("ppt/slides/slide1.xml")!.async("string");
+  assert.match(slideXml, /name="speech_1 tail"/);
+  assert.match(slideXml, /name="speech_1 balloon"/);
+  assert.match(slideXml, /name="speech_1 text"/);
+  assert.match(slideXml, /<a:t>編集できます<\/a:t>/);
+  assert.match(slideXml, /vert="eaVert"/);
+});
+
 test("createImageExport(format=pptx): パイプライン同一性 -- format=png 単体書き出しと pptx 内 media がバイト一致", async () => {
   const pixelWidth = 512;
   const { projectId, pageIds } = await setupCustomProject([{ height: 1.5, panelBounds: [0.1, 0.1, 0.9, 0.9] }]);

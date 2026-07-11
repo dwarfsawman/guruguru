@@ -14,7 +14,8 @@ Book の完成品を PowerPoint(.pptx)デッキとして書き出す機能。既
   の解像度で `createPageLayers` + `renderMergedImage`(いずれも `openRasterExport.ts`)により平坦化する。
   PPTX への埋め込みは `renderMergedImage` が返す PNG バッファをそのまま使う(再エンコード・
   フラット化なし)— ページは Paper 層で不透明なので透過ロスの心配はない。これにより
-  `format=png` の単体書き出しと PPTX 内の画像はバイト単位で一致する(`pptxExport.test.ts` で担保)。
+  背景画像・コマ枠・画像オブジェクトは背景 PNG にまとめ、balloon/box/text は PowerPoint の
+  編集可能な図形とテキストとして重ねる。吹き出し本体・しっぽ・文字は別オブジェクトになる。
   `pixelWidth` は `imageExport.ts` の `clampPixelWidth` で既に clamp 済みの値を渡す。
 - **循環 import 回避**: `computeExportCanvas` は元々 `imageExport.ts` にあったが、`pptxExport.ts`
   からも使うために `openRasterExport.ts` へ移設した(`imageExport.ts` は後方互換のため
@@ -94,6 +95,8 @@ E2E スタイル)で検証:
 変えた。
 
 ## 変更履歴
+
+- 2026-07-11: 背景の平坦画像と、編集可能な吹き出し本体・しっぽ・文字を分離して出力する方式へ変更。
 
 - 2026-07-11: PPTX への埋め込み形式を JPEG から PNG に変更(`renderMergedImage` の出力をそのまま
   埋め込み、sharp での flatten+再エンコードを削除)。`createPptxExport` のシグネチャから `quality`

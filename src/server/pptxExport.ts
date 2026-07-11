@@ -2,9 +2,9 @@
  * 完成品の PPTX 書き出し(Docs/Feature-PptxExport.md)。`imageExport.ts` の `/export-images`
  * エンドポイント(format="pptx")から委譲される -- 独自エンドポイントは持たない。
  *
- * 各ページを `computeExportCanvas`(openRasterExport.ts)の解像度で `createPageLayers` +
- * `renderMergedImage` により平坦化し、その PNG バッファをそのまま PPTX の1スライド=1画像として
- * 埋め込む(ページは Paper 層があるため常に不透明で、追加のフラット化・再エンコードは不要)。
+ * ページの画像・コマ枠・画像オブジェクトだけを背景 PNG に平坦化し、balloon/box/text は
+ * PowerPoint の図形とテキストとして重ねる。吹き出し本体・しっぽ・文字はそれぞれ独立した
+ * オブジェクトなので、書き出し後も PowerPoint 上で選択・移動・編集できる。
  * ライブラリ(pptxgenjs 等)は使わず、JSZip で OOXML(Office Open XML)パッケージを直接手組みする。
  *
  * OOXML の最小構成と罠(監督レビュー済み):
@@ -20,6 +20,7 @@
  */
 import JSZip from "jszip";
 import type { PageRow } from "../shared/apiTypes";
+import type { BalloonObject, BoxObject, PageObject, TextContent, TextObject } from "../shared/pageObjects";
 import {
   computeExportCanvas,
   createPageLayers,
@@ -48,6 +49,8 @@ interface SlideSize {
 interface RenderedSlidePage {
   png: Buffer;
   canvas: ExportCanvas;
+  pageHeight: number;
+  editableObjects: PageObject[];
 }
 
 /**
@@ -87,7 +90,7 @@ export async function createPptxExport(
   rendered.forEach((slide, index) => {
     const slideNumber = index + 1;
     const rect = computeSlidePicRect(slideSize, slide.canvas);
-    zip.file(`ppt/slides/slide${slideNumber}.xml`, renderSlideXml(rect), { compression: "DEFLATE" });
+    zip.file(`ppt/slides/slide${slideNumber}.xml`, renderSlideXml(rect, slide.pageHeight, slide.editableObjects), { compression: "DEFLATE" });
     zip.file(`ppt/slides/_rels/slide${slideNumber}.xml.rels`, renderSlideRelsXml(slideNumber), {
       compression: "DEFLATE"
     });
@@ -103,14 +106,16 @@ export async function createPptxExport(
   };
 }
 
-/** ページ1件を PPTX 埋め込み用 PNG にラスタライズする(埋め込みは常に PNG。`renderMergedImage` の出力をそのまま使う)。 */
+/** 背景 PNG には画像オブジェクトだけを残し、編集可能オブジェクトは slide XML へ分離する。 */
 async function renderSlidePage(page: PageRow, pixelWidth: number): Promise<RenderedSlidePage> {
   const layout = page.layout ?? null;
   const pageHeight = resolvePageHeight(page, layout);
   const canvas = computeExportCanvas(pixelWidth, pageHeight);
-  const layers = await createPageLayers(page, canvas);
+  const editableObjects = (page.objects ?? []).filter((object) => object.kind !== "image");
+  const backgroundPage: PageRow = { ...page, objects: (page.objects ?? []).filter((object) => object.kind === "image") };
+  const layers = await createPageLayers(backgroundPage, canvas);
   const png = await renderMergedImage(layers, canvas);
-  return { png, canvas };
+  return { png, canvas, pageHeight, editableObjects };
 }
 
 /** デッキ全体のスライドサイズ(EMU)。幅は固定、高さは先頭ページのアスペクト比から算出して clamp する。 */
@@ -400,7 +405,73 @@ function renderSlideLayoutRelsXml(): string {
 `;
 }
 
-function renderSlideXml(rect: { x: number; y: number; cx: number; cy: number }): string {
+interface SlideRect { x: number; y: number; cx: number; cy: number }
+
+function colorHex(value: string | undefined, fallback: string): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(value ?? "");
+  return (match?.[1] ?? fallback).toUpperCase();
+}
+
+function objectRect(position: { x: number; y: number }, size: { x: number; y: number }, pageHeight: number, rect: SlideRect): SlideRect {
+  return {
+    x: Math.round(rect.x + (position.x - size.x / 2) * rect.cx),
+    y: Math.round(rect.y + ((position.y - size.y / 2) / pageHeight) * rect.cy),
+    cx: Math.max(1, Math.round(size.x * rect.cx)),
+    cy: Math.max(1, Math.round((size.y / pageHeight) * rect.cy))
+  };
+}
+
+function shapeXml(id: number, name: string, geometry: string, box: SlideRect, fill: string, stroke: string, strokeWidth: number, rotation = 0): string {
+  const rot = Math.round((rotation * 180 / Math.PI) * 60000);
+  const lineWidth = Math.max(1, Math.round(strokeWidth * box.cx));
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXml(name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm${rot ? ` rot="${rot}"` : ""}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm><a:prstGeom prst="${geometry}"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="${colorHex(fill, "FFFFFF")}"/></a:solidFill><a:ln w="${lineWidth}"><a:solidFill><a:srgbClr val="${colorHex(stroke, "000000")}"/></a:solidFill></a:ln></p:spPr></p:sp>`;
+}
+
+function textXml(id: number, name: string, content: TextContent, box: SlideRect, rotation = 0): string {
+  const rot = Math.round((rotation * 180 / Math.PI) * 60000);
+  const fontSize = Math.max(500, Math.round((content.style.size * box.cx / 12700) * 100));
+  const vertical = content.style.direction === "vertical" ? ` vert="eaVert"` : "";
+  const align = content.style.align === "start" ? "l" : content.style.align === "end" ? "r" : "ctr";
+  const lines = content.text.split(/\r?\n/).map((line) => `<a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="ja-JP" sz="${fontSize}"><a:solidFill><a:srgbClr val="${colorHex(content.style.color, "000000")}"/></a:solidFill></a:rPr><a:t>${escapeXml(line)}</a:t></a:r><a:endParaRPr lang="ja-JP" sz="${fontSize}"/></a:p>`).join("");
+  return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXml(name)}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm${rot ? ` rot="${rot}"` : ""}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr wrap="square" anchor="ctr"${vertical}/><a:lstStyle/>${lines}</p:txBody></p:sp>`;
+}
+
+function editableObjectsXml(objects: PageObject[], pageHeight: number, rect: SlideRect): string {
+  let id = 3;
+  const xml: string[] = [];
+  for (const object of objects) {
+    if (object.kind === "balloon") {
+      const balloon = object as BalloonObject;
+      const box = objectRect(balloon.position, balloon.size, pageHeight, rect);
+      if (balloon.tail) {
+        const cos = Math.cos(balloon.rotation), sin = Math.sin(balloon.rotation);
+        const tx = balloon.position.x + balloon.tail.tip.x * cos - balloon.tail.tip.y * sin;
+        const ty = balloon.position.y + balloon.tail.tip.x * sin + balloon.tail.tip.y * cos;
+        const tailSize = { x: Math.max(balloon.tail.width, 0.012), y: Math.max(Math.abs(ty - balloon.position.y), 0.012) };
+        const tailBox = objectRect({ x: (tx + balloon.position.x) / 2, y: (ty + balloon.position.y) / 2 }, tailSize, pageHeight, rect);
+        xml.push(shapeXml(id++, `${balloon.id} tail`, "triangle", tailBox, balloon.fill, balloon.strokeColor, balloon.strokeWidth, Math.atan2(ty - balloon.position.y, tx - balloon.position.x) + Math.PI / 2));
+      }
+      const geometry = balloon.shape === "rounded" ? "roundRect" : balloon.shape === "cloud" || balloon.shape === "thought" ? "cloud" : balloon.shape === "jagged" ? "irregularSeal1" : "ellipse";
+      xml.push(shapeXml(id++, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation));
+      if (balloon.content?.text) {
+        const textBox = objectRect(balloon.position, { x: balloon.size.x * 0.78, y: balloon.size.y * 0.72 }, pageHeight, rect);
+        xml.push(textXml(id++, `${balloon.id} text`, balloon.content, textBox, balloon.rotation));
+      }
+    } else if (object.kind === "box") {
+      const boxObject = object as BoxObject;
+      const box = objectRect(boxObject.position, boxObject.size, pageHeight, rect);
+      xml.push(shapeXml(id++, `${boxObject.id} box`, boxObject.cornerRadius ? "roundRect" : "rect", box, boxObject.fill, boxObject.strokeColor, boxObject.strokeWidth, boxObject.rotation));
+      if (boxObject.content?.text) xml.push(textXml(id++, `${boxObject.id} text`, boxObject.content, objectRect(boxObject.position, { x: boxObject.size.x * 0.88, y: boxObject.size.y * 0.82 }, pageHeight, rect), boxObject.rotation));
+    } else if (object.kind === "text") {
+      const textObject = object as TextObject;
+      const size = { x: textObject.maxWidth ?? Math.max(0.08, textObject.content.style.size * 4), y: Math.max(0.08, textObject.content.style.size * 6) };
+      xml.push(textXml(id++, `${textObject.id} text`, textObject.content, objectRect(textObject.position, size, pageHeight, rect), textObject.rotation));
+    }
+  }
+  return xml.join("\n      ");
+}
+
+function renderSlideXml(rect: SlideRect, pageHeight: number, objects: PageObject[]): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld>
@@ -435,6 +506,7 @@ function renderSlideXml(rect: { x: number; y: number; cx: number; cy: number }):
           </a:prstGeom>
         </p:spPr>
       </p:pic>
+      ${editableObjectsXml(objects, pageHeight, rect)}
     </p:spTree>
   </p:cSld>
   <p:clrMapOvr>
