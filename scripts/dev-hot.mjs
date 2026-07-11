@@ -1,12 +1,17 @@
 import { createServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { existsSync, watch } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { buildAll } from "./build.mjs";
 
 const root = resolve(".");
-const appPort = Number(process.env.PORT ?? 5177);
-const reloadPort = Number(process.env.GURUGURU_RELOAD_PORT ?? appPort + 1);
+// 5177 は人間のオペレーターが常用する予約ポート。テスト実行(GURUGURU_TEST_DB=1)は
+// このポートへフォールバックせず、PORT 未指定なら空きポートを自動割当する。
+const RESERVED_USER_PORT = 5177;
+const isTestRun = process.env.GURUGURU_TEST_DB === "1";
+const appPort = await resolveAppPort();
+const reloadPort = await resolveReloadPort();
 const bunExecutable = process.execPath;
 const watchedDirs = ["src", "scripts"];
 
@@ -211,4 +216,55 @@ async function shutdown() {
 
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+async function resolveAppPort() {
+  const raw = process.env.PORT;
+  if (!isTestRun) {
+    return Number(raw ?? RESERVED_USER_PORT);
+  }
+  if (raw === undefined || raw === "") {
+    const port = await findFreePort();
+    console.log(`[dev] GURUGURU_TEST_DB=1: PORT 未指定のため空きポート ${port} を使用します。`);
+    return port;
+  }
+  const port = Number(raw);
+  if (port === RESERVED_USER_PORT) {
+    console.error(`[dev] GURUGURU_TEST_DB=1 の実行では予約ポート ${RESERVED_USER_PORT} を使用できません。別の PORT を指定してください。`);
+    process.exit(1);
+  }
+  return port;
+}
+
+async function resolveReloadPort() {
+  const raw = process.env.GURUGURU_RELOAD_PORT;
+  if (raw !== undefined && raw !== "") {
+    const port = Number(raw);
+    if (isTestRun && port === RESERVED_USER_PORT) {
+      console.error(`[dev] GURUGURU_TEST_DB=1 の実行では予約ポート ${RESERVED_USER_PORT} を使用できません。別の GURUGURU_RELOAD_PORT を指定してください。`);
+      process.exit(1);
+    }
+    return port;
+  }
+  if (isTestRun) {
+    return findFreePort();
+  }
+  return appPort + 1;
+}
+
+function findFreePort() {
+  return new Promise((resolvePort, reject) => {
+    const server = createNetServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => {
+        if (typeof address === "object" && address?.port) {
+          resolvePort(address.port);
+        } else {
+          reject(new Error("failed to allocate a free port"));
+        }
+      });
+    });
+    server.on("error", reject);
+  });
 }
