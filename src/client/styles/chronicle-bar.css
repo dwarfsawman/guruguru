@@ -106,8 +106,13 @@
   flex: 0 0 auto;
   overflow-x: auto;
   overflow-y: hidden;
-  padding-bottom: 4px;
-  scrollbar-width: thin;
+  /* スクロールバーは非表示(2026-07-11 要望)。横スクロールはトラック上のホイール
+     (chronicleController の wheel 委譲、Shift 不要)とドラッグ系 UI で行う。 */
+  scrollbar-width: none;
+}
+
+.chronicle-bar-track::-webkit-scrollbar {
+  display: none;
 }
 
 .chronicle-beat {
