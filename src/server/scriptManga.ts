@@ -10,6 +10,8 @@ import { HttpError } from "./http";
 import { createPage, updatePage } from "./pages";
 import { createGenerationRound } from "./rounds";
 import { objectBody, requiredString, stringOr } from "./validate";
+import { planScriptMangaWithDirector } from "./scriptMangaDirector";
+import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 
 interface RunRow {
   id: string;
@@ -94,15 +96,16 @@ function roundTo64(value: number): number {
 }
 
 /** コマの縦横比を保ち、長辺を 768px(≈800px)にする。 */
-function panelGenerationSize(layout: PageLayout, panelId: string): { width: number; height: number } {
+function panelGenerationSize(layout: PageLayout, panelId: string, longEdge = 1024): { width: number; height: number } {
+  const edge = Math.max(512, Math.min(1536, roundTo64(longEdge)));
   const panel = layout.panels.find((item) => item.id === panelId);
-  if (!panel) return { width: 768, height: 768 };
+  if (!panel) return { width: edge, height: edge };
   const [panelWidth, panelHeight] = panelBoundsSize(panelBounds(panel.shape));
-  if (panelWidth <= 0 || panelHeight <= 0) return { width: 768, height: 768 };
+  if (panelWidth <= 0 || panelHeight <= 0) return { width: edge, height: edge };
   if (panelWidth >= panelHeight) {
-    return { width: 768, height: roundTo64((768 * panelHeight) / panelWidth) };
+    return { width: edge, height: roundTo64((edge * panelHeight) / panelWidth) };
   }
-  return { width: roundTo64((768 * panelWidth) / panelHeight), height: 768 };
+  return { width: roundTo64((edge * panelWidth) / panelHeight), height: edge };
 }
 
 function runView(row: RunRow): ScriptMangaRunView {
@@ -181,18 +184,29 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     maxDialoguesPerPanel: typeof input.maxDialoguesPerPanel === "number" ? input.maxDialoguesPerPanel : 2,
     stylePrompt: stringOr(input.stylePrompt, "") || undefined
   };
-  const plan = planScriptManga(latestDoc(scriptId), planOptions);
+  const planningMode = stringOr(input.planningMode, "heuristic");
+  if (planningMode !== "heuristic" && planningMode !== "llm" && planningMode !== "provided") {
+    throw new HttpError(400, 'planningMode must be "heuristic", "llm", or "provided"');
+  }
+  const doc = latestDoc(scriptId);
+  const plan = planningMode === "llm"
+    ? await planScriptMangaWithDirector(doc, { ...planOptions, characterBible: stringOr(input.characterBible, "") || undefined })
+    : planningMode === "provided"
+      ? validateProvidedScriptMangaPlan(doc, input.directorPlan)
+      : planScriptManga(doc, planOptions);
+  if (!plan) throw new HttpError(400, "directorPlan is invalid or does not preserve every dialogue exactly once");
   removeUnusedStarterPage(projectId);
   const runId = createId("manga");
   const config = {
     templateId,
     providerId,
     batchSize: 1,
-    longEdge: 768,
-    steps: 4,
-    cfg: 1,
-    sampler: "euler_ancestral",
-    scheduler: "normal",
+    planningMode,
+    longEdge: typeof input.longEdge === "number" ? input.longEdge : 1024,
+    steps: typeof input.steps === "number" ? input.steps : 20,
+    cfg: typeof input.cfg === "number" ? input.cfg : 5,
+    sampler: stringOr(input.sampler, "euler"),
+    scheduler: stringOr(input.scheduler, "beta"),
     planOptions
   };
   runSql(
@@ -241,7 +255,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
            VALUES (?, ?, ?, ?, ?, 'submitting')`,
           [taskId, runId, page.id, layoutPanel.id, panelPlan.prompt]
         );
-        const size = panelGenerationSize(layout, layoutPanel.id);
+        const size = panelGenerationSize(layout, layoutPanel.id, config.longEdge);
         const request: GenerationRequest & { providerId?: string } = {
           templateId,
           prompt: panelPlan.prompt,
@@ -249,10 +263,10 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
           seed: null,
           seedMode: "random",
           batchSize: 1,
-          steps: 4,
-          cfg: 1,
-          sampler: "euler_ancestral",
-          scheduler: "normal",
+          steps: config.steps,
+          cfg: config.cfg,
+          sampler: config.sampler,
+          scheduler: config.scheduler,
           denoise: 1,
           width: size.width,
           height: size.height,

@@ -66,7 +66,7 @@ test("createScriptMangaRun builds pages, balloons and batch-1 panel generations,
     ]);
     assert.ok(round);
     assert.equal(JSON.parse(round!.request_json).batchSize, 1);
-    assert.equal(Math.max(JSON.parse(round!.request_json).width, JSON.parse(round!.request_json).height), 768);
+    assert.equal(Math.max(JSON.parse(round!.request_json).width, JSON.parse(round!.request_json).height), 1024);
     assert.equal(round!.target_panel_id, task.panel_id);
     await collectRound(task.round_id);
   }

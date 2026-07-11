@@ -83,6 +83,50 @@ function coverPanels(): LayoutPanel[] {
   ];
 }
 
+/** 会話の導入→反応→決めを作る、上段大ゴマ+下段2コマ。 */
+function threeHeroTopPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroBottom = MARGIN + 0.72;
+  const half = (right - left - GUTTER) / 2;
+  return [
+    rectPanel("hero", 1, left, MARGIN, right, heroBottom),
+    rectPanel("reaction-right", 2, left + half + GUTTER, heroBottom + GUTTER, right, bottom),
+    rectPanel("reaction-left", 3, left, heroBottom + GUTTER, left + half, bottom)
+  ];
+}
+
+/** 小さな導入3コマから下段の大ゴマへ落とす、アクション/発見向け。 */
+function fourHeroBottomPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const topBottom = MARGIN + 0.43;
+  const cell = (right - left - GUTTER * 2) / 3;
+  return [
+    rectPanel("setup-right", 1, left + (cell + GUTTER) * 2, MARGIN, right, topBottom),
+    rectPanel("setup-center", 2, left + cell + GUTTER, MARGIN, left + cell * 2 + GUTTER, topBottom),
+    rectPanel("setup-left", 3, left, MARGIN, left + cell, topBottom),
+    rectPanel("payoff", 4, left, topBottom + GUTTER, right, bottom)
+  ];
+}
+
+/** 右の縦長主役コマから左の3段へ流す、追跡/対決向け。 */
+function fourVerticalHeroPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroLeft = 0.55;
+  const smallHeight = (bottom - MARGIN - GUTTER * 2) / 3;
+  return [
+    rectPanel("hero-right", 1, heroLeft, MARGIN, right, bottom),
+    rectPanel("left-top", 2, left, MARGIN, heroLeft - GUTTER, MARGIN + smallHeight),
+    rectPanel("left-middle", 3, left, MARGIN + smallHeight + GUTTER, heroLeft - GUTTER, MARGIN + smallHeight * 2 + GUTTER),
+    rectPanel("left-bottom", 4, left, MARGIN + (smallHeight + GUTTER) * 2, heroLeft - GUTTER, bottom)
+  ];
+}
+
 /** 内蔵テンプレ一覧(表示順)。 */
 export const LAYOUT_PRESETS: BuiltinLayoutTemplate[] = [
   preset("cover", "表紙(タイトル+大ゴマ)", coverPanels()),
@@ -90,7 +134,10 @@ export const LAYOUT_PRESETS: BuiltinLayoutTemplate[] = [
   preset("two-horizontal", "2コマ(上下)", gridPanels(2, 1)),
   preset("two-vertical", "2コマ(左右)", gridPanels(1, 2)),
   preset("three-horizontal", "3コマ(3段)", gridPanels(3, 1)),
+  preset("three-hero-top", "3コマ(上段大ゴマ)", threeHeroTopPanels()),
   preset("four-grid", "4コマ(2×2)", gridPanels(2, 2)),
+  preset("four-hero-bottom", "4コマ(下段大ゴマ)", fourHeroBottomPanels()),
+  preset("four-vertical-hero", "4コマ(右縦大ゴマ)", fourVerticalHeroPanels()),
   preset("six-panel", "6コマ(3段×2)", gridPanels(3, 2)),
   preset("yonkoma", "4コマ(縦4段)", gridPanels(4, 1))
 ];

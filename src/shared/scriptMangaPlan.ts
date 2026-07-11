@@ -29,6 +29,8 @@ export interface ScriptMangaPlanOptions {
   maxDialoguesPerPanel?: number;
   maxSourceCharactersPerPanel?: number;
   stylePrompt?: string;
+  /** LLMネーム監督が全バッチへ再注入する人物固定票。決定的プランナーでは未使用。 */
+  characterBible?: string;
 }
 
 const DEFAULT_STYLE =
