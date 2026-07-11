@@ -43,6 +43,8 @@ export interface DialogueAutoLayoutItem {
   speakerLabel: string;
   /** dialogue_lines.order_index。コマ順との単調性判定・文字量比配分のソートキー。 */
   orderIndex: number;
+  /** 既に割当済みなら、そのコマを自動分配より優先する。 */
+  preferredPanelId?: string | null;
   /** 自動漫画など密度が高いページ向けの文字倍率。通常UIは1。 */
   fontScale?: number;
   /**
@@ -466,7 +468,12 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
    */
   let lastAssignedPanelIndex = -1;
 
-  for (const { item, panelIndex } of distributed) {
+  for (const { item, panelIndex: distributedPanelIndex } of distributed) {
+    const preferredPanelIndex = item.preferredPanelId
+      ? orderedPanels.findIndex((panel) => panel.id === item.preferredPanelId)
+      : -1;
+    const panelIndex = item.preferredPanelId ? (preferredPanelIndex >= 0 ? preferredPanelIndex : null) : distributedPanelIndex;
+    const hasPreferredPanel = Boolean(item.preferredPanelId);
     if (placedCount >= PAGE_OBJECTS_MAX_COUNT) {
       unplacedPlacementIds.push(item.placementId);
       warnings.push(`「${truncate(item.text)}」: ページオブジェクトの上限(${PAGE_OBJECTS_MAX_COUNT})に達しているため配置できませんでした。`);
@@ -566,7 +573,7 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
         }
       }
 
-      if (!position && !allowsPageWideFallback) {
+      if (!position && !allowsPageWideFallback && !hasPreferredPanel) {
         // 担当コマに空きが無い場合のフォールバック: 発話順とコマ順の単調性(order_index 昇順で
         // panelId のコマ順が逆転しない)を壊さない範囲で後続コマへの配置を試みる -- 探索範囲は
         // 「直前に panel ベースで配置した発話のコマ index の次」以降、かつ「担当 index+2」まで。

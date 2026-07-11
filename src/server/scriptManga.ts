@@ -15,6 +15,7 @@ import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPl
 import { fitPageBalloonText } from "./balloonTextFit";
 import { constrainBalloonTailTipToBounds, initialBalloonTailTip } from "../shared/balloonTailAim";
 import { normalizePageObjects } from "../shared/pageObjects";
+import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
 
 interface RunRow {
   id: string;
@@ -272,13 +273,30 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
       const page = createPage(projectId, { layoutTemplateId: pagePlan.layoutTemplateId });
       updatePage(projectId, page.id, { title: pagePlan.title });
       const layout = page.layout as PageLayout;
-      const layoutPanels = [...layout.panels].sort((a, b) => a.order - b.order);
+      // 吹き出し自動配置と同じ読書順へ揃える。layout の order は描画順であり、
+      // 非対称レイアウトでは右→左の読書順と一致しないことがある。
+      const layoutPanels = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
 
       const lineIds = pagePlan.panels.flatMap((panel) =>
         panel.dialogueOrderIndexes.map((order) => lineByOrder.get(order)).filter((id): id is string => Boolean(id))
       );
       if (lineIds.length > 0) {
         allocateDialoguePages(projectId, page.id, { lineIds, existingPlacementPolicy: "skip" });
+        // 監督プランが指定した発話→コマ対応を placement に固定する。ページ単位の自動分配だけに
+        // 任せると、無言コマを挟んだときに後続の台詞が手前のコマへ詰められてしまう。
+        for (let panelIndex = 0; panelIndex < pagePlan.panels.length; panelIndex += 1) {
+          const layoutPanel = layoutPanels[panelIndex];
+          if (!layoutPanel) throw new HttpError(500, `Page ${page.id} has fewer panels than planned`);
+          for (const orderIndex of pagePlan.panels[panelIndex]!.dialogueOrderIndexes) {
+            const lineId = lineByOrder.get(orderIndex);
+            if (!lineId) continue;
+            runSql(
+              `UPDATE dialogue_placements SET panel_id = ?, updated_at = CURRENT_TIMESTAMP
+               WHERE page_id = ? AND line_id = ? AND balloon_object_id IS NULL`,
+              [layoutPanel.id, page.id, lineId]
+            );
+          }
+        }
         const placementIds = getRows<{ id: string }>(
           `SELECT dp.id FROM dialogue_placements dp
            JOIN dialogue_lines dl ON dl.id = dp.line_id

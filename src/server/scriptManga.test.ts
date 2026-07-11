@@ -82,3 +82,64 @@ test("createScriptMangaRun builds pages, balloons and batch-1 panel generations,
   assert.equal(getRows("SELECT * FROM page_panel_assignments WHERE page_id = ?", [tasks[0]!.page_id]).length, 2);
   assert.equal(getRows("SELECT * FROM dialogue_placements WHERE page_id = ? AND balloon_object_id IS NOT NULL", [tasks[0]!.page_id]).length, 2);
 });
+
+test("createScriptMangaRun assigns directed prompts to the same RTL panels as their dialogues", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-reading-order-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const projectId = project!.id as string;
+  const imported = createScript(projectId, {
+    title: "Reading order",
+    fountainSource: [
+      "INT. COCKPIT - NIGHT",
+      "",
+      "@Alice",
+      "最初の台詞。",
+      "",
+      "@Mira",
+      "二番目の台詞。"
+    ].join("\n")
+  });
+
+  const run = await createScriptMangaRun(projectId, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    planningMode: "provided",
+    directorPlan: {
+      title: "Asymmetric RTL",
+      pages: [{
+        index: 0,
+        title: "Asymmetric page",
+        layoutTemplateId: "builtin:three-side-hero",
+        panels: [[], [0], [1]].map((dialogueOrderIndexes, dialogueOrderIndex) => ({
+          id: `directed-${dialogueOrderIndex}`,
+          sceneIndex: 0,
+          sceneHeading: "INT. COCKPIT - NIGHT",
+          prompt: `directed prompt ${dialogueOrderIndex}`,
+          sourceText: `source ${dialogueOrderIndex}`,
+          dialogueOrderIndexes
+        }))
+      }]
+    }
+  });
+
+  const promptPanels = getRows<{ prompt: string; panel_id: string }>(
+    "SELECT prompt, panel_id FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at ASC",
+    [run.id]
+  );
+  const dialoguePanels = getRows<{ order_index: number; panel_id: string }>(
+    `SELECT dl.order_index, dp.panel_id
+     FROM dialogue_placements dp
+     JOIN dialogue_lines dl ON dl.id = dp.line_id
+     WHERE dp.page_id = ?
+     ORDER BY dl.order_index ASC`,
+    [getRow<{ page_id: string }>("SELECT page_id FROM script_manga_tasks WHERE run_id = ? LIMIT 1", [run.id])!.page_id]
+  );
+
+  assert.deepEqual(promptPanels.map((task) => task.prompt), ["directed prompt 0", "directed prompt 1", "directed prompt 2"]);
+  assert.equal(promptPanels[1]!.panel_id, dialoguePanels[0]!.panel_id);
+  assert.equal(promptPanels[2]!.panel_id, dialoguePanels[1]!.panel_id);
+  assert.notEqual(promptPanels[0]!.panel_id, dialoguePanels[0]!.panel_id);
+});

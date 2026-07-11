@@ -60,6 +60,7 @@ interface PlacementRow {
   id: string;
   line_id: string;
   page_id: string;
+  panel_id: string | null;
   balloon_object_id: string | null;
 }
 
@@ -102,7 +103,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
   const placementIds = parsePlacementIds(input);
   const placeholders = placementIds.map(() => "?").join(",");
   const placements = getRows<PlacementRow>(
-    `SELECT id, line_id, page_id, balloon_object_id FROM dialogue_placements WHERE id IN (${placeholders})`,
+    `SELECT id, line_id, page_id, panel_id, balloon_object_id FROM dialogue_placements WHERE id IN (${placeholders})`,
     placementIds
   );
   const foundIds = new Set(placements.map((row) => row.id));
@@ -144,6 +145,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
       semanticKind: line.semantic_kind,
       speakerLabel: line.speaker_label,
       orderIndex: line.order_index,
+      preferredPanelId: placement.panel_id,
       fontScale,
       sizeVariants: requiredSizeVariantsFor(line.text, line.semantic_kind, fontScale)
     };
