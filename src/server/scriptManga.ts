@@ -284,18 +284,25 @@ function applyDialogueLayoutWithFallback(projectId: string, pageId: string, plac
       if (!(error instanceof HttpError) || error.statusCode !== 422) throw error;
     }
   }
-  for (let offset = 0; offset < placementIds.length; offset += 2) {
-    const group = placementIds.slice(offset, offset + 2);
+  for (let offset = 0; offset < placementIds.length; offset += 1) {
+    const group = placementIds.slice(offset, offset + 1);
     let placed = false;
-    for (let attempt = 0; attempt < 64; attempt += 1) {
-      try {
-        applyDialogueLayout(projectId, pageId, { placementIds: group, seed: baseSeed * 1000 + offset * 31 + attempt, fontScale: SCRIPT_MANGA_FONT_SCALE });
-        placed = true;
-        break;
-      } catch (error) {
-        lastError = error;
-        if (!(error instanceof HttpError) || error.statusCode !== 422) throw error;
+    for (const fontScale of [SCRIPT_MANGA_FONT_SCALE, 0.75, 0.62, 0.5, 0.42, 0.35]) {
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        try {
+          applyDialogueLayout(projectId, pageId, {
+            placementIds: group,
+            seed: baseSeed * 1000 + offset * 31 + attempt,
+            fontScale
+          });
+          placed = true;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!(error instanceof HttpError) || error.statusCode !== 422) throw error;
+        }
       }
+      if (placed) break;
     }
     if (!placed) throw lastError;
   }

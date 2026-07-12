@@ -103,7 +103,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
 
   const input = objectBody(body);
   const fontScale = typeof input.fontScale === "number" && Number.isFinite(input.fontScale)
-    ? Math.min(1, Math.max(0.5, input.fontScale))
+    ? Math.min(1, Math.max(0.35, input.fontScale))
     : 1;
   const preserveBalloonFontSize = typeof input.fontScale === "number" && Number.isFinite(input.fontScale);
   const placementIds = parsePlacementIds(input);
