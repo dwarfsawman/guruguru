@@ -112,7 +112,7 @@ test("normalizeGenerationRequest: normalizes denoise for img2img using default w
   // @ts-expect-error simulate a caller passing a non-numeric denoise
   input.denoise = "not-a-number";
   const result = normalizeGenerationRequest(input);
-  assert.equal(result.denoise, 0.35);
+  assert.equal(result.denoise, 0.8);
 });
 
 test("normalizeGenerationRequest: seed passes through only when a finite number", () => {

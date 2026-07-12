@@ -29,8 +29,8 @@ test("defaultDenoiseForMode: 1 when full denoise required", () => {
   assert.equal(defaultDenoiseForMode("prompt_reuse"), 1);
 });
 
-test("defaultDenoiseForMode: 0.35 for img2img", () => {
-  assert.equal(defaultDenoiseForMode("img2img"), 0.35);
+test("defaultDenoiseForMode: 0.8 for img2img", () => {
+  assert.equal(defaultDenoiseForMode("img2img"), 0.8);
 });
 
 test("defaultDenoiseForMode: 0.45 for other modes", () => {
@@ -47,7 +47,7 @@ test("normalizeDenoiseForMode: forces 1 for full-denoise modes regardless of inp
 });
 
 test("normalizeDenoiseForMode: falls back to mode default when not finite", () => {
-  assert.equal(normalizeDenoiseForMode(NaN, "img2img"), 0.35);
+  assert.equal(normalizeDenoiseForMode(NaN, "img2img"), 0.8);
   assert.equal(normalizeDenoiseForMode(Infinity, "detail"), 0.45);
 });
 

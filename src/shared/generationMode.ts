@@ -8,7 +8,7 @@ export function defaultDenoiseForMode(mode: string) {
   if (requiresFullDenoise(mode)) {
     return 1;
   }
-  return mode === "img2img" ? 0.35 : 0.45;
+  return mode === "img2img" ? 0.8 : 0.45;
 }
 
 export function normalizeDenoiseForMode(value: number, mode: string) {
