@@ -29,6 +29,7 @@ Fountain脚本を取り込み、漫画ページとして一括生成した作例
 
 - [入力したFountain脚本](Examples/ALICE_REBOOT_E01.fountain)
 - [生成した漫画PDF](https://github.com/dwarfsawman/guruguru/releases/download/v0.1.0/ALICE_REBOOT_E01_full_manga.pdf)
+- [amazon KDP](https://amzn.asia/d/08fgjX5Z)
 
 PDFは全85ページ。ファイルサイズが大きいため、GitHub Release Assetとして収録。
 
