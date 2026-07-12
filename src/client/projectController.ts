@@ -16,6 +16,7 @@ import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
 import { clearBookSession, openBook } from "./bookController";
 import { confirmDialog } from "./confirmDialogController";
+import { downloadBlob, filenameFromContentDisposition, responseErrorMessage } from "./downloadUtils";
 
 export async function loadHome() {
   state.currentProjectId = null;
@@ -323,11 +324,75 @@ async function deleteProject(projectId: string) {
   requestRender();
 }
 
+/**
+ * Docs/Feature-ProjectImportExport.md §6: プロジェクトカードの「エクスポート」。
+ * `GET /api/projects/:id/export` の .gguru バイト列を `<a download>` 経由で保存する
+ * (imageExportController.ts と同じ fetch → blob → downloadBlob の導線)。
+ */
+async function exportProject(projectId: string) {
+  const project = state.projects.find((item) => item.id === projectId) ?? state.detail?.project ?? null;
+  try {
+    const response = await fetch(`/api/projects/${projectId}/export`);
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response));
+    }
+    const blob = await response.blob();
+    const fallbackName = `${project?.name || "guruguru-project"}.gguru`;
+    const filename = filenameFromContentDisposition(response.headers.get("content-disposition")) ?? fallbackName;
+    downloadBlob(blob, filename);
+    pushToast("Projectをエクスポートしました。", "info");
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  }
+}
+
+/**
+ * Docs/Feature-ProjectImportExport.md §6: 一覧ヘッダの「インポート」。選択された .gguru を
+ * `POST /api/projects/import` へ生バイトのまま送る(base64 化しない。multipart でもない)。
+ * 成功した新規Projectを一覧の先頭へ差し込み、warnings があればそれぞれトーストで表示する。
+ */
+export async function importProjectFile(input: HTMLInputElement) {
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) {
+    return;
+  }
+  state.busy = true;
+  state.message = "Projectをインポートしています。";
+  requestRender();
+  try {
+    const response = await fetch("/api/projects/import", {
+      method: "POST",
+      headers: { "content-type": "application/zip" },
+      body: file
+    });
+    if (!response.ok) {
+      throw new Error(await responseErrorMessage(response));
+    }
+    const result = (await response.json()) as { project: ProjectRow; warnings?: string[] };
+    state.projects = [
+      { ...result.project, roundCount: 0, assetCount: 0, pageCount: result.project.mode === "book" ? 1 : 0 },
+      ...state.projects
+    ];
+    for (const warning of result.warnings ?? []) {
+      pushToast(warning, "error");
+    }
+    pushToast("Projectをインポートしました。", "info");
+  } catch (error) {
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    state.busy = false;
+    state.message = "";
+    requestRender();
+  }
+}
+
 registerActions({
   "home": () => loadHome(),
   "create-project": () => createProject(),
   "open-project": (id) => openProjectByMode(id),
   "delete-project": (id) => deleteProject(id),
+  "export-project": (id) => exportProject(id),
   "set-create-mode": (_id, target) => {
     state.createProjectMode = target.dataset.mode === "book" ? "book" : "single";
     requestRender();

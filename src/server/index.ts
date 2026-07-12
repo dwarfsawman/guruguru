@@ -6,7 +6,7 @@ import { checkModels, listAvailableLoras } from "./modelCheck";
 import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection, toLlmSettingsView } from "./llm";
 import { getVlmAuditSettings, getVlmAuditStatus } from "./vlmAudit";
 import { serveStatic } from "./files";
-import { HttpError, readJson, sendJson } from "./http";
+import { HttpError, readBuffer, readJson, sendJson } from "./http";
 import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
 import { createTemplate, deleteTemplate, listTemplates } from "./templates";
 import { serveAssetFile, updateAssetStatus } from "./assets";
@@ -93,6 +93,7 @@ import {
   updateScriptMangaPlan
 } from "./scriptManga";
 import { applySpeakerAnchors } from "./speakerAnchors";
+import { exportProject, importProject } from "./projectTransfer";
 import { fitPageBalloonText } from "./balloonTextFit";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
@@ -346,6 +347,15 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
+  // .gguru プロジェクトインポート(Docs/Feature-ProjectImportExport.md §5)。ボディは .gguru
+  // バイナリそのもの(multipart にはしない)。/api/projects/:id と衝突しないよう先に判定する
+  // (":id" 部分に "import" は入り得ないため実害はないが、意図を明確にする)。
+  if (method === "POST" && path === "/api/projects/import") {
+    const result = await importProject(await readBuffer(req));
+    sendJson(res, 201, result);
+    return;
+  }
+
   const projectDetailMatch = path.match(/^\/api\/projects\/([^/]+)$/);
   if (method === "GET" && projectDetailMatch) {
     sendJson(res, 200, getProjectDetail(projectDetailMatch[1]!, { ensureRoundMonitor }));
@@ -354,6 +364,19 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "DELETE" && projectDetailMatch) {
     sendJson(res, 200, await deleteProject(projectDetailMatch[1]!));
+    return;
+  }
+
+  // .gguru プロジェクトエクスポート(Docs/Feature-ProjectImportExport.md §5)。
+  const projectExportMatch = path.match(/^\/api\/projects\/([^/]+)\/export$/);
+  if (method === "GET" && projectExportMatch) {
+    const result = await exportProject(projectExportMatch[1]!);
+    res.writeHead(200, {
+      "content-type": result.contentType,
+      "content-length": String(result.buffer.byteLength),
+      "content-disposition": `attachment; filename="${result.filename}"`
+    });
+    res.end(result.buffer);
     return;
   }
 
