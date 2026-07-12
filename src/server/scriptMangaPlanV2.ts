@@ -27,10 +27,25 @@ import {
 
 interface DirectedPanelFields {
   shot?: string;
+  angle?: string;
   subject?: string;
+  subjects?: Array<{ ref: string; position: string; action: string; expression: string; gaze?: string }>;
+  avoid?: string[];
   action?: string;
   emotion?: string;
   composition?: string;
+}
+
+function positionBox(position: string): NormalizedBox {
+  const [vertical = "middle", horizontal = "center"] = position.split("-");
+  const width = 0.3;
+  const height = 0.42;
+  return {
+    x: horizontal === "left" ? 0.04 : horizontal === "right" ? 0.66 : 0.35,
+    y: vertical === "upper" ? 0.04 : vertical === "lower" ? 0.54 : 0.29,
+    width,
+    height
+  };
 }
 
 function panelDirection(panel: ScriptMangaPanelPlan): DirectedPanelFields {
@@ -191,15 +206,19 @@ export function buildMangaPlanV2(input: {
       ].filter((id, index, all) => all.indexOf(id) === index);
       const boxes = castBoxes(Math.max(1, characterIds.length));
       const cast: PanelCastSpec[] = characterIds.map((characterId, index) => {
+        const character = story.characterById.get(characterId);
+        const directedSubject = direction.subjects?.find((subject) =>
+          [character?.name, ...(character?.aliases ?? [])].some((name) => name === subject.ref)
+        );
         const speakingLineIds = dialogueLines.filter((line) => line.characterId === characterId).map((line) => line.id);
         return {
           characterId,
           variantId: `${characterId}:default`,
-          bbox: boxes[index]!,
-          pose: direction.action || "natural storytelling pose",
-          gazeTarget: undefined,
-          expression: direction.emotion?.trim() || (speakingLineIds.length > 0 ? "engaged" : "observant"),
-          action: direction.action?.trim() || (speakingLineIds.length > 0 ? "speaking" : "participating in the depicted action"),
+          bbox: directedSubject ? positionBox(directedSubject.position) : boxes[index]!,
+          pose: directedSubject?.action || direction.action || "natural storytelling pose",
+          gazeTarget: directedSubject?.gaze,
+          expression: directedSubject?.expression || direction.emotion?.trim() || (speakingLineIds.length > 0 ? "engaged" : "observant"),
+          action: directedSubject?.action || direction.action?.trim() || (speakingLineIds.length > 0 ? "speaking" : "participating in the depicted action"),
           speakingLineIds
         };
       });
@@ -266,7 +285,7 @@ export function buildMangaPlanV2(input: {
         props,
         shot: {
           size: shotSize(direction.shot),
-          angle: direction.shot?.trim() || "eye-level",
+          angle: direction.angle?.trim() || direction.shot?.trim() || "eye-level",
           focalSubjectId,
           compositionIntent: direction.composition?.trim() || "single clear action with readable silhouettes"
         },
@@ -278,7 +297,10 @@ export function buildMangaPlanV2(input: {
           ...props.map((prop) => ({ kind: "entity-present" as const, entityId: prop.entityId, description: `show ${prop.entityId}` })),
           { kind: "action", description: action }
         ],
-        mustNotShow: [{ kind: "other", description: "generated text, letters, captions, speech bubbles, logos or watermarks" }],
+        mustNotShow: [
+          { kind: "other", description: "generated text, letters, captions, speech bubbles, logos or watermarks" },
+          ...(direction.avoid ?? []).map((description) => ({ kind: "other" as const, description }))
+        ],
         continuityFromPanelIds: previousPanelId ? [previousPanelId] : [],
         referenceManifest: [],
         sceneIndex: legacyPanel.sceneIndex,

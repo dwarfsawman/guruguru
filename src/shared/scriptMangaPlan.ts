@@ -3,7 +3,16 @@ import { scriptMangaLayoutCandidates } from "./layoutPresets";
 
 export interface ScriptMangaPanelDirection {
   shot: string;
+  angle?: string;
   subject: string;
+  subjects?: Array<{
+    ref: string;
+    position: string;
+    action: string;
+    expression: string;
+    gaze?: string;
+  }>;
+  avoid?: string[];
   action: string;
   emotion: string;
   composition: string;

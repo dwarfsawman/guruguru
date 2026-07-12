@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { NarrativeEntity, PanelSpec } from "../shared/mangaPlanV2";
-import { compilePanelPrompt } from "./panelPromptCompiler";
+import { compilePanelConditioning, compilePanelPrompt } from "./panelPromptCompiler";
 
 const entity: NarrativeEntity = {
   id: "character-akari",
@@ -90,5 +90,13 @@ describe("compilePanelPrompt", () => {
 
     expect(result).toContain("警告灯のコックピット");
     expect(result).not.toContain("もう戦わなくていい");
+  });
+
+  test("v3 moves avoid facts to negative conditioning and injects identity tags", () => {
+    const englishEntity = { ...entity, attributes: { tags: "short silver hair, blue eyes, black jacket" } };
+    const result = compilePanelConditioning({ panel, basePrompt: "damaged cockpit", entities: [englishEntity], dialogueById: new Map(), dialect: "tags" });
+    expect(result.positive).toContain("short silver hair");
+    expect(result.positive).not.toContain("rain");
+    expect(result.negative).toContain("rain");
   });
 });

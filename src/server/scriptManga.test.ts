@@ -84,7 +84,8 @@ test("createScriptMangaRun awaits candidate review before assigning batch-1 pane
     assert.ok(round);
     const request = JSON.parse(round!.request_json);
     assert.equal(request.batchSize, 1);
-    assert.equal(Math.max(request.width, request.height), 1024);
+    assert.ok([[1024, 1024], [1152, 896], [896, 1152], [1216, 832], [832, 1216], [1344, 768], [768, 1344], [1536, 640], [640, 1536]]
+      .some(([width, height]) => request.width === width && request.height === height));
     assert.deepEqual(request.loras, [{ name: "anime-style.safetensors", strength: 0.65 }]);
     assert.match(request.negativePrompt, /typography/);
     assert.equal(round!.target_panel_id, task.panel_id);
@@ -282,7 +283,7 @@ test("createScriptMangaRun assigns directed prompts to the same RTL panels as th
     assert.match(task.prompt, new RegExp(`directed prompt ${index}`));
     assert.match(task.prompt, /(?:extreme-wide|wide|medium|close-up|insert) shot/);
     assert.match(task.prompt, /one coherent moment/);
-    assert.match(task.prompt, /no text, no letters, no speech bubbles/);
+    assert.match(task.prompt, /no text\. no letters\. no speech bubbles/);
   });
   assert.equal(promptPanels[1]!.panel_id, dialoguePanels[0]!.panel_id);
   assert.equal(promptPanels[2]!.panel_id, dialoguePanels[1]!.panel_id);

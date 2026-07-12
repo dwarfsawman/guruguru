@@ -18,7 +18,7 @@ import { constrainBalloonTailTipToBounds, initialBalloonTailTip } from "../share
 import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
 import { normalizePageObjects, type BalloonObject } from "../shared/pageObjects";
 import { fitPageBalloonText } from "./balloonTextFit";
-import { compilePanelPrompt } from "./panelPromptCompiler";
+import { compilePanelConditioning } from "./panelPromptCompiler";
 import { releaseComfyModelsForAudit } from "./comfy";
 import { createId, getRow, getRows, runSql } from "./db";
 import { allocateDialoguePages } from "./dialogueAllocation";
@@ -248,14 +248,24 @@ function roundTo64(value: number): number {
   return Math.max(256, Math.round(value / 64) * 64);
 }
 
-function panelGenerationSize(layout: PageLayout, panelId: string, longEdge = 1024): { width: number; height: number } {
+const SDXL_BUCKETS = [[1024, 1024], [1152, 896], [896, 1152], [1216, 832], [832, 1216], [1344, 768], [768, 1344], [1536, 640], [640, 1536]] as const;
+
+export function panelGenerationSize(layout: PageLayout, panelId: string, longEdge = 1024, family: "sdxl" | "chroma" = "sdxl"): { width: number; height: number } {
   const edge = Math.max(512, Math.min(1536, roundTo64(longEdge)));
   const panel = layout.panels.find((item) => item.id === panelId);
   if (!panel) return { width: edge, height: edge };
   const [panelWidth, panelHeight] = panelBoundsSize(panelBounds(panel.shape));
   if (panelWidth <= 0 || panelHeight <= 0) return { width: edge, height: edge };
-  if (panelWidth >= panelHeight) return { width: edge, height: roundTo64((edge * panelHeight) / panelWidth) };
-  return { width: roundTo64((edge * panelWidth) / panelHeight), height: edge };
+  const ratio = panelWidth / panelHeight;
+  if (family === "sdxl") {
+    const bucket = SDXL_BUCKETS.reduce((best, candidate) =>
+      Math.abs(Math.log(candidate[0] / candidate[1]) - Math.log(ratio)) < Math.abs(Math.log(best[0] / best[1]) - Math.log(ratio)) ? candidate : best
+    );
+    return { width: bucket[0], height: bucket[1] };
+  }
+  const clampedRatio = Math.max(0.5, Math.min(2, ratio));
+  if (clampedRatio >= 1) return { width: edge, height: roundTo64(edge / clampedRatio) };
+  return { width: roundTo64(edge * clampedRatio), height: edge };
 }
 
 function removeUnusedStarterPage(projectId: string): void {
@@ -634,6 +644,8 @@ function materializeRun(runId: string): void {
   }));
   const dialogueById = new Map(dialogueRows.map((line) => [line.id, line]));
   const dialogueSnapshots = new Map(plan.dialogueSnapshots.map((snapshot) => [snapshot.id, snapshot]));
+  const templateJson = getRow<{ workflow_json: string }>("SELECT workflow_json FROM workflow_templates WHERE id = ?", [config.templateId])?.workflow_json ?? "";
+  const dialect = /animagine|pony|sdxl|checkpointloadersimple/iu.test(templateJson) ? "tags" : "natural";
   removeUnusedStarterPage(run.project_id);
 
   for (const pageSpec of plan.pages) {
@@ -655,7 +667,7 @@ function materializeRun(runId: string): void {
         globalLoras: config.loras
       });
       panel.referenceManifest = references.manifest;
-      panel.compiledPrompt = compilePanelPrompt({
+      panel.compiledPrompt = compilePanelConditioning({
         panel,
         basePrompt: panel.promptBase,
         entities: plan.narrativeGraph.entities,
@@ -664,8 +676,9 @@ function materializeRun(runId: string): void {
           ? "base-only"
           : plan.plannerProvenance?.kind === "llm-director"
             ? "english-directed"
-            : "append"
-      });
+            : "append",
+        dialect
+      }).positive;
       const preflight = validatePanelPreflight({
         panel,
         layout,
@@ -711,7 +724,10 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
       continue;
     }
     const layout = pageLayout(task.page_id);
-    const size = panelGenerationSize(layout, task.panel_id, config.longEdge);
+    const templateJson = getRow<{ workflow_json: string }>("SELECT workflow_json FROM workflow_templates WHERE id = ?", [config.templateId])?.workflow_json ?? "";
+    const family = /chroma|auraflow/iu.test(templateJson) ? "chroma" : "sdxl";
+    const dialect = family === "sdxl" ? "tags" : "natural";
+    const size = panelGenerationSize(layout, task.panel_id, config.longEdge, family);
     const references = resolvePanelReferences({
       projectId: run.project_id,
       providerId: config.providerId,
@@ -720,11 +736,12 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
       globalLoras: config.loras
     });
     panel.referenceManifest = references.manifest;
+    const conditioning = compilePanelConditioning({ panel, basePrompt: panel.promptBase, entities: planFromRow(requirePlan(run.plan_id!)).narrativeGraph.entities,
+      dialogueById: new Map(), narrativeMetadata: "english-directed", dialect });
     const request: GenerationRequest & { providerId?: string } = {
       templateId: config.templateId,
       prompt: panel.compiledPrompt,
-      negativePrompt:
-        "text, letters, words, typography, captions, subtitles, speech bubbles, manga sound effects, signage, labels, logos, watermarks, UI overlays, model sheet, character sheet, reference sheet, split screen, multiple views, collage, comic page inside panel, low quality, blurry, deformed",
+      negativePrompt: conditioning.negative,
       seed: null,
       seedMode: "random",
       batchSize: 1,

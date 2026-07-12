@@ -1,6 +1,11 @@
 import type { NarrativeEntity, NormalizedBox, PanelSpec } from "../shared/mangaPlanV2";
 import type { StoryGraphDialogueInput } from "./storyGraphBuilder";
 
+export type PromptDialect = "natural" | "tags";
+export interface PanelConditioning { positive: string; negative: string }
+const TEXT_NEGATIVE = "text, letters, words, typography, captions, subtitles, speech bubbles, manga sound effects, signage, labels, logos, watermarks, UI overlays";
+const QUALITY_NEGATIVE = "low quality, blurry, deformed, bad anatomy, extra limbs, extra fingers";
+
 function regionName(box: NormalizedBox): string {
   const horizontal = box.x + box.width / 2 < 0.38 ? "left" : box.x + box.width / 2 > 0.62 ? "right" : "center";
   const vertical = box.y + box.height / 2 < 0.38 ? "upper" : box.y + box.height / 2 > 0.62 ? "lower" : "middle";
@@ -157,4 +162,40 @@ export function compilePanelPrompt(input: {
   if (input.panel.mustNotShow.length > 0) parts.push(`must not show: ${input.panel.mustNotShow.map((item) => item.description).join("; ")}`);
   parts.push("one coherent moment, consistent character design, readable silhouettes, no text, no letters, no speech bubbles, no watermark");
   return parts.filter(Boolean).join(". ").replace(/\s+/g, " ").trim();
+}
+
+/** v3 conditioning contract: exclusions never enter positive conditioning. */
+export function compilePanelConditioning(input: {
+  panel: PanelSpec;
+  basePrompt: string;
+  entities: NarrativeEntity[];
+  dialogueById: Map<string, StoryGraphDialogueInput>;
+  narrativeMetadata?: "append" | "english-directed" | "base-only";
+  dialect?: PromptDialect;
+  qualityTags?: string;
+  negativeBase?: string;
+  maxTerms?: number;
+}): PanelConditioning {
+  const cleanPanel = { ...input.panel, mustNotShow: [] };
+  const raw = compilePanelPrompt({ ...input, panel: cleanPanel });
+  const entityById = new Map(input.entities.map((entity) => [entity.id, entity]));
+  const identities = input.panel.cast.flatMap((member) => {
+    const entity = entityById.get(member.characterId);
+    const variant = entity?.variants.find((item) => item.id === member.variantId);
+    const descriptions = [entity?.attributes.tags || entity?.attributes.description, variant?.attributes.tags || variant?.attributes.description]
+      .filter((value): value is string => Boolean(value?.trim()) && !/[\u3040-\u30ff\u3400-\u9fff]/u.test(value!));
+    return descriptions;
+  });
+  const quality = input.qualityTags?.trim() || "masterpiece, best quality, high detail";
+  const positiveParts = input.dialect === "tags"
+    ? [quality, input.panel.cast.length === 1 ? "1character" : `${input.panel.cast.length}characters`, ...identities,
+        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), input.basePrompt]
+    : [raw, ...identities];
+  const maxTerms = Math.max(12, input.maxTerms ?? 75);
+  const positive = positiveParts.flatMap((part) => part?.split(/\s*,\s*|\.\s+/) ?? []).filter(Boolean).slice(0, maxTerms).join(input.dialect === "tags" ? ", " : ". ");
+  const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);
+  return {
+    positive,
+    negative: [input.negativeBase?.trim() || QUALITY_NEGATIVE, TEXT_NEGATIVE, ...moved].filter(Boolean).join(", ")
+  };
 }

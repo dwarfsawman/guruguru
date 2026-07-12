@@ -13,11 +13,13 @@ import { getLlmSettings } from "./llm";
 interface DirectedPanel {
   id: string;
   shot: string;
-  subject: string;
+  angle: string;
+  subjects: Array<{ ref: string; position: string; action: string; expression: string; gaze?: string }>;
   action: string;
   emotion: string;
   composition: string;
   prompt: string;
+  avoid?: string[];
 }
 
 interface DirectedPage {
@@ -49,11 +51,18 @@ const schema = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["id", "shot", "subject", "action", "emotion", "composition", "prompt"],
+              required: ["id", "shot", "angle", "subjects", "action", "emotion", "composition", "prompt"],
               properties: {
-                id: { type: "string" }, shot: { type: "string" }, subject: { type: "string" },
+                id: { type: "string" },
+                shot: { type: "string", enum: ["extreme-wide", "wide", "full", "medium", "bust", "close-up", "extreme-close-up", "insert"] },
+                angle: { type: "string", enum: ["eye-level", "low", "high", "overhead", "dutch", "pov"] },
+                subjects: { type: "array", items: { type: "object", additionalProperties: false,
+                  required: ["ref", "position", "action", "expression"], properties: {
+                    ref: { type: "string" }, position: { type: "string", enum: ["upper-left", "upper-center", "upper-right", "middle-left", "middle-center", "middle-right", "lower-left", "lower-center", "lower-right"] },
+                    action: { type: "string" }, expression: { type: "string" }, gaze: { type: "string" }
+                  } } },
                 action: { type: "string" }, emotion: { type: "string" }, composition: { type: "string" },
-                prompt: { type: "string" }
+                prompt: { type: "string" }, avoid: { type: "array", maxItems: 8, items: { type: "string" } }
               }
             }
           }
@@ -70,14 +79,23 @@ function nonEmpty(value: unknown): value is string {
 function directionFrom(panel: DirectedPanel): ScriptMangaPanelDirection {
   return {
     shot: panel.shot.trim(),
-    subject: panel.subject.trim(),
+    angle: panel.angle.trim(),
+    subject: panel.subjects.map((item) => item.ref).join(", "),
+    subjects: panel.subjects,
+    avoid: panel.avoid,
     action: panel.action.trim(),
     emotion: panel.emotion.trim(),
     composition: panel.composition.trim()
   };
 }
 
-function validateBatch(raw: unknown, sourcePages: ScriptMangaPagePlan[]): DirectedBatch | null {
+const SHOTS = new Set(["extreme-wide", "wide", "full", "medium", "bust", "close-up", "extreme-close-up", "insert"]);
+const ANGLES = new Set(["eye-level", "low", "high", "overhead", "dutch", "pov"]);
+const POSITIONS = new Set(["upper-left", "upper-center", "upper-right", "middle-left", "middle-center", "middle-right", "lower-left", "lower-center", "lower-right"]);
+const NON_ENGLISH_OR_NEGATION = /[\u3040-\u30ff\u3400-\u9fff]|\b(?:no|not|without|never)\b/iu;
+
+export function validateDirectedMangaBatch(raw: unknown, sourcePages: ScriptMangaPagePlan[], entityNames: string[] = []): DirectedBatch | null {
+
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as DirectedBatch).pages)) return null;
   const pages = (raw as DirectedBatch).pages;
   if (pages.length !== sourcePages.length) return null;
@@ -99,12 +117,19 @@ function validateBatch(raw: unknown, sourcePages: ScriptMangaPagePlan[]): Direct
         !panel ||
         panel.id !== source.panels[p]!.id ||
         !nonEmpty(panel.shot) ||
-        !nonEmpty(panel.subject) ||
+        !SHOTS.has(panel.shot) ||
+        !ANGLES.has(panel.angle) ||
+        !Array.isArray(panel.subjects) ||
         !nonEmpty(panel.action) ||
         !nonEmpty(panel.emotion) ||
         !nonEmpty(panel.composition) ||
-        !nonEmpty(panel.prompt)
+        !nonEmpty(panel.prompt) || NON_ENGLISH_OR_NEGATION.test(panel.prompt)
       ) return null;
+      for (const subject of panel.subjects) {
+        if (!subject || !nonEmpty(subject.ref) || !POSITIONS.has(subject.position) || !nonEmpty(subject.action) || !nonEmpty(subject.expression)) return null;
+        if (entityNames.length > 0 && !entityNames.includes(subject.ref)) return null;
+      }
+      if (panel.avoid !== undefined && (!Array.isArray(panel.avoid) || panel.avoid.length > 8 || panel.avoid.some((item) => !nonEmpty(item) || item.trim().split(/\s+/).length > 6 || NON_ENGLISH_OR_NEGATION.test(item)))) return null;
     }
   }
   return { pages };
@@ -116,9 +141,8 @@ export function applyScriptMangaDirectorBatch(
   sourcePages: ScriptMangaPagePlan[],
   stylePrompt?: string
 ): ScriptMangaPagePlan[] | null {
-  const directed = validateBatch(raw, sourcePages);
+  const directed = validateDirectedMangaBatch(raw, sourcePages);
   if (!directed) return null;
-  const style = stylePrompt?.trim() || "Japanese monochrome science fiction manga, professional ink line art, screentone";
   return sourcePages.map((source, pageIndex) => {
     const directedPage = directed.pages[pageIndex]!;
     return {
@@ -130,7 +154,7 @@ export function applyScriptMangaDirectorBatch(
         return {
           ...panel,
           direction: directionFrom(directedPanel),
-          prompt: `${style}. ${directedPanel.prompt.trim()}. consistent character design, readable silhouette, no text, no letters, no speech bubbles, no watermark`
+          prompt: directedPanel.prompt.trim()
         };
       })
     };
@@ -170,12 +194,12 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
         "各コマは一つの瞬間、一つの主行動だけに絞り、誰が何をしてどう感じているかが静止画だけで判別できるようにします。",
         "同じ画角を連続させず、導入はwide、反応はclose-up、決めはlow angle/splashなど意図的に変化させます。",
         "台詞本文はpromptへ転記せず、speech act、表情、身振り、視線、口の状態という視覚化可能な演出へ変換してください。",
-        "応答内のpageIntent、shot、subject、action、emotion、composition、promptは、固有名詞を含めてすべて英語で記述してください。日本語など英語以外の文字を混ぜないでください。",
-        "promptは人物数、左右位置、視線、手足の動作、背景、カメラ距離を具体化してください。文字・吹き出しは描かせません。",
+        "This is naming contract v3.0. Use only the fixed shot, angle, and position enum values from the schema.",
+        "Write prompt in English with panel-specific visual facts only. Never include appearance/style attributes, dialogue, non-English text, or the words no/not/without/never. Put exclusions in avoid as English noun phrases.",
         fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
         `登場話者: ${speakerNames(doc).join(", ")}`
       ].join("\n"),
-      userPrompt: `次のページ群を演出してください。ページ数、index、panel id、コマ数は変更禁止です。\n${JSON.stringify(compact)}`,
+      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
       schema,
       validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt),
       temperature: 0.35,

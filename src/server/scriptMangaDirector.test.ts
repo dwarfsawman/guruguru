@@ -24,7 +24,8 @@ test("director batch preserves structured direction and page intent for five and
         panels: sourcePages[0]!.panels.map((panel, index) => ({
           id: panel.id,
           shot: index === 0 ? "wide" : "medium",
-          subject: `subject ${index + 1}`,
+          angle: "eye-level",
+          subjects: [{ ref: `subject ${index + 1}`, position: "middle-center", action: `action ${index + 1}`, expression: "focused" }],
           action: `action ${index + 1}`,
           emotion: "focused",
           composition: `composition ${index + 1}`,
@@ -40,12 +41,15 @@ test("director batch preserves structured direction and page intent for five and
     assert.deepEqual(directed[0]!.panels.map((panel) => panel.sourceElementIds), sourceIds);
     assert.deepEqual(directed[0]!.panels[0]!.direction, {
       shot: "wide",
+      angle: "eye-level",
       subject: "subject 1",
+      subjects: [{ ref: "subject 1", position: "middle-center", action: "action 1", expression: "focused" }],
+      avoid: undefined,
       action: "action 1",
       emotion: "focused",
       composition: "composition 1"
     });
-    assert.match(directed[0]!.panels[0]!.prompt, /^test style\. rendered panel 1\./);
+    assert.equal(directed[0]!.panels[0]!.prompt, "rendered panel 1");
   }
 });
 
@@ -59,7 +63,8 @@ test("director batch rejects a layout with a different panel count", () => {
       panels: sourcePages[0]!.panels.map((panel) => ({
         id: panel.id,
         shot: "wide",
-        subject: "subject",
+        angle: "eye-level",
+        subjects: [{ ref: "subject", position: "middle-center", action: "action", expression: "focused" }],
         action: "action",
         emotion: "focused",
         composition: "balanced",
