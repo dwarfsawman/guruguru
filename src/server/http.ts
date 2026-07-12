@@ -28,6 +28,18 @@ export async function readJson<T = unknown>(req: IncomingMessage): Promise<T> {
   return JSON.parse(text) as T;
 }
 
+/**
+ * Read the raw request body as a Buffer (no JSON parsing). Used for endpoints that accept a
+ * binary body directly (e.g. `.gguru` project import) rather than a base64 data URL inside JSON.
+ */
+export async function readBuffer(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
 /** HTTP error carrying a status code, thrown by API handlers to short-circuit routing. */
 export class HttpError extends Error {
   constructor(

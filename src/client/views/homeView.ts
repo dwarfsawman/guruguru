@@ -7,7 +7,7 @@ import type { ComfySettings } from "../../shared/types";
 import type { LlmSettingsView, ProjectSummary, WorkflowTemplate } from "../../shared/apiTypes";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../../shared/constants";
 import { escapeAttr, escapeHtml, formatDate } from "../format";
-import { iconChevron, iconPlus, iconTrash } from "../icons";
+import { iconChevron, iconDownload, iconMangaPanelImport, iconPlus, iconTrash } from "../icons";
 import { renderModelSelectPanel } from "../workflowUi";
 import { renderRangeControl } from "./generationPanel";
 
@@ -40,6 +40,10 @@ export function renderHome(
             <h1>Project一覧</h1>
           </div>
           <span class="panel-count"><b>${projects.length}</b> projects · <b>${totalAssets}</b> assets</span>
+          <label class="button-secondary compact source-upload-button" title=".gguru ファイルからProjectをインポート">
+            ${iconMangaPanelImport()}インポート
+            <input data-project-import="1" type="file" accept=".gguru,application/zip" />
+          </label>
         </div>
         <form id="project-form" class="form-stack">
           <div class="form-span create-mode-row">
@@ -100,6 +104,7 @@ export function renderProjectCard(project: ProjectSummary) {
       </div>
       <div class="project-actions">
         <button class="button-secondary" type="button" data-action="open-project" data-id="${project.id}">開く</button>
+        <button class="button-secondary" type="button" data-action="export-project" data-id="${project.id}" title=".gguruファイルとしてエクスポート">${iconDownload()}エクスポート</button>
         <button class="button-danger" type="button" data-action="delete-project" data-id="${project.id}">${iconTrash()}削除</button>
       </div>
     </article>

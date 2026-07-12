@@ -185,6 +185,7 @@ import {
 } from "./generationController";
 import {
   closeWorkflowModals,
+  importProjectFile,
   loadHome,
   uploadSourceAsset
 } from "./projectController";
@@ -321,6 +322,14 @@ function bindEvents() {
     }
     if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.characterFaceUpload) {
       void uploadCharacterFaceImage(target).catch((error) => {
+        pushToast(error instanceof Error ? error.message : String(error), "error");
+        render();
+      });
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.type === "file" && target.dataset.projectImport) {
+      void importProjectFile(target).catch((error) => {
+        state.busy = false;
         pushToast(error instanceof Error ? error.message : String(error), "error");
         render();
       });
