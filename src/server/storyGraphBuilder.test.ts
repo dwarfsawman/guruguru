@@ -61,3 +61,14 @@ test("story graph warns about an unresolved Japanese pronoun in natural action p
     (warning) => warning.code === "unresolved-mention" && warning.sourceElementId === action.id
   ));
 });
+
+test("story graph freezes deterministic set/lighting/palette scene bibles", () => {
+  const result = graphFor("INT. COCKPIT - NIGHT\n\nBlue warning lights pulse across the wet canopy.");
+  assert.equal(result.graph.sceneBibles?.length, 1);
+  const bible = result.graph.sceneBibles![0]!;
+  assert.match(bible.set, /COCKPIT/);
+  assert.match(bible.lighting, /night lighting/);
+  assert.match(bible.palette, /deep blue/);
+  const setting = result.graph.entities.find((entity) => entity.id === bible.settingId);
+  assert.equal(setting?.attributes.palette, bible.palette);
+});

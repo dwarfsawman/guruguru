@@ -7,6 +7,7 @@ import type {
   SourceElementRef,
   WorldState
 } from "../shared/mangaPlanV2";
+import type { SceneBible } from "../shared/mangaPlanV2";
 
 export interface StoryGraphCharacterInput {
   id: string;
@@ -37,6 +38,23 @@ export interface StoryGraphBuildResult {
 
 function stableToken(value: string): string {
   return createHash("sha1").update(value).digest("hex").slice(0, 12);
+}
+
+/** Fountainだけから再現可能なシーン固定票。LLMが無くても同一sceneの全コマで同じ値になる。 */
+export function deriveSceneBibles(doc: FountainDoc, scriptRevisionId: string): SceneBible[] {
+  return doc.scenes.map((scene, sceneIndex) => {
+    const settingId = `setting:${scriptRevisionId}:scene-${sceneIndex}`;
+    const heading = (scene.heading || `Scene ${sceneIndex + 1}`).replace(/^(?:INT\.?|EXT\.?|I\/E\.?)\s*/iu, "").trim();
+    const action = scene.elements.find((element) => element.type === "action")?.text ?? "";
+    const night = /(?:NIGHT|夜|深夜|夕)/iu.test(scene.heading);
+    const day = /(?:DAY|昼|朝)/iu.test(scene.heading);
+    return {
+      settingId,
+      set: [heading, action.split(/[。.!?]/u)[0]?.trim()].filter(Boolean).join(", ").slice(0, 240),
+      lighting: night ? "low-key night lighting with controlled practical lights" : day ? "consistent daylight with stable key direction" : "consistent cinematic lighting with stable key direction",
+      palette: night ? "deep blue and charcoal palette with restrained accent colors" : "coherent neutral palette with restrained accent colors"
+    };
+  });
 }
 
 export function fountainSourceElementId(scriptRevisionId: string, sceneIndex: number, elementIndex: number): string {
@@ -154,6 +172,12 @@ export function buildStoryGraph(input: {
       variants: [{ id: `${id}:default`, label: "default", attributes: {} }]
     };
   });
+  const sceneBibles = deriveSceneBibles(doc, scriptRevisionId);
+  const bibleBySetting = new Map(sceneBibles.map((bible) => [bible.settingId, bible]));
+  for (const entity of settingEntities) {
+    const bible = bibleBySetting.get(entity.id);
+    if (bible) Object.assign(entity.attributes, { set: bible.set, lighting: bible.lighting, palette: bible.palette });
+  }
 
   const characterById = new Map(characters.map((character) => [character.id, character]));
   for (const entity of taggedEntities) {
@@ -188,6 +212,7 @@ export function buildStoryGraph(input: {
       sourceElements,
       entities: [...characterEntities, ...taggedEntities, ...settingEntities],
       worldStates: [] as WorldState[],
+      sceneBibles,
       beats: [] as MangaBeat[],
       warnings
     },

@@ -301,6 +301,9 @@ export interface WorkflowTemplate {
   workflowHash: string;
   workflowJson: Json;
   roleMap: Json;
+  promptDialect?: "natural" | "tags";
+  qualityTags?: string;
+  negativeBase?: string;
 }
 
 export interface ProjectDetail {

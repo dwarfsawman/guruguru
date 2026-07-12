@@ -621,7 +621,7 @@ function updateBoxContentField(box: BoxObject, field: string, target: HTMLInputE
   return { ...box, content: { ...box.content, style: nextStyle } };
 }
 
-const BALLOON_SHAPE_VALUES = new Set<BalloonShape>(["ellipse", "rounded", "cloud", "jagged", "thought", "compound"]);
+const BALLOON_SHAPE_VALUES = new Set<BalloonShape>(["ellipse", "rounded", "cloud", "jagged", "thought", "compound", "spike", "roundRect", "caption"]);
 
 /** balloon 自身のプロパティ(shape/塗り/線/しっぽ トグル+幅/テキストを載せる)。content の中身は updateBalloonContentField。 */
 function updateBalloonOwnField(balloon: BalloonObject, field: string, target: HTMLInputElement | HTMLSelectElement): BalloonObject | null {

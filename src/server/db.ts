@@ -542,6 +542,9 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_page_panel_assignments_asset ON page_panel_assignments(asset_id);
   `);
   ensureColumn("workflow_templates", "deleted_at", "TEXT");
+  ensureColumn("workflow_templates", "prompt_dialect", "TEXT NOT NULL DEFAULT 'natural'");
+  ensureColumn("workflow_templates", "quality_tags", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("workflow_templates", "negative_base", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("generation_rounds", "branch_color_index", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("generation_rounds", "branch_reason", "TEXT");
   ensureColumn("generation_rounds", "branch_key", "TEXT");

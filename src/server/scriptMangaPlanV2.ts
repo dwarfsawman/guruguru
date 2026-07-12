@@ -16,6 +16,7 @@ import {
 import type { ScriptMangaPanelPlan, ScriptMangaPlan } from "../shared/scriptMangaPlan";
 import type { PageLayout } from "../shared/pageLayout";
 import type { StyleLoraSelection } from "../shared/types";
+import { extractFillUnits } from "../shared/dialogueAdaptation";
 import { compilePanelPrompt } from "./panelPromptCompiler";
 import { resolvePanelReferences } from "./referenceResolver";
 import {
@@ -175,6 +176,9 @@ export function buildMangaPlanV2(input: {
     characters: input.characters,
     dialogues: input.dialogues
   });
+  const fillUnits = input.dialoguePolicy === "fill"
+    ? extractFillUnits(input.doc, (sceneIndex, elementIndex) => fountainSourceElementId(input.scriptRevisionId, sceneIndex, elementIndex))
+    : [];
   const dialogueById = new Map(input.dialogues.map((line) => [line.id, line]));
   const activeCharacterStates: WorldState["characterStates"] = {};
   const beats: MangaBeat[] = [];
@@ -183,6 +187,7 @@ export function buildMangaPlanV2(input: {
   let previousPanelId: string | null = null;
   let previousSummary = "";
   let flatPanelIndex = 0;
+  const captionedScenes = new Set<number>();
 
   const pages = input.legacyPlan.pages.map((page) => {
     const resolvedLayout = input.resolveLayoutTemplate(page.layoutTemplateId);
@@ -225,6 +230,11 @@ export function buildMangaPlanV2(input: {
       const settingId = story.settingIdByScene.get(legacyPanel.sceneIndex) ?? `setting:${input.scriptRevisionId}:scene-${legacyPanel.sceneIndex}`;
       const focalSubjectId = findFocalSubject(direction.subject, cast, [...story.characterById.values()], settingId);
       const sourceElementIds = inferSourceIds(legacyPanel, input.scriptRevisionId, story.graph.sourceElements);
+      const fillUnitIds = fillUnits.filter((unit) =>
+        (unit.sourceElementId && sourceElementIds.includes(unit.sourceElementId)) ||
+        (unit.id === `fill:scene:${legacyPanel.sceneIndex}` && !captionedScenes.has(legacyPanel.sceneIndex))
+      ).map((unit) => unit.id);
+      if (fillUnitIds.includes(`fill:scene:${legacyPanel.sceneIndex}`)) captionedScenes.add(legacyPanel.sceneIndex);
       const beatId = `beat:${input.id}:${flatPanelIndex}`;
       const action = direction.action?.trim() || legacyPanel.sourceText.split("\n").find((line) => !line.includes(":")) || "visual story beat";
       const beat: MangaBeat = {
@@ -290,6 +300,7 @@ export function buildMangaPlanV2(input: {
           compositionIntent: direction.composition?.trim() || "single clear action with readable silhouettes"
         },
         dialogueLineIds: dialogueLines.map((line) => line.id),
+        fillUnitIds,
         dialogueOrderIndexes: [...legacyPanel.dialogueOrderIndexes],
         textSafeZones: provisionalSafeZones(dialogueLines.length),
         mustShow: [
@@ -367,6 +378,7 @@ export function buildMangaPlanV2(input: {
         semanticKind: line.semanticKind,
         balloonStyle: line.balloonStyle
       })),
+    fillUnits,
     pages,
     panelCount: pages.reduce((sum, page) => sum + page.panels.length, 0),
     dialogueCount: sourceDialogueLineIds.size,

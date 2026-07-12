@@ -12,7 +12,7 @@ import {
 } from "./balloonShape.ts";
 import { PAGE_OBJECT_MIN_SIZE, type BalloonShape } from "./pageObjects.ts";
 
-const SHAPES: BalloonShape[] = ["ellipse", "rounded", "cloud", "jagged", "thought", "compound"];
+const SHAPES: BalloonShape[] = ["ellipse", "rounded", "cloud", "jagged", "thought", "compound", "spike", "roundRect", "caption"];
 const UNION_SHAPES = SHAPES.filter((s) => s !== "thought" && s !== "compound");
 const SIZE = { x: 0.35, y: 0.22 };
 const TAIL = { tip: { x: 0, y: 0.3 }, width: 0.05 };

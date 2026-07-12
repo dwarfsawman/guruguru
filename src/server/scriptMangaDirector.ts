@@ -1,4 +1,5 @@
 import type { FountainDoc } from "../shared/fountain";
+import { deriveSceneBibles } from "./storyGraphBuilder";
 import { scriptMangaLayoutCandidates } from "../shared/layoutPresets";
 import {
   planScriptManga,
@@ -175,6 +176,7 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
   const base = planScriptManga(doc, options);
   const settings = getLlmSettings();
   const fixedIdentity = options.characterBible?.trim() ?? "";
+  const sceneBibles = deriveSceneBibles(doc, "director-input").map((bible, sceneIndex) => ({ sceneIndex, set: bible.set, lighting: bible.lighting, palette: bible.palette }));
   const batches: ScriptMangaPagePlan[][] = [];
   const provenanceBatches: Array<{ rawOutput: string; messages: Array<{ role: string; content: string }> }> = [];
   for (let offset = 0; offset < base.pages.length; offset += 4) batches.push(base.pages.slice(offset, offset + 4));
@@ -199,7 +201,7 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
         fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
         `登場話者: ${speakerNames(doc).join(", ")}`
       ].join("\n"),
-      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
+      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
       schema,
       validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt),
       temperature: 0.35,

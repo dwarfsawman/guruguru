@@ -167,11 +167,14 @@ export function balloonBodyPath(shape: BalloonShape, size: PageVec): string {
   const rx = Math.max(1e-6, size.x / 2);
   const ry = Math.max(1e-6, size.y / 2);
   switch (shape) {
+    case "roundRect":
+    case "caption":
     case "rounded":
       return roundedRectPath(rx, ry);
     case "cloud":
     case "thought":
       return cloudPath(rx, ry, balloonBumpCount(size));
+    case "spike":
     case "jagged":
       return jaggedPath(rx, ry, balloonSpikeCount(size));
     case "compound":
@@ -428,10 +431,13 @@ export function balloonUnionPath(shape: BalloonShape, size: PageVec, tail: Ballo
   }
   const gap = tailGap(rx, ry, tail);
   switch (shape) {
+    case "roundRect":
+    case "caption":
     case "rounded":
       return roundedUnionPath(rx, ry, gap);
     case "cloud":
       return cloudUnionPath(rx, ry, balloonBumpCount(size), gap);
+    case "spike":
     case "jagged":
       return jaggedUnionPath(rx, ry, balloonSpikeCount(size), gap);
     case "compound":
@@ -471,7 +477,10 @@ const BALLOON_INSCRIBED_FACTOR: Record<BalloonShape, number> = {
   cloud: (1 / Math.SQRT2) * 0.8,
   jagged: (1 / Math.SQRT2) * 0.8,
   thought: (1 / Math.SQRT2) * 0.8,
-  compound: 0.68
+  compound: 0.68,
+  spike: (1 / Math.SQRT2) * 0.8,
+  roundRect: 0.9,
+  caption: 0.94
 };
 
 /** 形状内へ文字矩形を安全に収めるための内接係数。自動サイズ/自動フィットでも描画と同じ値を使う。 */

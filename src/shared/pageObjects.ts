@@ -62,7 +62,7 @@ export interface TextObject extends PageObjectBase {
   maxWidth?: number;
 }
 
-export type BalloonShape = "ellipse" | "rounded" | "cloud" | "jagged" | "thought" | "compound";
+export type BalloonShape = "ellipse" | "rounded" | "cloud" | "jagged" | "thought" | "compound" | "spike" | "roundRect" | "caption";
 
 export interface BalloonTail {
   /**
@@ -290,7 +290,7 @@ function normalizeTextObject(raw: Record<string, unknown>, fallbackId: string): 
   return object;
 }
 
-const BALLOON_SHAPES = new Set<BalloonShape>(["ellipse", "rounded", "cloud", "jagged", "thought", "compound"]);
+const BALLOON_SHAPES = new Set<BalloonShape>(["ellipse", "rounded", "cloud", "jagged", "thought", "compound", "spike", "roundRect", "caption"]);
 
 function normalizeBalloonObject(raw: Record<string, unknown>, fallbackId: string): BalloonObject | null {
   const base = normalizeBase(raw, fallbackId);

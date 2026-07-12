@@ -8,7 +8,7 @@ import { getVlmAuditSettings, getVlmAuditStatus } from "./vlmAudit";
 import { serveStatic } from "./files";
 import { HttpError, readBuffer, readJson, sendJson } from "./http";
 import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
-import { createTemplate, deleteTemplate, listTemplates } from "./templates";
+import { createTemplate, deleteTemplate, listTemplates, updateTemplatePromptProfile } from "./templates";
 import { serveAssetFile, updateAssetStatus } from "./assets";
 import { createProject, deleteProject, getProjectDetail, listProjects } from "./projects";
 import {
@@ -317,6 +317,10 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
 
   const templateDeleteMatch = path.match(/^\/api\/templates\/([^/]+)$/);
+  if ((method === "PATCH" || method === "PUT") && templateDeleteMatch) {
+    sendJson(res, 200, { template: updateTemplatePromptProfile(templateDeleteMatch[1]!, await readJson(req)) });
+    return;
+  }
   if (method === "DELETE" && templateDeleteMatch) {
     sendJson(res, 200, deleteTemplate(templateDeleteMatch[1]!));
     return;

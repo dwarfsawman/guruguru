@@ -13,12 +13,16 @@ import { planScriptManga, type ScriptMangaPlanOptions } from "../shared/scriptMa
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import type { ScriptMangaPlanView, ScriptMangaRunView, ScriptMangaTaskView } from "../shared/scriptMangaApi";
+import type { DialogueBalloonStyle, DialogueSemanticKind } from "../shared/apiTypes";
 import { updateAssetStatus } from "./assets";
 import { constrainBalloonTailTipToBounds, initialBalloonTailTip } from "../shared/balloonTailAim";
 import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
 import { normalizePageObjects, type BalloonObject } from "../shared/pageObjects";
+import { splitDialogueUnits, type DialogueUnit } from "../shared/dialogueAdaptation";
+import { auditLettering } from "../shared/letteringQuality";
 import { fitPageBalloonText } from "./balloonTextFit";
 import { compilePanelConditioning } from "./panelPromptCompiler";
+import { inferPromptProfile } from "./templates";
 import { releaseComfyModelsForAudit } from "./comfy";
 import { createId, getRow, getRows, runSql } from "./db";
 import { allocateDialoguePages } from "./dialogueAllocation";
@@ -28,6 +32,7 @@ import { resolveLayoutTemplate } from "./layoutTemplates";
 import { createPage, updatePage } from "./pages";
 import { validatePanelPreflight, type PanelPreflightReport } from "./panelPreflightValidator";
 import { evaluatePanelCandidate } from "./panelVisualEvaluator";
+import { evaluateDeterministicPanelQuality } from "./deterministicPanelQuality";
 import { resolvePanelReferences } from "./referenceResolver";
 import { createGenerationRound, ensureRoundMonitor, interruptRound } from "./rounds";
 import { createImageExport, type ImageExportResult } from "./imageExport";
@@ -443,6 +448,20 @@ function loadDialoguesByIds(ids: string[], projectId: string, scriptId: string):
   }));
 }
 
+function templatePromptProfile(templateId: string) {
+  const row = getRow<{ workflow_json: string; prompt_dialect: string; quality_tags: string; negative_base: string }>(
+    "SELECT workflow_json, prompt_dialect, quality_tags, negative_base FROM workflow_templates WHERE id = ?",
+    [templateId]
+  );
+  const inferred = inferPromptProfile(row?.workflow_json ? JSON.parse(row.workflow_json) : {}, row?.prompt_dialect);
+  return {
+    dialect: inferred.promptDialect,
+    qualityTags: row?.quality_tags || inferred.qualityTags,
+    negativeBase: row?.negative_base || inferred.negativeBase,
+    workflowJson: row?.workflow_json ?? ""
+  };
+}
+
 function layoutPanelCount(layoutTemplateId: string): number | null {
   return resolveLayoutTemplate(layoutTemplateId)?.panels.length ?? null;
 }
@@ -457,10 +476,8 @@ function clonePageLayout(layout: PageLayout): PageLayout {
 
 function parseDialoguePolicy(value: unknown): DialoguePolicy {
   const policy = typeof value === "string" ? value : "preserve";
-  if (policy === "preserve") return policy;
-  if (policy === "adapt" || policy === "fill" || policy === "generate") {
-    throw new HttpError(400, `dialoguePolicy "${policy}" is reserved until provenance-preserving dialogue generation is implemented`);
-  }
+  if (policy === "preserve" || policy === "adapt" || policy === "fill") return policy;
+  if (policy === "generate") throw new HttpError(400, "dialoguePolicy generate requires a future lexical-similarity gate");
   throw new HttpError(400, 'dialoguePolicy must be "preserve", "adapt", "fill", or "generate"');
 }
 
@@ -537,9 +554,28 @@ function ensureDialogueLettering(
   pageId: string,
   pageSpec: MangaPlanV2["pages"][number],
   layoutPanels: PageLayout["panels"],
-  dialogueSnapshots: Map<string, FrozenDialogueLine>
+  dialogueSnapshots: Map<string, FrozenDialogueLine>,
+  dialoguePolicy: DialoguePolicy,
+  fillUnits: Map<string, DialogueUnit>
 ): void {
-  const lineIds = pageSpec.panels.flatMap((panel) => panel.dialogueLineIds);
+  const pageFillIds = pageSpec.panels.flatMap((panel) => panel.fillUnitIds ?? []);
+  for (const unitId of pageFillIds) {
+    const unit = fillUnits.get(unitId);
+    if (!unit) throw new HttpError(422, `Frozen fill unit is missing: ${unitId}`);
+    runSql(
+      `INSERT OR IGNORE INTO dialogue_lines
+         (id, project_id, script_id, character_id, speaker_label, text, semantic_kind, balloon_style,
+          order_index, scene_index, source_hash, status, source)
+       VALUES (?, ?, ?, NULL, '', ?, ?, ?, ?, NULL, ?, 'active', 'llm')`,
+      [unit.id, run.project_id, run.script_id, unit.text, unit.semanticKind, unit.balloonStyle, 1_000_000 + fillUnits.size,
+        unit.sourceElementId ?? unit.id]
+    );
+    dialogueSnapshots.set(unit.id, {
+      id: unit.id, orderIndex: 1_000_000 + unit.part, sceneIndex: 0, characterId: null, speakerLabel: "",
+      text: unit.text, semanticKind: unit.semanticKind, balloonStyle: unit.balloonStyle
+    });
+  }
+  const lineIds = pageSpec.panels.flatMap((panel) => [...panel.dialogueLineIds, ...(panel.fillUnitIds ?? [])]);
   if (lineIds.length === 0) return;
   // Separate runs own separate pages/balloons, even when the same source line was already used by
   // another run. `copy` remains idempotent because allocation itself skips a placement on this page.
@@ -547,9 +583,37 @@ function ensureDialogueLettering(
   for (let index = 0; index < pageSpec.panels.length; index += 1) {
     const layoutPanel = layoutPanels[index];
     if (!layoutPanel) throw new HttpError(500, `Page ${pageId} has fewer panels than planned`);
-    for (const lineId of pageSpec.panels[index]!.dialogueLineIds) {
+    for (const lineId of [...pageSpec.panels[index]!.dialogueLineIds, ...(pageSpec.panels[index]!.fillUnitIds ?? [])]) {
       const snapshot = dialogueSnapshots.get(lineId);
       if (!snapshot) throw new HttpError(422, `Frozen dialogue snapshot is missing: ${lineId}`);
+      if (dialoguePolicy === "adapt" || dialoguePolicy === "fill") {
+        const existing = getRows<{ id: string; part_index: number; balloon_object_id: string | null }>(
+          "SELECT id, part_index, balloon_object_id FROM dialogue_placements WHERE page_id = ? AND line_id = ? ORDER BY part_index",
+          [pageId, lineId]
+        );
+        if (existing.length === 1 && !existing[0]!.balloon_object_id) {
+          const units = splitDialogueUnits({ lineId, text: snapshot.text, semanticKind: snapshot.semanticKind as DialogueSemanticKind,
+            balloonStyle: (snapshot.balloonStyle as DialogueBalloonStyle | undefined) ?? "normal" });
+          if (units.length > 1) {
+            runSql("DELETE FROM dialogue_placements WHERE id = ?", [existing[0]!.id]);
+            for (const unit of units) {
+              runSql(
+                `INSERT INTO dialogue_placements
+                   (id, line_id, page_id, panel_id, part_index, render_kind, balloon_object_id, text_override,
+                    semantic_kind_override, speaker_label_override, order_index_override)
+                 VALUES (?, ?, ?, ?, ?, 'balloon', NULL, ?, ?, ?, ?)`,
+                [createId("place"), lineId, pageId, layoutPanel.id, unit.part - 1, unit.text, unit.semanticKind,
+                  snapshot.speakerLabel, snapshot.orderIndex * 100 + unit.part]
+              );
+            }
+          }
+        }
+        const splitCount = getRow<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM dialogue_placements WHERE page_id = ? AND line_id = ?",
+          [pageId, lineId]
+        )?.count ?? 0;
+        if (splitCount > 1) continue;
+      }
       runSql(
         `UPDATE dialogue_placements SET panel_id = ?, text_override = ?, semantic_kind_override = ?,
            speaker_label_override = ?, order_index_override = ?, updated_at = CURRENT_TIMESTAMP
@@ -577,6 +641,25 @@ function ensureDialogueLettering(
     aimInitialBalloonTails(pageId);
   }
   requireReadableBalloonText(pageId);
+  const pageRow = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
+  const objects = normalizePageObjects(pageRow?.objects_json ? JSON.parse(pageRow.objects_json) : []);
+  const faceBoxes = pageSpec.panels.flatMap((panel, index) => {
+    const layoutPanel = layoutPanels[index];
+    if (!layoutPanel) return [];
+    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
+    return panel.cast.map((member) => ({
+      x: x0 + member.bbox.x * (x1 - x0),
+      y: y0 + member.bbox.y * (y1 - y0),
+      width: member.bbox.width * (x1 - x0),
+      height: member.bbox.height * (y1 - y0) * 0.38
+    }));
+  });
+  const letteringReport = auditLettering(pageSpec.layoutSnapshot, objects, faceBoxes);
+  const evaluation = parseJson<Record<string, unknown>>(requireRun(run.id).evaluation_json, {});
+  runSql("UPDATE script_manga_runs SET evaluation_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+    JSON.stringify({ ...evaluation, lettering: { ...(evaluation.lettering as Record<string, unknown> ?? {}), [pageId]: letteringReport } }),
+    run.id
+  ]);
 }
 
 function upsertPreparedTask(input: {
@@ -649,8 +732,7 @@ function materializeRun(runId: string): void {
   }));
   const dialogueById = new Map(dialogueRows.map((line) => [line.id, line]));
   const dialogueSnapshots = new Map(plan.dialogueSnapshots.map((snapshot) => [snapshot.id, snapshot]));
-  const templateJson = getRow<{ workflow_json: string }>("SELECT workflow_json FROM workflow_templates WHERE id = ?", [config.templateId])?.workflow_json ?? "";
-  const dialect = /animagine|pony|sdxl|checkpointloadersimple/iu.test(templateJson) ? "tags" : "natural";
+  const promptProfile = templatePromptProfile(config.templateId);
   removeUnusedStarterPage(run.project_id);
 
   for (const pageSpec of plan.pages) {
@@ -659,7 +741,8 @@ function materializeRun(runId: string): void {
     if (layoutPanels.length !== pageSpec.panels.length) {
       throw new HttpError(422, `Layout ${pageSpec.layoutTemplateId} has ${layoutPanels.length} panels but plan requires ${pageSpec.panels.length}`);
     }
-    ensureDialogueLettering(run, pageId, pageSpec, layoutPanels, dialogueSnapshots);
+    ensureDialogueLettering(run, pageId, pageSpec, layoutPanels, dialogueSnapshots, plan.dialoguePolicy,
+      new Map((plan.fillUnits ?? []).map((unit) => [unit.id, unit])));
     for (let index = 0; index < pageSpec.panels.length; index += 1) {
       const panel = pageSpec.panels[index]!;
       const layoutPanel = layoutPanels[index]!;
@@ -682,7 +765,10 @@ function materializeRun(runId: string): void {
           : plan.plannerProvenance?.kind === "llm-director"
             ? "english-directed"
             : "append",
-        dialect
+        dialect: promptProfile.dialect,
+        qualityTags: promptProfile.qualityTags,
+        negativeBase: promptProfile.negativeBase,
+        sceneBible: plan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === panel.settingId)
       }).positive;
       const preflight = validatePanelPreflight({
         panel,
@@ -729,9 +815,8 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
       continue;
     }
     const layout = pageLayout(task.page_id);
-    const templateJson = getRow<{ workflow_json: string }>("SELECT workflow_json FROM workflow_templates WHERE id = ?", [config.templateId])?.workflow_json ?? "";
-    const family = /chroma|auraflow/iu.test(templateJson) ? "chroma" : "sdxl";
-    const dialect = family === "sdxl" ? "tags" : "natural";
+    const promptProfile = templatePromptProfile(config.templateId);
+    const family = /chroma|auraflow/iu.test(promptProfile.workflowJson) ? "chroma" : "sdxl";
     const size = panelGenerationSize(layout, task.panel_id, config.longEdge, family);
     const references = resolvePanelReferences({
       projectId: run.project_id,
@@ -741,8 +826,11 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
       globalLoras: config.loras
     });
     panel.referenceManifest = references.manifest;
-    const conditioning = compilePanelConditioning({ panel, basePrompt: panel.promptBase, entities: planFromRow(requirePlan(run.plan_id!)).narrativeGraph.entities,
-      dialogueById: new Map(), narrativeMetadata: "english-directed", dialect });
+    const frozenPlan = planFromRow(requirePlan(run.plan_id!));
+    const conditioning = compilePanelConditioning({ panel, basePrompt: panel.promptBase, entities: frozenPlan.narrativeGraph.entities,
+      dialogueById: new Map(), narrativeMetadata: "english-directed", dialect: promptProfile.dialect,
+      qualityTags: promptProfile.qualityTags, negativeBase: promptProfile.negativeBase,
+      sceneBible: frozenPlan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === panel.settingId) });
     const request: GenerationRequest & { providerId?: string } = {
       templateId: config.templateId,
       prompt: panel.compiledPrompt,
@@ -937,16 +1025,19 @@ function syncTaskFromRound(task: TaskRow, config: ScriptMangaRunConfig): void {
       return;
     }
     const nextStatus = config.auditMode === "vlm" ? "auditing" : "awaiting_review";
+    const previousCandidateIds = parseJson<string[]>(task.candidate_asset_ids_json, []);
+    const candidateIds = [...new Set([...previousCandidateIds, ...scores.map((score) => score.assetId)])];
     runSql(
       `UPDATE script_manga_tasks SET status = ?, candidate_asset_ids_json = ?, scores_json = ?,
          updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [
         nextStatus,
-        JSON.stringify(scores.map((score) => score.assetId)),
+        JSON.stringify(candidateIds),
         JSON.stringify({
           ...parseJson<Record<string, unknown>>(task.scores_json, {}),
-          candidates: scores,
+          candidates: [...(parseJson<{ candidates?: unknown[] }>(task.scores_json, {}).candidates ?? []), ...scores],
           visualAuditRequired: true,
+          deterministicAudit: { state: "queued" },
           ...(config.auditMode === "vlm" ? { vlmAudit: { state: "queued" } } : {})
         }),
         task.id
@@ -997,6 +1088,7 @@ async function performRunVisualAudit(runId: string): Promise<void> {
   }
   const lease = await acquireVlmModel(settings);
   let releaseError: unknown = null;
+  const rerollTaskIds: string[] = [];
   try {
     for (const originalTask of auditTasks) {
       const task = requireTask(originalTask.id);
@@ -1008,6 +1100,19 @@ async function performRunVisualAudit(runId: string): Promise<void> {
         continue;
       }
       try {
+        const deterministicReports = [];
+        for (const assetId of assetIds) deterministicReports.push(await safeDeterministicQuality(assetId));
+        const budget = parseJson<{ maxAttemptsPerPanel?: number }>(run.generation_budget_json, {});
+        if (deterministicReports.every((report) => !report.passed) && task.attempt_count < (budget.maxAttemptsPerPanel ?? 3)) {
+          const previous = parseJson<Record<string, unknown>>(task.scores_json, {});
+          runSql(
+            `UPDATE script_manga_tasks SET status = 'pending', round_id = NULL, scores_json = ?, last_error_json = NULL,
+               updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'auditing'`,
+            [JSON.stringify({ ...previous, deterministicAudit: { state: "reroll", reports: deterministicReports } }), task.id]
+          );
+          rerollTaskIds.push(task.id);
+          continue;
+        }
         const reports = [];
         for (const assetId of assetIds) {
           reports.push(await evaluatePanelCandidate({ assetId, panel, settings: lease.settings }));
@@ -1019,6 +1124,7 @@ async function performRunVisualAudit(runId: string): Promise<void> {
           [
             JSON.stringify({
               ...previous,
+              deterministicAudit: { state: "completed", reports: deterministicReports },
               vlmAudit: {
                 state: "completed",
                 model: lease.settings.model,
@@ -1047,19 +1153,52 @@ async function performRunVisualAudit(runId: string): Promise<void> {
     }
   }
   if (releaseError) throw releaseError;
+  if (rerollTaskIds.length > 0) await submitTasks(runId, rerollTaskIds);
   runSql("UPDATE script_manga_runs SET last_error_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [runId]);
+}
+
+async function performRunDeterministicAudit(runId: string): Promise<void> {
+  const run = requireRun(runId);
+  const rerollTaskIds: string[] = [];
+  for (const task of getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ? AND status = 'auditing'", [runId])) {
+    const assetIds = parseJson<string[]>(task.candidate_asset_ids_json, []);
+    const reports = [];
+    for (const assetId of assetIds) reports.push(await safeDeterministicQuality(assetId));
+    const previous = parseJson<Record<string, unknown>>(task.scores_json, {});
+    const budget = parseJson<{ maxAttemptsPerPanel?: number }>(run.generation_budget_json, {});
+    if (reports.length > 0 && reports.every((report) => !report.passed) && task.attempt_count < (budget.maxAttemptsPerPanel ?? 3)) {
+      runSql(`UPDATE script_manga_tasks SET status = 'pending', round_id = NULL, scores_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [JSON.stringify({ ...previous, deterministicAudit: { state: "reroll", reports } }), task.id]);
+      rerollTaskIds.push(task.id);
+    } else {
+      runSql(`UPDATE script_manga_tasks SET status = 'awaiting_review', scores_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [JSON.stringify({ ...previous, deterministicAudit: { state: "completed", reports } }), task.id]);
+    }
+  }
+  if (rerollTaskIds.length > 0) await submitTasks(runId, rerollTaskIds);
+}
+
+async function safeDeterministicQuality(assetId: string) {
+  try {
+    return await evaluateDeterministicPanelQuality(assetId);
+  } catch (error) {
+    return {
+      assetId, passed: true,
+      metrics: { luminanceStdDev: 0, saturationMean: 0, edgeDensity: 0, pseudoTextRisk: 0 },
+      violations: [`gate-unavailable: ${error instanceof Error ? error.message : String(error)}`]
+    };
+  }
 }
 
 function scheduleRunVisualAudit(runId: string): void {
   if (activeAuditRuns.has(runId)) return;
   const run = requireRun(runId);
   const config = parseConfig(run);
-  if (config.auditMode !== "vlm") return;
   const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ?", [runId]);
   if (!tasks.some((task) => task.status === "auditing")) return;
   if (tasks.some((task) => task.status === "pending" || task.status === "submitting" || task.status === "running")) return;
 
-  const operation = visualAuditQueue.then(() => performRunVisualAudit(runId));
+  const operation = visualAuditQueue.then(() => config.auditMode === "vlm" ? performRunVisualAudit(runId) : performRunDeterministicAudit(runId));
   visualAuditQueue = operation.catch(() => undefined);
   activeAuditRuns.set(runId, operation);
   void operation

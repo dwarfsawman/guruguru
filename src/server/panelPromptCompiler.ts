@@ -178,6 +178,7 @@ export function compilePanelConditioning(input: {
   qualityTags?: string;
   negativeBase?: string;
   maxTerms?: number;
+  sceneBible?: { set: string; lighting: string; palette: string };
 }): PanelConditioning {
   const cleanPanel = { ...input.panel, mustNotShow: [] };
   const raw = compilePanelPrompt({ ...input, panel: cleanPanel });
@@ -190,10 +191,11 @@ export function compilePanelConditioning(input: {
     return descriptions;
   });
   const quality = input.qualityTags?.trim() || "masterpiece, best quality, high detail";
+  const scene = input.sceneBible ? [input.sceneBible.set, input.sceneBible.lighting, input.sceneBible.palette] : [];
   const positiveParts = input.dialect === "tags"
     ? [quality, input.panel.cast.length === 1 ? "1character" : `${input.panel.cast.length}characters`, ...identities,
-        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), input.basePrompt]
-    : [raw, ...identities];
+        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), ...scene, input.basePrompt]
+    : [raw, ...identities, ...scene];
   const maxTerms = Math.max(12, input.maxTerms ?? 75);
   const positive = positiveParts.flatMap((part) => part?.split(/\s*,\s*|\.\s+/) ?? []).filter(Boolean).slice(0, maxTerms).join(input.dialect === "tags" ? ", " : ". ");
   const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);

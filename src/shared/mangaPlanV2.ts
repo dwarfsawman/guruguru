@@ -1,5 +1,6 @@
 import type { ArtifactRef } from "./generationIntent";
 import type { PageLayout } from "./pageLayout";
+import type { DialogueUnit } from "./dialogueAdaptation";
 
 export const MANGA_PLAN_VERSION = 2 as const;
 export const MANGA_PLANNER_VERSION = "manga-plan-v2.1";
@@ -67,6 +68,13 @@ export interface WorldState {
   weather: string;
   lighting: string;
   spatialNotes: string[];
+}
+
+export interface SceneBible {
+  settingId: string;
+  set: string;
+  lighting: string;
+  palette: string;
 }
 
 export interface StateDelta {
@@ -150,6 +158,7 @@ export interface PanelSpec {
     compositionIntent: string;
   };
   dialogueLineIds: string[];
+  fillUnitIds?: string[];
   /** Kept for deterministic mapping to the current dialogue_lines ordering. */
   dialogueOrderIndexes: number[];
   textSafeZones: NormalizedBox[];
@@ -191,6 +200,7 @@ export interface NarrativeGraph {
   sourceElements: SourceElementRef[];
   entities: NarrativeEntity[];
   worldStates: WorldState[];
+  sceneBibles?: SceneBible[];
   beats: MangaBeat[];
   warnings: Array<{
     code: "unresolved-mention" | "ambiguous-mention" | "missing-reference" | "state-gap" | "other";
@@ -217,6 +227,7 @@ export interface MangaPlanV2 {
   sourceDialogueLineIds: string[];
   /** Immutable lettering/grounding snapshot captured from the pinned revision. */
   dialogueSnapshots: FrozenDialogueLine[];
+  fillUnits?: DialogueUnit[];
   pages: MangaPageSpec[];
   panelCount: number;
   dialogueCount: number;
@@ -301,6 +312,13 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
       if (!entityIds.has(propId)) error("state-prop", `World state references unknown prop: ${propId}`);
     }
   }
+  const sceneBibleSettings = new Set<string>();
+  for (const bible of plan.narrativeGraph.sceneBibles ?? []) {
+    if (!entityIds.has(bible.settingId)) error("scene-bible-setting", `Scene bible references unknown setting: ${bible.settingId}`);
+    if (sceneBibleSettings.has(bible.settingId)) error("scene-bible-duplicate", `Duplicate scene bible: ${bible.settingId}`);
+    sceneBibleSettings.add(bible.settingId);
+    if (!bible.set.trim() || !bible.lighting.trim() || !bible.palette.trim()) error("scene-bible-empty", `Scene bible fields must be non-empty: ${bible.settingId}`);
+  }
   const beatIds = new Set<string>();
   for (const beat of plan.narrativeGraph.beats) {
     if (!beat.id || beatIds.has(beat.id)) error("beat-id", `Duplicate or empty beat id: ${beat.id}`);
@@ -312,6 +330,7 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
   const panelIds = new Set<string>();
   const dialogueSeen = new Set<string>();
   const snapshotIds = new Set<string>();
+  const fillUnitIds = new Set((plan.fillUnits ?? []).map((unit) => unit.id));
   for (const snapshot of plan.dialogueSnapshots) {
     if (!snapshot.id || snapshotIds.has(snapshot.id)) error("dialogue-snapshot", `Duplicate or empty dialogue snapshot id: ${snapshot.id}`);
     snapshotIds.add(snapshot.id);
@@ -406,6 +425,9 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
       for (const lineId of panel.dialogueLineIds) {
         if (dialogueSeen.has(lineId)) error("dialogue-duplicate", `Dialogue line is assigned more than once: ${lineId}`, pageIndex, panel.id);
         dialogueSeen.add(lineId);
+      }
+      for (const unitId of panel.fillUnitIds ?? []) {
+        if (!fillUnitIds.has(unitId)) error("fill-unit-missing", `Panel references unknown fill unit: ${unitId}`, pageIndex, panel.id);
       }
       if (!panel.compiledPrompt.trim()) error("prompt", "compiledPrompt must not be empty", pageIndex, panel.id);
     }
