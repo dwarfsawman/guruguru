@@ -652,7 +652,8 @@ function materializeRun(runId: string): void {
         panel,
         basePrompt: panel.promptBase,
         entities: plan.narrativeGraph.entities,
-        dialogueById
+        dialogueById,
+        narrativeMetadata: plan.plannerProvenance?.kind === "llm-director" ? "base-only" : "append"
       });
       const preflight = validatePanelPreflight({
         panel,

@@ -25,7 +25,17 @@ export function compilePanelPrompt(input: {
   basePrompt: string;
   entities: NarrativeEntity[];
   dialogueById: Map<string, StoryGraphDialogueInput>;
+  /** LLM-authored base prompts already contain the visual facts in English. */
+  narrativeMetadata?: "append" | "base-only";
 }): string {
+  if (input.narrativeMetadata === "base-only") {
+    const parts = [input.basePrompt.trim()];
+    if (input.panel.textSafeZones.length > 0) {
+      parts.push(`leave ${input.panel.textSafeZones.map(regionName).join(" and ")} visually quiet for later lettering`);
+    }
+    parts.push("one coherent moment, consistent character design, readable silhouettes, no text, no letters, no speech bubbles, no watermark");
+    return parts.filter(Boolean).join(". ").replace(/\s+/g, " ").trim();
+  }
   const entityById = new Map(input.entities.map((entity) => [entity.id, entity]));
   const parts: string[] = [input.basePrompt.trim()];
   const focal = entityById.get(input.panel.shot.focalSubjectId);
