@@ -18,9 +18,16 @@ import type { PatchContext } from "./workflow.ts";
 const referencePath = fileURLToPath(
   new URL("../../Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.json", import.meta.url)
 );
+const animaReferencePath = fileURLToPath(
+  new URL("../../Docs/ReferenceFlows/Reference-AnimaUnifiedSwitchWorkflow.json", import.meta.url)
+);
 
 function referenceWorkflow(): Record<string, any> {
   return JSON.parse(readFileSync(referencePath, "utf8"));
+}
+
+function animaReferenceWorkflow(): Record<string, any> {
+  return JSON.parse(readFileSync(animaReferencePath, "utf8"));
 }
 
 function baseRequest(overrides: Partial<GenerationRequest> = {}): GenerationRequest {
@@ -513,4 +520,47 @@ test("patchWorkflow dispatch: a unified-switch template is patched by value writ
   assert.deepEqual(patchedPoisoned, patchedClean);
   // And no ImageScale was ever inserted (node set unchanged from the template).
   assert.deepEqual(Object.keys(patchedPoisoned as object).sort(), Object.keys(referenceWorkflow()).sort());
+});
+
+test("Anima unified preset: txt2img patches official defaults without Chroma-only nodes", () => {
+  const request = baseRequest({ steps: 30, sampler: "er_sde", scheduler: "simple" });
+  const patched = patchUnifiedSwitchWorkflow(
+    animaReferenceWorkflow(),
+    baseContext(request, { featureAvailability: { controlnet: false, pulid: false } }),
+    "anima-prefix"
+  ) as Record<string, any>;
+
+  assert.equal(patched["731"].inputs.unet_name, "anima-base-v1.0.safetensors");
+  assert.equal(patched["733"].inputs.clip_name, "qwen_3_06b_base.safetensors");
+  assert.equal(patched["733"].inputs.type, "stable_diffusion");
+  assert.equal(patched["710"].inputs.vae_name, "qwen_image_vae.safetensors");
+  assert.equal(patched["700"].inputs.sampler_name, "er_sde");
+  assert.equal(patched["734"].inputs.scheduler, "simple");
+  assert.equal(Object.values(patched).some((node: any) => node.class_type === "ModelSamplingAuraFlow"), false);
+  assert.equal(Object.values(patched).some((node: any) => node.class_type === "ControlNetLoader"), false);
+});
+
+test("Anima unified preset: img2img/inpaint roles resolve and Anima LoRA reaches guider and schedulers", () => {
+  const request = baseRequest({
+    generationMode: "img2img",
+    parentAssetId: "asset_1",
+    inpaint: { maskDataUrl: null, maskPath: "/tmp/mask.png", maskedContent: "original", inpaintArea: "only_masked", onlyMaskedPadding: 6 },
+    loras: [{ name: "anima-style.safetensors", strength: 0.8 }]
+  });
+  const patched = patchUnifiedSwitchWorkflow(
+    animaReferenceWorkflow(),
+    baseContext(request, {
+      uploadedImageName: "parent.png",
+      uploadedMaskName: "mask.png",
+      featureAvailability: { controlnet: false, pulid: false }
+    }),
+    "anima-prefix"
+  ) as Record<string, any>;
+
+  assert.equal(patched["770"].inputs.value, true);
+  assert.equal(patched["771"].inputs.value, true);
+  const loraNodeId = patched["694"].inputs.model[0];
+  assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
+  assert.deepEqual(patched["734"].inputs.model, [loraNodeId, 0]);
+  assert.deepEqual(patched["768"].inputs.model, [loraNodeId, 0]);
 });

@@ -13,6 +13,7 @@ import {
 } from "../comfy";
 import { isUnifiedSwitchWorkflow, patchWorkflow, type FeatureAvailabilityFlags } from "../workflow";
 import { resolveFeatureAvailability } from "../modelCheck";
+import { detectWorkflowModelFamily } from "../../shared/workflowModels";
 import { requiresParentAsset } from "../../shared/generationMode";
 import { isJsonObject } from "../validate";
 import { nodeIdFromRolePath } from "../../shared/workflowRolePath";
@@ -176,7 +177,7 @@ async function submit(ctx: ProviderSubmitContext): Promise<ProviderSubmittedJob[
   const isUnifiedSwitch = isUnifiedSwitchWorkflow(workflow);
   const dummyImageName = isUnifiedSwitch ? await ensureDummyComfyImage() : null;
   const featureAvailability: FeatureAvailabilityFlags | null = isUnifiedSwitch
-    ? await resolveFeatureAvailability()
+    ? await resolveFeatureAvailability(detectWorkflowModelFamily(workflow))
     : null;
 
   const clientId = createId("comfy_client");

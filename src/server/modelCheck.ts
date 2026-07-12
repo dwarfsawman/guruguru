@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { fetchComfyNodeInfo, getComfySettings } from "./comfy";
-import { extractModelRequirements, MODEL_TARGET_DIRS, type FeatureKey, type WorkflowModelRequirement } from "../shared/workflowModels";
+import { extractModelRequirements, MODEL_TARGET_DIRS, type FeatureKey, type ModelFamily, type WorkflowModelRequirement } from "../shared/workflowModels";
 import { FEATURE_LABELS, FEATURE_MODEL_REQUIREMENTS, FEATURE_NODE_PACKS, type FeatureNodePack } from "./workflowFeatureFragments";
 import type { ModelCheckEntry, ModelCheckFeatureStatus, ModelCheckResult } from "../shared/apiTypes";
 
@@ -15,9 +15,10 @@ const REQUIRED_CORE_NODES = ["ComfySwitchNode", "PrimitiveBoolean"] as const;
 // excluded, it is not something a user can turn on/off.
 const TOGGLABLE_FEATURES: FeatureKey[] = ["controlnet", "pulid"];
 
-const referencePath = fileURLToPath(
-  new URL("../../Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.json", import.meta.url)
-);
+const referencePaths: Record<ModelFamily, string> = {
+  chroma: fileURLToPath(new URL("../../Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.json", import.meta.url)),
+  anima: fileURLToPath(new URL("../../Docs/ReferenceFlows/Reference-AnimaUnifiedSwitchWorkflow.json", import.meta.url))
+};
 
 /**
  * 各 requirement を `choicesByRequirement`(`loaderClass::inputName` 複合キー → ComfyUI の
@@ -76,9 +77,12 @@ const NODE_PACK_CLASSES = [...new Set(Object.values(FEATURE_NODE_PACKS).flatMap(
  * (生成時のフラグメント注入ゲート)の両方がこれを使う。例外を投げず、取得不能時は
  * `comfyOk: false` を返す。
  */
-async function runRawCheck(): Promise<RawCheck> {
-  const workflow = JSON.parse(readFileSync(referencePath, "utf8"));
-  const requirements = [...extractModelRequirements(workflow), ...FEATURE_MODEL_REQUIREMENTS];
+async function runRawCheck(family: ModelFamily): Promise<RawCheck> {
+  const workflow = JSON.parse(readFileSync(referencePaths[family], "utf8"));
+  const requirements = [
+    ...extractModelRequirements(workflow),
+    ...(family === "chroma" ? FEATURE_MODEL_REQUIREMENTS : [])
+  ];
 
   const loaderClasses = [...new Set(requirements.map((r) => r.loaderClass))];
   const targetClasses = [...new Set([...loaderClasses, ...REQUIRED_CORE_NODES, ...NODE_PACK_CLASSES])];
@@ -124,20 +128,20 @@ function isFeatureAvailable(raw: RawCheck, feature: FeatureKey): boolean {
  * ComfyUI に接続し、参照ワークフローが要求するモデル/コアノードの在不在を確認する。
  * ComfyUI 未接続でも常に 200 相当の結果を返せるよう、この関数自体は例外を投げない。
  */
-export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
+export async function checkModels(family: ModelFamily): Promise<ModelCheckResult> {
   const settings = getComfySettings();
   const checkedAt = new Date().toISOString();
 
   let raw: RawCheck;
   try {
-    raw = await runRawCheck();
+    raw = await runRawCheck(family);
   } catch (error) {
     return {
       family,
       comfy: { ok: false, baseUrl: settings.baseUrl, error: errorMessage(error) },
       nodes: REQUIRED_CORE_NODES.map((classType) => ({ classType, available: false })),
       models: [],
-      features: TOGGLABLE_FEATURES.map((key) => ({
+      features: (family === "chroma" ? TOGGLABLE_FEATURES : []).map((key) => ({
         key,
         label: FEATURE_LABELS[key],
         available: null,
@@ -155,7 +159,7 @@ export async function checkModels(family: "chroma"): Promise<ModelCheckResult> {
     available: isNodePresent(raw.objectInfoByClass.get(classType), classType)
   }));
 
-  const features: ModelCheckFeatureStatus[] = TOGGLABLE_FEATURES.map((key) => {
+  const features: ModelCheckFeatureStatus[] = (family === "chroma" ? TOGGLABLE_FEATURES : []).map((key) => {
     const available = raw.comfyOk ? isFeatureAvailable(raw, key) : null;
     const missingNodePacks = FEATURE_NODE_PACKS[key].filter(
       (pack) => !isNodePackPresent(raw.objectInfoByClass.get(pack.representativeClass), pack)
@@ -210,7 +214,10 @@ let cachedAvailability: { value: FeatureAvailability; expiresAt: number } | null
  * すべてのラウンドで `/object_info` を叩き直すのを避けるため短い TTL でキャッシュする
  * (手動の「再チェック」`checkModels()` は常に非キャッシュ)。
  */
-export async function resolveFeatureAvailability(): Promise<FeatureAvailability> {
+export async function resolveFeatureAvailability(family: ModelFamily = "chroma"): Promise<FeatureAvailability> {
+  if (family === "anima") {
+    return { controlnet: false, pulid: false };
+  }
   const now = Date.now();
   if (cachedAvailability && cachedAvailability.expiresAt > now) {
     return cachedAvailability.value;
@@ -218,7 +225,7 @@ export async function resolveFeatureAvailability(): Promise<FeatureAvailability>
 
   let raw: RawCheck;
   try {
-    raw = await runRawCheck();
+    raw = await runRawCheck(family);
   } catch {
     return { controlnet: false, pulid: false };
   }

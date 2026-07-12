@@ -6,6 +6,7 @@
  */
 import type { ModelCheckEntry, ModelCheckResult } from "../shared/apiTypes";
 import type { ModelKind } from "../shared/workflowModels";
+import type { ModelFamily } from "../shared/workflowModels";
 import { escapeAttr, escapeHtml } from "./format";
 import { iconClose } from "./icons";
 import type { TemplateModelDefaults, WorkflowTemplate } from "./workflowTypes";
@@ -21,6 +22,7 @@ export function renderModelSelectPanel() {
       </div>
       <div class="model-select-buttons">
         <button class="button-secondary" type="button" data-action="open-model-install" data-family="chroma">Chroma</button>
+        <button class="button-secondary" type="button" data-action="open-model-install" data-family="anima">Anima</button>
       </div>
     </section>
   `;
@@ -40,7 +42,7 @@ export interface ModelCheckState {
   result: ModelCheckResult | null;
 }
 
-export function renderModelInstallModal(family: "chroma" | null, modelCheck: ModelCheckState) {
+export function renderModelInstallModal(family: ModelFamily | null, modelCheck: ModelCheckState) {
   if (!family) {
     return "";
   }
@@ -60,10 +62,12 @@ export function renderModelInstallModal(family: "chroma" | null, modelCheck: Mod
           ${renderModelInstallNodeWarning(result)}
           <h3 class="model-install-section-title">ベース(常時必須)</h3>
           ${renderModelInstallTable(result?.models.filter((model) => model.feature === "base") ?? null)}
+          ${family === "anima" ? `<div class="workflow-diagram-warning">Anima プリセットは txt2img・img2img・inpaint・Anima 用 LoRA に対応します。ControlNet と PuLID-Flux は互換モデルがないため無効です。</div>` : ""}
           <h3 class="model-install-section-title">任意機能(導入済みモデル/ノードパックに応じて自動 ON/OFF)</h3>
-          ${renderFeatureCards(result)}
+          ${family === "anima" ? `<div class="empty">Anima で追加インストールが必要な任意機能はありません。</div>` : renderFeatureCards(result)}
         </div>
         <div class="workflow-import-modal-actions">
+          <button class="button-primary" type="button" data-action="install-model-preset" data-family="${escapeAttr(family)}">Workflowプリセットを追加</button>
           <button class="button-secondary" type="button" data-action="recheck-models">再チェック</button>
           <button class="button-primary" type="button" data-action="close-model-install">${iconClose()}閉じる</button>
         </div>

@@ -24,8 +24,8 @@ for (const node of Object.values(objectInfo)) {
   }
 }
 const modelPatterns = {
-  diffusion: /(chroma|flux).*\.(safetensors|gguf)$/i,
-  textEncoder: /(t5|clip).*\.(safetensors|gguf|bin)$/i,
+  diffusion: /(chroma|flux|anima).*\.(safetensors|gguf)$/i,
+  textEncoder: /(t5|clip|qwen).*\.(safetensors|gguf|bin)$/i,
   vae: /(?:vae|ae).*\.(safetensors|pt|bin)$/i,
 };
 const recognition = Object.fromEntries(

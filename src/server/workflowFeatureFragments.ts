@@ -102,13 +102,26 @@ export function assembleFeatureFragments(
   }
 
   const modelSamplingNodeId = findNodeIdByExactClass(workflow, "ModelSamplingAuraFlow");
-  if (!modelSamplingNodeId) {
-    throw new Error("consistent-character fragments require a ModelSamplingAuraFlow node in the base template");
+  const guiderNodeId = findNodeIdByExactClass(workflow, "CFGGuider");
+  const anchorNodeId = modelSamplingNodeId ?? guiderNodeId;
+  if (!anchorNodeId) {
+    throw new Error("model fragments require a ModelSamplingAuraFlow or CFGGuider model input in the base template");
   }
-  const initialModelConnection = getNodeInput(workflow, modelSamplingNodeId, ["model"]);
+  const initialModelConnection = getNodeInput(workflow, anchorNodeId, ["model"]);
   if (!isConnection(initialModelConnection)) {
-    throw new Error("consistent-character fragments require ModelSamplingAuraFlow.model to already be wired");
+    throw new Error("model fragments require the base model input to already be wired");
   }
+
+  // Chroma has a single insertion point before ModelSamplingAuraFlow. Anima has no sampling
+  // patch node, so CFGGuider and both BasicScheduler nodes consume the UNET directly and must all
+  // be rewired to the same LoRA chain.
+  const modelTargets = modelSamplingNodeId
+    ? [modelSamplingNodeId]
+    : Object.entries(workflow)
+        .filter(([, rawNode]) =>
+          isObject(rawNode) && isObject(rawNode.inputs) && sameConnection(rawNode.inputs.model, initialModelConnection)
+        )
+        .map(([nodeId]) => nodeId);
 
   let modelConnection: unknown[] = [...initialModelConnection];
   let referenceImageNodeId: string | null = null;
@@ -139,6 +152,9 @@ export function assembleFeatureFragments(
   }
 
   if (enabled.pulid) {
+    if (!modelSamplingNodeId) {
+      throw new Error("PuLID-Flux is only supported by the Chroma ModelSamplingAuraFlow preset");
+    }
     const modelLoaderNodeId = addNode(workflow, {
       class_type: "PulidFluxModelLoader",
       inputs: { pulid_file: PULID_FILE }
@@ -171,8 +187,14 @@ export function assembleFeatureFragments(
     modelConnection = [applyNodeId, 0];
   }
 
-  setNodeInput(workflow, modelSamplingNodeId, ["model"], modelConnection);
+  for (const nodeId of modelTargets) {
+    setNodeInput(workflow, nodeId, ["model"], modelConnection);
+  }
   return workflow;
+}
+
+function sameConnection(value: unknown, expected: unknown[]): boolean {
+  return isConnection(value) && value[0] === expected[0] && value[1] === expected[1];
 }
 
 /**

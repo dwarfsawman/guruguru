@@ -3,6 +3,7 @@ import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
 import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
 import { checkModels, listAvailableLoras } from "./modelCheck";
+import { installModelPreset } from "./modelPresets";
 import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection, toLlmSettingsView } from "./llm";
 import { getVlmAuditSettings, getVlmAuditStatus } from "./vlmAudit";
 import { serveStatic } from "./files";
@@ -199,11 +200,17 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "GET" && path === "/api/comfy/model-check") {
     const family = url.searchParams.get("family");
-    if (family !== "chroma") {
+    if (family !== "chroma" && family !== "anima") {
       sendJson(res, 404, { error: `Unknown model family: ${family}` });
       return;
     }
     sendJson(res, 200, await checkModels(family));
+    return;
+  }
+
+  const modelPresetMatch = path.match(/^\/api\/model-presets\/(chroma|anima)$/);
+  if (method === "POST" && modelPresetMatch) {
+    sendJson(res, 200, installModelPreset(modelPresetMatch[1] as "chroma" | "anima"));
     return;
   }
 

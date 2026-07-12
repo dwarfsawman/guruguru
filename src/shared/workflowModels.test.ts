@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { extractModelRequirements } from "./workflowModels.ts";
+import { detectWorkflowModelFamily, extractModelRequirements } from "./workflowModels.ts";
 
 // This test runs against the actual reference template JSON
 // (Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.json) so extraction is
@@ -93,4 +93,9 @@ test("extractModelRequirements: ignores non-string / connection-wired input valu
 
 test("extractModelRequirements: returns empty list for a workflow with no model loaders", () => {
   assert.deepEqual(extractModelRequirements({}), []);
+});
+
+test("detectWorkflowModelFamily: distinguishes Anima from the Chroma default", () => {
+  assert.equal(detectWorkflowModelFamily({ "1": { inputs: { unet_name: "anima-base-v1.0.safetensors" } } }), "anima");
+  assert.equal(detectWorkflowModelFamily(referenceWorkflow()), "chroma");
 });

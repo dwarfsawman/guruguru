@@ -25,9 +25,9 @@ for node in object_info.values():
             filenames.extend(str(name) for name in value[0])
 
 patterns = (
-    re.compile(r"(chroma|flux).*\.(safetensors|gguf)$", re.I),
-    re.compile(r"(t5|clip).*\.(safetensors|gguf|bin)$", re.I),
+    re.compile(r"(chroma|flux|anima).*\.(safetensors|gguf)$", re.I),
+    re.compile(r"(t5|clip|qwen).*\.(safetensors|gguf|bin)$", re.I),
     re.compile(r"(vae|ae).*\.(safetensors|pt|bin)$", re.I),
 )
 if not all(any(pattern.search(name) for name in filenames) for pattern in patterns):
-    raise SystemExit("Required Chroma model choices are incomplete")
+    raise SystemExit("Required image model choices are incomplete")

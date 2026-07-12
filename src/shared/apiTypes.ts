@@ -12,7 +12,7 @@ import type { PageLayout, PanelCrop } from "./pageLayout";
 import type { PageObject, TextContent } from "./pageObjects";
 import type { MosaicRegion } from "./mosaicRegion";
 import type { TextLayoutResult } from "./textLayout";
-import type { FeatureKey, ModelKind } from "./workflowModels";
+import type { FeatureKey, ModelFamily, ModelKind } from "./workflowModels";
 import type { FountainDoc } from "./fountain";
 
 export interface ComfyStatus {
@@ -54,7 +54,7 @@ export interface ModelCheckFeatureStatus {
 
 /** `GET /api/comfy/model-check` のレスポンス全体。 */
 export interface ModelCheckResult {
-  family: string;
+  family: ModelFamily;
   comfy: { ok: boolean; baseUrl: string; error?: string };
   nodes: Array<{ classType: string; available: boolean }>;
   models: ModelCheckEntry[];

@@ -488,7 +488,7 @@ export interface AppState {
   /** UX改善#6: `?` キーで開閉するショートカット一覧オーバーレイの表示状態。 */
   showShortcutsHelp: boolean;
   /** 「必要モデルインストール」モーダルで表示中のモデルファミリ。null=モーダル閉。 */
-  modelInstallFamily: "chroma" | null;
+  modelInstallFamily: "chroma" | "anima" | null;
   /** `GET /api/comfy/model-check` の結果と取得状態。 */
   modelCheck: {
     status: "idle" | "loading" | "ready" | "error";

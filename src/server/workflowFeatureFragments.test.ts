@@ -94,11 +94,37 @@ test("assembleFeatureFragments: throws when pulid is enabled but no reference im
   );
 });
 
-test("assembleFeatureFragments: throws when the base template has no ModelSamplingAuraFlow node", () => {
+test("assembleFeatureFragments: throws when the base template has no model consumer", () => {
   assert.throws(
     () => assembleFeatureFragments({ "1": { class_type: "UNETLoader", inputs: {} } }, flags(), null, [{ name: "x.safetensors", strength: 1 }]),
-    /require a ModelSamplingAuraFlow node/
+    /require a ModelSamplingAuraFlow or CFGGuider/
   );
+});
+
+test("assembleFeatureFragments: Anima LoRA rewires CFGGuider and both schedulers", () => {
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: "anima-base-v1.0.safetensors" } },
+    "2": { class_type: "CFGGuider", inputs: { model: ["1", 0] } },
+    "3": { class_type: "BasicScheduler", inputs: { model: ["1", 0] } },
+    "4": { class_type: "BasicScheduler", inputs: { model: ["1", 0] } }
+  };
+
+  const patched = assembleFeatureFragments(workflow, flags(), null, [
+    { name: "anima-style.safetensors", strength: 0.75 }
+  ]) as Record<string, any>;
+
+  const loraNodeId = patched["2"].inputs.model[0];
+  assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
+  assert.deepEqual(patched["3"].inputs.model, [loraNodeId, 0]);
+  assert.deepEqual(patched["4"].inputs.model, [loraNodeId, 0]);
+});
+
+test("assembleFeatureFragments: PuLID is rejected for an Anima-style direct model chain", () => {
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: {} },
+    "2": { class_type: "CFGGuider", inputs: { model: ["1", 0] } }
+  };
+  assert.throws(() => assembleFeatureFragments(workflow, flags({ pulid: true }), "ref.png"), /only supported by the Chroma/);
 });
 
 function controlNetWorkflow() {
