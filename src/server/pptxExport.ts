@@ -438,10 +438,68 @@ function textXml(id: number, name: string, content: TextContent, box: SlideRect,
   return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXml(name)}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm${rot ? ` rot="${rot}"` : ""}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr wrap="square" anchor="ctr"${vertical}/><a:lstStyle/>${lines}</p:txBody></p:sp>`;
 }
 
+/** PowerPoint 上で吹き出し本体と文字を一操作で移動・拡縮できるグループ図形。 */
+function balloonGroupXml(
+  groupId: number,
+  shapeId: number,
+  textId: number,
+  balloon: BalloonObject,
+  geometry: string,
+  box: SlideRect,
+  textBox: SlideRect,
+  pageWidthEmu: number,
+  adjustments: Array<[string, number]>
+): string {
+  const left = Math.min(box.x, textBox.x);
+  const top = Math.min(box.y, textBox.y);
+  const right = Math.max(box.x + box.cx, textBox.x + textBox.cx);
+  const bottom = Math.max(box.y + box.cy, textBox.y + textBox.cy);
+  const bounds = { x: left, y: top, cx: Math.max(1, right - left), cy: Math.max(1, bottom - top) };
+  return `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="${groupId}" name="${escapeXml(`${balloon.id} balloon and text`)}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="${bounds.x}" y="${bounds.y}"/><a:ext cx="${bounds.cx}" cy="${bounds.cy}"/><a:chOff x="${bounds.x}" y="${bounds.y}"/><a:chExt cx="${bounds.cx}" cy="${bounds.cy}"/></a:xfrm></p:grpSpPr>${shapeXml(shapeId, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation, adjustments)}${textXml(textId, `${balloon.id} text`, balloon.content!, textBox, pageWidthEmu, balloon.rotation)}</p:grpSp>`;
+}
+
+function effectGroupKey(object: PageObject): string | null {
+  if (object.kind !== "box") return null;
+  const match = /^(effect:[^:]+:(?:focus-lines|speed-lines)):\d+$/.exec(object.id);
+  return match?.[1] ?? null;
+}
+
+/** 集中線・スピード線を構成する複数の細長いBoxをPowerPoint上の単一グループにする。 */
+function effectGroupXml(groupId: number, firstShapeId: number, key: string, effects: BoxObject[], pageHeight: number, rect: SlideRect): string {
+  const boxes = effects.map((effect) => objectRect(effect.position, effect.size, pageHeight, rect));
+  const left = Math.min(...boxes.map((box) => box.x));
+  const top = Math.min(...boxes.map((box) => box.y));
+  const right = Math.max(...boxes.map((box) => box.x + box.cx));
+  const bottom = Math.max(...boxes.map((box) => box.y + box.cy));
+  const cx = Math.max(1, right - left);
+  const cy = Math.max(1, bottom - top);
+  const children = effects.map((effect, index) => shapeXml(
+    firstShapeId + index,
+    effect.id,
+    effect.cornerRadius ? "roundRect" : "rect",
+    boxes[index]!,
+    effect.fill,
+    effect.strokeColor,
+    effect.strokeWidth,
+    effect.rotation
+  )).join("");
+  return `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="${groupId}" name="${escapeXml(key)}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="${left}" y="${top}"/><a:ext cx="${cx}" cy="${cy}"/><a:chOff x="${left}" y="${top}"/><a:chExt cx="${cx}" cy="${cy}"/></a:xfrm></p:grpSpPr>${children}</p:grpSp>`;
+}
+
 function editableObjectsXml(objects: PageObject[], pageHeight: number, rect: SlideRect): string {
   let id = 3;
   const xml: string[] = [];
+  const groupedEffects = new Set<string>();
   for (const object of objects) {
+    const effectKey = effectGroupKey(object);
+    if (effectKey) {
+      if (groupedEffects.has(effectKey)) continue;
+      groupedEffects.add(effectKey);
+      const effects = objects.filter((candidate): candidate is BoxObject => effectGroupKey(candidate) === effectKey);
+      xml.push(effectGroupXml(id++, id, effectKey, effects, pageHeight, rect));
+      id += effects.length;
+      continue;
+    }
     if (object.kind === "balloon") {
       const balloon = object as BalloonObject;
       const box = objectRect(balloon.position, balloon.size, pageHeight, rect);
@@ -449,10 +507,11 @@ function editableObjectsXml(objects: PageObject[], pageHeight: number, rect: Sli
         ? balloon.shape === "rounded" ? "wedgeRoundRectCallout" : balloon.shape === "cloud" || balloon.shape === "thought" ? "cloudCallout" : balloon.shape === "jagged" ? "wedgeRectCallout" : "wedgeEllipseCallout"
         : balloon.shape === "rounded" ? "roundRect" : balloon.shape === "cloud" || balloon.shape === "thought" ? "cloud" : balloon.shape === "jagged" ? "irregularSeal1" : "ellipse";
       const adjustments: Array<[string, number]> = balloon.tail ? [["adj1", balloon.tail.tip.x / balloon.size.x * 100000], ["adj2", balloon.tail.tip.y / balloon.size.y * 100000]] : [];
-      xml.push(shapeXml(id++, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation, adjustments));
       if (balloon.content?.text) {
         const textBox = objectRect(balloon.position, { x: balloon.size.x * 0.78, y: balloon.size.y * 0.72 }, pageHeight, rect);
-        xml.push(textXml(id++, `${balloon.id} text`, balloon.content, textBox, rect.cx, balloon.rotation));
+        xml.push(balloonGroupXml(id++, id++, id++, balloon, geometry, box, textBox, rect.cx, adjustments));
+      } else {
+        xml.push(shapeXml(id++, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation, adjustments));
       }
     } else if (object.kind === "box") {
       const boxObject = object as BoxObject;

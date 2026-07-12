@@ -263,7 +263,9 @@ async function exportRun(rawFormat: unknown): Promise<void> {
     if (!response.ok) throw new Error(await responseErrorMessage(response));
     const blob = await response.blob();
     if (!operationIsCurrent(serial) || state.scriptMangaRun?.id !== runId) return;
-    const fallbackName = `guruguru-manga.${format}`;
+    const fallbackName = format === "ora" && blob.type === "application/zip"
+      ? "guruguru-manga-openraster.zip"
+      : `guruguru-manga.${format}`;
     const filename = filenameFromContentDisposition(response.headers.get("content-disposition")) ?? fallbackName;
     downloadBlob(blob, filename);
     const labels: Record<ScriptMangaExportFormat, string> = { png: "PNG", pptx: "PPTX", ora: "OpenRaster" };

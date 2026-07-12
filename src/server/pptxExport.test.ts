@@ -196,11 +196,32 @@ test("createImageExport(format=pptx): PowerPoint標準の吹き出し図形と�
   const slideXml = await zip.file("ppt/slides/slide1.xml")!.async("string");
   assert.match(slideXml, /name="speech_1 balloon"/);
   assert.match(slideXml, /name="speech_1 text"/);
+  assert.match(slideXml, /<p:grpSp>/);
+  assert.match(slideXml, /name="speech_1 balloon and text"/);
+  assert.match(slideXml, /<a:chOff /);
+  assert.match(slideXml, /<a:chExt /);
   assert.match(slideXml, /prst="wedgeEllipseCallout"/);
   assert.match(slideXml, /name="adj1"/);
   assert.doesNotMatch(slideXml, /prst="triangle"/);
   assert.match(slideXml, /<a:t>編集できます<\/a:t>/);
   assert.match(slideXml, /vert="eaVert"/);
+});
+
+test("createImageExport(format=pptx): 集中線を単一グループとして出力する", async () => {
+  const { projectId, pageIds } = await setupProject(1);
+  const effects = [0, 1, 2].map((index) => ({
+    id: `effect:panel_1:focus-lines:${index}`, kind: "box", position: { x: 0.3 + index * 0.1, y: 0.4 },
+    rotation: index * 0.2, size: { x: 0.2, y: 0.006 }, cornerRadius: 0,
+    fill: "#111111", strokeColor: "#111111", strokeWidth: 0
+  }));
+  runSql("UPDATE pages SET objects_json = ? WHERE id = ?", [JSON.stringify(effects), pageIds[0]!]);
+  const result = await createImageExport(projectId, { pageIds, format: "pptx" });
+  const zip = await JSZip.loadAsync(result.buffer);
+  const slideXml = await zip.file("ppt/slides/slide1.xml")!.async("string");
+  assert.equal((slideXml.match(/<p:grpSp>/g) ?? []).length, 1);
+  assert.match(slideXml, /name="effect:panel_1:focus-lines"/);
+  assert.match(slideXml, /name="effect:panel_1:focus-lines:0"/);
+  assert.match(slideXml, /name="effect:panel_1:focus-lines:2"/);
 });
 
 test("createImageExport(format=pptx): パイプライン同一性 -- format=png 単体書き出しと pptx 内 media がバイト一致", async () => {
