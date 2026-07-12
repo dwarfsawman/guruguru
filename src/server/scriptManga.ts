@@ -131,7 +131,11 @@ interface ScriptMangaRunConfig {
 }
 
 const SCRIPT_MANGA_FONT_SCALE = 0.88;
-const SCRIPT_MANGA_MIN_FONT_SIZE = 0.02;
+// The 0.02 hard gate rejected even 7-16 character balloons in narrow/telecom
+// shapes after fitting. 0.016 remains comfortably legible at the default B5
+// export size while allowing the fitter's real glyph bbox to decide whether a
+// short line fits.
+const SCRIPT_MANGA_MIN_FONT_SIZE = 0.016;
 const activeTaskSubmissions = new Set<string>();
 const activeAuditRuns = new Map<string, Promise<void>>();
 let visualAuditQueue: Promise<void> = Promise.resolve();
