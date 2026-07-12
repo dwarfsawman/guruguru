@@ -220,7 +220,7 @@ errorがあるtaskは`blocked`となり、runのmaterializeは422で失敗する
 
 吹き出しは従来どおり0.0352 page-widthを基準にfitするが、MangaPlanV2経路はfit後に0.02未満へ縮んだ本文を不合格にする。読めない大きさで通過させず、台詞分割またはページ再計画を要求する。実配置した吹き出し領域は`textSafeZones`へ戻し、再コンパイルしたpromptで文字領域を空けるよう指示する。
 
-LLM監督モードでは、ネームとNarrativeGraphの人物名・説明・行動・表情等を原文のまま保存する一方、画像生成用`compiledPrompt`はLLMが英語で返した`promptBase`を基準にする。後段コンパイラは原文メタデータを再挿入せず、英語の文字領域制約と共通品質制約だけを追加する。決定的プランナーモードは従来どおり構造化メタデータをコンパイルする。
+LLM監督モードでは、元の脚本・台詞を原文のまま保存する一方、LLM構造化応答の`pageIntent`、`shot`、`subject`、`action`、`emotion`、`composition`、`prompt`はすべて英語に統一する。後段コンパイラは英語の演出メタデータ、文字領域制約、共通品質制約を使い、NarrativeGraphに残る原語の人物名・説明は生成promptへ再挿入しない。決定的プランナーモードは従来どおり構造化メタデータをコンパイルする。
 
 ## candidate review
 
@@ -292,6 +292,6 @@ Script画面の「MangaPlan V2 / 一括生成」カードからworkflow template
 
 ## 改訂履歴
 
-- 2026-07-12: LLM監督時の英語生成promptと原文ネーム保存を分離し、prompt compilerをv2.2へ更新。
+- 2026-07-12: LLM監督の構造化演出メタデータを英語に統一し、元の脚本・台詞と画像生成promptを分離。prompt compilerをv2.2へ更新。
 - 2026-07-12: immutable revision/dialogue/layout/provenance、所有ページ/round保護、P2 UI、LM Studio VLM監査、VRAM swap、run exportまで現行契約を更新。候補採用は常に人間reviewとした。
 - 2026-07-12: 初版。MangaPlanV2、永続run state、manual candidate reviewと、未実装のaudit/repair/export境界を記録。

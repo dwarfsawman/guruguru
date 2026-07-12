@@ -170,7 +170,8 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
         "各コマは一つの瞬間、一つの主行動だけに絞り、誰が何をしてどう感じているかが静止画だけで判別できるようにします。",
         "同じ画角を連続させず、導入はwide、反応はclose-up、決めはlow angle/splashなど意図的に変化させます。",
         "台詞本文はpromptへ転記せず、speech act、表情、身振り、視線、口の状態という視覚化可能な演出へ変換してください。",
-        "promptは英語で、人物数、左右位置、視線、手足の動作、背景、カメラ距離を具体化してください。文字・吹き出しは描かせません。",
+        "応答内のpageIntent、shot、subject、action、emotion、composition、promptは、固有名詞を含めてすべて英語で記述してください。日本語など英語以外の文字を混ぜないでください。",
+        "promptは人物数、左右位置、視線、手足の動作、背景、カメラ距離を具体化してください。文字・吹き出しは描かせません。",
         fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
         `登場話者: ${speakerNames(doc).join(", ")}`
       ].join("\n"),

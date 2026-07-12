@@ -25,14 +25,38 @@ export function compilePanelPrompt(input: {
   basePrompt: string;
   entities: NarrativeEntity[];
   dialogueById: Map<string, StoryGraphDialogueInput>;
-  /** LLM-authored base prompts already contain the visual facts in English. */
-  narrativeMetadata?: "append" | "base-only";
+  /** LLM-directed fields are English, while NarrativeGraph identity labels may remain source-language. */
+  narrativeMetadata?: "append" | "english-directed";
 }): string {
-  if (input.narrativeMetadata === "base-only") {
+  if (input.narrativeMetadata === "english-directed") {
     const parts = [input.basePrompt.trim()];
+    parts.push(
+      `${input.panel.shot.size} shot`,
+      input.panel.shot.angle || "eye-level angle",
+      input.panel.shot.compositionIntent || "clear single-moment composition"
+    );
+    for (const member of input.panel.cast) {
+      const lineStates = member.speakingLineIds
+        .map((lineId) => input.dialogueById.get(lineId))
+        .filter((line): line is StoryGraphDialogueInput => Boolean(line))
+        .map(speechAct);
+      parts.push([
+        `character in the ${regionName(member.bbox)}`,
+        member.action,
+        member.expression ? `${member.expression} expression` : "",
+        member.pose || "",
+        member.gazeTarget ? `looking toward ${member.gazeTarget}` : "",
+        lineStates.join(", ")
+      ].filter(Boolean).join(", "));
+    }
+    for (const prop of input.panel.props) {
+      parts.push(`prop: ${prop.state}${prop.bbox ? ` in the ${regionName(prop.bbox)}` : ""}`);
+    }
     if (input.panel.textSafeZones.length > 0) {
       parts.push(`leave ${input.panel.textSafeZones.map(regionName).join(" and ")} visually quiet for later lettering`);
     }
+    if (input.panel.mustShow.length > 0) parts.push(`must show: ${input.panel.mustShow.map((item) => item.description).join("; ")}`);
+    if (input.panel.mustNotShow.length > 0) parts.push(`must not show: ${input.panel.mustNotShow.map((item) => item.description).join("; ")}`);
     parts.push("one coherent moment, consistent character design, readable silhouettes, no text, no letters, no speech bubbles, no watermark");
     return parts.filter(Boolean).join(". ").replace(/\s+/g, " ").trim();
   }

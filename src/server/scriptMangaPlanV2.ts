@@ -300,7 +300,7 @@ export function buildMangaPlanV2(input: {
         basePrompt: promptBase,
         entities: story.graph.entities,
         dialogueById,
-        narrativeMetadata: input.legacyPlan.plannerProvenance?.kind === "llm-director" ? "base-only" : "append"
+        narrativeMetadata: input.legacyPlan.plannerProvenance?.kind === "llm-director" ? "english-directed" : "append"
       });
       for (const member of cast) {
         if (!references.manifest.some((reference) => reference.entityId === member.characterId)) {

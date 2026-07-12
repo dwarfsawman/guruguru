@@ -653,7 +653,7 @@ function materializeRun(runId: string): void {
         basePrompt: panel.promptBase,
         entities: plan.narrativeGraph.entities,
         dialogueById,
-        narrativeMetadata: plan.plannerProvenance?.kind === "llm-director" ? "base-only" : "append"
+        narrativeMetadata: plan.plannerProvenance?.kind === "llm-director" ? "english-directed" : "append"
       });
       const preflight = validatePanelPreflight({
         panel,
