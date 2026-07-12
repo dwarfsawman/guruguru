@@ -371,6 +371,68 @@ test("gguru インポート: app/kind が一致しないファイルは400", asy
   );
 });
 
+test("gguru インポート: 不正なカラム名(SQLインジェクション)を含む data.json は400で拒否され、行が増えない", async () => {
+  const zip = new JSZip();
+  zip.file(
+    "manifest.json",
+    JSON.stringify({ app: "guruguru", kind: "project-export", formatVersion: 1, counts: {}, warnings: [] })
+  );
+  const maliciousColumn = `id") VALUES ('x'); --`;
+  zip.file(
+    "data.json",
+    JSON.stringify({
+      project: {
+        id: "project_inject",
+        name: "Inject",
+        mode: "single",
+        storage_dir: "gguru://project/",
+        canvas_width: 1024,
+        canvas_height: 1446,
+        [maliciousColumn]: "evil"
+      },
+      tables: {},
+      shared: {}
+    })
+  );
+  const buffer = await zip.generateAsync({ type: "nodebuffer" });
+
+  const beforeProjectCount = getRow<{ n: number }>("SELECT COUNT(*) AS n FROM projects")!.n;
+  await assert.rejects(
+    () => importProject(buffer),
+    (error: unknown) => error instanceof HttpError && error.statusCode === 400
+  );
+  const afterProjectCount = getRow<{ n: number }>("SELECT COUNT(*) AS n FROM projects")!.n;
+  assert.equal(afterProjectCount, beforeProjectCount, "拒否されたインポートで project 行が増えてはいけない");
+});
+
+test("gguru インポート: 失敗時はファイル未書き込みでも空の projects/<newId>/ ディレクトリを残さない", async () => {
+  const { dataRoot } = await import("./db.ts");
+  const fs = await import("node:fs/promises");
+  const projectsRoot = join(dataRoot, "projects");
+  const before = new Set(await fs.readdir(projectsRoot).catch(() => [] as string[]));
+
+  // files/ を含まない zip + DB INSERT を確実に失敗させる不正カラム名 → ファイルを1つも書かない失敗経路。
+  const zip = new JSZip();
+  zip.file(
+    "manifest.json",
+    JSON.stringify({ app: "guruguru", kind: "project-export", formatVersion: 1, counts: {}, warnings: [] })
+  );
+  zip.file(
+    "data.json",
+    JSON.stringify({
+      project: { id: "project_orphan", name: "Orphan", mode: "single", storage_dir: "gguru://project/", canvas_width: 1024, canvas_height: 1446, ["bad-column"]: 1 },
+      tables: {},
+      shared: {}
+    })
+  );
+  const buffer = await zip.generateAsync({ type: "nodebuffer" });
+  await assert.rejects(() => importProject(buffer));
+
+  const after = await fs.readdir(projectsRoot).catch(() => [] as string[]);
+  const leaked = after.filter((name) => !before.has(name));
+  assert.deepEqual(leaked, [], "失敗したインポートが空のプロジェクトディレクトリを残している");
+});
+
 test("gguru エクスポート: 存在しない project は404", async () => {
   await assert.rejects(
     () => exportProject("project_does_not_exist"),

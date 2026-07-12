@@ -256,6 +256,10 @@ async function collectProjectFiles(projectRoot: string): Promise<ProjectFileEntr
   return results;
 }
 
+// NOTE: JSON 列の判定は db.ts の jsonColumnNames を使う。script_manga_runs.config_json は
+// jsonColumnNames に載っておらず、意図的に再帰走査しない -- 中身は templateId(shared な
+// workflow_template の ID で import 後もそのまま)・LoRA 名・数値パラメータのみで、
+// プロジェクトスコープの ID もローカルパスも含まないため書き換え不要(将来の列監査用メモ)。
 function exportRewriteRow(row: Row, projectRoot: string, warnings: string[]): Row {
   const out: Row = {};
   for (const [column, value] of Object.entries(row)) {
@@ -372,7 +376,6 @@ export async function importProject(zipBytes: Buffer): Promise<ProjectImportResu
     ? manifest.warnings.filter((item): item is string => typeof item === "string")
     : [];
 
-  let filesWritten = false;
   try {
     for (const entry of fileEntries) {
       const destPath = resolve(join(newProjectRoot, entry.relativePath));
@@ -382,7 +385,6 @@ export async function importProject(zipBytes: Buffer): Promise<ProjectImportResu
       const bytes = await zip.file(entry.zipPath)!.async("nodebuffer");
       ensureParentDir(destPath);
       await writeFile(destPath, bytes);
-      filesWritten = true;
     }
 
     const idMap = new Map<string, string>();
@@ -436,11 +438,10 @@ export async function importProject(zipBytes: Buffer): Promise<ProjectImportResu
     }
     return { project, warnings };
   } catch (error) {
-    if (filesWritten) {
-      await deleteProjectStorage(newProjectRoot).catch(() => {
-        // ベストエフォート。掃除に失敗しても元のエラーを優先して投げる。
-      });
-    }
+    // ensureProjectStorage() が先にディレクトリツリーを作っているため、ファイルを1つも
+    // 書いていない失敗(空 zip の DB 失敗・Zip Slip 400 等)でも空の projects/<newId>/ が
+    // 残る。掃除は常にベストエフォートで行い、失敗しても元のエラーを優先して投げる。
+    await deleteProjectStorage(newProjectRoot).catch(() => {});
     if (error instanceof HttpError) {
       throw error;
     }
@@ -513,10 +514,20 @@ function insertSharedRows(table: string, rows: unknown) {
   }
 }
 
+/** SQL 識別子として安全なカラム名(英数字とアンダースコアのみ)。 */
+const SAFE_COLUMN_NAME = /^[A-Za-z0-9_]+$/;
+
 function insertRow(table: string, row: Row) {
   const columns = Object.keys(row);
   if (columns.length === 0) {
     return;
+  }
+  // カラム名は data.json(=信頼できない入力)由来。`"` 等を含む名前でクォートを破って
+  // SQL を注入されないよう、識別子として安全な文字だけを許可する(不一致は 400)。
+  for (const column of columns) {
+    if (!SAFE_COLUMN_NAME.test(column)) {
+      throw new HttpError(400, `data.json に不正なカラム名を検出しました: ${column}`);
+    }
   }
   const columnList = columns.map((column) => `"${column}"`).join(", ");
   const placeholders = columns.map(() => "?").join(", ");
