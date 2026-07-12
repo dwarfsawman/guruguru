@@ -98,9 +98,9 @@ import { exportProject, importProject } from "./projectTransfer";
 import { fitPageBalloonText } from "./balloonTextFit";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
-  GITHUB_POSE_CIGPOSE_RELEASE_API_URL,
-  GITHUB_POSE_RELEASE_API_URL,
-  GITHUB_WEB_SAM_RELEASE_API_URL
+  GITHUB_POSE_CIGPOSE_RELEASE_BASE_URL,
+  GITHUB_POSE_RELEASE_BASE_URL,
+  GITHUB_WEB_SAM_RELEASE_BASE_URL
 } from "../shared/constants";
 import type { ComfySettings, GenerationRequest, LlmSettings, VlmAuditSettings } from "../shared/types";
 
@@ -108,13 +108,13 @@ const port = Number(process.env.PORT ?? 5177);
 let isShuttingDown = false;
 
 const releaseAssetRegistry = new Map<string, string>([
-  ["slimsam-77-encoder.onnx", GITHUB_WEB_SAM_RELEASE_API_URL],
-  ["slimsam-77-decoder.onnx", GITHUB_WEB_SAM_RELEASE_API_URL],
-  ["pose_landmarker_full.task", GITHUB_POSE_RELEASE_API_URL],
-  ["pose_landmarker_heavy.task", GITHUB_POSE_RELEASE_API_URL],
-  ["yolox_nano.onnx", GITHUB_POSE_CIGPOSE_RELEASE_API_URL],
-  ["cigpose-l_coco_384x288.onnx", GITHUB_POSE_CIGPOSE_RELEASE_API_URL],
-  ["cigpose-x_coco-wholebody_384x288.onnx", GITHUB_POSE_CIGPOSE_RELEASE_API_URL]
+  ["slimsam-77-encoder.onnx", GITHUB_WEB_SAM_RELEASE_BASE_URL],
+  ["slimsam-77-decoder.onnx", GITHUB_WEB_SAM_RELEASE_BASE_URL],
+  ["pose_landmarker_full.task", GITHUB_POSE_RELEASE_BASE_URL],
+  ["pose_landmarker_heavy.task", GITHUB_POSE_RELEASE_BASE_URL],
+  ["yolox_nano.onnx", GITHUB_POSE_CIGPOSE_RELEASE_BASE_URL],
+  ["cigpose-l_coco_384x288.onnx", GITHUB_POSE_CIGPOSE_RELEASE_BASE_URL],
+  ["cigpose-x_coco-wholebody_384x288.onnx", GITHUB_POSE_CIGPOSE_RELEASE_BASE_URL]
 ]);
 
 initializeDb();
@@ -925,33 +925,17 @@ function getSettingOrDefault(): ComfySettings {
 }
 
 async function serveReleaseAsset(res: ServerResponse, filename: string, label: string) {
-  const releaseApiUrl = releaseAssetRegistry.get(filename);
-  if (!releaseApiUrl) {
+  const releaseBaseUrl = releaseAssetRegistry.get(filename);
+  if (!releaseBaseUrl) {
     sendJson(res, 404, { error: `${label} model asset was not found` });
     return;
   }
 
-  const token = githubToken();
-  if (!token) {
-    sendJson(res, 503, {
-      error: `GitHub token is required to download ${label} models from this private repository release.`,
-      env: "Set GURUGURU_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN before starting GURUGURU."
-    });
-    return;
-  }
-
-  const release = await fetchGithubJson<{ assets?: Array<{ name?: string; url?: string; size?: number; content_type?: string }> }>(
-    releaseApiUrl,
-    token
-  );
-  const asset = release.assets?.find((item) => item.name === filename);
-  if (!asset?.url) {
-    sendJson(res, 404, { error: `${label} model asset was not found in the GitHub release` });
-    return;
-  }
-
-  const response = await fetch(asset.url, {
-    headers: githubHeaders(token, "application/octet-stream")
+  const response = await fetch(`${releaseBaseUrl}/${encodeURIComponent(filename)}`, {
+    headers: {
+      accept: "application/octet-stream",
+      "user-agent": "guruguru-model-loader"
+    }
   });
   if (!response.ok || !response.body) {
     sendJson(res, response.status || 502, {
@@ -961,37 +945,15 @@ async function serveReleaseAsset(res: ServerResponse, filename: string, label: s
   }
 
   res.writeHead(200, {
-    "content-type": asset.content_type || "application/octet-stream",
-    "content-length": String(asset.size ?? response.headers.get("content-length") ?? ""),
-    "cache-control": "private, max-age=86400"
+    "content-type": response.headers.get("content-type") || "application/octet-stream",
+    "content-length": response.headers.get("content-length") ?? "",
+    "cache-control": "public, max-age=86400"
   });
 
   for await (const chunk of response.body) {
     res.write(chunk);
   }
   res.end();
-}
-
-async function fetchGithubJson<T>(url: string, token: string): Promise<T> {
-  const response = await fetch(url, {
-    headers: githubHeaders(token, "application/vnd.github+json")
-  });
-  if (!response.ok) {
-    throw new HttpError(response.status || 502, `GitHub API request failed: ${response.status} ${response.statusText}`.trim());
-  }
-  return response.json() as Promise<T>;
-}
-
-function githubHeaders(token: string, accept: string) {
-  return {
-    accept,
-    authorization: `Bearer ${token}`,
-    "user-agent": "guruguru-websam-model-loader"
-  };
-}
-
-function githubToken() {
-  return process.env.GURUGURU_GITHUB_TOKEN?.trim() || process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || "";
 }
 
 function setupShutdownHandlers() {

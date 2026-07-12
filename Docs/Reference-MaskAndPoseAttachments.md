@@ -9,8 +9,8 @@
 - 画像詳細ビューアのマスク編集は、親画像と同じサイズの PNG マスクだけを生成リクエストに使う。
 - GURUGURU が生成するマスク PNG は透明背景に白で描画する。ComfyUI の `LoadImageMask` は alpha を反転マスクとして読むため、workflow patch では `red` チャンネルを使い、白い描画部分を更新対象にする。
 - スマート選択で WebSAM / SlimSAM-77 を使う場合、既定ではローカルAPI `/api/websam-models` 経由で GitHub Release `websam-models-v1` の `slimsam-77-encoder.onnx` と `slimsam-77-decoder.onnx` を取得する。別の配布先を使う場合だけ、設定画面の `WebSAM model base URL` を変更する。
-- このリポジトリは private のため、既定の `/api/websam-models` で release asset を読むには GURUGURU サーバー起動時に `GURUGURU_GITHUB_TOKEN`、`GH_TOKEN`、または `GITHUB_TOKEN` を設定する。token はブラウザへ渡さず、サーバー側で GitHub Release API を呼ぶためだけに使う。
-- サーバーの release asset proxy(`src/server/index.ts` の `serveReleaseAsset`)は「ファイル名 → release API URL」のレジストリ方式。WebSAM 用(`slimsam-77-encoder.onnx` / `slimsam-77-decoder.onnx` → `websam-models-v1`)に加え、ポーズ検出モデル用(`pose_landmarker_full.task` → GitHub Release `pose-models-v1`、`GET /api/pose-models/:filename`)を同じハンドラで配信する。token 要件・404/503 の挙動・streaming・cache-control は用途間で共通。
+- 公開GitHub Release Assetから取得するため、`GURUGURU_GITHUB_TOKEN`、`GH_TOKEN`、`GITHUB_TOKEN`などの認証設定は不要。
+- サーバーのrelease asset proxy(`src/server/index.ts`の`serveReleaseAsset`)は「ファイル名 → 公開release download base URL」のレジストリ方式。WebSAM用(`slimsam-77-encoder.onnx` / `slimsam-77-decoder.onnx` → `websam-models-v1`)に加え、ポーズ検出モデル用(`pose_landmarker_full.task` → GitHub Release `pose-models-v1`、`GET /api/pose-models/:filename`)を同じハンドラでストリーミング配信する。
 - SlimSAM-77 のモデルファイルはブラウザの OPFS にキャッシュされる。2回目以降はキャッシュ済みファイルを優先する。OPFS非対応ブラウザでは手動マスク機能はそのまま使えるが、WebSAMのキャッシュは使えない。
 - スマート選択の最終マスクは `finalMask = (samMask OR manualIncludeMask) AND NOT manualEraseMask` として合成し、この白黒PNGだけを `maskDataUrl` として送る。SAM候補プレビューは「適用」するまで `samMask` として確定しない。
 - 手動ペン(`manual-include`)で描くときは `manualInclude` レイヤーに加えて同じストローク形状を `manualErase` レイヤーから `destination-out` で削除する。これにより「消しゴムで消した領域を後からペンで再描きして復活させる」ことができる。消しゴムは引き続き `manualErase` に追加し、SAM結果や手動追加を最終合成で抜く。
