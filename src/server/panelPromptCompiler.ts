@@ -26,8 +26,13 @@ export function compilePanelPrompt(input: {
   entities: NarrativeEntity[];
   dialogueById: Map<string, StoryGraphDialogueInput>;
   /** LLM-directed fields are English, while NarrativeGraph identity labels may remain source-language. */
-  narrativeMetadata?: "append" | "english-directed";
+  narrativeMetadata?: "append" | "english-directed" | "base-only";
 }): string {
+  if (input.narrativeMetadata === "base-only") {
+    return `${input.basePrompt.trim()}. ${input.panel.shot.size} shot. ${input.panel.shot.angle || "eye-level angle"}. one coherent moment, consistent character design, readable silhouettes, no text, no letters, no speech bubbles, no watermark`
+      .replace(/\s+/g, " ")
+      .trim();
+  }
   if (input.narrativeMetadata === "english-directed") {
     const parts = [input.basePrompt.trim()];
     parts.push(

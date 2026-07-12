@@ -660,7 +660,11 @@ function materializeRun(runId: string): void {
         basePrompt: panel.promptBase,
         entities: plan.narrativeGraph.entities,
         dialogueById,
-        narrativeMetadata: plan.plannerProvenance?.kind === "llm-director" ? "english-directed" : "append"
+        narrativeMetadata: config.planningMode === "provided"
+          ? "base-only"
+          : plan.plannerProvenance?.kind === "llm-director"
+            ? "english-directed"
+            : "append"
       });
       const preflight = validatePanelPreflight({
         panel,

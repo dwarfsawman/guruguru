@@ -58,4 +58,18 @@ describe("compilePanelPrompt", () => {
     expect(result).toContain("あかり");
     expect(result).toContain("waving a hand");
   });
+
+  test("provided mode keeps an English prompt free of source-language metadata", () => {
+    const result = compilePanelPrompt({
+      panel,
+      basePrompt: "A red-haired pilot braces inside a damaged cockpit",
+      entities: [entity],
+      dialogueById: new Map(),
+      narrativeMetadata: "base-only"
+    });
+
+    expect(result).toContain("A red-haired pilot braces inside a damaged cockpit");
+    expect(result).not.toContain("waving a hand");
+    expect(result).not.toMatch(/[\u3040-\u30ff\u3400-\u9fff]/u);
+  });
 });

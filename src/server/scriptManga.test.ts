@@ -274,7 +274,6 @@ test("createScriptMangaRun assigns directed prompts to the same RTL panels as th
   promptPanels.forEach((task, index) => {
     assert.match(task.prompt, new RegExp(`directed prompt ${index}`));
     assert.match(task.prompt, /(?:extreme-wide|wide|medium|close-up|insert) shot/);
-    assert.match(task.prompt, /must show:/);
     assert.match(task.prompt, /one coherent moment/);
     assert.match(task.prompt, /no text, no letters, no speech bubbles/);
   });
