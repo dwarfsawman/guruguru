@@ -23,6 +23,7 @@ export interface StoryGraphDialogueInput {
   speakerLabel: string;
   text: string;
   semanticKind: string;
+  balloonStyle?: string;
 }
 
 export interface StoryGraphBuildResult {

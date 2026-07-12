@@ -36,7 +36,7 @@ function fmt(value: number): string {
  * (`localStrokeWidth = outlineWidth * style.size / emScale`)。
  */
 function renderGlyph(glyph: PositionedGlyph, style: TextStyle): string {
-  const transform = `translate(${fmt(glyph.x)} ${fmt(glyph.y)}) scale(${fmt(glyph.emScale)} ${fmt(-glyph.emScale)})${
+  const transform = `translate(${fmt(glyph.x)} ${fmt(glyph.y)}) scale(${fmt(glyph.emScale * (glyph.scaleX ?? 1))} ${fmt(-glyph.emScale)})${
     glyph.rotationDeg ? ` rotate(${fmt(glyph.rotationDeg)} ${fmt(glyph.centerX)} ${fmt(glyph.centerY)})` : ""
   }`;
   let outline = "";

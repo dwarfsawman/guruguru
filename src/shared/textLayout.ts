@@ -53,6 +53,8 @@ export interface PositionedGlyph {
   y: number;
   /** ページ単位への倍率(= style.size / unitsPerEm)。 */
   emScale: number;
+  /** 縦中横など、横方向だけ追加で縮小する倍率。省略時は1。 */
+  scaleX?: number;
   /** フォールバック回転(度)。約物の90°回転のみ非0。回転軸はフォント内部座標の (centerX, centerY)。 */
   rotationDeg: number;
   /** 回転軸(フォント内部座標系)。advanceWidth/2, (ascent+descent)/2。 */
@@ -117,6 +119,27 @@ function toChars(text: string): string[] {
   return Array.from(text);
 }
 
+const JAPANESE_PARTICLES = ["から", "まで", "より", "って", "では", "には", "へは", "とは", "ので", "のに", "ても", "でも", "だけ", "しか", "ほど", "くらい", "ぐらい", "こそ", "さえ", "ばかり", "ながら", "たり", "だり", "を", "が", "に", "へ", "と", "で", "の", "は", "も", "や", "ね", "よ", "ぞ", "さ"];
+const PHRASE_PUNCTUATION = new Set(["、", "。", "，", "．", "！", "？", "!", "?", "…", "‥"]);
+
+/** 日本語の文節を壊しにくい折返し候補。辞書を使わず、句読点・助詞末尾・語種境界だけを採用する。 */
+function phraseBreaks(chars: string[]): Set<number> {
+  const result = new Set<number>();
+  for (let index = 1; index < chars.length; index += 1) {
+    const before = chars[index - 1]!;
+    const after = chars[index]!;
+    const prefix = chars.slice(0, index).join("");
+    if (PHRASE_PUNCTUATION.has(before) || JAPANESE_PARTICLES.some((particle) => prefix.endsWith(particle))) {
+      result.add(index);
+      continue;
+    }
+    const beforeJapanese = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(before);
+    const afterJapanese = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(after);
+    if (beforeJapanese !== afterJapanese) result.add(index);
+  }
+  return result;
+}
+
 /**
  * 貪欲法での折り返し + 簡易禁則処理。`measureAdvance` は「この文字を追加する時の送り幅(page 単位)」。
  * `maxExtent` が undefined/0以下なら折り返さない(禁則処理も適用対象が無いので実質no-op)。
@@ -128,15 +151,31 @@ function wrapParagraph(chars: string[], measureAdvance: (char: string) => number
   const lines: string[][] = [];
   let current: string[] = [];
   let currentExtent = 0;
+  const breaks = phraseBreaks(chars);
+  let sourceIndex = 0;
   for (const ch of chars) {
     const advance = measureAdvance(ch);
     if (maxExtent !== undefined && maxExtent > 0 && current.length > 0 && currentExtent + advance > maxExtent) {
-      lines.push(current);
-      current = [];
-      currentExtent = 0;
+      let breakAt = -1;
+      const lineStart = sourceIndex - current.length;
+      for (let candidate = sourceIndex; candidate > lineStart; candidate -= 1) {
+        if (breaks.has(candidate)) { breakAt = candidate - lineStart; break; }
+      }
+      // 文節まで戻して行が半分未満になる場合は、過度な空きを避けて従来の文字折返しにする。
+      if (breakAt > 0 && breakAt >= Math.ceil(current.length / 2)) {
+        const carry = current.splice(breakAt);
+        lines.push(current);
+        current = carry;
+        currentExtent = current.reduce((sum, item) => sum + measureAdvance(item), 0);
+      } else {
+        lines.push(current);
+        current = [];
+        currentExtent = 0;
+      }
     }
     current.push(ch);
     currentExtent += advance;
+    sourceIndex += 1;
   }
   lines.push(current);
   return applyKinsoku(lines);
@@ -278,12 +317,33 @@ function layoutVertical(provider: FontMetricsProvider, text: string, style: Text
   const allColumns: string[][] = [];
   for (const paragraph of paragraphs) {
     const chars = toChars(paragraph);
+    const cells: string[] = [];
+    for (let index = 0; index < chars.length;) {
+      const tail = chars.slice(index).join("");
+      const asciiRun = tail.match(/^[0-9A-Za-z%.!?]+/)?.[0];
+      if (asciiRun && Array.from(asciiRun).length > 3) {
+        cells.push(...Array.from(asciiRun));
+        index += Array.from(asciiRun).length;
+        continue;
+      }
+      if (asciiRun && Array.from(asciiRun).length <= 3) {
+        cells.push(asciiRun);
+        index += Array.from(asciiRun).length;
+      } else if ((chars[index] === "！" || chars[index] === "？") && (chars[index + 1] === "！" || chars[index + 1] === "？")) {
+        cells.push(chars[index]! + chars[index + 1]!);
+        index += 2;
+      } else {
+        cells.push(chars[index]!);
+        index += 1;
+      }
+    }
     const measureAdvance = (ch: string) => {
+      if (Array.from(ch).length > 1) return provider.unitsPerEm * ctx.emScale * ctx.letterSpacing;
       const glyph = ctx.getGlyph(ch);
       const base = glyph.vertPathD ? glyph.vertAdvance || provider.unitsPerEm : provider.unitsPerEm;
       return base * ctx.emScale * ctx.letterSpacing;
     };
-    allColumns.push(...wrapParagraph(chars, measureAdvance, ctx.maxWidth));
+    allColumns.push(...wrapParagraph(cells, measureAdvance, ctx.maxWidth));
   }
 
   const colHeights: number[] = [];
@@ -294,6 +354,25 @@ function layoutVertical(provider: FontMetricsProvider, text: string, style: Text
     const colCenterX = -colIndex * columnPitch;
     const colGlyphs: PositionedGlyph[] = [];
     for (const ch of col) {
+      const run = Array.from(ch);
+      if (run.length > 1) {
+        const metrics = run.map((char) => ctx.getGlyph(char));
+        const totalAdvance = metrics.reduce((sum, glyph) => sum + glyph.advanceWidth, 0);
+        const scaleX = Math.min(1, provider.unitsPerEm / Math.max(1, totalAdvance));
+        let localX = -totalAdvance * scaleX * ctx.emScale / 2;
+        const cellCenterY = cursorY + style.size / 2;
+        metrics.forEach((glyph, index) => {
+          colGlyphs.push({
+            char: run[index]!, pathD: glyph.pathD,
+            x: colCenterX + localX, y: cellCenterY + ((provider.ascent + provider.descent) / 2) * ctx.emScale,
+            emScale: ctx.emScale, scaleX, rotationDeg: 0,
+            centerX: glyph.advanceWidth / 2, centerY: (provider.ascent + provider.descent) / 2
+          });
+          localX += glyph.advanceWidth * scaleX * ctx.emScale;
+        });
+        cursorY += provider.unitsPerEm * ctx.emScale * ctx.letterSpacing;
+        continue;
+      }
       const glyph = ctx.getGlyph(ch);
       const useVert = Boolean(glyph.vertPathD);
       const baseAdvance = useVert ? glyph.vertAdvance || provider.unitsPerEm : provider.unitsPerEm;

@@ -364,7 +364,8 @@ export function buildMangaPlanV2(input: {
         characterId: line.characterId,
         speakerLabel: line.speakerLabel,
         text: line.text,
-        semanticKind: line.semanticKind
+        semanticKind: line.semanticKind,
+        balloonStyle: line.balloonStyle
       })),
     pages,
     panelCount: pages.reduce((sum, page) => sum + page.panels.length, 0),

@@ -12,6 +12,7 @@ function makeLine(overrides: Partial<DialogueLine> & Pick<DialogueLine, "id" | "
     speakerLabel: "太郎",
     text: "テスト",
     semanticKind: "dialogue",
+    balloonStyle: "normal",
     emotion: null,
     sceneIndex: 0,
     sourceHash: null,

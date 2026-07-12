@@ -381,6 +381,7 @@ export interface ScriptRevision {
 }
 
 export type DialogueSemanticKind = "dialogue" | "monologue" | "narration" | "sfx";
+export type DialogueBalloonStyle = "normal" | "telecom" | "machine" | "vo" | "thought" | "caption" | "monitor" | "sfx";
 export type DialogueLineStatus = "active" | "orphaned";
 export type DialogueLineSource = "fountain" | "manual" | "llm";
 
@@ -393,6 +394,7 @@ export interface DialogueLine {
   speakerLabel: string;
   text: string;
   semanticKind: DialogueSemanticKind;
+  balloonStyle: DialogueBalloonStyle;
   emotion: string | null;
   orderIndex: number;
   sceneIndex: number | null;

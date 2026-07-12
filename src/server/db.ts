@@ -361,6 +361,7 @@ export function initializeDb() {
       speaker_label TEXT NOT NULL DEFAULT '',
       text TEXT NOT NULL,
       semantic_kind TEXT NOT NULL DEFAULT 'dialogue',
+      balloon_style TEXT NOT NULL DEFAULT 'normal',
       emotion TEXT,
       order_index INTEGER NOT NULL DEFAULT 0,
       scene_index INTEGER,
@@ -584,6 +585,7 @@ export function initializeDb() {
   ensureColumn("dialogue_placements", "semantic_kind_override", "TEXT");
   ensureColumn("dialogue_placements", "speaker_label_override", "TEXT");
   ensureColumn("dialogue_placements", "order_index_override", "INTEGER");
+  ensureColumn("dialogue_lines", "balloon_style", "TEXT NOT NULL DEFAULT 'normal'");
   // Links a generation attempt to its owning automatic-manga task before provider submission.
   ensureColumn("generation_rounds", "script_manga_task_id", "TEXT");
   // MangaPlanV2/control layer: existing databases receive nullable relationship columns first;

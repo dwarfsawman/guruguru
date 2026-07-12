@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import type { FountainDoc } from "../shared/fountain";
 import { parseFountain } from "../shared/fountain";
-import type { DialogueLine, DialogueSemanticKind, MangaScript, ScriptImportResult, ScriptRevision } from "../shared/apiTypes";
+import type { DialogueBalloonStyle, DialogueLine, DialogueSemanticKind, MangaScript, ScriptImportResult, ScriptRevision } from "../shared/apiTypes";
 import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
 import { findOrCreateCharacterByLabel } from "./characters";
@@ -22,6 +22,7 @@ interface DialogueLineRow {
   speaker_label: string;
   text: string;
   semantic_kind: string;
+  balloon_style: string;
   order_index: number;
   scene_index: number | null;
   source_hash: string | null;
@@ -107,19 +108,33 @@ function flattenDialogueElements(doc: FountainDoc): FlatDialogue[] {
  * parenthetical (M)/(N) → monologue/narration、`SFX:` 接頭辞 → sfx(接頭辞は本文から除去する)。
  * それ以外は既定 dialogue。
  */
-function resolveSemanticKindAndText(parenthetical: string | undefined, rawText: string): { semanticKind: DialogueSemanticKind; text: string } {
+export function resolveDialoguePresentation(
+  speakerLabel: string,
+  parenthetical: string | undefined,
+  rawText: string
+): { semanticKind: DialogueSemanticKind; balloonStyle: DialogueBalloonStyle; text: string } {
   const trimmedParen = parenthetical?.trim().toUpperCase();
   if (trimmedParen === "(M)") {
-    return { semanticKind: "monologue", text: rawText };
+    return { semanticKind: "monologue", balloonStyle: "thought", text: rawText };
   }
   if (trimmedParen === "(N)") {
-    return { semanticKind: "narration", text: rawText };
+    return { semanticKind: "narration", balloonStyle: "caption", text: rawText };
   }
   const trimmedText = rawText.trim();
   if (/^SFX:/i.test(trimmedText)) {
-    return { semanticKind: "sfx", text: trimmedText.replace(/^SFX:\s*/i, "") };
+    return { semanticKind: "sfx", balloonStyle: "sfx", text: trimmedText.replace(/^SFX:\s*/i, "") };
   }
-  return { semanticKind: "dialogue", text: rawText };
+  if (/^《[^》]+》$/u.test(trimmedText) || /(?:機械音声|システム|アナウンス|computer|system)/iu.test(speakerLabel)) {
+    return { semanticKind: "dialogue", balloonStyle: "machine", text: rawText };
+  }
+  const parentheticalText = (parenthetical ?? "").replace(/[()（）]/g, "").trim();
+  if (/(?:V\.O\.|Ｖ\.Ｏ\.|記憶|記録|回想)/iu.test(parentheticalText)) {
+    return { semanticKind: "dialogue", balloonStyle: "vo", text: rawText };
+  }
+  if (/(?:通信|無線|拡声|スピーカー)/u.test(`${speakerLabel} ${parentheticalText}`)) {
+    return { semanticKind: "dialogue", balloonStyle: "telecom", text: rawText };
+  }
+  return { semanticKind: "dialogue", balloonStyle: "normal", text: rawText };
 }
 
 /**
@@ -144,15 +159,15 @@ function applyScriptRevisionDiff(projectId: string, scriptId: string, doc: Fount
 
   const claimed = new Set<string>();
   flat.forEach((item, index) => {
-    const { semanticKind, text } = resolveSemanticKindAndText(item.parenthetical, item.text);
+    const { semanticKind, balloonStyle, text } = resolveDialoguePresentation(item.speakerLabel, item.parenthetical, item.text);
     const hash = normalizedHash(item.speakerLabel, text);
     const queue = queues.get(hash);
     const existingId = queue && queue.length > 0 ? queue.shift() : undefined;
     if (existingId) {
       claimed.add(existingId);
       runSql(
-        "UPDATE dialogue_lines SET order_index = ?, scene_index = ?, status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [index, item.sceneIndex, existingId]
+        "UPDATE dialogue_lines SET order_index = ?, scene_index = ?, semantic_kind = ?, balloon_style = ?, status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [index, item.sceneIndex, semanticKind, balloonStyle, existingId]
       );
       return;
     }
@@ -160,9 +175,9 @@ function applyScriptRevisionDiff(projectId: string, scriptId: string, doc: Fount
     const id = createId("line");
     runSql(
       `INSERT INTO dialogue_lines
-         (id, project_id, script_id, character_id, speaker_label, text, semantic_kind, order_index, scene_index, source_hash, status, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'fountain')`,
-      [id, projectId, scriptId, character.id, item.speakerLabel, text, semanticKind, index, item.sceneIndex, hash]
+         (id, project_id, script_id, character_id, speaker_label, text, semantic_kind, balloon_style, order_index, scene_index, source_hash, status, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 'fountain')`,
+      [id, projectId, scriptId, character.id, item.speakerLabel, text, semanticKind, balloonStyle, index, item.sceneIndex, hash]
     );
     claimed.add(id);
   });

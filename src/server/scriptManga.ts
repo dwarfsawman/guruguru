@@ -398,8 +398,9 @@ function loadActiveDialogues(scriptId: string): StoryGraphDialogueInput[] {
     speaker_label: string;
     text: string;
     semantic_kind: string;
+    balloon_style: string;
   }>(
-    `SELECT id, order_index, scene_index, character_id, speaker_label, text, semantic_kind
+    `SELECT id, order_index, scene_index, character_id, speaker_label, text, semantic_kind, balloon_style
      FROM dialogue_lines WHERE script_id = ? AND status = 'active' ORDER BY order_index ASC`,
     [scriptId]
   ).map((row) => ({
@@ -409,7 +410,8 @@ function loadActiveDialogues(scriptId: string): StoryGraphDialogueInput[] {
     characterId: row.character_id,
     speakerLabel: row.speaker_label,
     text: row.text,
-    semanticKind: row.semantic_kind
+    semanticKind: row.semantic_kind,
+    balloonStyle: row.balloon_style
   }));
 }
 
@@ -424,8 +426,9 @@ function loadDialoguesByIds(ids: string[], projectId: string, scriptId: string):
     speaker_label: string;
     text: string;
     semantic_kind: string;
+    balloon_style: string;
   }>(
-    `SELECT id, order_index, scene_index, character_id, speaker_label, text, semantic_kind
+    `SELECT id, order_index, scene_index, character_id, speaker_label, text, semantic_kind, balloon_style
      FROM dialogue_lines WHERE project_id = ? AND script_id = ? AND id IN (${placeholders})`,
     [projectId, scriptId, ...ids]
   ).map((row) => ({
@@ -435,7 +438,8 @@ function loadDialoguesByIds(ids: string[], projectId: string, scriptId: string):
     characterId: row.character_id,
     speakerLabel: row.speaker_label,
     text: row.text,
-    semanticKind: row.semantic_kind
+    semanticKind: row.semantic_kind,
+    balloonStyle: row.balloon_style
   }));
 }
 
@@ -640,7 +644,8 @@ function materializeRun(runId: string): void {
     characterId: snapshot.characterId,
     speakerLabel: snapshot.speakerLabel,
     text: snapshot.text,
-    semanticKind: snapshot.semanticKind
+    semanticKind: snapshot.semanticKind,
+    balloonStyle: snapshot.balloonStyle
   }));
   const dialogueById = new Map(dialogueRows.map((line) => [line.id, line]));
   const dialogueSnapshots = new Map(plan.dialogueSnapshots.map((snapshot) => [snapshot.id, snapshot]));

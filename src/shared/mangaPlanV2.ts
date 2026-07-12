@@ -184,6 +184,7 @@ export interface FrozenDialogueLine {
   speakerLabel: string;
   text: string;
   semanticKind: string;
+  balloonStyle?: string;
 }
 
 export interface NarrativeGraph {

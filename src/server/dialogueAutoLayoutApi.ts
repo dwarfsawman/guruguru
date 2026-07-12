@@ -6,7 +6,7 @@
  */
 import { randomInt } from "node:crypto";
 import type { DialogueLayoutPreview, DialogueLayoutUnlockResult } from "../shared/chronicle";
-import type { DialogueSemanticKind } from "../shared/apiTypes";
+import type { DialogueBalloonStyle, DialogueSemanticKind } from "../shared/apiTypes";
 import { balloonInscribedFactor } from "../shared/balloonShape";
 import { runDialogueAutoLayout, AUTO_LAYOUT_SFX_FONT_SCALE, type DialogueAutoLayoutItem } from "../shared/dialogueAutoLayout";
 import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
@@ -73,6 +73,7 @@ interface LineRow {
   id: string;
   text: string;
   semantic_kind: DialogueSemanticKind;
+  balloon_style: DialogueBalloonStyle;
   speaker_label: string;
   order_index: number;
 }
@@ -134,7 +135,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
   const lineIds = placements.map((row) => row.line_id);
   const linePlaceholders = lineIds.map(() => "?").join(",");
   const lineRows = getRows<LineRow>(
-    `SELECT id, text, semantic_kind, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
+    `SELECT id, text, semantic_kind, balloon_style, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
     lineIds
   );
   const lineById = new Map(lineRows.map((row) => [row.id, row]));
@@ -153,6 +154,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
       lineId: line.id,
       text,
       semanticKind,
+      balloonStyle: line.balloon_style,
       speakerLabel: placement.speaker_label_override ?? line.speaker_label,
       orderIndex: placement.order_index_override ?? line.order_index,
       preferredPanelId: placement.panel_id,
@@ -367,7 +369,7 @@ function loadReflowContext(projectId: string, pageId: string): ReflowContext {
   const lineIds = targets.map((row) => row.line_id);
   const linePlaceholders = lineIds.map(() => "?").join(",");
   const lineRows = getRows<LineRow>(
-    `SELECT id, text, semantic_kind, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
+    `SELECT id, text, semantic_kind, balloon_style, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
     lineIds
   );
   const lineById = new Map(lineRows.map((row) => [row.id, row]));
@@ -384,6 +386,7 @@ function loadReflowContext(projectId: string, pageId: string): ReflowContext {
       lineId: line.id,
       text,
       semanticKind,
+      balloonStyle: line.balloon_style,
       speakerLabel: row.speaker_label_override ?? line.speaker_label,
       orderIndex: row.order_index_override ?? line.order_index,
       sizeVariants: requiredSizeVariantsFor(text, semanticKind)

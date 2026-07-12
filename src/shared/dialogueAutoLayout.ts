@@ -10,7 +10,7 @@
  *
  * 乱数は `Math.random` を使わず、自前の mulberry32 PRNG(seed 付き決定的)のみを使う。
  */
-import type { DialogueSemanticKind } from "./apiTypes";
+import type { DialogueBalloonStyle, DialogueSemanticKind } from "./apiTypes";
 import { panelBounds, panelBoundsSize, type LayoutPanel, type PageLayout, type PanelShape } from "./pageLayout";
 import {
   DEFAULT_BALLOON_SIZE,
@@ -40,6 +40,7 @@ export interface DialogueAutoLayoutItem {
   lineId: string;
   text: string;
   semanticKind: DialogueSemanticKind;
+  balloonStyle?: DialogueBalloonStyle;
   speakerLabel: string;
   /** dialogue_lines.order_index。コマ順との単調性判定・文字量比配分のソートキー。 */
   orderIndex: number;
@@ -373,17 +374,18 @@ function nextObjectId(seed: number, localIndex: number): string {
 
 function buildBalloonObject(id: string, item: DialogueAutoLayoutItem, position: PageVec, size: PageVec): BalloonObject {
   const isThought = item.semanticKind === "monologue";
+  const style = item.balloonStyle ?? (isThought ? "thought" : "normal");
   const object: BalloonObject = {
     id,
     kind: "balloon",
     position,
     rotation: 0,
-    shape: isThought ? "thought" : item.text.replace(/\s+/g, "").length >= 34 ? "compound" : "ellipse",
+    shape: style === "telecom" ? "jagged" : style === "machine" ? "rounded" : isThought ? "thought" : item.text.replace(/\s+/g, "").length >= 34 ? "compound" : "ellipse",
     size,
     fill: DEFAULT_BOX_FILL,
     strokeColor: DEFAULT_BOX_STROKE_COLOR,
     strokeWidth: DEFAULT_BOX_STROKE_WIDTH,
-    tail: isThought ? null : defaultBalloonTail(size),
+    tail: style === "normal" ? defaultBalloonTail(size) : null,
     content: { text: item.text, style: { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * (item.fontScale ?? 1) } },
     sourceDialogueLineId: item.lineId
   };
@@ -668,7 +670,9 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
     }
     usedObjectIds.add(objectId);
     let object: PageObject;
-    if (item.semanticKind === "dialogue" || item.semanticKind === "monologue") {
+    if (["vo", "caption", "monitor"].includes(item.balloonStyle ?? "")) {
+      object = buildNarrationObject(objectId, item, position, size);
+    } else if (item.semanticKind === "dialogue" || item.semanticKind === "monologue") {
       object = buildBalloonObject(objectId, item, position, size);
     } else if (item.semanticKind === "narration") {
       object = buildNarrationObject(objectId, item, position, size);

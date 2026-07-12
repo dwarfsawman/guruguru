@@ -13,6 +13,9 @@ function regionName(box: NormalizedBox): string {
 }
 
 function speechAct(line: StoryGraphDialogueInput): string {
+  if (["telecom", "machine", "vo", "caption", "monitor"].includes(line.balloonStyle ?? "")) {
+    return "off-screen voice; the speaker is not depicted in this panel; the image contains no rendered text";
+  }
   if (line.semanticKind === "narration") return "off-panel narration; the image contains no rendered text";
   if (line.semanticKind === "monologue") return "quiet internal reaction with closed or resting mouth";
   if (line.semanticKind === "sfx") return "reacting to a sound; do not render sound-effect letters";

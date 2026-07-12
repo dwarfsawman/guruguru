@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addScriptRevision, createScript, listScriptRevisions } from "./scripts.ts";
+import { addScriptRevision, createScript, listScriptRevisions, resolveDialoguePresentation } from "./scripts.ts";
 import { listDialogueLines } from "./dialogueLines.ts";
 import { listCharacters } from "./characters.ts";
 import { createProject } from "./projects.ts";
@@ -75,6 +75,21 @@ test("再取り込み: parenthetical (M)/(N) は monologue/narration に、SFX: 
   assert.equal(result.lines[0]!.text, "心の声だ。");
   assert.equal(result.lines[1]!.semanticKind, "sfx");
   assert.equal(result.lines[1]!.text, "ドカーン");
+});
+
+test("ALICE E01 balloonStyle: 通信・V.O.・記録・拡声・機械音声・monitorを分類する", () => {
+  const cases = [
+    ["男の声（通信）", undefined, "聞こえるか", "telecom"],
+    ["ゲン", "（通信）", "命令だ", "telecom"],
+    ["ミラ", "(V.O.)", "思い出して", "vo"],
+    ["シドウ", "（記録）", "記録を開始", "vo"],
+    ["AEGIS兵（拡声）", undefined, "停止しろ", "telecom"],
+    ["機械音声", undefined, "同期完了", "machine"],
+    ["表示", undefined, "《同期率 98.7%》", "machine"]
+  ] as const;
+  for (const [speaker, parenthetical, text, expected] of cases) {
+    assert.equal(resolveDialoguePresentation(speaker, parenthetical, text).balloonStyle, expected);
+  }
 });
 
 test("script_revisions は不変保存(fountain_source / parsed_json を後から書き換えない)", () => {
