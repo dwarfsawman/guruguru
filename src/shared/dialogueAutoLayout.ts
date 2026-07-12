@@ -413,10 +413,11 @@ function buildSfxObject(id: string, item: DialogueAutoLayoutItem, position: Page
     id,
     kind: "text",
     position,
-    rotation: 0,
+    rotation: ((item.orderIndex % 9) - 4) * (Math.PI / 180),
     content: {
       text: item.text,
-      style: { ...DEFAULT_TEXT_STYLE, size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE * (item.fontScale ?? 1) }
+      style: { ...DEFAULT_TEXT_STYLE, direction: "horizontal", color: "#ffffff", outlineColor: "#000000", outlineWidth: 0.18,
+        size: DEFAULT_TEXT_STYLE.size * AUTO_LAYOUT_SFX_FONT_SCALE * (item.fontScale ?? 1) }
     },
     sourceDialogueLineId: item.lineId
   };
@@ -440,7 +441,7 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
   const orderedPanels = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
   const panelBoundsList = orderedPanels.map((panel) => panelBounds(panel.shape));
 
-  const obstacles: Box[] = existingObjects.map((object) => {
+  const obstacles: Box[] = existingObjects.filter((object) => !object.id.startsWith("effect:")).map((object) => {
     const size = object.kind === "text" ? estimateTextObjectSize(object) : object.size;
     return inflate(boxFromCenterSize(object.position, size, object.rotation), 0.006);
   });

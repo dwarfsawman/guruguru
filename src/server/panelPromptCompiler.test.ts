@@ -99,4 +99,13 @@ describe("compilePanelPrompt", () => {
     expect(result.positive).not.toContain("rain");
     expect(result.negative).toContain("rain");
   });
+
+  test("tags dialect translates source-language visual facts and does not invent characters for an empty cast", () => {
+    const empty = { ...panel, cast: [], promptBase: "漆黒の宇宙。砕けた人工衛星。白い人型機動兵器。" };
+    const result = compilePanelConditioning({ panel: empty, basePrompt: empty.promptBase, entities: [], dialogueById: new Map(), dialect: "tags" });
+    expect(result.positive).toMatch(/outer space/);
+    expect(result.positive).toMatch(/broken satellite debris/);
+    expect(result.positive).toMatch(/white humanoid mecha/);
+    expect(result.positive).not.toMatch(/[\u3040-\u30ff\u3400-\u9fff]|0characters/);
+  });
 });

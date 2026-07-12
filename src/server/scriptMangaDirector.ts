@@ -10,6 +10,7 @@ import {
 } from "../shared/scriptMangaPlan";
 import { generateStructuredJson } from "./llmStructured";
 import { getLlmSettings } from "./llm";
+import { applyPageNaming, PAGE_NAMING_SCHEMA } from "./scriptMangaPageNaming";
 
 interface DirectedPanel {
   id: string;
@@ -173,10 +174,32 @@ function speakerNames(doc: FountainDoc): string[] {
  * 台詞対応とページ/コマ数は変更させないため、全発話保持の既存保証は維持される。
  */
 export async function planScriptMangaWithDirector(doc: FountainDoc, options: ScriptMangaPlanOptions = {}): Promise<ScriptMangaPlan> {
-  const base = planScriptManga(doc, options);
+  const deterministicBase = planScriptManga(doc, options);
   const settings = getLlmSettings();
   const fixedIdentity = options.characterBible?.trim() ?? "";
   const sceneBibles = deriveSceneBibles(doc, "director-input").map((bible, sceneIndex) => ({ sceneIndex, set: bible.set, lighting: bible.lighting, palette: bible.palette }));
+  const targetPageCount = Math.max(1, Math.trunc(options.targetPageCount ?? Math.max(deterministicBase.pages.length, deterministicBase.dialogueCount / 5)));
+  let base = deterministicBase;
+  let pageNamingProvenance: { rawOutput: string; messages: Array<{ role: string; content: string }>; fallback: boolean } | undefined;
+  try {
+    const sourcePanels = deterministicBase.pages.flatMap((page) => page.panels).map((panel) => ({
+      id: panel.id, sceneIndex: panel.sceneIndex, sourceElementIds: panel.sourceElementIds,
+      dialogueOrderIndexes: panel.dialogueOrderIndexes, source: panel.sourceText
+    }));
+    const named = await generateStructuredJson<ScriptMangaPlan>({
+      settings,
+      systemPrompt: "You are the N1 manga page-naming editor. Preserve every sourcePanelId exactly once and in order. Never combine scenes. Use 1-6 panels per page; splash means one panel on its page. Design page turns and hero beats.",
+      userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Source panels: ${JSON.stringify(sourcePanels)}`,
+      schema: PAGE_NAMING_SCHEMA,
+      validate: (raw) => applyPageNaming(raw, deterministicBase, targetPageCount),
+      temperature: 0.3,
+      timeoutMs: 180000
+    });
+    base = named.value;
+    pageNamingProvenance = { rawOutput: named.rawOutput, messages: named.messages, fallback: false };
+  } catch (error) {
+    pageNamingProvenance = { rawOutput: error instanceof Error ? error.message : String(error), messages: [], fallback: true };
+  }
   const batches: ScriptMangaPagePlan[][] = [];
   const provenanceBatches: Array<{ rawOutput: string; messages: Array<{ role: string; content: string }> }> = [];
   for (let offset = 0; offset < base.pages.length; offset += 4) batches.push(base.pages.slice(offset, offset + 4));
@@ -216,7 +239,8 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
     plannerProvenance: {
       kind: "llm-director",
       model: settings.model,
-      batches: provenanceBatches
+      batches: provenanceBatches,
+      pageNaming: pageNamingProvenance
     }
   };
 }

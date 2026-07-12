@@ -58,8 +58,8 @@ export function nextScriptMangaSettings(
     if (!Number.isFinite(parsed)) return current;
     return { ...current, panelsPerPage: Math.min(6, Math.max(1, Math.trunc(parsed))) };
   }
-  if (field === "dialoguePolicy" && rawValue === "preserve") {
-    return { ...current, dialoguePolicy: "preserve" };
+  if (field === "dialoguePolicy" && (rawValue === "preserve" || rawValue === "adapt" || rawValue === "fill")) {
+    return { ...current, dialoguePolicy: rawValue, panelsPerPage: rawValue === "preserve" ? current.panelsPerPage : Math.min(current.panelsPerPage, 2) };
   }
   if (field === "auditMode" && (rawValue === "manual" || rawValue === "vlm")) {
     return { ...current, auditMode: rawValue };
@@ -153,10 +153,6 @@ async function prepareRun(): Promise<void> {
   }
   if (!settings.templateId) {
     pushToast("画像生成workflow templateを選択してください。", "error");
-    return;
-  }
-  if (settings.dialoguePolicy !== "preserve") {
-    pushToast("現在の一括生成はdialogue policy preserveのみ対応しています。", "error");
     return;
   }
   const serial = beginOperation();

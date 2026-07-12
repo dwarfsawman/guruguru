@@ -30,10 +30,12 @@ test("nextScriptMangaSettings applies supported template, planner and panel cont
   assert.equal(nextScriptMangaSettings(settings, "auditMode", "vlm").auditMode, "vlm");
 });
 
-test("nextScriptMangaSettings keeps unsupported values and future dialogue policies disabled", () => {
+test("nextScriptMangaSettings enables provenance-safe policies and keeps unsupported values disabled", () => {
   assert.equal(nextScriptMangaSettings(settings, "planningMode", "provided"), settings);
   assert.equal(nextScriptMangaSettings(settings, "panelsPerPage", "not-a-number"), settings);
-  assert.equal(nextScriptMangaSettings(settings, "dialoguePolicy", "adapt"), settings);
+  assert.deepEqual(nextScriptMangaSettings(settings, "dialoguePolicy", "adapt"), { ...settings, dialoguePolicy: "adapt", panelsPerPage: 2 });
+  assert.deepEqual(nextScriptMangaSettings(settings, "dialoguePolicy", "fill"), { ...settings, dialoguePolicy: "fill", panelsPerPage: 2 });
+  assert.equal(nextScriptMangaSettings(settings, "dialoguePolicy", "generate"), settings);
   assert.equal(nextScriptMangaSettings(settings, "dialoguePolicy", "preserve").dialoguePolicy, "preserve");
   assert.equal(nextScriptMangaSettings(settings, "auditMode", "automatic"), settings);
 });

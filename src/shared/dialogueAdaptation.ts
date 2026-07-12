@@ -10,6 +10,8 @@ export interface DialogueUnit {
   text: string;
   semanticKind: DialogueSemanticKind;
   balloonStyle: DialogueBalloonStyle;
+  intensity?: "low" | "medium" | "high";
+  placement?: "panel-center" | "edge" | "background";
 }
 
 function normalized(text: string): string {
@@ -24,7 +26,7 @@ export function splitDialogueUnits(input: {
   balloonStyle: DialogueBalloonStyle;
   maxChars?: number;
 }): DialogueUnit[] {
-  const maxChars = Math.max(12, input.maxChars ?? 30);
+  const maxChars = Math.max(8, input.maxChars ?? 12);
   const phrases = input.text.match(/[^、。！？!?]+[、。！？!?]?|[、。！？!?]+/gu) ?? [input.text];
   const parts: string[] = [];
   let current = "";
@@ -72,6 +74,16 @@ export function extractFillUnits(doc: FountainDoc, sourceId: (sceneIndex: number
         const sourceElementId = sourceId(sceneIndex, elementIndex);
         units.push({ id: `fill:${sourceElementId}:${matchIndex++}`, sourceElementId, part: 1, of: 1,
           text, semanticKind: "narration", balloonStyle: "monitor" });
+      }
+      const effects: Array<[RegExp, string, DialogueUnit["intensity"]]> = [
+        [/(?:大爆発|爆発)/u, "ドカーン", "high"], [/(?:砲撃|発砲|銃声)/u, "ズガン", "high"],
+        [/(?:衝突|激突)/u, "ガン", "medium"], [/(?:警報|アラーム)/u, "ビーッ", "medium"]
+      ];
+      for (const [pattern, text, intensity] of effects) {
+        if (!pattern.test(element.text)) continue;
+        const sourceElementId = sourceId(sceneIndex, elementIndex);
+        units.push({ id: `sfx:${sourceElementId}:${text}`, sourceElementId, part: 1, of: 1, text,
+          semanticKind: "sfx", balloonStyle: "sfx", intensity, placement: "panel-center" });
       }
     });
   });

@@ -9,6 +9,7 @@ import { serveStatic } from "./files";
 import { HttpError, readBuffer, readJson, sendJson } from "./http";
 import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
 import { createTemplate, deleteTemplate, listTemplates, updateTemplatePromptProfile } from "./templates";
+import { adoptCharacterSheetAsset, createCharacterSheetRun } from "./characterSheets";
 import { serveAssetFile, updateAssetStatus } from "./assets";
 import { createProject, deleteProject, getProjectDetail, listProjects } from "./projects";
 import {
@@ -703,6 +704,18 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   if (method === "PUT" && characterBindingMatch) {
     sendJson(res, 200, await putCharacterBinding(characterBindingMatch[1]!, characterBindingMatch[2]!, await readJson(req)));
+    return;
+  }
+
+  const characterSheetMatch = path.match(/^\/api\/characters\/([^/]+)\/character-sheet$/);
+  if (method === "POST" && characterSheetMatch) {
+    sendJson(res, 202, await createCharacterSheetRun(characterSheetMatch[1]!, await readJson(req)));
+    return;
+  }
+  const characterSheetAdoptMatch = path.match(/^\/api\/characters\/([^/]+)\/character-sheet\/adopt$/);
+  if (method === "POST" && characterSheetAdoptMatch) {
+    const input = await readJson(req) as Record<string, unknown>;
+    sendJson(res, 200, await adoptCharacterSheetAsset(characterSheetAdoptMatch[1]!, String(input.assetId ?? ""), String(input.providerId ?? "comfy")));
     return;
   }
 

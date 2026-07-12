@@ -383,8 +383,8 @@ export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps)
           <span>dialogue policy</span>
           <select data-script-manga-setting="dialoguePolicy" ${props.scriptMangaBusy ? "disabled" : ""}>
             <option value="preserve" ${settings.dialoguePolicy === "preserve" ? "selected" : ""}>preserve（原文維持）</option>
-            <option value="adapt" disabled>adapt（今後対応）</option>
-            <option value="fill" disabled>fill（今後対応）</option>
+            <option value="adapt" ${settings.dialoguePolicy === "adapt" ? "selected" : ""}>adapt（原文一致の呼吸分割）</option>
+            <option value="fill" ${settings.dialoguePolicy === "fill" ? "selected" : ""}>fill（分割＋caption/monitor/SFX）</option>
             <option value="generate" disabled>generate（今後対応）</option>
           </select>
         </label>

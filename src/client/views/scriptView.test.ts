@@ -104,7 +104,9 @@ test("script manga card renders supported controls and marks future dialogue pol
   assert.match(html, /data-script-manga-setting="panelsPerPage"/);
   assert.match(html, /value="6" selected/);
   assert.match(html, /value="preserve" selected/);
-  assert.match(html, /value="adapt" disabled>adapt（今後対応）/);
+  assert.match(html, /value="adapt" >adapt（原文一致の呼吸分割）/);
+  assert.match(html, /value="fill" >fill（分割＋caption\/monitor\/SFX）/);
+  assert.match(html, /value="generate" disabled>generate（今後対応）/);
   assert.match(html, /data-script-manga-setting="auditMode"/);
   assert.match(html, /VLM自動監査 → 人間レビュー/);
   assert.match(html, /ComfyUIモデルを解放してVLMへVRAMを入れ替え/);

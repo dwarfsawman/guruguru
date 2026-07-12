@@ -50,6 +50,7 @@ export interface ScriptMangaPlan {
       rawOutput: string;
       messages: Array<{ role: string; content: string }>;
     }>;
+    pageNaming?: { rawOutput: string; messages: Array<{ role: string; content: string }>; fallback: boolean };
   };
 }
 
@@ -61,6 +62,8 @@ export interface ScriptMangaPlanOptions {
   stylePrompt?: string;
   /** LLMネーム監督が全バッチへ再注入する人物固定票。決定的プランナーでは未使用。 */
   characterBible?: string;
+  /** N1ページネームの目標ページ数。省略時は発話量と決定的packerから算出。 */
+  targetPageCount?: number;
 }
 
 const DEFAULT_STYLE =

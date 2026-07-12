@@ -16,10 +16,14 @@ import type { ScriptMangaPlanView, ScriptMangaRunView, ScriptMangaTaskView } fro
 import type { DialogueBalloonStyle, DialogueSemanticKind } from "../shared/apiTypes";
 import { updateAssetStatus } from "./assets";
 import { constrainBalloonTailTipToBounds, initialBalloonTailTip } from "../shared/balloonTailAim";
+import { balloonContentMaxWidth, balloonInscribedFactor } from "../shared/balloonShape";
+import { CONTENT_PADDING_RATIO } from "../shared/pageObjects";
+import { computeTextLayoutForContent } from "./textLayoutApi";
 import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
 import { normalizePageObjects, type BalloonObject } from "../shared/pageObjects";
 import { splitDialogueUnits, type DialogueUnit } from "../shared/dialogueAdaptation";
 import { auditLettering } from "../shared/letteringQuality";
+import { createMangaEffectObjects } from "../shared/mangaEffects";
 import { fitPageBalloonText } from "./balloonTextFit";
 import { compilePanelConditioning } from "./panelPromptCompiler";
 import { inferPromptProfile } from "./templates";
@@ -351,11 +355,23 @@ function requireReadableBalloonText(pageId: string): void {
   const balloons = normalizePageObjects(row?.objects_json ? JSON.parse(row.objects_json) : []).filter(
     (object): object is BalloonObject => object.kind === "balloon"
   );
-  const tooSmall = balloons.filter((balloon) => balloon.content && balloon.content.style.size < SCRIPT_MANGA_MIN_FONT_SIZE);
+  const tooSmall: BalloonObject[] = [];
+  let adjusted = false;
+  for (const balloon of balloons) {
+    if (!balloon.content || balloon.content.style.size >= SCRIPT_MANGA_MIN_FONT_SIZE) continue;
+    const trial = { ...balloon.content, style: { ...balloon.content.style, size: SCRIPT_MANGA_MIN_FONT_SIZE } };
+    const layout = computeTextLayoutForContent(trial, balloonContentMaxWidth(balloon.shape, balloon.size, trial.style.direction));
+    const factor = balloonInscribedFactor(balloon.shape) * (1 - CONTENT_PADDING_RATIO);
+    const fits = layout.bbox.maxX - layout.bbox.minX <= balloon.size.x * factor + 1e-6 &&
+      layout.bbox.maxY - layout.bbox.minY <= balloon.size.y * factor + 1e-6;
+    if (fits) { balloon.content.style.size = SCRIPT_MANGA_MIN_FONT_SIZE; adjusted = true; }
+    else tooSmall.push(balloon);
+  }
+  if (adjusted) runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [JSON.stringify(normalizePageObjects(row?.objects_json ? JSON.parse(row.objects_json) : []).map((object) => balloons.find((balloon) => balloon.id === object.id) ?? object)), pageId]);
   if (tooSmall.length > 0) {
     throw new HttpError(
       422,
-      `Dialogue does not fit at the minimum readable size (${SCRIPT_MANGA_MIN_FONT_SIZE}); split dialogue or re-plan the page`
+      `Dialogue does not fit at the minimum readable size (${SCRIPT_MANGA_MIN_FONT_SIZE}); split dialogue or re-plan the page: ${tooSmall.map((balloon) => `${balloon.sourceDialogueLineId ?? balloon.id}(${Array.from(balloon.content?.text ?? "").length} chars)`).join(", ")}`
     );
   }
 }
@@ -597,12 +613,13 @@ function ensureDialogueLettering(
           if (units.length > 1) {
             runSql("DELETE FROM dialogue_placements WHERE id = ?", [existing[0]!.id]);
             for (const unit of units) {
+              const unitPanel = layoutPanels[Math.min(layoutPanels.length - 1, index + unit.part - 1)] ?? layoutPanel;
               runSql(
                 `INSERT INTO dialogue_placements
                    (id, line_id, page_id, panel_id, part_index, render_kind, balloon_object_id, text_override,
                     semantic_kind_override, speaker_label_override, order_index_override)
                  VALUES (?, ?, ?, ?, ?, 'balloon', NULL, ?, ?, ?, ?)`,
-                [createId("place"), lineId, pageId, layoutPanel.id, unit.part - 1, unit.text, unit.semanticKind,
+                [createId("place"), lineId, pageId, unitPanel.id, unit.part - 1, unit.text, unit.semanticKind,
                   snapshot.speakerLabel, snapshot.orderIndex * 100 + unit.part]
               );
             }
@@ -740,6 +757,16 @@ function materializeRun(runId: string): void {
     const layoutPanels = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
     if (layoutPanels.length !== pageSpec.panels.length) {
       throw new HttpError(422, `Layout ${pageSpec.layoutTemplateId} has ${layoutPanels.length} panels but plan requires ${pageSpec.panels.length}`);
+    }
+    const pageObjectRow = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
+    const existingPageObjects = normalizePageObjects(pageObjectRow?.objects_json ? JSON.parse(pageObjectRow.objects_json) : []);
+    const existingObjectIds = new Set(existingPageObjects.map((object) => object.id));
+    const effectObjects = pageSpec.panels.flatMap((panel, index) => createMangaEffectObjects(panel, layoutPanels[index]!))
+      .filter((object) => !existingObjectIds.has(object.id));
+    if (effectObjects.length > 0) {
+      runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+        JSON.stringify([...existingPageObjects, ...effectObjects]), pageId
+      ]);
     }
     ensureDialogueLettering(run, pageId, pageSpec, layoutPanels, dialogueSnapshots, plan.dialoguePolicy,
       new Map((plan.fillUnits ?? []).map((unit) => [unit.id, unit])));
@@ -1101,7 +1128,7 @@ async function performRunVisualAudit(runId: string): Promise<void> {
       }
       try {
         const deterministicReports = [];
-        for (const assetId of assetIds) deterministicReports.push(await safeDeterministicQuality(assetId));
+        for (const assetId of assetIds) deterministicReports.push(await safeDeterministicQuality(assetId, panel.cast.map((member) => member.characterId)));
         const budget = parseJson<{ maxAttemptsPerPanel?: number }>(run.generation_budget_json, {});
         if (deterministicReports.every((report) => !report.passed) && task.attempt_count < (budget.maxAttemptsPerPanel ?? 3)) {
           const previous = parseJson<Record<string, unknown>>(task.scores_json, {});
@@ -1178,13 +1205,13 @@ async function performRunDeterministicAudit(runId: string): Promise<void> {
   if (rerollTaskIds.length > 0) await submitTasks(runId, rerollTaskIds);
 }
 
-async function safeDeterministicQuality(assetId: string) {
+async function safeDeterministicQuality(assetId: string, characterIds: string[] = []) {
   try {
-    return await evaluateDeterministicPanelQuality(assetId);
+    return await evaluateDeterministicPanelQuality(assetId, characterIds);
   } catch (error) {
     return {
       assetId, passed: true,
-      metrics: { luminanceStdDev: 0, saturationMean: 0, edgeDensity: 0, pseudoTextRisk: 0 },
+      metrics: { luminanceStdDev: 0, saturationMean: 0, edgeDensity: 0, pseudoTextRisk: 0, ocrTokens: [], identitySimilarity: null },
       violations: [`gate-unavailable: ${error instanceof Error ? error.message : String(error)}`]
     };
   }
@@ -1274,6 +1301,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
   const planOptions: ScriptMangaPlanOptions = {
     panelsPerPage: typeof input.panelsPerPage === "number" ? input.panelsPerPage : 4,
     maxElementsPerPanel: typeof input.maxElementsPerPanel === "number" ? input.maxElementsPerPanel : 6,
+    targetPageCount: typeof input.targetPageCount === "number" ? input.targetPageCount : undefined,
     maxDialoguesPerPanel: typeof input.maxDialoguesPerPanel === "number" ? input.maxDialoguesPerPanel : 2,
     stylePrompt: stringOr(input.stylePrompt, "") || undefined
   };
@@ -1290,6 +1318,11 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
   }
   const auditMode = input.auditMode === "vlm" ? "vlm" : "manual";
   const dialoguePolicy = parseDialoguePolicy(input.dialoguePolicy);
+  if ((dialoguePolicy === "adapt" || dialoguePolicy === "fill") && input.panelsPerPage === undefined) {
+    // 分割unitを可読サイズで置けるよう、既定packerも呼吸単位向けの大きめコマへ切り替える。
+    planOptions.panelsPerPage = 2;
+    if (input.maxDialoguesPerPanel === undefined) planOptions.maxDialoguesPerPanel = 1;
+  }
   const revision = latestRevision(scriptId);
   const fullPlan = planningMode === "llm"
     ? await planScriptMangaWithDirector(revision.doc, { ...planOptions, characterBible: stringOr(input.characterBible, "") || undefined })

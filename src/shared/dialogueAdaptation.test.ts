@@ -12,8 +12,9 @@ test("adapt分割は呼吸単位に分け、連結すると原文へ完全一致
 });
 
 test("fillはscene headingとactionの《monitor》を決定的抽出する", () => {
-  const doc = parseFountain("INT. COCKPIT - NIGHT\n\nモニターに《同期率 98.7%》が点滅する。").doc;
+  const doc = parseFountain("INT. COCKPIT - NIGHT\n\nモニターに《同期率 98.7%》が点滅し、大爆発が起きる。").doc;
   const units = extractFillUnits(doc, (scene, element) => `source:r:${scene}:${element}`);
   assert.equal(units[0]!.balloonStyle, "caption");
   assert.deepEqual(units.filter((unit) => unit.balloonStyle === "monitor").map((unit) => unit.text), ["同期率 98.7%"]);
+  assert.deepEqual(units.filter((unit) => unit.balloonStyle === "sfx").map((unit) => unit.text), ["ドカーン"]);
 });
