@@ -16,6 +16,58 @@ function speechAct(line: StoryGraphDialogueInput): string {
   return "speaking naturally";
 }
 
+function stripDialogueFromVisualFact(text: string, dialogueById: Map<string, StoryGraphDialogueInput>): string {
+  let result = text;
+  for (const line of dialogueById.values()) {
+    const wording = line.text.trim();
+    if (wording) result = result.replaceAll(wording, "");
+  }
+  return result
+    .replace(/[「『《][^」』》]*[」』》]/gu, "")
+    .replace(/(?:communication|dialogue|caption|monitor|screen|text)\s*[:=]\s*[^.;]+/giu, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*([,.;])\s*\1+/g, "$1")
+    .trim();
+}
+
+function compileProvidedVisualFacts(input: {
+  panel: PanelSpec;
+  basePrompt: string;
+  entities: NarrativeEntity[];
+  dialogueById: Map<string, StoryGraphDialogueInput>;
+}): string {
+  const entityById = new Map(input.entities.map((entity) => [entity.id, entity]));
+  const parts = [input.basePrompt.trim()];
+  if (!/\b(?:extreme[- ]wide|wide|long|full|medium|close[- ]?up|insert)\s+shot\b/iu.test(input.basePrompt)) {
+    parts.push(`${input.panel.shot.size} shot`);
+  }
+  const angle = input.panel.shot.angle?.trim();
+  if (angle && !/\b(?:eye[- ]level|low|high|dutch|overhead|bird(?:'s)?[- ]eye)\b/iu.test(input.basePrompt)) {
+    parts.push(angle);
+  }
+  for (const member of input.panel.cast) {
+    const entity = entityById.get(member.characterId);
+    parts.push([
+      entity?.name || "character",
+      entity?.attributes.description?.trim() || "",
+      member.action,
+      member.expression ? `${member.expression} expression` : "",
+      member.pose || "",
+      `in the ${regionName(member.bbox)}`
+    ].filter(Boolean).join(", "));
+  }
+  for (const item of input.panel.mustShow) {
+    const fact = stripDialogueFromVisualFact(item.description, input.dialogueById);
+    if (fact) parts.push(`must show: ${fact}`);
+  }
+  for (const item of input.panel.mustNotShow) {
+    const fact = stripDialogueFromVisualFact(item.description, input.dialogueById);
+    if (fact) parts.push(`must not show: ${fact}`);
+  }
+  parts.push("one coherent moment, single concrete scene, clearly recognizable subjects, consistent character design, no text, no letters, no speech bubbles, no watermark");
+  return parts.filter(Boolean).join(". ").replace(/\s+/g, " ").trim();
+}
+
 /**
  * Compiles visual facts only. Dialogue wording remains in the lettering layer and is represented
  * here as speech act / mouth state, preventing diffusion models from trying to draw the script.
@@ -29,9 +81,7 @@ export function compilePanelPrompt(input: {
   narrativeMetadata?: "append" | "english-directed" | "base-only";
 }): string {
   if (input.narrativeMetadata === "base-only") {
-    return `${input.basePrompt.trim()}. ${input.panel.shot.size} shot. ${input.panel.shot.angle || "eye-level angle"}. one coherent moment, consistent character design, readable silhouettes, no text, no letters, no speech bubbles, no watermark`
-      .replace(/\s+/g, " ")
-      .trim();
+    return compileProvidedVisualFacts(input);
   }
   if (input.narrativeMetadata === "english-directed") {
     const parts = [input.basePrompt.trim()];

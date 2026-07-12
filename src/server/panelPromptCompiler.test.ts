@@ -59,17 +59,36 @@ describe("compilePanelPrompt", () => {
     expect(result).toContain("waving a hand");
   });
 
-  test("provided mode keeps an English prompt free of source-language metadata", () => {
+  test("provided mode restores concrete panel facts instead of using only a scene-level prompt", () => {
     const result = compilePanelPrompt({
       panel,
-      basePrompt: "A red-haired pilot braces inside a damaged cockpit",
+      basePrompt: "A red-haired pilot braces inside a damaged cockpit, wide shot",
       entities: [entity],
       dialogueById: new Map(),
       narrativeMetadata: "base-only"
     });
 
-    expect(result).toContain("A red-haired pilot braces inside a damaged cockpit");
-    expect(result).not.toContain("waving a hand");
-    expect(result).not.toMatch(/[\u3040-\u30ff\u3400-\u9fff]/u);
+    expect(result).toContain("A red-haired pilot braces inside a damaged cockpit, wide shot");
+    expect(result).toContain("waving a hand");
+    expect(result).toContain("must show: waving a hand");
+    expect(result).not.toContain("medium shot");
+  });
+
+  test("provided mode removes dialogue wording from restored visual facts", () => {
+    const dialoguePanel = structuredClone(panel);
+    dialoguePanel.mustShow = [{ kind: "action", description: "警告灯のコックピット。通信「もう戦わなくていい」" }];
+    const result = compilePanelPrompt({
+      panel: dialoguePanel,
+      basePrompt: "A wounded pilot braces inside a damaged cockpit",
+      entities: [entity],
+      dialogueById: new Map([["line-1", {
+        id: "line-1", orderIndex: 0, sceneIndex: 0, characterId: entity.id,
+        speakerLabel: "Akari", text: "もう戦わなくていい", semanticKind: "dialogue"
+      }]]),
+      narrativeMetadata: "base-only"
+    });
+
+    expect(result).toContain("警告灯のコックピット");
+    expect(result).not.toContain("もう戦わなくていい");
   });
 });

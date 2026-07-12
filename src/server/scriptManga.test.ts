@@ -191,6 +191,13 @@ test("VLM audit scores generated candidates and still requires a human selection
     assert.equal(scores.vlmAudit?.reports?.[0]?.model, "mock-vlm");
     const persisted = getRow<{ scores_json: string }>("SELECT scores_json FROM script_manga_tasks WHERE id = ?", [queued.tasks[0]!.id])!.scores_json;
     assert.doesNotMatch(persisted, /data:image|base64|thumbnail/i);
+    const rejectedScores = JSON.parse(persisted);
+    rejectedScores.vlmAudit.reports[0].passed = false;
+    runSql("UPDATE script_manga_tasks SET scores_json = ? WHERE id = ?", [JSON.stringify(rejectedScores), queued.tasks[0]!.id]);
+    assert.throws(
+      () => selectScriptMangaTaskCandidate(queued.tasks[0]!.id, { assetId: audited.tasks[0]!.candidateAssetIds[0]! }),
+      /failed VLM audit/
+    );
   } finally {
     server.stop(true);
     setSetting("vlm_audit", defaultVlmAuditSettings);

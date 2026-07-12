@@ -1394,11 +1394,25 @@ export async function retryScriptMangaTask(taskId: string): Promise<ScriptMangaR
 
 export function selectScriptMangaTaskCandidate(taskId: string, body: unknown): ScriptMangaRunView {
   const task = requireTask(taskId);
+  const run = requireRun(task.run_id);
   const input = objectBody(body);
   const assetId = requiredString(input.assetId, "assetId");
   if (task.status !== "awaiting_review") throw new HttpError(409, "Task is not awaiting candidate review");
   const candidates = parseJson<string[]>(task.candidate_asset_ids_json, []);
   if (!candidates.includes(assetId)) throw new HttpError(400, "Asset is not in the persisted candidate set");
+  if (parseConfig(run).auditMode === "vlm") {
+    const scores = parseJson<{ vlmAudit?: { state?: string; reports?: Array<{ assetId?: string; passed?: boolean }> } }>(
+      task.scores_json,
+      {}
+    );
+    const report = scores.vlmAudit?.reports?.find((candidate) => candidate.assetId === assetId);
+    if (scores.vlmAudit?.state !== "completed" || !report) {
+      throw new HttpError(409, "The selected candidate must complete VLM audit before selection");
+    }
+    if (report.passed !== true) {
+      throw new HttpError(409, "The selected candidate failed VLM audit; repair or regenerate this panel");
+    }
+  }
   selectTaskCandidateInternal(task, assetId);
   return runView(refreshRunStatus(task.run_id));
 }
