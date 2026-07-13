@@ -63,12 +63,35 @@ export interface DialogueAutoLayoutObstacle {
   rotation: number;
 }
 
+/**
+ * 吹き出しを被せたくない領域(page 座標の矩形)。自動漫画では plan の cast bbox から推定した
+ * 顔領域(頭部)や、コマぶち抜き立ち絵の全身領域を渡す。障害物(existingObjects)との違いは
+ * 「まず避けて探し、どうしても置けない時だけ警告付きで緩和する」二段制約であること --
+ * ハード障害物にすると preserve 台詞の長文がコマへ全く入らなくなるため。
+ */
+export interface DialogueAvoidZone {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** 警告文言などの表示用(例: "顔", "立ち絵")。 */
+  label?: string;
+}
+
 export interface DialogueAutoLayoutInput {
   layout: PageLayout;
   /** 既存 PageObject(障害物として扱う。ロック済み balloon もここに含まれる想定)。 */
   existingObjects: readonly PageObject[];
   items: DialogueAutoLayoutItem[];
   seed: number;
+  /** 吹き出しを被せたくない領域(顔・立ち絵など)。未指定なら従来と完全に同じ挙動。 */
+  avoidZones?: readonly DialogueAvoidZone[];
+  /**
+   * コマ外接矩形の面積に対する「そのコマに置く吹き出し等の合計面積」の上限(0..1)。
+   * 超える配置はまず避け、後続コマへのフォールバックでも収まらない場合のみ警告付きで緩和する。
+   * 未指定なら無制限(従来挙動)。
+   */
+  maxPanelCoverageRatio?: number;
 }
 
 export interface DialogueAutoLayoutAssignment {
@@ -290,11 +313,21 @@ interface CandidateSearchArgs {
   insidePanelCheck?: (point: [number, number]) => boolean;
   avoidPanelBoxes?: [number, number, number, number][]; // narration: コマの上に極力置かない
   anchorHint?: PageVec | null; // 同一話者近接ボーナスの基準点
+  /** 顔・立ち絵などの回避領域。avoidHard=true なら重なる候補を除外、false ならスコア減点のみ。 */
+  avoidZones?: Box[];
+  avoidHard?: boolean;
   random: () => number;
 }
 
+/** 矩形同士の重なり面積(重ならなければ 0)。 */
+function overlapArea(a: Box, b: Box): number {
+  return (
+    Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0)) * Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0))
+  );
+}
+
 function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
-  const { bounds, size, direction, obstacles, pageBounds, insidePanelCheck, avoidPanelBoxes, anchorHint, random } = args;
+  const { bounds, size, direction, obstacles, pageBounds, insidePanelCheck, avoidPanelBoxes, anchorHint, avoidZones, avoidHard, random } = args;
   const margin = Math.max(0.006, Math.min(bounds[2] - bounds[0], bounds[3] - bounds[1]) * 0.04);
   const minX = bounds[0] + margin + size.x / 2;
   const maxX = bounds[2] - margin - size.x / 2;
@@ -328,10 +361,27 @@ function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
       if (obstacles.some((obstacle) => boxesOverlap(candidateBox, obstacle))) {
         continue;
       }
+      // 回避領域(顔・立ち絵): strict パスでは重なる候補を候補から外す。relax パスでは
+      // 重なり面積比に応じた強い減点(上部優先スコアの振れ幅 2 を上回る 6)で「なるべく外す」。
+      let avoidPenalty = 0;
+      if (avoidZones && avoidZones.length > 0) {
+        const candidateArea = Math.max(1e-9, size.x * size.y);
+        let overlapped = 0;
+        for (const zone of avoidZones) {
+          overlapped += overlapArea(candidateBox, zone);
+        }
+        if (overlapped > 0) {
+          if (avoidHard) {
+            continue;
+          }
+          avoidPenalty = 6 * Math.min(1, overlapped / candidateArea);
+        }
+      }
 
       // ソフト制約スコア: コマ上部優先(y が小さいほど高得点)、reading direction 優先方向、
       // avoidPanelBoxes との重なり回避(narration)、話者近接ボーナス、サイズが大きいほど微減点。
       let score = 0;
+      score -= avoidPenalty;
       score -= ty * 2; // 上部優先(row=0 が最上段)
       score -= effectiveTx * 0.3; // 走査方向を弱くスコアにも反映(同点になりすぎないように)
       if (avoidPanelBoxes) {
@@ -446,6 +496,32 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
     return inflate(boxFromCenterSize(object.position, size, object.rotation), 0.006);
   });
 
+  // 顔・立ち絵などの回避領域とコマ専有率上限。どちらも未指定なら従来と完全に同じ経路を通る
+  // (passes が [false] の1周だけになり、avoidZones も空なので PRNG の消費列も変わらない)。
+  const avoidZoneBoxes: Box[] = (input.avoidZones ?? [])
+    .filter((zone) => [zone.x, zone.y, zone.width, zone.height].every((value) => Number.isFinite(value)) && zone.width > 0 && zone.height > 0)
+    .map((zone) => ({ x0: zone.x, y0: zone.y, x1: zone.x + zone.width, y1: zone.y + zone.height }));
+  const coverageLimit =
+    typeof input.maxPanelCoverageRatio === "number" && Number.isFinite(input.maxPanelCoverageRatio)
+      ? Math.min(1, Math.max(0.05, input.maxPanelCoverageRatio))
+      : null;
+  const constraintsActive = avoidZoneBoxes.length > 0 || coverageLimit !== null;
+  const passes: boolean[] = constraintsActive ? [false, true] : [false];
+  const panelAreas = panelBoundsList.map(([x0, y0, x1, y1]) => Math.max(1e-9, (x1 - x0) * (y1 - y0)));
+  // 既存の吹き出し/キャプション(ロック済み等)もコマ専有率へ算入する(中心点の属するコマで近似)。
+  const coveredAreaByPanel = panelBoundsList.map(() => 0);
+  if (coverageLimit !== null) {
+    for (const object of existingObjects) {
+      if (object.kind !== "balloon" && object.kind !== "box") continue;
+      const index = panelBoundsList.findIndex(
+        ([x0, y0, x1, y1]) => object.position.x >= x0 && object.position.x <= x1 && object.position.y >= y0 && object.position.y <= y1
+      );
+      if (index >= 0) coveredAreaByPanel[index]! += Math.max(0, object.size.x * object.size.y);
+    }
+  }
+  const coverageAllows = (panelIdx: number, variant: PageVec): boolean =>
+    coverageLimit === null || coveredAreaByPanel[panelIdx]! + variant.x * variant.y <= coverageLimit * panelAreas[panelIdx]!;
+
   const distributed = distributeItemsToPanels(items, orderedPanels.length);
 
   const objects: PageObject[] = [];
@@ -493,29 +569,11 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
     let size: PageVec | null = null;
     let targetPanel: LayoutPanel | null = null;
     let anyVariantFitsPanelRatio = false;
+    let relaxedUsed = false;
 
     if (item.semanticKind === "narration") {
       // ページ全体候補(コマ非依存)。コマの上に極力被らないようスコアで回避する。
-      for (const variant of variants) {
-        const found = searchBestCandidate({
-          bounds: pageBounds,
-          size: variant,
-          direction: layout.readingDirection,
-          obstacles,
-          pageBounds,
-          avoidPanelBoxes: panelBoundsList,
-          anchorHint,
-          random
-        });
-        if (found) {
-          position = found;
-          size = variant;
-          break;
-        }
-      }
-    } else if (panelIndex === null || orderedPanels.length === 0) {
-      // dialogue/monologue はコマが無ければ配置不能。sfx はページ全体候補へフォールバックする。
-      if (allowsPageWideFallback) {
+      for (const relaxed of passes) {
         for (const variant of variants) {
           const found = searchBestCandidate({
             bounds: pageBounds,
@@ -525,13 +583,44 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
             pageBounds,
             avoidPanelBoxes: panelBoundsList,
             anchorHint,
+            avoidZones: avoidZoneBoxes,
+            avoidHard: !relaxed,
             random
           });
           if (found) {
             position = found;
             size = variant;
+            relaxedUsed = relaxed;
             break;
           }
+        }
+        if (position) break;
+      }
+    } else if (panelIndex === null || orderedPanels.length === 0) {
+      // dialogue/monologue はコマが無ければ配置不能。sfx はページ全体候補へフォールバックする。
+      if (allowsPageWideFallback) {
+        for (const relaxed of passes) {
+          for (const variant of variants) {
+            const found = searchBestCandidate({
+              bounds: pageBounds,
+              size: variant,
+              direction: layout.readingDirection,
+              obstacles,
+              pageBounds,
+              avoidPanelBoxes: panelBoundsList,
+              anchorHint,
+              avoidZones: avoidZoneBoxes,
+              avoidHard: !relaxed,
+              random
+            });
+            if (found) {
+              position = found;
+              size = variant;
+              relaxedUsed = relaxed;
+              break;
+            }
+          }
+          if (position) break;
         }
       }
       if (!position) {
@@ -554,95 +643,116 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
       const insidePanelCheck = (point: [number, number]) => pointInPanelShape(point, targetPanel!.shape);
       let placedPanelIndex = index;
 
-      for (const variant of variants) {
-        if (variant.x > panelWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || variant.y > panelHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
-          continue;
-        }
-        anyVariantFitsPanelRatio = true;
-        const found = searchBestCandidate({
-          bounds,
-          size: variant,
-          direction: layout.readingDirection,
-          obstacles,
-          pageBounds,
-          insidePanelCheck,
-          anchorHint,
-          random
-        });
-        if (found) {
-          position = found;
-          size = variant;
-          break;
-        }
-      }
-
-      if (!position && !allowsPageWideFallback && !hasPreferredPanel) {
-        // 担当コマに空きが無い場合のフォールバック: 発話順とコマ順の単調性(order_index 昇順で
-        // panelId のコマ順が逆転しない)を壊さない範囲で後続コマへの配置を試みる -- 探索範囲は
-        // 「直前に panel ベースで配置した発話のコマ index の次」以降、かつ「担当 index+2」まで。
-        // sfx は既存のページ全体フォールバック(担当コマ近傍優先)を維持するため対象外にする。
-        const fallbackStart = Math.max(index + 1, lastAssignedPanelIndex + 1);
-        const fallbackEnd = Math.min(orderedPanels.length - 1, index + 2);
-        for (let fbIndex = fallbackStart; fbIndex <= fallbackEnd && !position; fbIndex += 1) {
-          const fbPanel = orderedPanels[fbIndex];
-          const fbBounds = panelBoundsList[fbIndex];
-          if (!fbPanel || !fbBounds) {
+      // strict(回避領域=ハード除外・専有率上限あり)→ relax(回避領域=減点のみ・専有率無視)の
+      // 二段で探す。制約が無効(passes=[false])なら従来と同一の1周。
+      for (const relaxed of passes) {
+        for (const variant of variants) {
+          if (variant.x > panelWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || variant.y > panelHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
             continue;
           }
-          const [fbx0, fby0, fbx1, fby1] = fbBounds;
-          const fbWidth = Math.max(1e-6, fbx1 - fbx0);
-          const fbHeight = Math.max(1e-6, fby1 - fby0);
-          const fbInsidePanelCheck = (point: [number, number]) => pointInPanelShape(point, fbPanel.shape);
-          for (const variant of variants) {
-            if (variant.x > fbWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || variant.y > fbHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
-              continue;
-            }
-            anyVariantFitsPanelRatio = true;
-            const found = searchBestCandidate({
-              bounds: fbBounds,
-              size: variant,
-              direction: layout.readingDirection,
-              obstacles,
-              pageBounds,
-              insidePanelCheck: fbInsidePanelCheck,
-              anchorHint,
-              random
-            });
-            if (found) {
-              position = found;
-              size = variant;
-              targetPanel = fbPanel;
-              placedPanelIndex = fbIndex;
-              break;
-            }
+          anyVariantFitsPanelRatio = true;
+          if (!relaxed && !coverageAllows(index, variant)) {
+            continue;
           }
-        }
-      }
-
-      if (position) {
-        lastAssignedPanelIndex = placedPanelIndex;
-      }
-
-      if (!position && allowsPageWideFallback) {
-        // コマ内に入らなかった sfx は、担当コマ近傍を優先しつつページ全体から探す。
-        const panelCenter: PageVec = { x: (bx0 + bx1) / 2, y: (by0 + by1) / 2 };
-        for (const variant of variants) {
           const found = searchBestCandidate({
-            bounds: pageBounds,
+            bounds,
             size: variant,
             direction: layout.readingDirection,
             obstacles,
             pageBounds,
-            anchorHint: panelCenter,
+            insidePanelCheck,
+            anchorHint,
+            avoidZones: avoidZoneBoxes,
+            avoidHard: !relaxed,
             random
           });
           if (found) {
             position = found;
             size = variant;
-            targetPanel = null; // ページ全体配置扱い(コマ非依存)。
+            relaxedUsed = relaxed;
             break;
           }
         }
+
+        if (!position && !allowsPageWideFallback && !hasPreferredPanel) {
+          // 担当コマに空きが無い場合のフォールバック: 発話順とコマ順の単調性(order_index 昇順で
+          // panelId のコマ順が逆転しない)を壊さない範囲で後続コマへの配置を試みる -- 探索範囲は
+          // 「直前に panel ベースで配置した発話のコマ index の次」以降、かつ「担当 index+2」まで。
+          // sfx は既存のページ全体フォールバック(担当コマ近傍優先)を維持するため対象外にする。
+          const fallbackStart = Math.max(index + 1, lastAssignedPanelIndex + 1);
+          const fallbackEnd = Math.min(orderedPanels.length - 1, index + 2);
+          for (let fbIndex = fallbackStart; fbIndex <= fallbackEnd && !position; fbIndex += 1) {
+            const fbPanel = orderedPanels[fbIndex];
+            const fbBounds = panelBoundsList[fbIndex];
+            if (!fbPanel || !fbBounds) {
+              continue;
+            }
+            const [fbx0, fby0, fbx1, fby1] = fbBounds;
+            const fbWidth = Math.max(1e-6, fbx1 - fbx0);
+            const fbHeight = Math.max(1e-6, fby1 - fby0);
+            const fbInsidePanelCheck = (point: [number, number]) => pointInPanelShape(point, fbPanel.shape);
+            for (const variant of variants) {
+              if (variant.x > fbWidth * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO || variant.y > fbHeight * AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO) {
+                continue;
+              }
+              anyVariantFitsPanelRatio = true;
+              if (!relaxed && !coverageAllows(fbIndex, variant)) {
+                continue;
+              }
+              const found = searchBestCandidate({
+                bounds: fbBounds,
+                size: variant,
+                direction: layout.readingDirection,
+                obstacles,
+                pageBounds,
+                insidePanelCheck: fbInsidePanelCheck,
+                anchorHint,
+                avoidZones: avoidZoneBoxes,
+                avoidHard: !relaxed,
+                random
+              });
+              if (found) {
+                position = found;
+                size = variant;
+                targetPanel = fbPanel;
+                placedPanelIndex = fbIndex;
+                relaxedUsed = relaxed;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!position && allowsPageWideFallback) {
+          // コマ内に入らなかった sfx は、担当コマ近傍を優先しつつページ全体から探す。
+          const panelCenter: PageVec = { x: (bx0 + bx1) / 2, y: (by0 + by1) / 2 };
+          for (const variant of variants) {
+            const found = searchBestCandidate({
+              bounds: pageBounds,
+              size: variant,
+              direction: layout.readingDirection,
+              obstacles,
+              pageBounds,
+              anchorHint: panelCenter,
+              avoidZones: avoidZoneBoxes,
+              avoidHard: !relaxed,
+              random
+            });
+            if (found) {
+              position = found;
+              size = variant;
+              targetPanel = null; // ページ全体配置扱い(コマ非依存)。
+              relaxedUsed = relaxed;
+              break;
+            }
+          }
+        }
+
+        if (position) break;
+      }
+
+      if (position && targetPanel) {
+        lastAssignedPanelIndex = placedPanelIndex;
       }
 
       if (!position) {
@@ -684,6 +794,13 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
     objects.push(object);
     assignments.push({ placementId: item.placementId, panelId: targetPanel?.id ?? null, objectId });
     obstacles.push(inflate(boxFromCenterSize(position, size, 0), 0.006));
+    if (coverageLimit !== null && targetPanel) {
+      const coverageIndex = orderedPanels.indexOf(targetPanel);
+      if (coverageIndex >= 0) coveredAreaByPanel[coverageIndex]! += size.x * size.y;
+    }
+    if (relaxedUsed) {
+      warnings.push(`「${truncate(item.text)}」: 顔・立ち絵の回避/コマ専有率の制約を緩和して配置しました。`);
+    }
     placedCount += 1;
     if (item.speakerLabel) {
       lastPositionBySpeaker.set(item.speakerLabel, position);

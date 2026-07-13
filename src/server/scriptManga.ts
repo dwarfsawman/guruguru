@@ -141,6 +141,13 @@ const SCRIPT_MANGA_FONT_SCALE = 0.88;
 // export size while allowing the fitter's real glyph bbox to decide whether a
 // short line fits.
 const SCRIPT_MANGA_MIN_FONT_SIZE = 0.016;
+/**
+ * 自動レタリングでの「吹き出し等がコマ外接矩形を占有してよい面積比」の上限
+ * (Docs/Feature-MangaCompositions.md)。preserve の長台詞は relax パスで超過を許すが警告が残る。
+ */
+const SCRIPT_MANGA_MAX_BALLOON_COVERAGE = 0.45;
+/** plan の cast bbox から顔領域とみなす高さ比(bbox 上端からこの割合)。auditLettering と共有。 */
+const CAST_FACE_HEIGHT_RATIO = 0.38;
 const activeTaskSubmissions = new Set<string>();
 const activeAuditRuns = new Map<string, Promise<void>>();
 let visualAuditQueue: Promise<void> = Promise.resolve();
@@ -302,11 +309,54 @@ function removeUnusedStarterPage(projectId: string): void {
   }
 }
 
-function applyDialogueLayoutWithFallback(projectId: string, pageId: string, placementIds: string[], baseSeed: number): void {
+/**
+ * plan の cast bbox(コマ内正規化)を page 座標へ写像した回避領域を作る。head=true なら顔領域
+ * (bbox 上端から CAST_FACE_HEIGHT_RATIO)、false なら全身。ぶち抜き立ち絵スロット
+ * (layoutPanel.role === "figure")は吹き出しで隠したくないため全身を返す。
+ */
+function planCastAvoidZones(
+  pageSpec: MangaPlanV2["pages"][number],
+  layoutPanels: PageLayout["panels"]
+): Array<{ x: number; y: number; width: number; height: number; label?: string }> {
+  return pageSpec.panels.flatMap((panel, index) => {
+    const layoutPanel = layoutPanels[index];
+    if (!layoutPanel) return [];
+    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
+    const fullBody = layoutPanel.role === "figure";
+    return panel.cast.map((member) => ({
+      x: x0 + member.bbox.x * (x1 - x0),
+      y: y0 + member.bbox.y * (y1 - y0),
+      width: member.bbox.width * (x1 - x0),
+      height: member.bbox.height * (y1 - y0) * (fullBody ? 1 : CAST_FACE_HEIGHT_RATIO),
+      label: fullBody ? "立ち絵" : "顔"
+    }));
+  });
+}
+
+interface LetteringConstraints {
+  avoidZones: Array<{ x: number; y: number; width: number; height: number; label?: string }>;
+  maxPanelCoverageRatio: number;
+}
+
+function applyDialogueLayoutWithFallback(
+  projectId: string,
+  pageId: string,
+  placementIds: string[],
+  baseSeed: number,
+  constraints?: LetteringConstraints
+): void {
   let lastError: unknown;
+  const constraintBody = constraints
+    ? { avoidZones: constraints.avoidZones, maxPanelCoverageRatio: constraints.maxPanelCoverageRatio }
+    : {};
   for (let attempt = 0; attempt < 16; attempt += 1) {
     try {
-      applyDialogueLayout(projectId, pageId, { placementIds, seed: baseSeed * 100 + attempt, fontScale: SCRIPT_MANGA_FONT_SCALE });
+      applyDialogueLayout(projectId, pageId, {
+        placementIds,
+        seed: baseSeed * 100 + attempt,
+        fontScale: SCRIPT_MANGA_FONT_SCALE,
+        ...constraintBody
+      });
       return;
     } catch (error) {
       lastError = error;
@@ -322,7 +372,8 @@ function applyDialogueLayoutWithFallback(projectId: string, pageId: string, plac
           applyDialogueLayout(projectId, pageId, {
             placementIds: group,
             seed: baseSeed * 1000 + offset * 31 + attempt,
-            fontScale
+            fontScale,
+            ...constraintBody
           });
           placed = true;
           break;
@@ -709,7 +760,10 @@ function ensureDialogueLettering(
     [pageId, ...lineIds]
   ).map((row) => row.id);
   if (placementIds.length > 0) {
-    applyDialogueLayoutWithFallback(run.project_id, pageId, placementIds, pageSpec.index + 1);
+    applyDialogueLayoutWithFallback(run.project_id, pageId, placementIds, pageSpec.index + 1, {
+      avoidZones: planCastAvoidZones(pageSpec, layoutPanels),
+      maxPanelCoverageRatio: SCRIPT_MANGA_MAX_BALLOON_COVERAGE
+    });
     fitPageBalloonText(run.project_id, pageId);
     aimInitialBalloonTails(pageId);
   }
@@ -724,7 +778,7 @@ function ensureDialogueLettering(
       x: x0 + member.bbox.x * (x1 - x0),
       y: y0 + member.bbox.y * (y1 - y0),
       width: member.bbox.width * (x1 - x0),
-      height: member.bbox.height * (y1 - y0) * 0.38
+      height: member.bbox.height * (y1 - y0) * CAST_FACE_HEIGHT_RATIO
     }));
   });
   const letteringReport = auditLettering(pageSpec.layoutSnapshot, objects, faceBoxes);
