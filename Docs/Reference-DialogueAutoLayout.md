@@ -154,7 +154,78 @@ strict → relax の二段探索になる。
 - 同一行への PageObject 重複作成をしない(1発話=1オブジェクト、途中で失敗したら unplaced のまま次の発話へ)。
 - コマ順(reading direction)と発話順(order_index)を逆転させない(§4 の配分 + §6-2 のフォールバック範囲制限で担保)。
 
-## 11. 関連ファイル
+## 12. MangaPlanV2(script-manga)経路の最小可読サイズ落とし穴
+
+自動漫画の一括レタリング(`ensureDialogueLettering` → `applyDialogueLayoutWithFallback`、
+`src/server/scriptManga.ts:344-392`)は、本ファイルのソルバーとは別に**プレースメント後の追加ゲート**
+(`requireReadableBalloonText`、`scriptManga.ts:417-441`)を持つ。`planningMode:"provided"` で
+1コマに複数の発話(`dialogueOrderIndexes.length >= 2`)を割り当てて手作りすると、ここで
+`run` 作成全体が **422「Dialogue does not fit at the minimum readable size (0.016);
+split dialogue or re-plan the page: line_...(N chars)」** で失敗することがある。ALICE_REBOOT_E02
+の375コマ・provided plan 構築時に実際に踏んだ不具合と、その予測・自動修復手順を記録する。
+
+### 12.1 何が起きているか
+
+1. `applyDialogueLayoutWithFallback` はまずコマ内の全発話を1バッチとして `fontScale=0.88`
+   (`SCRIPT_MANGA_FONT_SCALE`、`scriptManga.ts:141`)で16回試す。失敗すると**発話1件ずつ**に切り替え、
+   配列順に `[0.88, 0.75, 0.62, 0.5, 0.42, 0.35]` の `fontScale` ラダーを個別に下げながら配置する
+   (`scriptManga.ts:369-391`)。
+2. 同じコマ内で**先に処理された発話が良い位置/サイズを取り**、後続の発話は残りスペースしか使えない。
+   後続発話が `fontScale=0.35` まで落ちることがあり、これは `0.04 * 0.35 = 0.014 < 0.016`
+   (`SCRIPT_MANGA_MIN_FONT_SIZE`、`scriptManga.ts:146`)。
+3. `requireReadableBalloonText` は `content.style.size < 0.016` のバルーンだけを対象に、
+   フォントを強制的に `0.016` へ引き上げて再度収まるか判定する(`scriptManga.ts:424-433`)。
+   しかしバルーンの外形は `preserveBalloonFontSize`(常時 true、`panel-prompt-v3.2` 経路)により
+   **小さいフォントぴったりの余白ゼロで確定済み**なので、引き上げ後の文字がまず収まらず失敗する。
+4. **短い発話ほど安全とは限らない**。縦書きは1コマ内で列高さが文字数にほぼ比例するため
+   (`estimateWrapWidth`、`dialogueAutoLayoutApi.ts:183-187`)、7文字程度の短文でも小さいコマ
+   (例: `builtin:three-hero-bottom` の setup 枠、0.45×0.43)ではバルーン高さがコマ高さの9割前後に
+   達し、先着の発話に押し出されて即座に下限割れする。
+5. エラーは**最初に見つかった1件だけ**を報告して run 作成全体を中断する(422、page/panel の特定情報なし)。
+   1つの provided plan に同種の違反が複数あっても1回のリクエストでは1件しか分からず、
+   「直して再送→次の1件が出る→また直す」を素朴に繰り返すと大きな plan では非現実的な回数になる。
+
+### 12.2 予測・自動修復の手順(このコマンドで再現できる)
+
+`requiredSizeVariantsFor` 相当のサイズ計算(`dialogueAutoLayoutApi.ts:201-237`)は DB 非依存で、
+実運用中のサーバーの `POST /api/text-layout`(`src/server/textLayoutApi.ts`)を呼べば実フォントの
+正確な bbox が得られる。これを使い、投げる前にローカルで全コマを検査できる。
+
+1. 各発話本文について `POST /api/text-layout` を `WRAP_HEIGHT_CAPS = [0.36, 0.28, 0.2]` の3候補で叩き、
+   `requiredSizeVariantsFor` と同じ式(`rawWidth/rawHeight` を `(1 - CONTENT_PADDING_RATIO) * balloonInscribedFactor(shape)`
+   で割り、`MIN_BALLOON_WIDTH=0.07`/`MIN_BALLOON_HEIGHT=0.06` で下限クランプ)でバルーンサイズを算出する。
+2. 対象コマの実寸(`src/shared/layoutPresets.ts` の各 builtin レイアウトの panel bounds を直接使う。
+   `four-grid` は 0.45×0.656044、`three-hero-bottom` の setup 枠は 0.45×0.43 など、レイアウトIDだけでなく
+   **スロットごとの実寸**を使わないと過小/過大評価する)に対して、
+   - いずれの候補も `width > panelWidth * 0.8` または `height > panelHeight * 0.8`
+     (`AUTO_LAYOUT_MAX_PANEL_SIZE_RATIO`、`dialogueAutoLayout.ts:33`)なら**単独でも収まらない**と判定。
+   - コマ内の全発話の(収まる候補の中で最小の)面積合計が `panelArea * 0.45`
+     (`SCRIPT_MANGA_MAX_BALLOON_COVERAGE`、`scriptManga.ts:151`)を超えるなら**共存で溢れる**と判定。
+3. 違反コマは次のいずれかで直す。
+   - **coverage 超過**(複数発話が同居): 1発話1コマへ分割し、ページのレイアウトを新しいコマ数の
+     既定レイアウトへ差し替える。
+   - **単独でも収まらない**: その発話だけを独立した `builtin:splash` ページへ昇格する(最も安全、
+     かつ重要な台詞を大ゴマ扱いする演出としても違和感が無い)。
+4. 分割/昇格は**新しいレイアウトの空きスロットが元より小さくなる**ことがあるため(例:
+   `four-grid` の1コマを割って5コマ化すると `builtin:five-panel` の小枠は `four-grid` の枠より
+   低い)、1回の修復で新たな違反が生まれ得る。**予測→修復→再予測を収束(違反0件)するまで反復する**
+   (ALICE_REBOOT_E02 では2周で収束)。
+5. 分割時は**その1発話だけの sourceText を作り直す**こと。元の複数発話ぶんの `sourceText` を
+   そのまま複製すると、他の発話の引用文中に含まれる別キャラクター名まで一緒に複製されてしまい、
+   `characterIdsForText`(`src/server/storyGraphBuilder.ts:189-194`、引用文かどうかを区別しない
+   単純な部分一致)経由で不在キャラクターが cast に紛れ込む副作用が出る。
+
+### 12.3 既定パイプライン(heuristic/LLM監督)への波及
+
+この最小可読サイズゲートと `fontScale` ラダーはプランニングモードを問わず `materializeRun` から
+常に通る(`scriptManga.ts` 内、provided/heuristic/llm 共通)。決定的プランナー(heuristic)は
+既定で `panelsPerPage=4`・`maxDialoguesPerPanel=2` かつ常に各コマ数の**先頭候補レイアウト**
+(`layoutForPanelCount`、`scriptMangaPlan.ts:106-110`)を選ぶため、上記の「小さいスロットに複数発話」
+が起きにくい組み合わせに寄っているだけで、原理的には同じ422を踏み得る。`planningMode:"provided"`
+で `builtin:three-hero-bottom`/`builtin:four-hero-bottom`/`builtin:five-panel`/`builtin:six-panel`
+のような不均等スロット・小スロットへ複数発話を意図的に置く場合は特に注意する。
+
+## 13. 関連ファイル
 
 - `src/shared/dialogueAutoLayout.ts` … 本体(純ロジック)。
 - `src/shared/dialogueAutoLayout.test.ts` … 単体テスト(RTL/LTR・重なり回避・サイズバリアント・
@@ -162,3 +233,7 @@ strict → relax の二段探索になる。
 - `src/server/dialogueAutoLayoutApi.ts` … サイズ計算結線・preview/apply/reflow・トランザクション。
 - `src/server/dialogueAutoLayoutApi.test.ts` … API 単位のテスト(ロールバック・上限・ロック除外・
   reflow のフォールバック回帰など)。
+- `src/server/scriptManga.ts` … `applyDialogueLayoutWithFallback`/`requireReadableBalloonText`
+  (§12 の script-manga 専用ゲート)、`SCRIPT_MANGA_FONT_SCALE`/`SCRIPT_MANGA_MIN_FONT_SIZE`/
+  `SCRIPT_MANGA_MAX_BALLOON_COVERAGE` の定数。
+- `src/shared/layoutPresets.ts` … builtin レイアウトのスロット実寸(§12.2 の予測に必須)。
