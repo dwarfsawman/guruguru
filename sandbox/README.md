@@ -31,10 +31,26 @@ docker compose --env-file sandbox/.env -f sandbox/compose.yaml ps
 bun sandbox/scripts/check-comfy.mjs http://127.0.0.1:8288
 # Anima models をマウントした場合は txt2img + inpaint の実生成も確認
 bun sandbox/scripts/check-anima.mjs http://127.0.0.1:8288
+# 任意: single-reference Anima In-Context の同一 seed smoke
+bun sandbox/scripts/check-anima.mjs http://127.0.0.1:8288 C:/path/to/reference.png
 ```
 
 共通検査は GPU、ComfyUI API、PuLID カスタムノード、Chroma または Anima のモデル候補認識を確認します。
 Anima 検査はリポジトリの統合 Switch パッチャーを通し、512×512・8 steps の txt2img と synthetic parent/mask の inpaint が画像出力まで完走することを確認します。
+`check-anima.mjs` は production の 8188 へ誤接続しないよう、loopback の 8288 以外を拒否します。
+
+Anima In-Context は任意の実験機能です。スクリプトは `/object_info` から
+`AnimaRefEncode`、`AnimaRefLatentBatch`、`AnimaInContextApply` と
+`anima-incontext-character.safetensors` の有無を報告します。参照画像を第2引数に渡し、
+single-reference に必要な `AnimaRefEncode` / `AnimaInContextApply` と adapter が揃っている場合だけ、
+通常の txt2img と同じ固定 seed で追加生成します。未導入または参照画像省略時は既存の
+txt2img / inpaint 検査を維持したまま `inContext.skippedReason` を出力します。
+
+実験する場合は、[Anima-InContext-Character](https://huggingface.co/darask0/Anima-InContext-Character) 配布物の
+custom node pack `comfyui-anima-incontext` を隔離テスト用 ComfyUI イメージへだけ導入し、
+adapter `anima-incontext-character.safetensors` をホスト側の
+`GURUGURU_MODELS_DIR/loras` に配置します。adapter は本体 Anima とは別の非商用ライセンスなので、
+利用・再配布前に配布元の最新ライセンスを確認してください。参照画像は白背景に近い明瞭なキャラクター画像を使います。
 `docker compose down` は生成用 volume を保持し、`down --volumes` でテスト生成データも削除します。
 
 ## RunPod での同一イメージ利用
