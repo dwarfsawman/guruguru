@@ -3,7 +3,7 @@
  * 配置時に元 Asset のファイルをコピーする方式で、Round/Asset 削除で ImageObject が孤児化する
  * (Asset 寿命問題)のを避ける。来歴(どの生成から来たか)は source_asset_id で追える。
  */
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import type { PageObject } from "../shared/pageObjects";
@@ -11,7 +11,7 @@ import { createId, dataRoot, getRow, runSql } from "./db";
 import { streamFile } from "./files";
 import { HttpError } from "./http";
 import { isPathInside } from "./paths";
-import { storePageMediaImage } from "./storage";
+import { storePageMediaBuffer, storePageMediaImage } from "./storage";
 import { objectBody, requiredString } from "./validate";
 
 interface AssetImageRow {
@@ -56,6 +56,44 @@ export async function createPageMedia(projectId: string, body: unknown): Promise
   );
 
   return { mediaId, width: stored.width, height: stored.height, url: `/api/page-media/${mediaId}` };
+}
+
+/**
+ * 加工済みバイト列(ぶち抜き立ち絵の切り抜き PNG 等)を page_media として登録する
+ * (Docs/Reference-MangaCompositions.md)。来歴は `source_asset_id` で追える。
+ */
+export async function createPageMediaFromBuffer(
+  projectId: string,
+  bytes: Buffer,
+  sourceAssetId: string | null
+): Promise<CreatePageMediaResult> {
+  const mediaId = createId("media");
+  const stored = await storePageMediaBuffer(projectId, mediaId, bytes, ".png");
+  runSql(
+    `INSERT INTO page_media (id, project_id, file_path, width, height, source_asset_id)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [mediaId, projectId, stored.filePath, stored.width, stored.height, sourceAssetId]
+  );
+  return { mediaId, width: stored.width, height: stored.height, url: `/api/page-media/${mediaId}` };
+}
+
+/**
+ * page_media の行とファイルを削除する(ぶち抜き立ち絵の差し替え時、旧切り抜きの掃除に使う)。
+ * ファイル欠損・data root 外は行削除だけ行い黙って続行する(表示側は missing 扱いで安全)。
+ */
+export function deletePageMedia(mediaId: string): void {
+  const row = getRow<{ file_path: string }>("SELECT file_path FROM page_media WHERE id = ?", [mediaId]);
+  if (row) {
+    const resolved = resolve(row.file_path);
+    if (isPathInside(resolved, resolve(dataRoot)) && existsSync(resolved)) {
+      try {
+        unlinkSync(resolved);
+      } catch {
+        // 使用中などで消せなくても行削除は行う(孤児ファイルは無害)。
+      }
+    }
+  }
+  runSql("DELETE FROM page_media WHERE id = ?", [mediaId]);
 }
 
 function resolvePageMediaPath(mediaId: string): string {

@@ -127,3 +127,45 @@ describe("compilePanelPrompt", () => {
     expect(result.positive).not.toContain("銀髪");
   });
 });
+
+describe("compileFigureConditioning (role: figure)", () => {
+  test("figure slots compile to a solo full-body white-background prompt in both dialects", () => {
+    const figurePanel = structuredClone(panel);
+    (figurePanel as { role?: "figure" }).role = "figure";
+    for (const dialect of ["tags", "natural"] as const) {
+      const result = compilePanelConditioning({
+        panel: figurePanel,
+        basePrompt: "confident heroine introduction",
+        entities: [entity],
+        dialogueById: new Map(),
+        narrativeMetadata: "english-directed",
+        dialect,
+        sceneBible: { set: "ruined lunar base", lighting: "harsh sunlight", palette: "grey and blue" }
+      });
+      expect(result.positive).toContain("solo");
+      expect(result.positive).toContain("full body");
+      expect(result.positive).toContain("white background");
+      // シーンバイブルは立ち絵へ持ち込まない(背景は無地が前提)。
+      expect(result.positive).not.toContain("ruined lunar base");
+      expect(result.positive).not.toContain("visually quiet");
+      expect(result.negative).toContain("scenery");
+      // mustNotShow は negative へ移送されたまま。
+      expect(result.negative).toContain("rain");
+      expect(result.positive).not.toMatch(/[぀-ヿ㐀-鿿]/u);
+    }
+  });
+
+  test("non-figure panels keep the scene conditioning path", () => {
+    const result = compilePanelConditioning({
+      panel,
+      basePrompt: "a busy hangar",
+      entities: [entity],
+      dialogueById: new Map(),
+      narrativeMetadata: "english-directed",
+      dialect: "natural",
+      sceneBible: { set: "ruined lunar base", lighting: "harsh sunlight", palette: "grey and blue" }
+    });
+    expect(result.positive).toContain("ruined lunar base");
+    expect(result.positive).not.toContain("white background");
+  });
+});

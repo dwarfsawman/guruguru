@@ -397,3 +397,97 @@ test("runDialogueAutoLayout: 同 seed ならバリアント探索でも同じ結
   const b = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 99 });
   assert.deepEqual(a, b);
 });
+
+// --- 回避領域(顔・立ち絵)とコマ専有率上限(Docs/Reference-MangaCompositions.md) ---
+
+/** 1コマ(横長)のレイアウト。回避領域・専有率テスト用。 */
+function singlePanelLayout(): PageLayout {
+  return {
+    version: 1,
+    page: { aspectRatio: [1, 1.4142], height: 1.4142 },
+    readingDirection: "rtl",
+    panels: [rectPanel("panel_only", 1, [0, 0, 1, 0.7])]
+  };
+}
+
+function objectBox(object: PageObject): { x0: number; y0: number; x1: number; y1: number } {
+  const size = (object as { size?: PageVec }).size ?? { x: 0, y: 0 };
+  return {
+    x0: object.position.x - size.x / 2,
+    y0: object.position.y - size.y / 2,
+    x1: object.position.x + size.x / 2,
+    y1: object.position.y + size.y / 2
+  };
+}
+
+test("runDialogueAutoLayout: avoidZones を strict パスで避けて配置する", () => {
+  const layout = singlePanelLayout();
+  // RTL の優先位置(右上)を覆う回避領域。ゾーン無しなら右上に置かれるところを外させる。
+  const zone = { x: 0.4, y: 0, width: 0.6, height: 0.4, label: "顔" };
+  const items = [item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 0.2, y: 0.15 } })];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 11, avoidZones: [zone] });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  assert.equal(result.warnings.length, 0);
+  const box = objectBox(result.objects[0]!);
+  const overlaps =
+    box.x0 < zone.x + zone.width && box.x1 > zone.x && box.y0 < zone.y + zone.height && box.y1 > zone.y;
+  assert.equal(overlaps, false, "回避領域と重ならないこと");
+});
+
+test("runDialogueAutoLayout: avoidZones がコマ全面でも緩和して配置し警告を残す", () => {
+  const layout = singlePanelLayout();
+  const zone = { x: 0, y: 0, width: 1, height: 0.7, label: "立ち絵" };
+  const items = [item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 0.2, y: 0.15 } })];
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 11, avoidZones: [zone] });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  assert.equal(result.objects.length, 1);
+  assert.ok(result.warnings.some((warning) => warning.includes("緩和")), "緩和の警告が残ること");
+});
+
+test("runDialogueAutoLayout: maxPanelCoverageRatio 超過は pinned なら同コマで緩和配置(警告付き)", () => {
+  const layout = singlePanelLayout();
+  const items = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, preferredPanelId: "panel_only", size: { x: 0.3, y: 0.3 } }),
+    item({ placementId: "p2", lineId: "l2", orderIndex: 1, preferredPanelId: "panel_only", size: { x: 0.3, y: 0.3 } })
+  ];
+  // コマ面積 0.7、上限 0.15 → 許容面積 0.105。1件目(0.09)は入り、2件目で超過する。
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 3, maxPanelCoverageRatio: 0.15 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  assert.equal(result.objects.length, 2);
+  assert.equal(result.assignments.every((assignment) => assignment.panelId === "panel_only"), true);
+  assert.equal(result.warnings.filter((warning) => warning.includes("緩和")).length, 1);
+});
+
+test("runDialogueAutoLayout: maxPanelCoverageRatio 超過の非固定アイテムは後続コマへ逃がす", () => {
+  const layout: PageLayout = {
+    version: 1,
+    page: { aspectRatio: [1, 1.4142], height: 1.4142 },
+    readingDirection: "rtl",
+    panels: [rectPanel("panel_top", 1, [0, 0, 1, 0.65]), rectPanel("panel_bottom", 2, [0, 0.75, 1, 1.4])]
+  };
+  // 等重み3件 → 文字量比配分で先頭2件が panel_top、3件目が panel_bottom。
+  const items = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, text: "abcde", size: { x: 0.3, y: 0.3 } }),
+    item({ placementId: "p2", lineId: "l2", orderIndex: 1, text: "abcde", size: { x: 0.3, y: 0.3 } }),
+    item({ placementId: "p3", lineId: "l3", orderIndex: 2, text: "abcde", size: { x: 0.3, y: 0.3 } })
+  ];
+  // panel_top 面積 0.65、上限 0.2 → 許容 0.13。2件目(累計 0.18)は strict では入らず panel_bottom へ。
+  const result = runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 3, maxPanelCoverageRatio: 0.2 });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  const panelByPlacement = new Map(result.assignments.map((assignment) => [assignment.placementId, assignment.panelId]));
+  assert.equal(panelByPlacement.get("p1"), "panel_top");
+  assert.equal(panelByPlacement.get("p2"), "panel_bottom", "専有率超過分は後続コマへ逃げること");
+  assert.equal(panelByPlacement.get("p3"), "panel_bottom");
+});
+
+test("runDialogueAutoLayout: avoidZones/専有率付きでも同 seed なら同じ結果", () => {
+  const layout = singlePanelLayout();
+  const zone = { x: 0.4, y: 0, width: 0.6, height: 0.4 };
+  const items = [
+    item({ placementId: "p1", lineId: "l1", orderIndex: 0, size: { x: 0.2, y: 0.15 } }),
+    item({ placementId: "p2", lineId: "l2", orderIndex: 1, speakerLabel: "花子", size: { x: 0.2, y: 0.15 } })
+  ];
+  const run = () =>
+    runDialogueAutoLayout({ layout, existingObjects: [], items, seed: 21, avoidZones: [zone], maxPanelCoverageRatio: 0.5 });
+  assert.deepEqual(run(), run());
+});

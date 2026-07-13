@@ -457,3 +457,37 @@ test("reflowDialogueLayout: 2x2グリッドで5件中1件ロック、ロック�
   assert.ok(lockedObjectAfter);
   assert.deepEqual(lockedObjectAfter!.position, panelCenter);
 });
+
+test("applyDialogueLayout: avoidZones/maxPanelCoverageRatio を受け付け、崩れた avoidZones は 400", () => {
+  const { projectId, pageId, placementRows } = setup();
+  const ids = placementRows.map((row) => row.id);
+  assert.throws(
+    () => previewDialogueLayout(projectId, pageId, { placementIds: ids, seed: 1, avoidZones: [{ x: 0.1 }] }),
+    (error: unknown) => error instanceof HttpError && error.statusCode === 400
+  );
+  const result = applyDialogueLayout(projectId, pageId, {
+    placementIds: ids,
+    seed: 7,
+    avoidZones: [{ x: 0.6, y: 0, width: 0.4, height: 0.3, label: "顔" }],
+    maxPanelCoverageRatio: 0.6
+  });
+  assert.equal(result.unplacedPlacementIds.length, 0);
+  assert.equal(result.objects.length, ids.length);
+});
+
+test("reflowDialogueLayout: fontScale 指定時は再配置後も吹き出し本文サイズを維持する", () => {
+  const { projectId, pageId, placementRows } = setup();
+  const ids = placementRows.map((row) => row.id);
+  applyDialogueLayout(projectId, pageId, { placementIds: ids, seed: 7, fontScale: 0.88 });
+  const reflowed = reflowDialogueLayout(projectId, pageId, { seed: 9, fontScale: 0.88 });
+  assert.equal(reflowed.unplacedPlacementIds.length, 0);
+  const balloons = pageObjectsJson(pageId).filter(
+    (object): object is Extract<PageObject, { kind: "balloon" }> => object.kind === "balloon"
+  );
+  assert.ok(balloons.length > 0);
+  for (const balloon of balloons) {
+    assert.ok(balloon.content, "本文を維持すること");
+    // DEFAULT_TEXT_STYLE.size(0.04) × 0.88。fontScale が無視されると 0.04 に戻ってしまう。
+    assert.ok(Math.abs(balloon.content!.style.size - 0.04 * 0.88) < 1e-9, `size=${balloon.content!.style.size}`);
+  }
+});

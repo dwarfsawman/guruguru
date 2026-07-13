@@ -34,6 +34,13 @@ export interface LayoutPanel {
   shape: PanelShape;
   /** 未指定なら描画側の既定枠を使う。 */
   frame?: PanelFrame;
+  /**
+   * コマの役割(Docs/Reference-MangaCompositions.md)。省略 = 通常の絵コマ。
+   * "figure" = コマぶち抜き立ち絵スロット: 枠を描かず、自動漫画では担当キャラの全身を
+   * 白背景で生成 → 背景除去+白フチの切り抜きを ImageObject(band:"front", clipPanelId:null)
+   * としてコマ枠の前面へ重ねる。テンプレート上は読み順最後に置く規約。
+   */
+  role?: "figure";
 }
 
 /** 将来機能(吹き出し)の予約型。今回は生成しないが取り込み時に保持する。 */
@@ -72,6 +79,12 @@ export const DEFAULT_PANEL_FRAME: PanelFrame = {
   strokeWidth: 0.006,
   strokeColor: "#000000"
 };
+
+/**
+ * 裁ち切り(bleed)コマがページ外へはみ出してよい上限(page-width 単位)。内蔵プリセットの
+ * BLEED(0.015)を許容しつつ、桁違いの座標崩れは preflight(layout-geometry)で弾くための境界。
+ */
+export const PANEL_BLEED_OVERSHOOT = 0.02;
 
 const EPSILON = 1e-9;
 
@@ -358,7 +371,11 @@ export function normalizeGuruguruLayout(parsed: unknown): PageLayout {
     }
     const id = typeof raw.id === "string" && raw.id ? raw.id : `panel_${index + 1}`;
     const order = isFiniteNumber(raw.order) ? raw.order : index + 1;
-    panels.push({ id, order, shape, frame: normalizeFrame(raw.frame, defaultsFrame) });
+    const panel: LayoutPanel = { id, order, shape, frame: normalizeFrame(raw.frame, defaultsFrame) };
+    if (raw.role === "figure") {
+      panel.role = "figure";
+    }
+    panels.push(panel);
   });
 
   if (panels.length === 0) {
@@ -482,6 +499,10 @@ export function normalizeEditedPageLayout(raw: unknown): PageLayout | null {
     const panel: LayoutPanel = { id, order, shape };
     if (rawPanel.frame !== undefined) {
       panel.frame = normalizeFrame(rawPanel.frame, DEFAULT_PANEL_FRAME);
+    }
+    // role は編集往復で消えるとぶち抜き立ち絵の描画/生成規約が壊れるため必ず保持する。
+    if (rawPanel.role === "figure") {
+      panel.role = "figure";
     }
     panels.push(panel);
   });

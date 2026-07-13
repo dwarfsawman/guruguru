@@ -1,4 +1,4 @@
-import { panelBounds, type PageLayout } from "../shared/pageLayout";
+import { PANEL_BLEED_OVERSHOOT, panelBounds, type PageLayout } from "../shared/pageLayout";
 import type { NormalizedBox, PanelSpec } from "../shared/mangaPlanV2";
 
 export interface PreflightViolation {
@@ -65,7 +65,15 @@ export function validatePanelPreflight(input: {
   let layoutGeometryValid = false;
   if (layoutPanel) {
     const [x1, y1, x2, y2] = panelBounds(layoutPanel.shape);
-    layoutGeometryValid = x1 >= 0 && y1 >= 0 && x2 <= 1.000001 && y2 <= layout.page.height + 0.000001 && x2 - x1 >= 0.04 && y2 - y1 >= 0.04;
+    // 裁ち切り(bleed)コマは PANEL_BLEED_OVERSHOOT までページ外へはみ出してよい
+    // (Docs/Reference-MangaCompositions.md)。それを超えるはみ出しは座標崩れとして弾く。
+    layoutGeometryValid =
+      x1 >= -PANEL_BLEED_OVERSHOOT &&
+      y1 >= -PANEL_BLEED_OVERSHOOT &&
+      x2 <= 1 + PANEL_BLEED_OVERSHOOT + 0.000001 &&
+      y2 <= layout.page.height + PANEL_BLEED_OVERSHOOT + 0.000001 &&
+      x2 - x1 >= 0.04 &&
+      y2 - y1 >= 0.04;
     if (!layoutGeometryValid) {
       violations.push({ code: "layout-geometry", severity: "error", message: "Panel is outside the page or too small to render safely" });
     }

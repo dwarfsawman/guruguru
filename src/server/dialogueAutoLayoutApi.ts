@@ -8,7 +8,12 @@ import { randomInt } from "node:crypto";
 import type { DialogueLayoutPreview, DialogueLayoutUnlockResult } from "../shared/chronicle";
 import type { DialogueBalloonStyle, DialogueSemanticKind } from "../shared/apiTypes";
 import { balloonInscribedFactor } from "../shared/balloonShape";
-import { runDialogueAutoLayout, AUTO_LAYOUT_SFX_FONT_SCALE, type DialogueAutoLayoutItem } from "../shared/dialogueAutoLayout";
+import {
+  runDialogueAutoLayout,
+  AUTO_LAYOUT_SFX_FONT_SCALE,
+  type DialogueAutoLayoutItem,
+  type DialogueAvoidZone
+} from "../shared/dialogueAutoLayout";
 import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
 import {
   CONTENT_PADDING_RATIO,
@@ -247,6 +252,47 @@ function parseSeed(input: Record<string, unknown>): number | undefined {
 }
 
 /**
+ * 回避領域(顔・立ち絵)とコマ専有率上限の任意入力(Docs/Reference-MangaCompositions.md)。
+ * 未指定なら空を返し、ソルバーは従来と完全に同じ挙動になる。フォーマット崩れは黙って捨てず 400
+ * (自動漫画経路が計算済みの値を渡す前提で、崩れは呼び出し側のバグのため)。
+ */
+function parseSolverConstraints(input: Record<string, unknown>): {
+  avoidZones?: DialogueAvoidZone[];
+  maxPanelCoverageRatio?: number;
+} {
+  const result: { avoidZones?: DialogueAvoidZone[]; maxPanelCoverageRatio?: number } = {};
+  if (input.avoidZones !== undefined) {
+    if (!Array.isArray(input.avoidZones) || input.avoidZones.length > 64) {
+      throw new HttpError(400, "avoidZones must be an array of at most 64 rectangles");
+    }
+    const zones: DialogueAvoidZone[] = [];
+    for (const raw of input.avoidZones) {
+      const zone = raw as Record<string, unknown> | null;
+      const values = [zone?.x, zone?.y, zone?.width, zone?.height];
+      if (!values.every((value) => typeof value === "number" && Number.isFinite(value))) {
+        throw new HttpError(400, "avoidZones entries must have finite x/y/width/height");
+      }
+      if ((zone!.width as number) <= 0 || (zone!.height as number) <= 0) continue;
+      zones.push({
+        x: zone!.x as number,
+        y: zone!.y as number,
+        width: zone!.width as number,
+        height: zone!.height as number,
+        label: typeof zone!.label === "string" ? zone!.label : undefined
+      });
+    }
+    if (zones.length > 0) result.avoidZones = zones;
+  }
+  if (input.maxPanelCoverageRatio !== undefined) {
+    if (typeof input.maxPanelCoverageRatio !== "number" || !Number.isFinite(input.maxPanelCoverageRatio)) {
+      throw new HttpError(400, "maxPanelCoverageRatio must be a finite number");
+    }
+    result.maxPanelCoverageRatio = Math.min(1, Math.max(0.05, input.maxPanelCoverageRatio));
+  }
+  return result;
+}
+
+/**
  * `POST /api/projects/:projectId/pages/:pageId/dialogue-layout/preview`(§3)。DB は一切書き換えない。
  */
 export function previewDialogueLayout(projectId: string, pageId: string, body: unknown): DialogueLayoutPreview {
@@ -257,7 +303,8 @@ export function previewDialogueLayout(projectId: string, pageId: string, body: u
     layout: context.layout,
     existingObjects: context.existingObjects,
     items: context.items,
-    seed
+    seed,
+    ...parseSolverConstraints(input)
   });
   return { seed, ...result };
 }
@@ -279,7 +326,8 @@ export function applyDialogueLayout(projectId: string, pageId: string, body: unk
     layout: context.layout,
     existingObjects: context.existingObjects,
     items: context.items,
-    seed
+    seed,
+    ...parseSolverConstraints(input)
   });
   if (result.unplacedPlacementIds.length > 0) {
     throw new HttpError(
@@ -342,12 +390,19 @@ interface ReflowContext {
  * auto_layout_locked=0」の placement 群(§6 フェーズIV)。対象の PageObject を objects_json から
  * 除去した残りを障害物として返す(除去した分はソルバーが新しい位置・サイズで作り直す)。
  */
-function loadReflowContext(projectId: string, pageId: string): ReflowContext {
+function loadReflowContext(projectId: string, pageId: string, body: unknown): ReflowContext {
   requireProject(projectId);
   const page = requirePageRow(projectId, pageId);
   if (!page.layout_json) {
     throw new HttpError(400, "このページにはコマ割りが無いため、再配置は使えません。");
   }
+  const input = objectBody(body);
+  // apply と同じ規約: fontScale を明示指定した呼び出し(自動漫画)は吹き出し内フォントを保持する
+  // 前提でサイズ候補を逆算する。未指定(手動UI)は従来どおり既定サイズで組む。
+  const fontScale = typeof input.fontScale === "number" && Number.isFinite(input.fontScale)
+    ? Math.min(1, Math.max(0.35, input.fontScale))
+    : 1;
+  const preserveBalloonFontSize = typeof input.fontScale === "number" && Number.isFinite(input.fontScale);
   const layout = normalizeEditedPageLayout(JSON.parse(page.layout_json));
   if (!layout) {
     throw new HttpError(400, "このページのレイアウトが不正です。");
@@ -389,7 +444,8 @@ function loadReflowContext(projectId: string, pageId: string): ReflowContext {
       balloonStyle: line.balloon_style,
       speakerLabel: row.speaker_label_override ?? line.speaker_label,
       orderIndex: row.order_index_override ?? line.order_index,
-      sizeVariants: requiredSizeVariantsFor(text, semanticKind)
+      fontScale,
+      sizeVariants: requiredSizeVariantsFor(text, semanticKind, fontScale, preserveBalloonFontSize)
     };
   });
 
@@ -407,7 +463,7 @@ function loadReflowContext(projectId: string, pageId: string): ReflowContext {
  */
 export function reflowDialogueLayout(projectId: string, pageId: string, body: unknown): DialogueLayoutPreview {
   const input = objectBody(body);
-  const context = loadReflowContext(projectId, pageId);
+  const context = loadReflowContext(projectId, pageId, body);
   if (context.items.length === 0) {
     return {
       seed: parseSeed(input) ?? 0,
@@ -423,7 +479,8 @@ export function reflowDialogueLayout(projectId: string, pageId: string, body: un
     layout: context.layout,
     existingObjects: context.remainingObjects,
     items: context.items,
-    seed
+    seed,
+    ...parseSolverConstraints(input)
   });
   if (result.unplacedPlacementIds.length > 0) {
     throw new HttpError(

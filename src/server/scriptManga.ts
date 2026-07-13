@@ -13,7 +13,7 @@ import { planScriptManga, type ScriptMangaPlanOptions } from "../shared/scriptMa
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import type { ScriptMangaPlanView, ScriptMangaRunView, ScriptMangaTaskView } from "../shared/scriptMangaApi";
-import type { DialogueBalloonStyle, DialogueSemanticKind } from "../shared/apiTypes";
+import type { DialogueBalloonStyle, DialogueSemanticKind, PageRow } from "../shared/apiTypes";
 import type { ReferenceModelFamily, ScriptMangaReferenceSnapshot } from "../shared/referenceSets";
 import { referenceSnapshotKey } from "../shared/referenceSets";
 import { updateAssetStatus } from "./assets";
@@ -22,7 +22,7 @@ import { balloonContentMaxWidth, balloonInscribedFactor } from "../shared/balloo
 import { CONTENT_PADDING_RATIO } from "../shared/pageObjects";
 import { computeTextLayoutForContent } from "./textLayoutApi";
 import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
-import { normalizePageObjects, type BalloonObject } from "../shared/pageObjects";
+import { normalizePageObjects, type BalloonObject, type ImageObject } from "../shared/pageObjects";
 import { splitDialogueUnits, type DialogueUnit } from "../shared/dialogueAdaptation";
 import { auditLettering } from "../shared/letteringQuality";
 import { isMangaEffectObject } from "../shared/mangaEffects";
@@ -30,9 +30,12 @@ import { fitPageBalloonText } from "./balloonTextFit";
 import { compilePanelConditioning } from "./panelPromptCompiler";
 import { inferPromptProfile } from "./templates";
 import { releaseComfyModelsForAudit } from "./comfy";
-import { createId, getRow, getRows, runSql } from "./db";
+import { createId, getRow, getRows, runSql, toApiRow } from "./db";
 import { allocateDialoguePages } from "./dialogueAllocation";
-import { applyDialogueLayout } from "./dialogueAutoLayoutApi";
+import { applyDialogueLayout, reflowDialogueLayout } from "./dialogueAutoLayoutApi";
+import { cutoutFigure } from "./figureCutout";
+import { createPageMediaFromBuffer, deletePageMedia } from "./pageMedia";
+import { upsertPanelAssignment } from "./panelAssignments";
 import { HttpError } from "./http";
 import { resolveLayoutTemplate } from "./layoutTemplates";
 import { createPage, updatePage } from "./pages";
@@ -141,6 +144,13 @@ const SCRIPT_MANGA_FONT_SCALE = 0.88;
 // export size while allowing the fitter's real glyph bbox to decide whether a
 // short line fits.
 const SCRIPT_MANGA_MIN_FONT_SIZE = 0.016;
+/**
+ * 自動レタリングでの「吹き出し等がコマ外接矩形を占有してよい面積比」の上限
+ * (Docs/Reference-MangaCompositions.md)。preserve の長台詞は relax パスで超過を許すが警告が残る。
+ */
+const SCRIPT_MANGA_MAX_BALLOON_COVERAGE = 0.45;
+/** plan の cast bbox から顔領域とみなす高さ比(bbox 上端からこの割合)。auditLettering と共有。 */
+const CAST_FACE_HEIGHT_RATIO = 0.38;
 const activeTaskSubmissions = new Set<string>();
 const activeAuditRuns = new Map<string, Promise<void>>();
 let visualAuditQueue: Promise<void> = Promise.resolve();
@@ -302,11 +312,54 @@ function removeUnusedStarterPage(projectId: string): void {
   }
 }
 
-function applyDialogueLayoutWithFallback(projectId: string, pageId: string, placementIds: string[], baseSeed: number): void {
+/**
+ * plan の cast bbox(コマ内正規化)を page 座標へ写像した回避領域を作る。head=true なら顔領域
+ * (bbox 上端から CAST_FACE_HEIGHT_RATIO)、false なら全身。ぶち抜き立ち絵スロット
+ * (layoutPanel.role === "figure")は吹き出しで隠したくないため全身を返す。
+ */
+function planCastAvoidZones(
+  pageSpec: MangaPlanV2["pages"][number],
+  layoutPanels: PageLayout["panels"]
+): Array<{ x: number; y: number; width: number; height: number; label?: string }> {
+  return pageSpec.panels.flatMap((panel, index) => {
+    const layoutPanel = layoutPanels[index];
+    if (!layoutPanel) return [];
+    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
+    const fullBody = layoutPanel.role === "figure";
+    return panel.cast.map((member) => ({
+      x: x0 + member.bbox.x * (x1 - x0),
+      y: y0 + member.bbox.y * (y1 - y0),
+      width: member.bbox.width * (x1 - x0),
+      height: member.bbox.height * (y1 - y0) * (fullBody ? 1 : CAST_FACE_HEIGHT_RATIO),
+      label: fullBody ? "立ち絵" : "顔"
+    }));
+  });
+}
+
+interface LetteringConstraints {
+  avoidZones: Array<{ x: number; y: number; width: number; height: number; label?: string }>;
+  maxPanelCoverageRatio: number;
+}
+
+function applyDialogueLayoutWithFallback(
+  projectId: string,
+  pageId: string,
+  placementIds: string[],
+  baseSeed: number,
+  constraints?: LetteringConstraints
+): void {
   let lastError: unknown;
+  const constraintBody = constraints
+    ? { avoidZones: constraints.avoidZones, maxPanelCoverageRatio: constraints.maxPanelCoverageRatio }
+    : {};
   for (let attempt = 0; attempt < 16; attempt += 1) {
     try {
-      applyDialogueLayout(projectId, pageId, { placementIds, seed: baseSeed * 100 + attempt, fontScale: SCRIPT_MANGA_FONT_SCALE });
+      applyDialogueLayout(projectId, pageId, {
+        placementIds,
+        seed: baseSeed * 100 + attempt,
+        fontScale: SCRIPT_MANGA_FONT_SCALE,
+        ...constraintBody
+      });
       return;
     } catch (error) {
       lastError = error;
@@ -322,7 +375,8 @@ function applyDialogueLayoutWithFallback(projectId: string, pageId: string, plac
           applyDialogueLayout(projectId, pageId, {
             placementIds: group,
             seed: baseSeed * 1000 + offset * 31 + attempt,
-            fontScale
+            fontScale,
+            ...constraintBody
           });
           placed = true;
           break;
@@ -709,7 +763,10 @@ function ensureDialogueLettering(
     [pageId, ...lineIds]
   ).map((row) => row.id);
   if (placementIds.length > 0) {
-    applyDialogueLayoutWithFallback(run.project_id, pageId, placementIds, pageSpec.index + 1);
+    applyDialogueLayoutWithFallback(run.project_id, pageId, placementIds, pageSpec.index + 1, {
+      avoidZones: planCastAvoidZones(pageSpec, layoutPanels),
+      maxPanelCoverageRatio: SCRIPT_MANGA_MAX_BALLOON_COVERAGE
+    });
     fitPageBalloonText(run.project_id, pageId);
     aimInitialBalloonTails(pageId);
   }
@@ -724,7 +781,7 @@ function ensureDialogueLettering(
       x: x0 + member.bbox.x * (x1 - x0),
       y: y0 + member.bbox.y * (y1 - y0),
       width: member.bbox.width * (x1 - x0),
-      height: member.bbox.height * (y1 - y0) * 0.38
+      height: member.bbox.height * (y1 - y0) * CAST_FACE_HEIGHT_RATIO
     }));
   });
   const letteringReport = auditLettering(pageSpec.layoutSnapshot, objects, faceBoxes);
@@ -856,6 +913,9 @@ function materializeRun(runId: string): void {
     for (let index = 0; index < pageSpec.panels.length; index += 1) {
       const panel = pageSpec.panels[index]!;
       const layoutPanel = layoutPanels[index]!;
+      // 役割の正は layout snapshot 側(provided plan が role を書き忘れても立ち絵仕様になる)。
+      if (layoutPanel.role === "figure") panel.role = "figure";
+      else delete panel.role;
       const castNormalization = normalizePanelCast(panel, dialogueById);
       panel.cast = castNormalization.cast;
       panel.textSafeZones = actualTextSafeZones(pageId, layout, layoutPanel.id);
@@ -1373,7 +1433,10 @@ function refreshRunStatus(runId: string): RunRow {
     status = "approved";
     phase = "preparing_references";
   }
+  // 集計以外のキー(materialize が書く lettering、候補採用が書く figures)は上書きで消さない。
+  const previousEvaluation = parseJson<Record<string, unknown>>(run.evaluation_json, {});
   const evaluation = {
+    ...previousEvaluation,
     taskCount: tasks.length,
     completed,
     failed,
@@ -1696,7 +1759,122 @@ export async function retryScriptMangaTask(taskId: string): Promise<ScriptMangaR
   return runView(refreshRunStatus(run.id));
 }
 
-export function selectScriptMangaTaskCandidate(taskId: string, body: unknown): ScriptMangaRunView {
+/** run の evaluation_json へ figure 切り抜きの結果(成功/フォールバック/失敗)を記録する。 */
+function recordFigureResult(runId: string, taskId: string, value: unknown): void {
+  const evaluation = parseJson<Record<string, unknown>>(requireRun(runId).evaluation_json, {});
+  const figures = { ...((evaluation.figures as Record<string, unknown>) ?? {}), [taskId]: value };
+  runSql("UPDATE script_manga_runs SET evaluation_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+    JSON.stringify({ ...evaluation, figures }),
+    runId
+  ]);
+}
+
+/**
+ * ぶち抜き立ち絵(Docs/Reference-MangaCompositions.md)の再レタリング。立ち絵 ImageObject が
+ * 障害物として増えた後、ロックされていない吹き出しを顔・立ち絵回避と専有率制約付きで
+ * 組み直す。失敗しても既存配置を維持する(切り抜き自体は成功している)best effort。
+ */
+function reflowLetteringAroundFigure(run: RunRow, task: TaskRow): void {
+  try {
+    if (!run.plan_id) return;
+    const plan = planFromRow(requirePlan(run.plan_id));
+    const pageIndex = getRow<{ page_index: number }>(
+      "SELECT page_index FROM script_manga_run_pages WHERE run_id = ? AND page_id = ?",
+      [run.id, task.page_id]
+    )?.page_index;
+    const pageSpec = typeof pageIndex === "number" ? plan.pages[pageIndex] : undefined;
+    if (!pageSpec) return;
+    const layout = pageLayout(task.page_id);
+    const layoutPanels = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
+    reflowDialogueLayout(run.project_id, task.page_id, {
+      seed: (pageSpec.index + 1) * 7919 + 17,
+      fontScale: SCRIPT_MANGA_FONT_SCALE,
+      avoidZones: planCastAvoidZones(pageSpec, layoutPanels),
+      maxPanelCoverageRatio: SCRIPT_MANGA_MAX_BALLOON_COVERAGE
+    });
+    fitPageBalloonText(run.project_id, task.page_id);
+    aimInitialBalloonTails(task.page_id);
+  } catch {
+    // 再配置できないページはそのまま(手動の再配置・ロック解除で調整できる)。
+  }
+}
+
+/**
+ * 採用候補がぶち抜き立ち絵スロット(layout panel role:"figure")のものなら、背景除去+白フチの
+ * 切り抜きを page_media 化し、`figure_<panelId>` の ImageObject(band:"front"、クリップ無し)として
+ * コマ枠の前面へ重ねる。切り抜きが成立しない画像(無地背景でない等)は通常のコマ画像割当へ
+ * フォールバックする。再採用時は同 id のオブジェクトと旧メディアを差し替える。
+ */
+async function materializeFigureForTask(task: TaskRow, assetId: string): Promise<void> {
+  const run = requireRun(task.run_id);
+  const layout = pageLayout(task.page_id);
+  const layoutPanel = layout.panels.find((panel) => panel.id === task.panel_id);
+  if (layoutPanel?.role !== "figure") return;
+  const asset = getRow<{ image_path: string }>("SELECT image_path FROM assets WHERE id = ?", [assetId]);
+  if (!asset) return;
+
+  const cutout = await cutoutFigure(asset.image_path);
+  if (!cutout) {
+    // 無地背景でない等で切り抜き不成立 → 枠なしコマとして通常割当(絵は出るがぶち抜きにはならない)。
+    const page = toApiRow(getRow("SELECT * FROM pages WHERE id = ?", [task.page_id])) as unknown as PageRow | null;
+    if (page?.layout) {
+      try {
+        upsertPanelAssignment(page, task.panel_id, { assetId });
+      } catch {
+        // 割当に失敗しても候補採用自体は成立させる。
+      }
+    }
+    recordFigureResult(run.id, task.id, { state: "fallback-panel-assignment", assetId });
+    return;
+  }
+
+  const media = await createPageMediaFromBuffer(run.project_id, cutout.png, assetId);
+  const [px0, py0, px1, py1] = panelBounds(layoutPanel.shape);
+  const slotWidth = Math.max(1e-6, px1 - px0);
+  const slotHeight = Math.max(1e-6, py1 - py0);
+  const aspect = cutout.width / Math.max(1, cutout.height);
+  let height = slotHeight;
+  let width = height * aspect;
+  const maxWidth = slotWidth * 1.25; // ぶち抜き: 横はスロット幅の 25% まで隣へ張り出してよい。
+  if (width > maxWidth) {
+    width = maxWidth;
+    height = width / aspect;
+  }
+  const objectId = `figure_${task.panel_id}`;
+  const figureObject: ImageObject = {
+    id: objectId,
+    kind: "image",
+    mediaId: media.mediaId,
+    position: { x: (px0 + px1) / 2, y: py1 - height / 2 },
+    size: { x: width, y: height },
+    rotation: 0,
+    opacity: 1,
+    band: "front",
+    clipPanelId: null
+  };
+  const pageRow = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [task.page_id]);
+  const objects = normalizePageObjects(pageRow?.objects_json ? JSON.parse(pageRow.objects_json) : []);
+  const previous = objects.find((object): object is ImageObject => object.kind === "image" && object.id === objectId);
+  // 万一 figure スロットに旧来の矩形割当が残っていたら取り除く(切り抜きの下に敷かれるのを防ぐ)。
+  runSql("DELETE FROM page_panel_assignments WHERE page_id = ? AND panel_id = ?", [task.page_id, task.panel_id]);
+  const nextObjects = normalizePageObjects([...objects.filter((object) => object.id !== objectId), figureObject]);
+  runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+    JSON.stringify(nextObjects),
+    task.page_id
+  ]);
+  if (previous && previous.mediaId !== media.mediaId) {
+    deletePageMedia(previous.mediaId);
+  }
+  recordFigureResult(run.id, task.id, {
+    state: "cutout",
+    assetId,
+    mediaId: media.mediaId,
+    foregroundRatio: Number(cutout.foregroundRatio.toFixed(4))
+  });
+  reflowLetteringAroundFigure(run, task);
+}
+
+export async function selectScriptMangaTaskCandidate(taskId: string, body: unknown): Promise<ScriptMangaRunView> {
   const task = requireTask(taskId);
   const run = requireRun(task.run_id);
   const input = objectBody(body);
@@ -1718,6 +1896,16 @@ export function selectScriptMangaTaskCandidate(taskId: string, body: unknown): S
     }
   }
   selectTaskCandidateInternal(task, assetId);
+  try {
+    await materializeFigureForTask(requireTask(task.id), assetId);
+  } catch (error) {
+    // 立ち絵化の失敗で候補採用まで巻き戻さない(採用は成立、原因は evaluation で追える)。
+    recordFigureResult(task.run_id, task.id, {
+      state: "failed",
+      assetId,
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
   return runView(refreshRunStatus(task.run_id));
 }
 

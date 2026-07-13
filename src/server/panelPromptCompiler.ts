@@ -187,8 +187,7 @@ export function compilePanelPrompt(input: {
   return parts.filter(Boolean).join(". ").replace(/\s+/g, " ").trim();
 }
 
-/** v3 conditioning contract: exclusions never enter positive conditioning. */
-export function compilePanelConditioning(input: {
+interface PanelConditioningInput {
   panel: PanelSpec;
   basePrompt: string;
   entities: NarrativeEntity[];
@@ -200,7 +199,62 @@ export function compilePanelConditioning(input: {
   maxTerms?: number;
   sceneBible?: { set: string; lighting: string; palette: string };
   referenceAppearances?: ReferenceSetSnapshot[];
-}): PanelConditioning {
+}
+
+/**
+ * ぶち抜き立ち絵スロット(Docs/Reference-MangaCompositions.md)の条件付け。シーンバイブル・
+ * 文字用余白などのシーン都合は使わず、単独人物の全身立ち姿を「無地の白背景」で生成させる。
+ * 白背景は候補採用時の背景除去(縁フラッドフィル)の成立条件なので positive で強制し、
+ * 背景描写に働く語は negative へ移す。
+ */
+function compileFigureConditioning(input: PanelConditioningInput): PanelConditioning {
+  const entityById = new Map(input.entities.map((entity) => [entity.id, entity]));
+  const member = input.panel.cast[0];
+  const entity = member ? entityById.get(member.characterId) : undefined;
+  const variant = member ? entity?.variants.find((item) => item.id === member.variantId) : undefined;
+  const identity = [entity?.attributes.tags || entity?.attributes.description, variant?.attributes.tags || variant?.attributes.description]
+    .filter((value): value is string => Boolean(value?.trim()) && !/[぀-ヿ㐀-鿿]/u.test(value!));
+  const approvedAppearances = (input.referenceAppearances ?? []).flatMap((reference) => [
+    reference.appearancePromptEn,
+    reference.mustNotChange.length > 0 ? `identity invariants: ${reference.mustNotChange.join(", ")}` : ""
+  ]).filter(Boolean);
+  const quality = input.qualityTags?.trim() || "masterpiece, best quality, high detail";
+  const parts = [
+    quality,
+    "solo",
+    ...approvedAppearances,
+    ...identity,
+    "full body, standing figure, head to toe in frame",
+    member?.action ?? "",
+    member?.expression ? `${member.expression} expression` : "",
+    member?.pose ?? "",
+    tagSafeVisual(input.basePrompt),
+    "simple background, plain white background"
+  ];
+  const maxTerms = Math.max(12, input.maxTerms ?? 75);
+  const positive = parts
+    .flatMap((part) => (input.dialect === "tags" ? tagSafeVisual(part ?? "") : part ?? "").split(/\s*,\s*|\.\s+/))
+    .filter(Boolean)
+    .slice(0, maxTerms)
+    .join(input.dialect === "tags" ? ", " : ". ");
+  const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);
+  return {
+    positive,
+    negative: [
+      input.negativeBase?.trim() || QUALITY_NEGATIVE,
+      TEXT_NEGATIVE,
+      "detailed background, scenery, indoor, outdoor, cropped legs, cropped feet, out of frame",
+      ...moved
+    ].filter(Boolean).join(", ")
+  };
+}
+
+/** v3 conditioning contract: exclusions never enter positive conditioning. */
+export function compilePanelConditioning(input: PanelConditioningInput): PanelConditioning {
+  // ぶち抜き立ち絵スロットはシーン描写ではなく人物切り抜き前提の専用条件付けへ分岐する。
+  if (input.panel.role === "figure") {
+    return compileFigureConditioning(input);
+  }
   const cleanPanel = { ...input.panel, mustNotShow: [] };
   const raw = compilePanelPrompt({ ...input, panel: cleanPanel });
   const naturalRaw = /[\u3040-\u30ff\u3400-\u9fff]/u.test(raw) ? tagSafeVisual(raw) : raw;

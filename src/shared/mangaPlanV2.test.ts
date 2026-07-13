@@ -211,3 +211,26 @@ test("validateMangaPlanV2 warns only when an omitted source lacks a reason", () 
   assert.equal(report.ok, true, "source omission is reviewable warning, not a structural error");
   assert.ok(report.issues.some((issue) => issue.code === "source-unassigned" && issue.severity === "warning"));
 });
+
+test("validateMangaPlanV2 warns when a figure slot panel does not have exactly one cast member", () => {
+  // splash(1コマ)を figure スロット化した snapshot。cast 2人で warning、1人なら issue 無し。
+  const plan = validPlan();
+  plan.pages[0]!.layoutSnapshot.panels[0]!.role = "figure";
+  assert.equal(issueCodes(plan).includes("figure-cast-count"), false);
+
+  const crowded = validPlan();
+  crowded.pages[0]!.layoutSnapshot.panels[0]!.role = "figure";
+  crowded.pages[0]!.panels[0]!.cast.push({
+    characterId: "character-alice",
+    variantId: "character-alice:default",
+    bbox: { x: 0.5, y: 0.2, width: 0.3, height: 0.7 },
+    expression: "calm",
+    action: "standing",
+    speakingLineIds: []
+  });
+  const report = validateMangaPlanV2(crowded);
+  const issue = report.issues.find((entry) => entry.code === "figure-cast-count");
+  assert.ok(issue, "figure-cast-count warning");
+  assert.equal(issue!.severity, "warning");
+  assert.equal(report.ok, true, "warning は実行を止めない");
+});

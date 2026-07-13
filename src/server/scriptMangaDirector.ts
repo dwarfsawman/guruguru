@@ -1,6 +1,6 @@
 import type { FountainDoc } from "../shared/fountain";
 import { deriveSceneBibles } from "./storyGraphBuilder";
-import { scriptMangaLayoutCandidates } from "../shared/layoutPresets";
+import { describeScriptMangaLayouts, scriptMangaLayoutCandidates } from "../shared/layoutPresets";
 import {
   planScriptManga,
   type ScriptMangaPagePlan,
@@ -212,6 +212,10 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
       allowedLayouts: scriptMangaLayoutCandidates(page.panels.length),
       panels: page.panels.map((panel) => ({ id: panel.id, scene: panel.sceneHeading, source: panel.sourceText }))
     }));
+    // バッチ内で許可されている全レイアウトの説明(bleed/figure スロットの意味と読み順位置を含む)。
+    const layoutGuide = describeScriptMangaLayouts([
+      ...new Set(batch.flatMap((page) => scriptMangaLayoutCandidates(page.panels.length)))
+    ]);
     const result = await generateStructuredJson<ScriptMangaPagePlan[]>({
       settings,
       systemPrompt: [
@@ -221,10 +225,12 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
         "台詞本文はpromptへ転記せず、speech act、表情、身振り、視線、口の状態という視覚化可能な演出へ変換してください。",
         "This is naming contract v3.0. Use only the fixed shot, angle, and position enum values from the schema.",
         "Write prompt in English with panel-specific visual facts only. Never include appearance/style attributes, dialogue, non-English text, or the words no/not/without/never. Put exclusions in avoid as English noun phrases.",
+        "Layout ids containing 'bleed' extend panels past the page edge (borderless art) — pick them for climactic, atmospheric, or montage pages instead of always using framed grids.",
+        "Layouts with a figureSlot render that reading position as a borderless full-body character cut-out standing over the page (punch-out). Panels are mapped to layout slots in reading order, so the panel at that position becomes the figure: give it a single character-defining beat, set its subject to full body, and keep its dialogue minimal.",
         fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
         `登場話者: ${speakerNames(doc).join(", ")}`
       ].join("\n"),
-      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
+      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Layout guide: ${JSON.stringify(layoutGuide)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
       schema,
       validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt),
       temperature: 0.35,
