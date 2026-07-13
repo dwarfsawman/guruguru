@@ -114,6 +114,11 @@ const commonRequest = {
   inpaint: null,
   controlnet: null
 };
+const inContextTargetRequest = {
+  ...commonRequest,
+  prompt: "masterpiece, best quality, score_7, safe, 1girl, solo, blue hair, single horn, black choker, white blouse, seated in a cozy library, reading a book, three-quarter view",
+  seed: 654321
+};
 const featureAvailability = { controlnet: false, pulid: false, animaInContext: false };
 
 const txt2imgPrompt = patchUnifiedSwitchWorkflow(
@@ -159,6 +164,9 @@ const inpaint = await queueAndWait(inpaintPrompt, "inpaint");
 let inContext = {
   ...inContextAvailability,
   referenceImage: referenceImagePath ? basename(referenceImagePath) : null,
+  targetPrompt: referenceImagePath ? inContextTargetRequest.prompt : null,
+  targetSeed: referenceImagePath ? inContextTargetRequest.seed : null,
+  baselineGeneration: null,
   generation: null,
   skippedReason: null
 };
@@ -180,13 +188,25 @@ if (!referenceImagePath) {
   }
   const referenceBytes = await sharp(await readFile(referenceImagePath)).png().toBuffer();
   const referenceName = await upload("guruguru-anima-incontext-reference.png", referenceBytes);
-  const inContextPrompt = patchUnifiedSwitchWorkflow(
+  const baselinePrompt = patchUnifiedSwitchWorkflow(
     structuredClone(workflow),
     {
       projectId: "anima-check",
       roundIndex: 3,
+      request: { ...inContextTargetRequest, generationMode: "txt2img" },
+      dummyImageName: dummyName,
+      featureAvailability
+    },
+    "guruguru/anima-check/incontext-target-baseline"
+  );
+  inContext.baselineGeneration = await queueAndWait(baselinePrompt, "in-context-target-baseline");
+  const inContextPrompt = patchUnifiedSwitchWorkflow(
+    structuredClone(workflow),
+    {
+      projectId: "anima-check",
+      roundIndex: 4,
       request: {
-        ...commonRequest,
+        ...inContextTargetRequest,
         generationMode: "txt2img",
         reference: {
           imageDataUrl: null,
@@ -199,9 +219,9 @@ if (!referenceImagePath) {
       dummyImageName: dummyName,
       featureAvailability: { ...featureAvailability, animaInContext: true }
     },
-    "guruguru/anima-check/incontext-single-ref"
+    "guruguru/anima-check/incontext-target-reference"
   );
-  inContext.generation = await queueAndWait(inContextPrompt, "in-context-single-ref");
+  inContext.generation = await queueAndWait(inContextPrompt, "in-context-target-reference");
 }
 
 console.log(JSON.stringify({ ok: true, comfyui: baseUrl, seed: commonRequest.seed, txt2img, inpaint, inContext }, null, 2));

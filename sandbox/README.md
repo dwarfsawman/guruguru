@@ -43,7 +43,7 @@ Anima In-Context は任意の実験機能です。スクリプトは `/object_in
 `AnimaRefEncode`、`AnimaRefLatentBatch`、`AnimaInContextApply` と
 `anima-incontext-character.safetensors` の有無を報告します。参照画像を第2引数に渡し、
 single-reference に必要な `AnimaRefEncode` / `AnimaInContextApply` と adapter が揃っている場合だけ、
-通常の txt2img と同じ固定 seed で追加生成します。未導入または参照画像省略時は既存の
+参照元とは異なる固定 seed・ポーズ・背景のターゲットを、参照なし／参照ありの同一条件でA/B生成します。未導入または参照画像省略時は既存の
 txt2img / inpaint 検査を維持したまま `inContext.skippedReason` を出力します。
 
 実験する場合は、[Anima-InContext-Character](https://huggingface.co/darask0/Anima-InContext-Character) 配布物の

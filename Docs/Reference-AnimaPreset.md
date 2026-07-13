@@ -43,4 +43,4 @@
 - 既存のキャラクターシート採用APIは顔cropだけをバインディングするため、現時点で「Anima Ready」とは扱わない。次段ではcharacterごとのface/full-bodyスロットと承認UXを追加する。
 - 参照はGeneration Round単位では固定されるが、Script Manga Run全体の再試行で同一Reference Setを固定するrun-level snapshotは未実装。
 - 外部配布物は新しく実験的で、adapterのモデルカードは非商用派生物としている。外部ノードコードのライセンスも導入前に確認し、GURUGURUのDockerイメージには自動同梱しない。
-- 実機A/Bは本番8188ではなく、`sandbox/scripts/check-anima.mjs`を隔離8288に対して実行する。Dockerが未起動・必要物が未導入の場合は理由付きskipとなる。
+- 実機A/Bは本番8188ではなく、`sandbox/scripts/check-anima.mjs`を隔離8288に対して実行する。参照元とは異なる固定seed・ポーズ・背景のターゲットを参照なし／参照ありで生成し、Dockerが未起動・必要物が未導入の場合は理由付きskipとなる。
