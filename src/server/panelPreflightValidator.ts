@@ -66,7 +66,7 @@ export function validatePanelPreflight(input: {
   if (layoutPanel) {
     const [x1, y1, x2, y2] = panelBounds(layoutPanel.shape);
     // 裁ち切り(bleed)コマは PANEL_BLEED_OVERSHOOT までページ外へはみ出してよい
-    // (Docs/Feature-MangaCompositions.md)。それを超えるはみ出しは座標崩れとして弾く。
+    // (Docs/Reference-MangaCompositions.md)。それを超えるはみ出しは座標崩れとして弾く。
     layoutGeometryValid =
       x1 >= -PANEL_BLEED_OVERSHOOT &&
       y1 >= -PANEL_BLEED_OVERSHOOT &&

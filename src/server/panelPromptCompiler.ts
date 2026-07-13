@@ -202,7 +202,7 @@ interface PanelConditioningInput {
 }
 
 /**
- * ぶち抜き立ち絵スロット(Docs/Feature-MangaCompositions.md)の条件付け。シーンバイブル・
+ * ぶち抜き立ち絵スロット(Docs/Reference-MangaCompositions.md)の条件付け。シーンバイブル・
  * 文字用余白などのシーン都合は使わず、単独人物の全身立ち姿を「無地の白背景」で生成させる。
  * 白背景は候補採用時の背景除去(縁フラッドフィル)の成立条件なので positive で強制し、
  * 背景描写に働く語は negative へ移す。

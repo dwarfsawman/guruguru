@@ -205,7 +205,7 @@ export async function storePageMediaImage(projectId: string, mediaId: string, so
 }
 
 /**
- * 加工済みバイト列(ぶち抜き立ち絵の切り抜き PNG 等、Docs/Feature-MangaCompositions.md)を
+ * 加工済みバイト列(ぶち抜き立ち絵の切り抜き PNG 等、Docs/Reference-MangaCompositions.md)を
  * page 所有メディアとして保存する。ファイル配置・寿命の規約は `storePageMediaImage` と同じ。
  */
 export async function storePageMediaBuffer(projectId: string, mediaId: string, bytes: Buffer, ext = ".png"): Promise<StoredPageMedia> {

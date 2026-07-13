@@ -35,7 +35,7 @@ export interface LayoutPanel {
   /** 未指定なら描画側の既定枠を使う。 */
   frame?: PanelFrame;
   /**
-   * コマの役割(Docs/Feature-MangaCompositions.md)。省略 = 通常の絵コマ。
+   * コマの役割(Docs/Reference-MangaCompositions.md)。省略 = 通常の絵コマ。
    * "figure" = コマぶち抜き立ち絵スロット: 枠を描かず、自動漫画では担当キャラの全身を
    * 白背景で生成 → 背景除去+白フチの切り抜きを ImageObject(band:"front", clipPanelId:null)
    * としてコマ枠の前面へ重ねる。テンプレート上は読み順最後に置く規約。

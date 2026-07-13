@@ -292,6 +292,7 @@ Script画面の「MangaPlan V2 / 一括生成」カードからworkflow template
 
 ## 改訂履歴
 
+- 2026-07-13: 自由な構図([Reference-MangaCompositions.md](Reference-MangaCompositions.md))を追加。`PanelSpec.role:"figure"`(layout snapshotのfigureスロットからreading-orderで写す)、figure専用のprompt分岐(solo・全身・白背景、prompt compiler v3.2)、候補採用時の背景除去+白フチ切り抜き→`ImageObject`化と吹き出し再配置、`validateMangaPlanV2`の`figure-cast-count` warning、監督プロンプトへのlayout guide(bleed/figure説明+figureSlot)を実装。吹き出し一括配置は顔回避ゾーンとコマ専有率上限(0.45)を常時適用する。`evaluation_json`は集計更新時に`lettering`/`figures`キーを保持するようになった。
 - 2026-07-12: provided planのコマ固有visual facts欠落と重複画角を修正し、prompt compilerをv2.3へ更新。VLM不合格候補の採用を禁止。
 - 2026-07-12: LLM監督の構造化演出メタデータを英語に統一し、元の脚本・台詞と画像生成promptを分離。prompt compilerをv2.2へ更新。
 - 2026-07-12: immutable revision/dialogue/layout/provenance、所有ページ/round保護、P2 UI、LM Studio VLM監査、VRAM swap、run exportまで現行契約を更新。候補採用は常に人間reviewとした。

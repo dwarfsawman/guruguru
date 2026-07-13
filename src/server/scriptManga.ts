@@ -146,7 +146,7 @@ const SCRIPT_MANGA_FONT_SCALE = 0.88;
 const SCRIPT_MANGA_MIN_FONT_SIZE = 0.016;
 /**
  * 自動レタリングでの「吹き出し等がコマ外接矩形を占有してよい面積比」の上限
- * (Docs/Feature-MangaCompositions.md)。preserve の長台詞は relax パスで超過を許すが警告が残る。
+ * (Docs/Reference-MangaCompositions.md)。preserve の長台詞は relax パスで超過を許すが警告が残る。
  */
 const SCRIPT_MANGA_MAX_BALLOON_COVERAGE = 0.45;
 /** plan の cast bbox から顔領域とみなす高さ比(bbox 上端からこの割合)。auditLettering と共有。 */
@@ -1770,7 +1770,7 @@ function recordFigureResult(runId: string, taskId: string, value: unknown): void
 }
 
 /**
- * ぶち抜き立ち絵(Docs/Feature-MangaCompositions.md)の再レタリング。立ち絵 ImageObject が
+ * ぶち抜き立ち絵(Docs/Reference-MangaCompositions.md)の再レタリング。立ち絵 ImageObject が
  * 障害物として増えた後、ロックされていない吹き出しを顔・立ち絵回避と専有率制約付きで
  * 組み直す。失敗しても既存配置を維持する(切り抜き自体は成功している)best effort。
  */

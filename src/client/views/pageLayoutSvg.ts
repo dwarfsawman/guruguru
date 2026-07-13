@@ -97,7 +97,7 @@ function panelElement(panel: LayoutPanel, defaultStroke: string, showOrder: bool
   }
   const stroke = defaultStroke;
   // ぶち抜き立ち絵スロット(枠なし)は実描画では線を引かないが、サムネ/ピッカーでは破線で
-  // スロット位置が分かるようにする(Docs/Feature-MangaCompositions.md)。
+  // スロット位置が分かるようにする(Docs/Reference-MangaCompositions.md)。
   const parts = [
     frame.visible === false
       ? shapeGeometryElement(

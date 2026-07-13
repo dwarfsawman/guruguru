@@ -51,7 +51,7 @@ test("five-panel preset keeps five ordered panels inside the page", () => {
   }
 });
 
-// --- 自由な構図プリセット(Docs/Feature-MangaCompositions.md) ---
+// --- 自由な構図プリセット(Docs/Reference-MangaCompositions.md) ---
 
 test("scriptMangaLayoutCandidates: 既定(先頭)は従来のまま、新プリセットは末尾側に追加", () => {
   assert.equal(scriptMangaLayoutCandidates(1)[0], "builtin:splash");

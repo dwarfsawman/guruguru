@@ -12,6 +12,8 @@ interface DialogueAutoLayoutInput {
   existingObjects: readonly PageObject[];    // 障害物(ロック済み balloon を含む)
   items: DialogueAutoLayoutItem[];           // 配置対象の発話(サイズ候補込み)
   seed: number;                              // 決定的探索の種
+  avoidZones?: DialogueAvoidZone[];          // 顔・立ち絵の回避領域(page 座標、§5.5)
+  maxPanelCoverageRatio?: number;            // コマ専有率上限(§5.5)。未指定=無制限(従来挙動)
 }
 
 interface DialogueAutoLayoutItem {
@@ -72,6 +74,26 @@ interface DialogueAutoLayoutItem {
   - サイズが大きいほど微減点(`size.x * size.y * 0.1`)。
 - **同点近傍**(`SCORE_EPSILON = 0.09`)は tie として扱い、`random()`(mulberry32、seed 付き)で選ぶ。厳密な浮動小数
   一致だけを同点にすると常に同じ候補が選ばれ、「再配置(seed 変更)」が実質無意味になるため意図的に幅を持たせている。
+
+## 5.5 回避領域とコマ専有率上限(Docs/Reference-MangaCompositions.md)
+
+どちらも**未指定なら従来と完全に同じ経路**(passes=[false] の1周、PRNG 消費列も不変)。指定時は
+strict → relax の二段探索になる。
+
+- `avoidZones`: 顔(plan cast bbox の上端 38%)や、ぶち抜き立ち絵(figure スロットの cast 全身)の
+  矩形。**strict パス**では重なる候補をハード除外し、**relax パス**では重なり面積比 × 6 のスコア
+  減点のみで配置する(上部優先スコアの振れ幅 2 を上回る強さ)。
+- `maxPanelCoverageRatio`: コマ外接矩形面積に対する「そのコマの吹き出し/キャプション合計面積」の
+  上限(0.05〜1 に clamp)。既存オブジェクト(balloon/box、中心点の属するコマで近似)も算入する。
+  strict で超過する配置は候補にせず、非固定アイテムは §6-2 の後続コマフォールバックで逃がす。
+  preferredPanelId 固定(自動漫画)のアイテムはコマを移さず relax で同コマに置く。
+- relax パスで置いた発話には「顔・立ち絵の回避/コマ専有率の制約を緩和して配置しました」警告が付く。
+  unplaced の意味は従来と同じ(relax でも置けない=本当に空きが無い)。
+- 自動漫画(`ensureDialogueLettering` と figure 採用後の再レタリング)は常時
+  `maxPanelCoverageRatio: 0.45` + plan 由来の avoidZones を渡す。手動 Chronicle UI は未指定のまま。
+- HTTP API(preview/apply/reflow)は body の `avoidZones` / `maxPanelCoverageRatio` をそのまま
+  受ける(不正形は 400)。reflow は `fontScale` も apply と同じ規約で受け、自動漫画ページの
+  再配置時に本文サイズを維持する。
 
 ## 6. フォールバック規則
 

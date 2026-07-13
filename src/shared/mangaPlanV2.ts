@@ -146,7 +146,7 @@ export interface PanelPropSpec {
 export interface PanelSpec {
   id: string;
   /**
-   * コマの役割(Docs/Feature-MangaCompositions.md)。省略 = 通常の絵コマ。"figure" は
+   * コマの役割(Docs/Reference-MangaCompositions.md)。省略 = 通常の絵コマ。"figure" は
    * layout snapshot の `role:"figure"` スロット(reading order で対応)に対応し、
    * プロンプトは「単独人物・全身・白背景」へ切り替わる。候補採用時に背景除去+白フチの
    * 切り抜きが ImageObject としてコマ枠の前面へ重ねられる(コマぶち抜き立ち絵)。
@@ -380,7 +380,7 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
         layoutPanelIds.add(layoutPanel?.id ?? "");
       }
       // ぶち抜き立ち絵スロット(role:"figure"、reading order で plan panel と対応)は単独人物が
-      // 前提(Docs/Feature-MangaCompositions.md)。壊れた snapshot でも検証自体は落とさない。
+      // 前提(Docs/Reference-MangaCompositions.md)。壊れた snapshot でも検証自体は落とさない。
       try {
         const orderedLayoutPanels = orderPanelsByReadingDirection(
           snapshot.panels,

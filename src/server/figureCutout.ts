@@ -1,5 +1,5 @@
 /**
- * コマぶち抜き立ち絵の切り抜き(Docs/Feature-MangaCompositions.md)。
+ * コマぶち抜き立ち絵の切り抜き(Docs/Reference-MangaCompositions.md)。
  *
  * 「無地(白など)の背景で生成した全身立ち絵」を前提に、
  *   1. 画像の縁 2px リングから背景色(中央値)を推定し、

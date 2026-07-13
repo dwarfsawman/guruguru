@@ -252,7 +252,7 @@ function parseSeed(input: Record<string, unknown>): number | undefined {
 }
 
 /**
- * 回避領域(顔・立ち絵)とコマ専有率上限の任意入力(Docs/Feature-MangaCompositions.md)。
+ * 回避領域(顔・立ち絵)とコマ専有率上限の任意入力(Docs/Reference-MangaCompositions.md)。
  * 未指定なら空を返し、ソルバーは従来と完全に同じ挙動になる。フォーマット崩れは黙って捨てず 400
  * (自動漫画経路が計算済みの値を渡す前提で、崩れは呼び出し側のバグのため)。
  */

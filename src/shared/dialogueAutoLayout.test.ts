@@ -398,7 +398,7 @@ test("runDialogueAutoLayout: 同 seed ならバリアント探索でも同じ結
   assert.deepEqual(a, b);
 });
 
-// --- 回避領域(顔・立ち絵)とコマ専有率上限(Docs/Feature-MangaCompositions.md) ---
+// --- 回避領域(顔・立ち絵)とコマ専有率上限(Docs/Reference-MangaCompositions.md) ---
 
 /** 1コマ(横長)のレイアウト。回避領域・専有率テスト用。 */
 function singlePanelLayout(): PageLayout {

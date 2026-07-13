@@ -5,7 +5,7 @@
  * 座標系は `PageLayout` と同じ width-relative-top-left。B5 相当(aspectRatio [182,257])で、
  * 余白/コマ間(GUTTER)を取った rect コマで構成する。読み順は右→左(rtl)。
  *
- * 通常コマのほかに、次の「自由な構図」プリセットを持つ(Docs/Feature-MangaCompositions.md):
+ * 通常コマのほかに、次の「自由な構図」プリセットを持つ(Docs/Reference-MangaCompositions.md):
  * - 裁ち切り(bleed): 紙端に接する辺を BLEED だけページ外へはみ出させる。枠線はページ外に
  *   落ちるため描かれず、絵が紙端まで届く(断ち切りコマ)。preflight は
  *   `PANEL_BLEED_OVERSHOOT` までのはみ出しを許容する。

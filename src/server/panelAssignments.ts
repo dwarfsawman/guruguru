@@ -142,7 +142,7 @@ export function autoAssignPanelForSelectedAsset(assetId: string, roundId: string
   }
   // ぶち抜き立ち絵スロット(role:"figure")は矩形のコマ画像割当ではなく、切り抜き ImageObject 化
   // (scriptManga の候補採用フック)が担当する。ここで割り当てると未加工の矩形画像が立ち絵の
-  // 下に敷かれてしまうためスキップする(Docs/Feature-MangaCompositions.md)。
+  // 下に敷かれてしまうためスキップする(Docs/Reference-MangaCompositions.md)。
   const panel = page.layout.panels.find((item) => item.id === round.target_panel_id);
   if (panel?.role === "figure") {
     return;

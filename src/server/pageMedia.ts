@@ -60,7 +60,7 @@ export async function createPageMedia(projectId: string, body: unknown): Promise
 
 /**
  * 加工済みバイト列(ぶち抜き立ち絵の切り抜き PNG 等)を page_media として登録する
- * (Docs/Feature-MangaCompositions.md)。来歴は `source_asset_id` で追える。
+ * (Docs/Reference-MangaCompositions.md)。来歴は `source_asset_id` で追える。
  */
 export async function createPageMediaFromBuffer(
   projectId: string,
