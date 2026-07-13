@@ -68,7 +68,8 @@ export function patchUnifiedSwitchWorkflow(
   // validation would reject even plain txt2img/img2img prompts.
   const featureAvailability: FeatureAvailabilityFlags = context.featureAvailability ?? {
     controlnet: true,
-    pulid: false
+    pulid: false,
+    animaInContext: false
   };
   if (!featureAvailability.controlnet) {
     if (request.generationMode === "controlnet") {
@@ -205,11 +206,23 @@ export function patchUnifiedSwitchWorkflow(
   // reference requires both the request toggle AND a shared reference image uploaded this round.
   const hasReferenceImage = Boolean(context.uploadedReferenceImageName);
   const pulidEnabled = featureAvailability.pulid && Boolean(request.reference?.face?.enabled) && hasReferenceImage;
+  const animaInContextEnabled =
+    Boolean(featureAvailability.animaInContext) &&
+    Boolean(request.reference?.animaInContext?.enabled) &&
+    hasReferenceImage;
+  const animaOptions = request.reference?.animaInContext;
   assembleFeatureFragments(
     workflow,
-    { pulid: pulidEnabled },
+    { pulid: pulidEnabled, animaInContext: animaInContextEnabled },
     context.uploadedReferenceImageName ?? null,
-    request.loras ?? []
+    request.loras ?? [],
+    {
+      width: request.width,
+      height: request.height,
+      strength: animaOptions?.strength,
+      startPercent: animaOptions?.startPercent,
+      endPercent: animaOptions?.endPercent
+    }
   );
 
   return workflow;

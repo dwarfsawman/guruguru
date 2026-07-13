@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { assembleFeatureFragments, pruneControlNetBranch, type FeatureFlags } from "./workflowFeatureFragments.ts";
+import {
+  ANIMA_IN_CONTEXT_LORA_FILE,
+  ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS,
+  ANIMA_IN_CONTEXT_NODE_PACKS,
+  assembleFeatureFragments,
+  pruneControlNetBranch,
+  type FeatureFlags
+} from "./workflowFeatureFragments.ts";
 
 function baseWorkflow(): Record<string, any> {
   return {
@@ -10,7 +17,7 @@ function baseWorkflow(): Record<string, any> {
 }
 
 function flags(overrides: Partial<FeatureFlags> = {}): FeatureFlags {
-  return { pulid: false, ...overrides };
+  return { pulid: false, animaInContext: false, ...overrides };
 }
 
 test("assembleFeatureFragments: no-op when every flag is false", () => {
@@ -117,6 +124,114 @@ test("assembleFeatureFragments: Anima LoRA rewires CFGGuider and both schedulers
   assert.equal(patched[loraNodeId].class_type, "LoraLoaderModelOnly");
   assert.deepEqual(patched["3"].inputs.model, [loraNodeId, 0]);
   assert.deepEqual(patched["4"].inputs.model, [loraNodeId, 0]);
+});
+
+test("assembleFeatureFragments: Anima In-Context inserts adapter, reference encode, and apply before every model consumer", () => {
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: "anima-base-v1.0.safetensors" } },
+    "2": { class_type: "VAELoader", inputs: { vae_name: "qwen_image_vae.safetensors" } },
+    "3": { class_type: "CFGGuider", inputs: { model: ["1", 0] } },
+    "4": { class_type: "BasicScheduler", inputs: { model: ["1", 0] } },
+    "5": { class_type: "BasicScheduler", inputs: { model: ["1", 0] } }
+  };
+
+  const patched = assembleFeatureFragments(
+    workflow,
+    flags({ animaInContext: true }),
+    "anima-reference.png"
+  ) as Record<string, any>;
+
+  const applyNodeId = patched["3"].inputs.model[0];
+  assert.equal(patched[applyNodeId].class_type, "AnimaInContextApply");
+  assert.deepEqual(patched["4"].inputs.model, [applyNodeId, 0]);
+  assert.deepEqual(patched["5"].inputs.model, [applyNodeId, 0]);
+
+  const apply = patched[applyNodeId];
+  assert.equal(apply.inputs.strength, 1.0);
+  assert.equal(apply.inputs.start_percent, 0.0);
+  assert.equal(apply.inputs.end_percent, 1.0);
+  assert.equal(apply.inputs.cond_only, true);
+  assert.equal(apply.inputs.fit_mode, "pad");
+  assert.equal(apply.inputs.ref_timestep, 0.0);
+
+  const adapterNodeId = apply.inputs.model[0];
+  assert.equal(patched[adapterNodeId].class_type, "LoraLoaderModelOnly");
+  assert.equal(patched[adapterNodeId].inputs.lora_name, ANIMA_IN_CONTEXT_LORA_FILE);
+  assert.equal(patched[adapterNodeId].inputs.strength_model, 1.0);
+  assert.deepEqual(patched[adapterNodeId].inputs.model, ["1", 0]);
+
+  const refEncodeNodeId = apply.inputs.ref_latent[0];
+  assert.equal(patched[refEncodeNodeId].class_type, "AnimaRefEncode");
+  assert.deepEqual(patched[refEncodeNodeId].inputs.vae, ["2", 0]);
+  const refImageNodeId = patched[refEncodeNodeId].inputs.image[0];
+  assert.equal(patched[refImageNodeId].class_type, "LoadImage");
+  assert.equal(patched[refImageNodeId].inputs.image, "anima-reference.png");
+});
+
+test("assembleFeatureFragments: user LoRAs remain before the dedicated Anima In-Context adapter", () => {
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: {} },
+    "2": { class_type: "VAELoader", inputs: {} },
+    "3": { class_type: "CFGGuider", inputs: { model: ["1", 0] } }
+  };
+  const patched = assembleFeatureFragments(
+    workflow,
+    flags({ animaInContext: true }),
+    "ref.png",
+    [{ name: "anima-style.safetensors", strength: 0.8 }]
+  ) as Record<string, any>;
+
+  const apply = patched[patched["3"].inputs.model[0]];
+  const adapter = patched[apply.inputs.model[0]];
+  const style = patched[adapter.inputs.model[0]];
+  assert.equal(adapter.inputs.lora_name, ANIMA_IN_CONTEXT_LORA_FILE);
+  assert.equal(style.inputs.lora_name, "anima-style.safetensors");
+  assert.deepEqual(style.inputs.model, ["1", 0]);
+});
+
+test("assembleFeatureFragments: Anima In-Context validates the model family, reference, and VAE before mutation", () => {
+  assert.throws(
+    () => assembleFeatureFragments(baseWorkflow(), flags({ animaInContext: true }), "ref.png"),
+    /only supported by the Anima/
+  );
+
+  const missingReference = {
+    "1": { class_type: "UNETLoader", inputs: {} },
+    "2": { class_type: "VAELoader", inputs: {} },
+    "3": { class_type: "CFGGuider", inputs: { model: ["1", 0] } }
+  };
+  assert.throws(
+    () => assembleFeatureFragments(missingReference, flags({ animaInContext: true }), null),
+    /reference image name/
+  );
+  assert.deepEqual(Object.keys(missingReference).sort(), ["1", "2", "3"]);
+
+  const missingVae = {
+    "1": { class_type: "UNETLoader", inputs: {} },
+    "2": { class_type: "CFGGuider", inputs: { model: ["1", 0] } }
+  };
+  assert.throws(
+    () => assembleFeatureFragments(missingVae, flags({ animaInContext: true }), "ref.png"),
+    /requires a VAELoader/
+  );
+  assert.deepEqual(Object.keys(missingVae).sort(), ["1", "2"]);
+});
+
+test("Anima In-Context exports the adapter and complete node-pack contracts for model-check integration", () => {
+  assert.deepEqual(ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS, [
+    {
+      kind: "lora",
+      name: "anima-incontext-character.safetensors",
+      loaderClass: "LoraLoaderModelOnly",
+      inputName: "lora_name",
+      feature: "animaInContext",
+      matchBasename: false
+    }
+  ]);
+  assert.deepEqual(
+    ANIMA_IN_CONTEXT_NODE_PACKS.map((pack) => pack.representativeClass),
+    ["AnimaRefEncode", "AnimaRefLatentBatch", "AnimaInContextApply"]
+  );
 });
 
 test("assembleFeatureFragments: PuLID is rejected for an Anima-style direct model chain", () => {

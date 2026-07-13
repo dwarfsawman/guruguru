@@ -564,3 +564,42 @@ test("Anima unified preset: img2img/inpaint roles resolve and Anima LoRA reaches
   assert.deepEqual(patched["734"].inputs.model, [loraNodeId, 0]);
   assert.deepEqual(patched["768"].inputs.model, [loraNodeId, 0]);
 });
+
+test("Anima unified preset: uploaded identity reference injects the experimental In-Context chain", () => {
+  const request = baseRequest({
+    width: 768,
+    height: 1024,
+    reference: {
+      imageDataUrl: null,
+      imagePath: "/tmp/anima-ref.png",
+      face: { enabled: true },
+      animaInContext: { enabled: true, strength: 0.9, startPercent: 0.1, endPercent: 0.85 }
+    }
+  });
+  const patched = patchUnifiedSwitchWorkflow(
+    animaReferenceWorkflow(),
+    baseContext(request, {
+      uploadedReferenceImageName: "anima-ref-upload.png",
+      featureAvailability: { controlnet: false, pulid: false, animaInContext: true }
+    }),
+    "anima-prefix"
+  ) as Record<string, any>;
+
+  const applyNodeId = patched["694"].inputs.model[0];
+  const apply = patched[applyNodeId];
+  assert.equal(apply.class_type, "AnimaInContextApply");
+  assert.equal(apply.inputs.strength, 0.9);
+  assert.equal(apply.inputs.start_percent, 0.1);
+  assert.equal(apply.inputs.end_percent, 0.85);
+  assert.deepEqual(patched["734"].inputs.model, [applyNodeId, 0]);
+  assert.deepEqual(patched["768"].inputs.model, [applyNodeId, 0]);
+
+  const adapter = patched[apply.inputs.model[0]];
+  assert.equal(adapter.class_type, "LoraLoaderModelOnly");
+  assert.equal(adapter.inputs.lora_name, "anima-incontext-character.safetensors");
+  const encode = patched[apply.inputs.ref_latent[0]];
+  assert.equal(encode.class_type, "AnimaRefEncode");
+  assert.equal(encode.inputs.target_width, 768);
+  assert.equal(encode.inputs.target_height, 1024);
+  assert.equal(patched[encode.inputs.image[0]].inputs.image, "anima-ref-upload.png");
+});

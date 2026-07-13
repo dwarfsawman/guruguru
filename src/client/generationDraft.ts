@@ -20,7 +20,6 @@ import { renderPoseSkeletonDataUrl } from "./poseSkeleton";
 import { poseDraftForAsset } from "./poseEditorController";
 import { defaultPrompt } from "./views/generationPanel";
 import { setFormValue } from "./formUtils";
-import { referenceFeatureAvailability } from "./referenceController";
 
 export function captureGenerationDraft() {
   const form = document.querySelector<HTMLFormElement>("#generation-form");
@@ -163,18 +162,18 @@ export function controlnetRequestForParent(
 /**
  * `state.referenceDraft`(フォームレベル、親画像取り込みの直下の参照画像)から
  * request.reference を組み立てる。画像が無ければ null(inpaint/controlnet と同じ規約)。
- * 明示トグルは廃止したので、参照画像がある時は PuLID が導入済み(availability.pulid)なら
- * 顔参照を有効にする(未導入なら false = 適用されない)。
+ * 明示トグルは廃止したので、参照画像がある時は両方のidentity方式を要求する。
+ * 実際に適用する方式はサーバーがworkflow familyと導入状況でゲートする。
  */
 export function referenceRequestForForm(): ReferenceImageOptions | null {
   const draft = state.referenceDraft;
   if (!draft?.imageDataUrl) {
     return null;
   }
-  const availability = referenceFeatureAvailability();
   return {
     imageDataUrl: draft.imageDataUrl,
-    face: { enabled: availability.pulid }
+    face: { enabled: true },
+    animaInContext: { enabled: true }
   };
 }
 

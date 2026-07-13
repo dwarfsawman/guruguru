@@ -69,10 +69,11 @@ function blobToDataUrl(blob: Blob) {
  * `state.modelCheck.result.features` から顔スタイル参照(PuLID)の可用性を読む。
  * 未取得(モデルチェック未実行)またはComfyUI未接続時は false(トグルは無効のまま)。
  */
-export function referenceFeatureAvailability(): { pulid: boolean } {
+export function referenceFeatureAvailability(): { pulid: boolean; animaInContext: boolean } {
   const features = state.modelCheck.result?.features ?? [];
   return {
-    pulid: features.find((feature) => feature.key === "pulid")?.available === true
+    pulid: features.find((feature) => feature.key === "pulid")?.available === true,
+    animaInContext: features.find((feature) => feature.key === "animaInContext")?.available === true
   };
 }
 

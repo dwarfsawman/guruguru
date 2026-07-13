@@ -23,8 +23,30 @@ import { type JsonObject, getNodeInput, isConnection, isObject, findNodeIdByExac
 // ComfyUI installs actually report today (see Docs/Feature-ConsistentCharacter.md "Phase 5 実施記録").
 const PULID_FILE = "pulid_flux_v0.9.1.safetensors";
 
+/**
+ * Anima In-Context Character PoC (darask0/Anima-InContext-Character).
+ * The adapter is intentionally injected dynamically rather than baked into the persisted Anima
+ * template: users without the experimental node pack/model can keep using the base preset.
+ */
+export const ANIMA_IN_CONTEXT_LORA_FILE = "anima-incontext-character.safetensors";
+
+/** Adapter model contract used by modelCheck.ts's family-specific availability gate. */
+export const ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS: WorkflowModelRequirement[] = [
+  {
+    kind: "lora",
+    name: ANIMA_IN_CONTEXT_LORA_FILE,
+    loaderClass: "LoraLoaderModelOnly",
+    inputName: "lora_name",
+    feature: "animaInContext",
+    // The dynamic fragment sends this exact root-level ComfyUI choice. A basename-only match to a
+    // subfolder choice would report available and then fail graph validation at queue time.
+    matchBasename: false
+  }
+] as const;
+
 export const FEATURE_MODEL_REQUIREMENTS: WorkflowModelRequirement[] = [
-  { kind: "pulid", name: PULID_FILE, loaderClass: "PulidFluxModelLoader", inputName: "pulid_file", feature: "pulid" }
+  { kind: "pulid", name: PULID_FILE, loaderClass: "PulidFluxModelLoader", inputName: "pulid_file", feature: "pulid" },
+  ...ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS
 ];
 
 export interface FeatureNodePack {
@@ -47,6 +69,31 @@ export interface FeatureNodePack {
 }
 
 /**
+ * `/object_info` contracts for the experimental Anima node pack. These are exported separately
+ * for the same compatibility reason as ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS above.
+ */
+export const ANIMA_IN_CONTEXT_NODE_PACKS: FeatureNodePack[] = [
+  {
+    label: "Anima In-Context Character (reference encode)",
+    representativeClass: "AnimaRefEncode",
+    requiredInputs: ["vae", "image", "target_width", "target_height"],
+    installUrl: "https://huggingface.co/darask0/Anima-InContext-Character/tree/main/comfyui-anima-incontext"
+  },
+  {
+    label: "Anima In-Context Character (reference latent batch)",
+    representativeClass: "AnimaRefLatentBatch",
+    requiredInputs: ["ref_latent_1", "ref_latent_2", "fit_mode"],
+    installUrl: "https://huggingface.co/darask0/Anima-InContext-Character/tree/main/comfyui-anima-incontext"
+  },
+  {
+    label: "Anima In-Context Character (apply)",
+    representativeClass: "AnimaInContextApply",
+    requiredInputs: ["model", "ref_latent", "strength", "start_percent", "end_percent", "cond_only", "fit_mode", "ref_timestep"],
+    installUrl: "https://huggingface.co/darask0/Anima-InContext-Character/tree/main/comfyui-anima-incontext"
+  }
+];
+
+/**
  * ノードパック存在検出用の代表クラス(`/object_info/{class}` が `{}` を返せば未導入)。
  * ポーズ(ControlNet)はコアノードのみで完結するため空配列(可用性は ControlNet モデルの
  * 有無だけで決まる)。
@@ -61,17 +108,21 @@ export const FEATURE_NODE_PACKS: Record<FeatureKey, FeatureNodePack[]> = {
       requiredInputs: ["prior_image"],
       installUrl: "https://comfy.icu/extension/PaoloC68__ComfyUI-PuLID-Flux-Chroma"
     }
-  ]
+  ],
+  animaInContext: ANIMA_IN_CONTEXT_NODE_PACKS
 };
 
 export const FEATURE_LABELS: Record<FeatureKey, string> = {
   base: "ベース",
   controlnet: "ポーズ(ControlNet)",
-  pulid: "顔スタイル参照(PuLID)"
+  pulid: "顔スタイル参照(PuLID)",
+  animaInContext: "キャラクター参照(Anima In-Context・実験)"
 };
 
 export interface FeatureFlags {
   pulid: boolean;
+  /** Experimental Anima reference-latent conditioning. Optional for caller compatibility. */
+  animaInContext?: boolean;
 }
 
 function addNode(workflow: JsonObject, node: JsonObject): string {
@@ -95,10 +146,21 @@ export function assembleFeatureFragments(
   workflow: JsonObject,
   enabled: FeatureFlags,
   referenceImageName: string | null,
-  loras: ReadonlyArray<StyleLoraSelection> = []
+  loras: ReadonlyArray<StyleLoraSelection> = [],
+  animaOptions: {
+    width?: number;
+    height?: number;
+    strength?: number;
+    startPercent?: number;
+    endPercent?: number;
+  } = {}
 ): JsonObject {
-  if (loras.length === 0 && !enabled.pulid) {
+  if (loras.length === 0 && !enabled.pulid && !enabled.animaInContext) {
     return workflow;
+  }
+
+  if (enabled.pulid && enabled.animaInContext) {
+    throw new Error("PuLID and Anima In-Context cannot be enabled in the same workflow");
   }
 
   const modelSamplingNodeId = findNodeIdByExactClass(workflow, "ModelSamplingAuraFlow");
@@ -110,6 +172,20 @@ export function assembleFeatureFragments(
   const initialModelConnection = getNodeInput(workflow, anchorNodeId, ["model"]);
   if (!isConnection(initialModelConnection)) {
     throw new Error("model fragments require the base model input to already be wired");
+  }
+
+  let animaVaeNodeId: string | null = null;
+  if (enabled.animaInContext) {
+    if (modelSamplingNodeId) {
+      throw new Error("Anima In-Context is only supported by the Anima direct model chain");
+    }
+    if (!referenceImageName) {
+      throw new Error("consistent-character fragments: Anima In-Context enabled without a reference image name");
+    }
+    animaVaeNodeId = findNodeIdByExactClass(workflow, "VAELoader");
+    if (!animaVaeNodeId) {
+      throw new Error("Anima In-Context requires a VAELoader in the base template");
+    }
   }
 
   // Chroma has a single insertion point before ModelSamplingAuraFlow. Anima has no sampling
@@ -130,7 +206,7 @@ export function assembleFeatureFragments(
       return referenceImageNodeId;
     }
     if (!referenceImageName) {
-      throw new Error("consistent-character fragments: pulid enabled without a reference image name");
+      throw new Error("consistent-character fragments: identity reference enabled without a reference image name");
     }
     referenceImageNodeId = addNode(workflow, {
       class_type: "LoadImage",
@@ -182,6 +258,43 @@ export function assembleFeatureFragments(
         fusion_weight_min: 0,
         train_step: 8000,
         use_gray: true
+      }
+    });
+    modelConnection = [applyNodeId, 0];
+  }
+
+  if (enabled.animaInContext) {
+    // The dedicated adapter must be the last LoRA before the model patch, matching the published
+    // reference workflow: UNET -> [user LoRAs] -> adapter LoRA -> AnimaInContextApply.
+    const adapterNodeId = addNode(workflow, {
+      class_type: "LoraLoaderModelOnly",
+      inputs: {
+        model: modelConnection,
+        lora_name: ANIMA_IN_CONTEXT_LORA_FILE,
+        strength_model: 1.0
+      }
+    });
+    const refImageNodeId = ensureReferenceImageNode();
+    const refEncodeNodeId = addNode(workflow, {
+      class_type: "AnimaRefEncode",
+      inputs: {
+        vae: [animaVaeNodeId!, 0],
+        image: [refImageNodeId, 0],
+        ...(animaOptions.width ? { target_width: animaOptions.width } : {}),
+        ...(animaOptions.height ? { target_height: animaOptions.height } : {})
+      }
+    });
+    const applyNodeId = addNode(workflow, {
+      class_type: "AnimaInContextApply",
+      inputs: {
+        model: [adapterNodeId, 0],
+        ref_latent: [refEncodeNodeId, 0],
+        strength: animaOptions.strength ?? 1.0,
+        start_percent: animaOptions.startPercent ?? 0.0,
+        end_percent: animaOptions.endPercent ?? 1.0,
+        cond_only: true,
+        fit_mode: "pad",
+        ref_timestep: 0.0
       }
     });
     modelConnection = [applyNodeId, 0];

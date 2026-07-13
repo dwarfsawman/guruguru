@@ -33,6 +33,7 @@ const MODEL_KIND_LABELS: Record<ModelKind, string> = {
   diffusionModel: "Diffusion Model",
   textEncoder: "Text Encoder",
   vae: "VAE",
+  lora: "LoRA",
   controlnet: "ControlNet",
   pulid: "PuLID"
 };
@@ -62,9 +63,9 @@ export function renderModelInstallModal(family: ModelFamily | null, modelCheck: 
           ${renderModelInstallNodeWarning(result)}
           <h3 class="model-install-section-title">ベース(常時必須)</h3>
           ${renderModelInstallTable(result?.models.filter((model) => model.feature === "base") ?? null)}
-          ${family === "anima" ? `<div class="workflow-diagram-warning">Anima プリセットは txt2img・img2img・inpaint・Anima 用 LoRA に対応します。ControlNet と PuLID-Flux は互換モデルがないため無効です。</div>` : ""}
+          ${family === "anima" ? `<div class="workflow-diagram-warning">Anima プリセットは txt2img・img2img・inpaint・Anima用LoRAに対応します。キャラクター参照は実験機能です。ControlNet と PuLID-Flux は無効です。</div>` : ""}
           <h3 class="model-install-section-title">任意機能(導入済みモデル/ノードパックに応じて自動 ON/OFF)</h3>
-          ${family === "anima" ? `<div class="empty">Anima で追加インストールが必要な任意機能はありません。</div>` : renderFeatureCards(result)}
+          ${renderFeatureCards(result)}
         </div>
         <div class="workflow-import-modal-actions">
           <button class="button-primary" type="button" data-action="install-model-preset" data-family="${escapeAttr(family)}">Workflowプリセットを追加</button>

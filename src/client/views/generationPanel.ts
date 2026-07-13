@@ -10,6 +10,7 @@ import {
 } from "../../shared/generationMode";
 import type { Asset, ProjectDetail, RecentReferenceImage, Round } from "../../shared/apiTypes";
 import type { StyleLoraSelection } from "../../shared/types";
+import { detectWorkflowModelFamily } from "../../shared/workflowModels";
 import { escapeAttr, escapeHtml, formatNumber } from "../format";
 import {
   iconChevron,
@@ -115,7 +116,7 @@ export function renderGenerationPanel(
   llmConfigured = false,
   llmImproving = false,
   referenceDraft: ReferenceDraft | null = null,
-  referenceAvailability: { pulid: boolean } = { pulid: false },
+  referenceAvailability: { pulid: boolean; animaInContext: boolean } = { pulid: false, animaInContext: false },
   loraDraft: StyleLoraSelection[] = [],
   loraChoices: { status: "idle" | "loading" | "ready" | "error"; names: string[] } = { status: "idle", names: [] },
   recentReferenceImages: RecentReferenceImage[] = [],
@@ -194,7 +195,7 @@ export function renderGenerationPanel(
         ${renderSourceUploadButton("source asset をアップロード")}
       </section>
 
-      ${renderReferenceImageSection(referenceDraft, referenceAvailability, recentReferenceImages)}`}
+      ${renderReferenceImageSection(referenceDraft, referenceAvailability, recentReferenceImages, activeTemplateForMode?.workflowJson)}`}
 
       ${renderStyleLoraSection(loraDraft, loraChoices)}
 
@@ -279,19 +280,22 @@ export function renderGenerationPanel(
 }
 
 /**
- * Consistent Character(Docs/Feature-ConsistentCharacter.md)の顔スタイル参照(PuLID)画像枠。
- * 親画像の直下に置き、取り込んだ1枚を PuLID の顔参照元にする。明示トグルは持たず、画像があり
- * PuLID が導入済みなら適用する(未導入時はヒントを表示)。プレビューはクリックで拡大できる。
+ * Consistent Character の参照画像枠。workflow familyに応じてPuLIDまたは実験的な
+ * Anima In-Contextの参照元にする。プレビューはクリックで拡大できる。
  */
 function renderReferenceImageSection(
   draft: ReferenceDraft | null,
-  availability: { pulid: boolean },
-  recentReferenceImages: RecentReferenceImage[] = []
+  availability: { pulid: boolean; animaInContext: boolean },
+  recentReferenceImages: RecentReferenceImage[] = [],
+  workflowJson: unknown = {}
 ) {
   const imageDataUrl = draft?.imageDataUrl ?? null;
-  const unavailableHint = availability.pulid
+  const family = detectWorkflowModelFamily(workflowJson as Parameters<typeof detectWorkflowModelFamily>[0]);
+  const isAvailable = family === "anima" ? availability.animaInContext : availability.pulid;
+  const featureLabel = family === "anima" ? "キャラクター参照（Anima In-Context・実験）" : "顔スタイル参照画像（PuLID）";
+  const unavailableHint = isAvailable
     ? ""
-    : `<p class="section-hint">PuLID が未導入のため顔参照は適用されません(モデル選択→Chroma で確認してください)。</p>`;
+    : `<p class="section-hint">${family === "anima" ? "Anima In-Context のノード/adapter" : "PuLID"} が未導入または未確認のため参照は適用されません(モデル選択で確認してください)。</p>`;
   // 「最近使った画像」ピッカー: 過去の生成で使った参照画像を1クリックで再利用できる
   // (Book のページ間で同じキャラ顔を使い回す用途)。
   const recentPicker = recentReferenceImages.length
@@ -310,7 +314,7 @@ function renderReferenceImageSection(
     : "";
   return `
     <section class="sidebar-section reference-image-section">
-      <p class="section-kicker">顔スタイル参照画像（PuLID）</p>
+      <p class="section-kicker">${featureLabel}</p>
       ${imageDataUrl
         ? `
           <div class="reference-image-preview">

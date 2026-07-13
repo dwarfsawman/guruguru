@@ -69,7 +69,7 @@ export interface PasteCompositeOptions {
 
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。顔スタイル参照
- * (PuLID)の参照元。face が false でも imageDataUrl/imagePath を持ちうる(先に画像だけ
+ * (PuLID / Anima In-Context)の参照元。face が false でも imageDataUrl/imagePath を持ちうる(先に画像だけ
  * 取り込んでおくケース)。inpaint.maskDataUrl と同じ規約で、保存後は imageDataUrl を
  * null化して request_json に残さない。
  */
@@ -79,6 +79,13 @@ export interface ReferenceImageOptions {
   /** Server-resolved Character appearance binding. The client cannot provide a local file path. */
   characterBinding?: { characterId: string; providerId: string } | null;
   face: { enabled: boolean };
+  /** Experimental Anima identity conditioning. Availability is gated server-side per workflow family. */
+  animaInContext?: {
+    enabled: boolean;
+    strength?: number;
+    startPercent?: number;
+    endPercent?: number;
+  } | null;
 }
 
 /**

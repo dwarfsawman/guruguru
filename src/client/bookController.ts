@@ -18,7 +18,7 @@ import {
 import { clearPasteCaches } from "./pasteObjectController";
 import { resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
 import { captureGenerationDraft, rememberActiveRoundDraft, restoreGenerationDraftForRound } from "./generationDraft";
-import { refreshModelCheck } from "./modelCheckController";
+import { refreshModelCheck, refreshModelCheckForTemplate } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
 import { confirmDialog } from "./confirmDialogController";
@@ -99,6 +99,7 @@ export async function openPage(pageId: string) {
   state.iterationScrollReset = true;
   requestRender();
   resumeAutoCollectForActiveRounds();
+  refreshModelCheckForTemplate();
   void refreshRecentReferenceImages();
 }
 

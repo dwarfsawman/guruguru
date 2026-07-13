@@ -52,6 +52,26 @@ test("matchRequirements: basename match with backslash subfolder is available", 
   assert.equal(result[0].available, true);
 });
 
+test("matchRequirements: exact-path feature adapter does not accept a basename in a subfolder", () => {
+  const requirements = [
+    requirement({
+      kind: "lora",
+      name: "anima-incontext-character.safetensors",
+      loaderClass: "LoraLoaderModelOnly",
+      inputName: "lora_name",
+      feature: "animaInContext",
+      matchBasename: false
+    })
+  ];
+  const choices = new Map([
+    ["LoraLoaderModelOnly::lora_name", ["experimental\\anima-incontext-character.safetensors"]]
+  ]);
+
+  assert.equal(matchRequirements(requirements, choices)[0].available, false);
+  choices.set("LoraLoaderModelOnly::lora_name", ["anima-incontext-character.safetensors"]);
+  assert.equal(matchRequirements(requirements, choices)[0].available, true);
+});
+
 test("matchRequirements: missing file among known choices is unavailable", () => {
   const requirements = [requirement()];
   const choices = new Map([["VAELoader::vae_name", ["other.safetensors"]]]);

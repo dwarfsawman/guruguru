@@ -33,8 +33,6 @@ import type {
 
 export type HistoryImage = { nodeId: string; filename: string; subfolder?: string; type?: string };
 
-const modelFamily = "chroma";
-
 /** comfy の providerOptions として許可されるキー(S1 v2: providerOptions の規律)。 */
 interface ComfyProviderOptions {
   generationMode?: string;
@@ -62,12 +60,21 @@ export function normalizeComfyProviderOptions(raw: unknown): ComfyProviderOption
 
 /**
  * recipe(workflow_templates.id + version)単位で能力を解決する(S1 v2: `resolveCapabilities(recipe)`)。
- * ComfyProvider は v1 時点では recipe ごとの差異を持たない(単一モデルファミリー "chroma")ため、
- * recipe 引数は結果の `recipe` に反映されず、記録用の受け口として温存する(将来テンプレごとに
- * 能力が変わる場合はここで分岐する)。
+ * テンプレートJSONからモデルファミリーを判定し、対応するidentity機能の可用性を返す。
  */
 async function resolveCapabilities(recipe: { recipeId: string; revision?: string }): Promise<ProviderCapabilities> {
-  void recipe;
+  const template = getRow<{ workflow_json: string }>(
+    "SELECT workflow_json FROM workflow_templates WHERE id = ? AND deleted_at IS NULL",
+    [recipe.recipeId]
+  );
+  let modelFamily: "chroma" | "anima" = "chroma";
+  if (template) {
+    try {
+      modelFamily = detectWorkflowModelFamily(JSON.parse(template.workflow_json));
+    } catch {
+      // Invalid workflow JSON is reported by submit; capability resolution remains conservative.
+    }
+  }
   const checkedAt = new Date().toISOString();
   const status = await getComfyStatus();
   if (!status.ok) {
@@ -90,7 +97,7 @@ async function resolveCapabilities(recipe: { recipeId: string; revision?: string
     };
   }
 
-  const availability = await resolveFeatureAvailability();
+  const availability = await resolveFeatureAvailability(modelFamily);
   return {
     providerId: "comfy",
     displayName: "ComfyUI",
@@ -100,7 +107,7 @@ async function resolveCapabilities(recipe: { recipeId: string; revision?: string
       inpaint: true,
       controlPose: availability.controlnet,
       controlEdge: null,
-      identityReference: availability.pulid,
+      identityReference: modelFamily === "anima" ? availability.animaInContext : availability.pulid,
       styles: true,
       pageGeneration: false
     },

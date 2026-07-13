@@ -18,6 +18,7 @@ export type ModelKind =
   | "diffusionModel"
   | "textEncoder"
   | "vae"
+  | "lora"
   | "controlnet"
   | "pulid";
 
@@ -26,7 +27,7 @@ export type ModelKind =
  * トグル対象外)。それ以外はユーザーが任意にON/OFFできる機能で、`Docs/Feature-ConsistentCharacter.md`
  * の「必要ノードパック」表に対応する。
  */
-export type FeatureKey = "base" | "controlnet" | "pulid";
+export type FeatureKey = "base" | "controlnet" | "pulid" | "animaInContext";
 
 export interface WorkflowModelRequirement {
   kind: ModelKind;
@@ -34,6 +35,8 @@ export interface WorkflowModelRequirement {
   loaderClass: string;
   inputName: string;
   feature: FeatureKey;
+  /** Some feature adapters must be installed at the exact ComfyUI choice path. Defaults to true. */
+  matchBasename?: boolean;
 }
 
 const INPUT_NAME_TO_KIND: Record<string, ModelKind> = {
@@ -54,6 +57,7 @@ export const MODEL_TARGET_DIRS: Record<ModelKind, string> = {
   diffusionModel: "models/diffusion_models",
   textEncoder: "models/text_encoders",
   vae: "models/vae",
+  lora: "models/loras",
   controlnet: "models/controlnet",
   pulid: "models/pulid"
 };
@@ -63,6 +67,7 @@ export const KIND_TO_FEATURE: Record<ModelKind, FeatureKey> = {
   diffusionModel: "base",
   textEncoder: "base",
   vae: "base",
+  lora: "base",
   controlnet: "controlnet",
   pulid: "pulid"
 };

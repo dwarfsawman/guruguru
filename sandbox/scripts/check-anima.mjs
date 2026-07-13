@@ -46,83 +46,17 @@ function nodeInputChoices(objectInfo, classType, inputName) {
   return Array.isArray(schema?.[0]) ? schema[0].map(String) : [];
 }
 
-function fileBasename(path) {
-  return String(path).replaceAll("\\", "/").split("/").at(-1) ?? "";
-}
-
 function animaInContextAvailability(objectInfo) {
   const nodes = Object.fromEntries(
     ANIMA_INCONTEXT_NODES.map((classType) => [classType, Boolean(objectInfo?.[classType])])
   );
   const adapterName = nodeInputChoices(objectInfo, "LoraLoaderModelOnly", "lora_name")
-    .find((name) => fileBasename(name) === ANIMA_INCONTEXT_ADAPTER) ?? null;
+    .find((name) => name === ANIMA_INCONTEXT_ADAPTER) ?? null;
   return {
     available: nodes.AnimaRefEncode && nodes.AnimaInContextApply && adapterName !== null,
     nodes,
     adapterName
   };
-}
-
-function sameConnection(value, expected) {
-  return Array.isArray(value) && value.length === 2 && value[0] === expected[0] && value[1] === expected[1];
-}
-
-function nextNodeId(prompt) {
-  return String(Math.max(0, ...Object.keys(prompt).map(Number).filter(Number.isFinite)) + 1);
-}
-
-function addNode(prompt, classType, inputs) {
-  const id = nextNodeId(prompt);
-  prompt[id] = { class_type: classType, inputs };
-  return id;
-}
-
-function findNodeId(prompt, classType) {
-  return Object.entries(prompt).find(([, node]) => node?.class_type === classType)?.[0] ?? null;
-}
-
-function attachSingleAnimaReference(prompt, { adapterName, referenceImageName, width, height }) {
-  const modelLoaderId = findNodeId(prompt, "UNETLoader");
-  const vaeLoaderId = findNodeId(prompt, "VAELoader");
-  if (!modelLoaderId || !vaeLoaderId) {
-    throw new Error("Anima in-context smoke requires UNETLoader and VAELoader in the patched workflow");
-  }
-
-  const baseModel = [modelLoaderId, 0];
-  const modelTargets = Object.entries(prompt)
-    .filter(([, node]) => sameConnection(node?.inputs?.model, baseModel))
-    .map(([nodeId]) => nodeId);
-  if (modelTargets.length === 0) {
-    throw new Error("Anima in-context smoke could not find model consumers to rewire");
-  }
-
-  const adapterId = addNode(prompt, "LoraLoaderModelOnly", {
-    model: baseModel,
-    lora_name: adapterName,
-    strength_model: 1
-  });
-  const imageId = addNode(prompt, "LoadImage", { image: referenceImageName });
-  const encodeId = addNode(prompt, "AnimaRefEncode", {
-    vae: [vaeLoaderId, 0],
-    image: [imageId, 0],
-    target_width: width,
-    target_height: height
-  });
-  const applyId = addNode(prompt, "AnimaInContextApply", {
-    model: [adapterId, 0],
-    ref_latent: [encodeId, 0],
-    strength: 1,
-    start_percent: 0,
-    end_percent: 1,
-    cond_only: true,
-    fit_mode: "pad",
-    ref_timestep: 0
-  });
-
-  for (const nodeId of modelTargets) {
-    prompt[nodeId].inputs.model = [applyId, 0];
-  }
-  return prompt;
 }
 
 async function queueAndWait(prompt, label) {
@@ -180,7 +114,7 @@ const commonRequest = {
   inpaint: null,
   controlnet: null
 };
-const featureAvailability = { controlnet: false, pulid: false };
+const featureAvailability = { controlnet: false, pulid: false, animaInContext: false };
 
 const txt2imgPrompt = patchUnifiedSwitchWorkflow(
   structuredClone(workflow),
@@ -246,24 +180,26 @@ if (!referenceImagePath) {
   }
   const referenceBytes = await sharp(await readFile(referenceImagePath)).png().toBuffer();
   const referenceName = await upload("guruguru-anima-incontext-reference.png", referenceBytes);
-  const inContextPrompt = attachSingleAnimaReference(
-    patchUnifiedSwitchWorkflow(
-      structuredClone(workflow),
-      {
-        projectId: "anima-check",
-        roundIndex: 3,
-        request: { ...commonRequest, generationMode: "txt2img" },
-        dummyImageName: dummyName,
-        featureAvailability
-      },
-      "guruguru/anima-check/incontext-single-ref"
-    ),
+  const inContextPrompt = patchUnifiedSwitchWorkflow(
+    structuredClone(workflow),
     {
-      adapterName: inContextAvailability.adapterName,
-      referenceImageName: referenceName,
-      width: commonRequest.width,
-      height: commonRequest.height
-    }
+      projectId: "anima-check",
+      roundIndex: 3,
+      request: {
+        ...commonRequest,
+        generationMode: "txt2img",
+        reference: {
+          imageDataUrl: null,
+          imagePath: referenceImagePath,
+          face: { enabled: false },
+          animaInContext: { enabled: true }
+        }
+      },
+      uploadedReferenceImageName: referenceName,
+      dummyImageName: dummyName,
+      featureAvailability: { ...featureAvailability, animaInContext: true }
+    },
+    "guruguru/anima-check/incontext-single-ref"
   );
   inContext.generation = await queueAndWait(inContextPrompt, "in-context-single-ref");
 }

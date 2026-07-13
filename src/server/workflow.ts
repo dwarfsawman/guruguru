@@ -28,6 +28,7 @@ export { ensureWorkflowObject, hashJson, normalizeRoleMap, isUnifiedSwitchWorkfl
 export interface FeatureAvailabilityFlags {
   controlnet: boolean;
   pulid: boolean;
+  animaInContext?: boolean;
 }
 
 export interface PatchContext {
@@ -38,7 +39,7 @@ export interface PatchContext {
   uploadedImageName?: string | null;
   uploadedMaskName?: string | null;
   uploadedControlImageName?: string | null;
-  // Consistent Character reference image (face-style / PuLID).
+  // Consistent Character reference image (PuLID / experimental Anima In-Context).
   uploadedReferenceImageName?: string | null;
   featureAvailability?: FeatureAvailabilityFlags | null;
   // Placeholder image filename (already uploaded to ComfyUI) for image inputs on branches a

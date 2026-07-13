@@ -879,7 +879,11 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
       generationMode: "txt2img",
       loras: references.loras,
       reference: references.primaryCharacterBinding
-        ? { characterBinding: references.primaryCharacterBinding, face: { enabled: true } }
+        ? {
+            characterBinding: references.primaryCharacterBinding,
+            face: { enabled: true },
+            animaInContext: { enabled: true }
+          }
         : null,
       providerId: config.providerId
     };

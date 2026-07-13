@@ -542,10 +542,21 @@ async function prepareReferenceRequest(
 
 function normalizeReferenceOptions(rawReference: Record<string, unknown>, imagePath: string): ReferenceImageOptions {
   const rawFace = isJsonObject(rawReference.face) ? (rawReference.face as Record<string, unknown>) : null;
+  const rawAnima = isJsonObject(rawReference.animaInContext)
+    ? (rawReference.animaInContext as Record<string, unknown>)
+    : null;
   return {
     imageDataUrl: null,
     imagePath,
-    face: { enabled: Boolean(rawFace?.enabled) }
+    face: { enabled: Boolean(rawFace?.enabled) },
+    animaInContext: rawAnima
+      ? {
+          enabled: Boolean(rawAnima.enabled),
+          strength: clampFloat(numberOr(rawAnima.strength, 1), 0, 2),
+          startPercent: clampFloat(numberOr(rawAnima.startPercent, 0), 0, 1),
+          endPercent: clampFloat(numberOr(rawAnima.endPercent, 1), 0, 1)
+        }
+      : null
   };
 }
 

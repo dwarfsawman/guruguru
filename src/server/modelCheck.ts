@@ -13,7 +13,10 @@ import type { ModelCheckEntry, ModelCheckFeatureStatus, ModelCheckResult } from 
 const REQUIRED_CORE_NODES = ["ComfySwitchNode", "PrimitiveBoolean"] as const;
 // Features tracked for togglable availability -- "base" (the 4 always-required models) is
 // excluded, it is not something a user can turn on/off.
-const TOGGLABLE_FEATURES: FeatureKey[] = ["controlnet", "pulid"];
+const TOGGLABLE_FEATURES: Record<ModelFamily, FeatureKey[]> = {
+  chroma: ["controlnet", "pulid"],
+  anima: ["animaInContext"]
+};
 
 const referencePaths: Record<ModelFamily, string> = {
   chroma: fileURLToPath(new URL("../../Docs/ReferenceFlows/Reference-UnifiedSwitchWorkflow.json", import.meta.url)),
@@ -33,7 +36,7 @@ export function matchRequirements(
 ): ModelCheckEntry[] {
   return requirements.map((requirement) => {
     const choices = choicesByRequirement.get(choiceKey(requirement.loaderClass, requirement.inputName));
-    const available = choices == null ? null : matchesAny(choices, requirement.name);
+    const available = choices == null ? null : matchesRequirement(choices, requirement);
 
     return {
       kind: requirement.kind,
@@ -49,6 +52,12 @@ export function matchRequirements(
 
 function matchesAny(choices: string[], name: string): boolean {
   return choices.some((choice) => choice === name || basenameOf(choice) === basenameOf(name));
+}
+
+function matchesRequirement(choices: string[], requirement: WorkflowModelRequirement): boolean {
+  return requirement.matchBasename === false
+    ? choices.some((choice) => choice === requirement.name)
+    : matchesAny(choices, requirement.name);
 }
 
 function basenameOf(path: string): string {
@@ -81,7 +90,9 @@ async function runRawCheck(family: ModelFamily): Promise<RawCheck> {
   const workflow = JSON.parse(readFileSync(referencePaths[family], "utf8"));
   const requirements = [
     ...extractModelRequirements(workflow),
-    ...(family === "chroma" ? FEATURE_MODEL_REQUIREMENTS : [])
+    ...FEATURE_MODEL_REQUIREMENTS.filter((requirement) =>
+      family === "anima" ? requirement.feature === "animaInContext" : requirement.feature !== "animaInContext"
+    )
   ];
 
   const loaderClasses = [...new Set(requirements.map((r) => r.loaderClass))];
@@ -119,7 +130,7 @@ function isFeatureAvailable(raw: RawCheck, feature: FeatureKey): boolean {
     .filter((requirement) => requirement.feature === feature)
     .every((requirement) => {
       const choices = raw.choicesByRequirement.get(choiceKey(requirement.loaderClass, requirement.inputName));
-      return choices != null && matchesAny(choices, requirement.name);
+      return choices != null && matchesRequirement(choices, requirement);
     });
   return nodePacksOk && modelsOk;
 }
@@ -141,7 +152,7 @@ export async function checkModels(family: ModelFamily): Promise<ModelCheckResult
       comfy: { ok: false, baseUrl: settings.baseUrl, error: errorMessage(error) },
       nodes: REQUIRED_CORE_NODES.map((classType) => ({ classType, available: false })),
       models: [],
-      features: (family === "chroma" ? TOGGLABLE_FEATURES : []).map((key) => ({
+      features: TOGGLABLE_FEATURES[family].map((key) => ({
         key,
         label: FEATURE_LABELS[key],
         available: null,
@@ -159,7 +170,7 @@ export async function checkModels(family: ModelFamily): Promise<ModelCheckResult
     available: isNodePresent(raw.objectInfoByClass.get(classType), classType)
   }));
 
-  const features: ModelCheckFeatureStatus[] = (family === "chroma" ? TOGGLABLE_FEATURES : []).map((key) => {
+  const features: ModelCheckFeatureStatus[] = TOGGLABLE_FEATURES[family].map((key) => {
     const available = raw.comfyOk ? isFeatureAvailable(raw, key) : null;
     const missingNodePacks = FEATURE_NODE_PACKS[key].filter(
       (pack) => !isNodePackPresent(raw.objectInfoByClass.get(pack.representativeClass), pack)
@@ -203,10 +214,11 @@ export async function listAvailableLoras(): Promise<{ ok: boolean; loras: string
 export interface FeatureAvailability {
   controlnet: boolean;
   pulid: boolean;
+  animaInContext: boolean;
 }
 
 const FEATURE_AVAILABILITY_CACHE_MS = 10_000;
-let cachedAvailability: { value: FeatureAvailability; expiresAt: number } | null = null;
+const cachedAvailability = new Map<ModelFamily, { value: FeatureAvailability; expiresAt: number }>();
 
 /**
  * 生成のたびにフラグメント注入をゲートするための、真偽値のみの可用性。ComfyUI 未接続時は
@@ -215,29 +227,28 @@ let cachedAvailability: { value: FeatureAvailability; expiresAt: number } | null
  * (手動の「再チェック」`checkModels()` は常に非キャッシュ)。
  */
 export async function resolveFeatureAvailability(family: ModelFamily = "chroma"): Promise<FeatureAvailability> {
-  if (family === "anima") {
-    return { controlnet: false, pulid: false };
-  }
   const now = Date.now();
-  if (cachedAvailability && cachedAvailability.expiresAt > now) {
-    return cachedAvailability.value;
+  const cached = cachedAvailability.get(family);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
   }
 
   let raw: RawCheck;
   try {
     raw = await runRawCheck(family);
   } catch {
-    return { controlnet: false, pulid: false };
+    return { controlnet: false, pulid: false, animaInContext: false };
   }
 
   const value: FeatureAvailability = raw.comfyOk
     ? {
-        controlnet: isFeatureAvailable(raw, "controlnet"),
-        pulid: isFeatureAvailable(raw, "pulid")
+        controlnet: family === "chroma" && isFeatureAvailable(raw, "controlnet"),
+        pulid: family === "chroma" && isFeatureAvailable(raw, "pulid"),
+        animaInContext: family === "anima" && isFeatureAvailable(raw, "animaInContext")
       }
-    : { controlnet: false, pulid: false };
+    : { controlnet: false, pulid: false, animaInContext: false };
 
-  cachedAvailability = { value, expiresAt: now + FEATURE_AVAILABILITY_CACHE_MS };
+  cachedAvailability.set(family, { value, expiresAt: now + FEATURE_AVAILABILITY_CACHE_MS });
   return value;
 }
 

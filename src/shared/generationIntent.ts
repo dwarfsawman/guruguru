@@ -209,7 +209,7 @@ function resolveControl(request: GenerationRequest, ctx: ToGenerationIntentConte
  */
 function resolveIdentity(request: GenerationRequest, ctx: ToGenerationIntentContext): GenerationIntent["identity"] {
   const reference = request.reference;
-  if (reference?.face?.enabled && reference.imagePath) {
+  if ((reference?.face?.enabled || reference?.animaInContext?.enabled) && reference.imagePath) {
     return { face: { kind: "roundAttachment", roundId: ctx.roundId, attachment: "reference" } };
   }
   if (request.generationMode === "ipadapter" && request.parentAssetId) {

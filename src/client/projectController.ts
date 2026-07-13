@@ -11,7 +11,7 @@ import { readForm } from "./formUtils";
 import { applyAssetDimensionsToDraft, generationDraftFromForm } from "./generationDraft";
 import { refreshProject, resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
 import { refreshComfyStatus, refreshLlmStatus } from "./settingsController";
-import { refreshModelCheck } from "./modelCheckController";
+import { refreshModelCheckForTemplate } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
 import { clearBookSession, openBook } from "./bookController";
@@ -64,9 +64,8 @@ async function openProject(projectId: string) {
   state.iterationScrollReset = true;
   requestRender();
   resumeAutoCollectForActiveRounds();
-  // 顔スタイル参照(PuLID)トグルの disabled 判定に使うため、
-  // モーダルを開かなくても機能可用性を先取りしておく(Docs/Feature-ConsistentCharacter.md)。
-  void refreshModelCheck("chroma");
+  // 選択中workflow familyのidentity機能可用性を先取りする。
+  refreshModelCheckForTemplate();
   void refreshLoraChoices();
   void refreshRecentReferenceImages();
 }
