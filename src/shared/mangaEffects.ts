@@ -1,8 +1,13 @@
 import { panelBounds, type LayoutPanel } from "./pageLayout";
 import type { PanelSpec } from "./mangaPlanV2";
-import type { BoxObject } from "./pageObjects";
+import type { BoxObject, PageObject } from "./pageObjects";
 
 export type MangaEffectKind = "focus-lines" | "speed-lines" | "none";
+
+/** 自動付与していた集中線・スピード線オブジェクトを識別する。 */
+export function isMangaEffectObject(object: Pick<PageObject, "id" | "kind">): boolean {
+  return object.kind === "box" && /^(effect:[^:]+:(?:focus-lines|speed-lines)):\d+$/.test(object.id);
+}
 
 export function inferMangaEffect(panel: PanelSpec): MangaEffectKind {
   const text = `${panel.shot.compositionIntent} ${panel.cast.map((member) => member.action).join(" ")}`;
@@ -11,7 +16,7 @@ export function inferMangaEffect(panel: PanelSpec): MangaEffectKind {
   return "none";
 }
 
-/** 既存BoxObjectだけで効果線を表現し、SVG/ORA/PPTX/PNGの全既存経路へ自動的に載せる。 */
+/** 効果線を明示的に有効化する場合の生成ロジック。標準のmaterialize経路では使用しない。 */
 export function createMangaEffectObjects(panel: PanelSpec, layoutPanel: LayoutPanel): BoxObject[] {
   const kind = inferMangaEffect(panel);
   if (kind === "none") return [];

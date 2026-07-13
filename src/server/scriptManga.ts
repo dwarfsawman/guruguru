@@ -25,7 +25,7 @@ import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
 import { normalizePageObjects, type BalloonObject } from "../shared/pageObjects";
 import { splitDialogueUnits, type DialogueUnit } from "../shared/dialogueAdaptation";
 import { auditLettering } from "../shared/letteringQuality";
-import { createMangaEffectObjects } from "../shared/mangaEffects";
+import { isMangaEffectObject } from "../shared/mangaEffects";
 import { fitPageBalloonText } from "./balloonTextFit";
 import { compilePanelConditioning } from "./panelPromptCompiler";
 import { inferPromptProfile } from "./templates";
@@ -845,12 +845,10 @@ function materializeRun(runId: string): void {
     }
     const pageObjectRow = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
     const existingPageObjects = normalizePageObjects(pageObjectRow?.objects_json ? JSON.parse(pageObjectRow.objects_json) : []);
-    const existingObjectIds = new Set(existingPageObjects.map((object) => object.id));
-    const effectObjects = pageSpec.panels.flatMap((panel, index) => createMangaEffectObjects(panel, layoutPanels[index]!))
-      .filter((object) => !existingObjectIds.has(object.id));
-    if (effectObjects.length > 0) {
+    const pageObjectsWithoutMangaEffects = existingPageObjects.filter((object) => !isMangaEffectObject(object));
+    if (pageObjectsWithoutMangaEffects.length !== existingPageObjects.length) {
       runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
-        JSON.stringify([...existingPageObjects, ...effectObjects]), pageId
+        JSON.stringify(pageObjectsWithoutMangaEffects), pageId
       ]);
     }
     ensureDialogueLettering(run, pageId, pageSpec, layoutPanels, dialogueSnapshots, plan.dialoguePolicy,

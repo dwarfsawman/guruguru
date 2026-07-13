@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createMangaEffectObjects, inferMangaEffect } from "./mangaEffects.ts";
+import { createMangaEffectObjects, inferMangaEffect, isMangaEffectObject } from "./mangaEffects.ts";
 import type { PanelSpec } from "./mangaPlanV2.ts";
 import type { LayoutPanel } from "./pageLayout.ts";
 
@@ -14,4 +14,11 @@ test("composition/shotから集中線を決定的生成する", () => {
   const first = createMangaEffectObjects(panel, layoutPanel);
   assert.equal(first.length, 12);
   assert.deepEqual(first, createMangaEffectObjects(panel, layoutPanel));
+});
+
+test("自動付与済みの集中線・スピード線オブジェクトを識別する", () => {
+  assert.equal(isMangaEffectObject({ kind: "box", id: "effect:p1:focus-lines:0" }), true);
+  assert.equal(isMangaEffectObject({ kind: "box", id: "effect:p2:speed-lines:8" }), true);
+  assert.equal(isMangaEffectObject({ kind: "box", id: "user-box:0" }), false);
+  assert.equal(isMangaEffectObject({ kind: "image", id: "effect:p1:focus-lines:0" }), false);
 });
