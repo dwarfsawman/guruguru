@@ -613,7 +613,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
         ? await retryScriptMangaTask(scriptMangaTaskActionMatch[1]!)
         : scriptMangaTaskActionMatch[2] === "audit"
           ? await auditScriptMangaTask(scriptMangaTaskActionMatch[1]!)
-          : selectScriptMangaTaskCandidate(scriptMangaTaskActionMatch[1]!, await readJson(req))
+          : await selectScriptMangaTaskCandidate(scriptMangaTaskActionMatch[1]!, await readJson(req))
     );
     return;
   }

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { createId, defaultVlmAuditSettings, getRow, getRows, initializeDb, runSql, setSetting } from "./db.ts";
 import { createCharacter, listCharacters, putCharacterBinding } from "./characters.ts";
@@ -170,7 +171,7 @@ test("createScriptMangaRun awaits candidate review before assigning batch-1 pane
 
   let completed = awaitingReview;
   for (const task of awaitingReview.tasks) {
-    completed = selectScriptMangaTaskCandidate(task.id, { assetId: task.candidateAssetIds[0]! });
+    completed = await selectScriptMangaTaskCandidate(task.id, { assetId: task.candidateAssetIds[0]! });
   }
   assert.equal(completed.status, "completed");
   assert.equal(completed.phase, "completed");
@@ -262,7 +263,7 @@ test("VLM audit scores generated candidates and still requires a human selection
     const rejectedScores = JSON.parse(persisted);
     rejectedScores.vlmAudit.reports[0].passed = false;
     runSql("UPDATE script_manga_tasks SET scores_json = ? WHERE id = ?", [JSON.stringify(rejectedScores), queued.tasks[0]!.id]);
-    assert.throws(
+    await assert.rejects(
       () => selectScriptMangaTaskCandidate(queued.tasks[0]!.id, { assetId: audited.tasks[0]!.candidateAssetIds[0]! }),
       /failed VLM audit/
     );
@@ -668,4 +669,125 @@ test("character aliases and bindings feed PanelSpec references and the generatio
   assert.ok(request.reference.imagePath.length > 0);
   assert.equal(intent.identity.face.kind, "roundAttachment");
   assert.equal(intent.identity.face.attachment, "reference");
+});
+
+test("figure スロット付きレイアウトの採用は切り抜き ImageObject を作り、矩形割当を残さない", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-figure-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const projectId = project!.id as string;
+  const imported = createScript(projectId, {
+    title: "Figure",
+    fountainSource: [
+      "INT. LAB - NIGHT",
+      "",
+      "Alice enters the lab.",
+      "",
+      "@Alice",
+      "ここはどこ？",
+      "",
+      "@Mira",
+      "旧研究棟です。",
+      "",
+      "Alice walks to the window.",
+      "",
+      "@Alice",
+      "広いね。",
+      "",
+      "@Mira",
+      "はい。",
+      "",
+      "Alice stands tall.",
+      "",
+      "@Alice",
+      "行こう。"
+    ].join("\n")
+  });
+  const prepared = await createScriptMangaRun(projectId, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false
+  });
+  assert.equal(prepared.pageCount, 1);
+  assert.equal(prepared.panelCount, 3);
+
+  // 監督(または provided plan 作者)が figure スロット付きレイアウトを選んだ状況を再現する。
+  const plan = structuredClone(prepared.plan!);
+  plan.pages[0]!.layoutTemplateId = "builtin:three-figure-left";
+  updateScriptMangaPlan(prepared.planId!, { plan });
+  approveScriptMangaRun(prepared.id);
+  const started = await startScriptMangaRun(prepared.id);
+  for (const task of started.tasks) {
+    assert.ok(task.roundId);
+    await collectRound(task.roundId!);
+  }
+
+  const awaitingReview = getScriptMangaRun(prepared.id);
+  assert.equal(awaitingReview.status, "awaiting_review");
+  const figureTask = awaitingReview.tasks.find((task) => task.panelId === "figure");
+  assert.ok(figureTask, "figure スロットの task が存在すること");
+  const figureSpec = JSON.parse(
+    getRow<{ panel_spec_json: string }>("SELECT panel_spec_json FROM script_manga_tasks WHERE id = ?", [figureTask!.id])!
+      .panel_spec_json
+  ) as { role?: string; compiledPrompt: string; cast: unknown[] };
+  assert.equal(figureSpec.role, "figure");
+  assert.match(figureSpec.compiledPrompt, /white background/);
+  assert.equal(figureSpec.cast.length, 1);
+
+  // fake provider の候補画像を「白背景の全身立ち絵」に差し替えてから採用する。
+  const figureAssetId = figureTask!.candidateAssetIds[0]!;
+  const figureAsset = getRow<{ image_path: string }>("SELECT image_path FROM assets WHERE id = ?", [figureAssetId])!;
+  const figureSvg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="420">`,
+    `<rect width="240" height="420" fill="#ffffff"/>`,
+    `<ellipse cx="120" cy="90" rx="40" ry="46" fill="#aa3344"/>`,
+    `<rect x="85" y="130" width="70" height="240" fill="#443366"/>`,
+    `</svg>`
+  ].join("");
+  const sharpModule = (await import("sharp")).default;
+  await writeFile(figureAsset.image_path, await sharpModule(Buffer.from(figureSvg)).png().toBuffer());
+
+  let view = awaitingReview;
+  for (const task of awaitingReview.tasks) {
+    view = await selectScriptMangaTaskCandidate(task.id, { assetId: task.candidateAssetIds[0]! });
+  }
+  assert.equal(view.status, "completed");
+
+  const pageObjects = JSON.parse(
+    getRow<{ objects_json: string }>("SELECT objects_json FROM pages WHERE id = ?", [figureTask!.pageId])!.objects_json
+  ) as Array<Record<string, unknown>>;
+  const figureObject = pageObjects.find((object) => object.id === "figure_figure");
+  assert.ok(figureObject, "figure ImageObject が作られること");
+  assert.equal(figureObject!.kind, "image");
+  assert.equal(figureObject!.band, "front");
+  assert.equal(figureObject!.clipPanelId ?? null, null);
+
+  const media = getRow<{ id: string; file_path: string; source_asset_id: string | null }>(
+    "SELECT id, file_path, source_asset_id FROM page_media WHERE id = ?",
+    [figureObject!.mediaId as string]
+  );
+  assert.ok(media, "page_media 行が作られること");
+  assert.equal(media!.source_asset_id, figureAssetId);
+  assert.ok(existsSync(media!.file_path), "切り抜き PNG が保存されること");
+
+  const assignments = getRows<{ panel_id: string }>(
+    "SELECT panel_id FROM page_panel_assignments WHERE page_id = ?",
+    [figureTask!.pageId]
+  );
+  assert.equal(assignments.length, 2, "矩形割当は story コマ2つだけ");
+  assert.ok(assignments.every((row) => row.panel_id !== "figure"));
+
+  const evaluation = JSON.parse(
+    getRow<{ evaluation_json: string }>("SELECT evaluation_json FROM script_manga_runs WHERE id = ?", [prepared.id])!
+      .evaluation_json
+  ) as { figures?: Record<string, { state?: string }> };
+  assert.equal(evaluation.figures?.[figureTask!.id]?.state, "cutout");
+
+  // 立ち絵の再レタリング後も全 placement が吹き出し化されたまま。
+  assert.equal(
+    getRows("SELECT id FROM dialogue_placements WHERE page_id = ? AND balloon_object_id IS NULL", [figureTask!.pageId]).length,
+    0
+  );
 });

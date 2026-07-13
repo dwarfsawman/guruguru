@@ -14,6 +14,7 @@ import {
   type WorldState
 } from "../shared/mangaPlanV2";
 import type { ScriptMangaPanelPlan, ScriptMangaPlan } from "../shared/scriptMangaPlan";
+import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
 import type { PageLayout } from "../shared/pageLayout";
 import type { StyleLoraSelection } from "../shared/types";
 import { extractFillUnits } from "../shared/dialogueAdaptation";
@@ -193,13 +194,17 @@ export function buildMangaPlanV2(input: {
     const resolvedLayout = input.resolveLayoutTemplate(page.layoutTemplateId);
     if (!resolvedLayout) throw new Error(`Layout template could not be resolved: ${page.layoutTemplateId}`);
     const layoutSnapshot = JSON.parse(JSON.stringify(resolvedLayout)) as PageLayout;
+    // plan panels[index] は layout の reading-order スロットへ対応する(materialize と同じ規約)。
+    // figure スロットに落ちた panel には role を写し、プロンプトを立ち絵仕様へ切り替える。
+    const orderedLayoutPanels = orderPanelsByReadingDirection(layoutSnapshot.panels, layoutSnapshot.readingDirection);
     return {
       index: page.index,
       title: page.title,
       layoutTemplateId: page.layoutTemplateId,
       layoutSnapshot,
       pageIntent: pageIntent(page),
-      panels: page.panels.map((legacyPanel): PanelSpec => {
+      panels: page.panels.map((legacyPanel, panelIndexOnPage): PanelSpec => {
+      const layoutRole = orderedLayoutPanels[panelIndexOnPage]?.role;
       const direction = panelDirection(legacyPanel);
       const dialogueLines = legacyPanel.dialogueOrderIndexes
         .map((order) => story.dialogueByOrder.get(order))
@@ -229,6 +234,17 @@ export function buildMangaPlanV2(input: {
       });
       const settingId = story.settingIdByScene.get(legacyPanel.sceneIndex) ?? `setting:${input.scriptRevisionId}:scene-${legacyPanel.sceneIndex}`;
       const focalSubjectId = findFocalSubject(direction.subject, cast, [...story.characterById.values()], settingId);
+      // figure スロットは単独の全身立ち絵。focal subject 1人へ絞り、bbox はスロットほぼ全面にする
+      // (吹き出し回避ゾーン・切り抜き後の配置サイズの基準にもなる)。
+      let effectiveCast = cast;
+      if (layoutRole === "figure" && cast.length > 0) {
+        const focal = cast.find((member) => member.characterId === focalSubjectId) ?? cast[0]!;
+        effectiveCast = [{
+          ...focal,
+          bbox: { x: 0.1, y: 0.04, width: 0.8, height: 0.92 },
+          pose: focal.pose || "standing full body"
+        }];
+      }
       const sourceElementIds = inferSourceIds(legacyPanel, input.scriptRevisionId, story.graph.sourceElements);
       const fillUnitIds = fillUnits.filter((unit) =>
         (unit.sourceElementId && sourceElementIds.includes(unit.sourceElementId)) ||
@@ -286,12 +302,13 @@ export function buildMangaPlanV2(input: {
       const promptBase = stripDialogueWording(legacyPanel.prompt, dialogueLines);
       const provisional: PanelSpec = {
         id: legacyPanel.id,
+        ...(layoutRole === "figure" ? { role: "figure" as const } : {}),
         sourceElementIds,
         beatIds: [beatId],
         preStateId,
         postStateDelta,
         settingId,
-        cast,
+        cast: effectiveCast,
         props,
         shot: {
           size: shotSize(direction.shot),
@@ -304,7 +321,7 @@ export function buildMangaPlanV2(input: {
         dialogueOrderIndexes: [...legacyPanel.dialogueOrderIndexes],
         textSafeZones: provisionalSafeZones(dialogueLines.length),
         mustShow: [
-          ...cast.map((member) => ({ kind: "entity-present" as const, entityId: member.characterId, description: `show ${member.characterId}` })),
+          ...effectiveCast.map((member) => ({ kind: "entity-present" as const, entityId: member.characterId, description: `show ${member.characterId}` })),
           ...props.map((prop) => ({ kind: "entity-present" as const, entityId: prop.entityId, description: `show ${prop.entityId}` })),
           { kind: "action", description: action }
         ],
@@ -323,7 +340,7 @@ export function buildMangaPlanV2(input: {
       const references = resolvePanelReferences({
         projectId: input.projectId,
         providerId: input.providerId,
-        cast,
+        cast: effectiveCast,
         focalSubjectId,
         globalLoras: input.globalLoras
       });
@@ -335,7 +352,7 @@ export function buildMangaPlanV2(input: {
         dialogueById,
         narrativeMetadata: input.legacyPlan.plannerProvenance?.kind === "llm-director" ? "english-directed" : "append"
       });
-      for (const member of cast) {
+      for (const member of effectiveCast) {
         if (!references.manifest.some((reference) => reference.entityId === member.characterId)) {
           story.graph.warnings.push({
             code: "missing-reference",

@@ -204,6 +204,22 @@ export async function storePageMediaImage(projectId: string, mediaId: string, so
   return { filePath, width: size?.width ?? null, height: size?.height ?? null };
 }
 
+/**
+ * 加工済みバイト列(ぶち抜き立ち絵の切り抜き PNG 等、Docs/Feature-MangaCompositions.md)を
+ * page 所有メディアとして保存する。ファイル配置・寿命の規約は `storePageMediaImage` と同じ。
+ */
+export async function storePageMediaBuffer(projectId: string, mediaId: string, bytes: Buffer, ext = ".png"): Promise<StoredPageMedia> {
+  const storage = ensureProjectStorage(projectId);
+  const baseName = `${sanitizeBaseName(mediaId)}${ext.startsWith(".") ? ext : `.${ext}`}`;
+  const filePath = resolve(join(storage.pageMedia, baseName));
+  if (!isPathInside(filePath, resolve(storage.projectRoot))) {
+    throw new Error("Page media storage path is outside the project directory");
+  }
+  await writeFile(filePath, bytes);
+  const size = readImageSize(bytes);
+  return { filePath, width: size?.width ?? null, height: size?.height ?? null };
+}
+
 export interface StoredCharacterFace {
   filePath: string;
   width: number | null;

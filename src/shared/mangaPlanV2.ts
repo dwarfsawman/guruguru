@@ -1,10 +1,11 @@
 import type { ArtifactRef } from "./generationIntent";
 import type { PageLayout } from "./pageLayout";
 import type { DialogueUnit } from "./dialogueAdaptation";
+import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
 
 export const MANGA_PLAN_VERSION = 2 as const;
 export const MANGA_PLANNER_VERSION = "manga-plan-v2.1";
-export const PANEL_PROMPT_COMPILER_VERSION = "panel-prompt-v3.1";
+export const PANEL_PROMPT_COMPILER_VERSION = "panel-prompt-v3.2";
 
 export type DialoguePolicy = "preserve" | "adapt" | "fill" | "generate";
 export type NarrativeEntityKind = "character" | "setting" | "prop" | "vehicle" | "unknown";
@@ -144,6 +145,14 @@ export interface PanelPropSpec {
 
 export interface PanelSpec {
   id: string;
+  /**
+   * コマの役割(Docs/Feature-MangaCompositions.md)。省略 = 通常の絵コマ。"figure" は
+   * layout snapshot の `role:"figure"` スロット(reading order で対応)に対応し、
+   * プロンプトは「単独人物・全身・白背景」へ切り替わる。候補採用時に背景除去+白フチの
+   * 切り抜きが ImageObject としてコマ枠の前面へ重ねられる(コマぶち抜き立ち絵)。
+   * 実行時の正はあくまで layout snapshot 側で、materialize がここへ写す。
+   */
+  role?: "figure";
   sourceElementIds: string[];
   beatIds: string[];
   preStateId: string;
@@ -369,6 +378,28 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
           error("layout-panel-id", `Layout snapshot has a duplicate or empty panel id: ${layoutPanel?.id ?? ""}`, pageIndex);
         }
         layoutPanelIds.add(layoutPanel?.id ?? "");
+      }
+      // ぶち抜き立ち絵スロット(role:"figure"、reading order で plan panel と対応)は単独人物が
+      // 前提(Docs/Feature-MangaCompositions.md)。壊れた snapshot でも検証自体は落とさない。
+      try {
+        const orderedLayoutPanels = orderPanelsByReadingDirection(
+          snapshot.panels,
+          snapshot.readingDirection === "ltr" ? "ltr" : "rtl"
+        );
+        orderedLayoutPanels.forEach((layoutPanel, panelIndex) => {
+          if (layoutPanel.role !== "figure") return;
+          const panel = page.panels[panelIndex];
+          if (panel && panel.cast.length !== 1) {
+            warning(
+              "figure-cast-count",
+              `Figure slot panel ${panel.id} should have exactly one cast member (got ${panel.cast.length})`,
+              pageIndex,
+              panel.id
+            );
+          }
+        });
+      } catch {
+        // geometry が壊れている場合は layout-snapshot 系の error 側で報告済み。
       }
     }
     if (expectedPanelCount === null) {
