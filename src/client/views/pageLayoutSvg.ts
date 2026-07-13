@@ -92,11 +92,20 @@ function shapeElement(shape: PanelShape, stroke: string, strokeWidth: number): s
 
 function panelElement(panel: LayoutPanel, defaultStroke: string, showOrder: boolean): string {
   const frame = panel.frame ?? DEFAULT_PANEL_FRAME;
-  if (frame.visible === false) {
+  if (frame.visible === false && panel.role !== "figure") {
     return "";
   }
   const stroke = defaultStroke;
-  const parts = [shapeElement(panel.shape, stroke, frame.strokeWidth)];
+  // ぶち抜き立ち絵スロット(枠なし)は実描画では線を引かないが、サムネ/ピッカーでは破線で
+  // スロット位置が分かるようにする(Docs/Feature-MangaCompositions.md)。
+  const parts = [
+    frame.visible === false
+      ? shapeGeometryElement(
+          panel.shape,
+          `fill="none" stroke="${escapeAttr(stroke)}" stroke-width="${num(DEFAULT_PANEL_FRAME.strokeWidth * 0.75)}" stroke-dasharray="0.024 0.016" opacity="0.55"`
+        )
+      : shapeElement(panel.shape, stroke, frame.strokeWidth)
+  ];
   if (showOrder) {
     const center = shapeCenter(panel.shape);
     if (center) {

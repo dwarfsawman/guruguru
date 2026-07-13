@@ -80,6 +80,12 @@ export const DEFAULT_PANEL_FRAME: PanelFrame = {
   strokeColor: "#000000"
 };
 
+/**
+ * 裁ち切り(bleed)コマがページ外へはみ出してよい上限(page-width 単位)。内蔵プリセットの
+ * BLEED(0.015)を許容しつつ、桁違いの座標崩れは preflight(layout-geometry)で弾くための境界。
+ */
+export const PANEL_BLEED_OVERSHOOT = 0.02;
+
 const EPSILON = 1e-9;
 
 function isFiniteNumber(value: unknown): value is number {
