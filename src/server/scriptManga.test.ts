@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { writeFile } from "node:fs/promises";
 import { createId, defaultVlmAuditSettings, getRow, getRows, initializeDb, runSql, setSetting } from "./db.ts";
-import { createCharacter, putCharacterBinding } from "./characters.ts";
+import { createCharacter, listCharacters, putCharacterBinding } from "./characters.ts";
+import { approveReferenceSet, createReferenceSet, uploadReferenceSetImage } from "./referenceSets.ts";
 import { createProject } from "./projects.ts";
 import { addScriptRevision, createScript } from "./scripts.ts";
 import { collectRound } from "./rounds.ts";
@@ -36,6 +37,72 @@ function template(): string {
   );
   return id;
 }
+
+function chromaTemplate(): string {
+  initializeDb();
+  const id = createId("template");
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: { unet_name: "Chroma1-HD.safetensors" } },
+    "2": { class_type: "ModelSamplingAuraFlow", inputs: { model: ["1", 0], shift: 1 } }
+  };
+  runSql(
+    `INSERT INTO workflow_templates (id, name, description, type, version, workflow_json, role_map_json, workflow_hash)
+     VALUES (?, 'Script manga Chroma fake', '', 'txt2img', 1, ?, '{}', 'chroma-hash')`,
+    [id, JSON.stringify(workflow)]
+  );
+  return id;
+}
+
+test("approved run freezes Reference Set version and hashes across resume after appearance changes", async () => {
+  resetFakeProvider();
+  const templateId = chromaTemplate();
+  const project = createProject({ name: `script-manga-ref-snapshot-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Reference snapshot",
+    fountainSource: ["INT. ROOM - DAY", "", "@Alice", "待って。"].join("\n")
+  });
+  const alice = listCharacters(project.id).find((character) => character.name === "Alice");
+  assert.ok(alice);
+  const first = createReferenceSet(alice.id, {
+    modelFamily: "chroma",
+    variantId: `${alice.id}:default`,
+    appearanceJa: "短い銀髪、青い目、紺の上着",
+    appearancePromptEn: "short silver hair, blue eyes, navy jacket",
+    mustNotChange: ["silver hair"]
+  });
+  await uploadReferenceSetImage(first.id, "face", { imageDataUrl: TINY_PNG_DATA_URL });
+  await approveReferenceSet(first.id, {});
+  const prepared = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    requireReferenceSets: true
+  });
+  const approved = approveScriptMangaRun(prepared.id);
+  const before = approved.referenceSnapshot;
+  assert.equal(before?.sets[0]?.setId, first.id);
+  const beforeHashes = before?.sets[0]?.images.map((image) => image.checksum);
+
+  createReferenceSet(alice.id, {
+    modelFamily: "chroma",
+    variantId: `${alice.id}:default`,
+    appearanceJa: "短い銀髪、青い目、赤い上着",
+    appearancePromptEn: "short silver hair, blue eyes, red jacket",
+    mustNotChange: ["silver hair"]
+  });
+  const resumed = await resumeScriptMangaRun(prepared.id);
+  assert.equal(resumed.referenceSnapshot?.sets[0]?.setId, first.id);
+  assert.equal(resumed.referenceSnapshot?.sets[0]?.version, 1);
+  assert.deepEqual(resumed.referenceSnapshot?.sets[0]?.images.map((image) => image.checksum), beforeHashes);
+  const roundRequest = getRow<{ request_json: string }>(
+    "SELECT request_json FROM generation_rounds WHERE script_manga_task_id = ? ORDER BY created_at DESC LIMIT 1",
+    [resumed.tasks[0]!.id]
+  );
+  assert.ok(roundRequest);
+  assert.deepEqual(JSON.parse(roundRequest.request_json).reference.referenceSet, { setId: first.id, version: 1 });
+});
 
 test("createScriptMangaRun awaits candidate review before assigning batch-1 panel results", async () => {
   resetFakeProvider();

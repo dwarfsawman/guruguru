@@ -222,7 +222,8 @@ export function patchUnifiedSwitchWorkflow(
       strength: animaOptions?.strength,
       startPercent: animaOptions?.startPercent,
       endPercent: animaOptions?.endPercent
-    }
+    },
+    context.uploadedFullBodyReferenceImageName ?? null
   );
 
   return workflow;

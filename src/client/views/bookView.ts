@@ -3,7 +3,8 @@
  * ドラッグで並び替えできる。色・ボタン・トークンは既存 UI（Home の .panel / round-grid のタイル）に合わせる。
  * state は引数で受け取るため main.ts への逆依存を持たない。DnD は bookController が担当する。
  */
-import type { BookPages, PageSummary } from "../../shared/apiTypes";
+import type { BookPages, Character, PageSummary } from "../../shared/apiTypes";
+import type { CharacterReferenceImageView, CharacterReferenceSetView, ReferenceModelFamily } from "../../shared/referenceSets";
 import { escapeAttr, escapeHtml } from "../format";
 import {
   iconCheck,
@@ -21,7 +22,17 @@ import {
 } from "../icons";
 import { renderPageLayoutSvg } from "./pageLayoutSvg";
 
-export function renderBookView(book: BookPages, selectionMode = false, selectedPageIds: readonly string[] = []): string {
+export function renderBookView(
+  book: BookPages,
+  selectionMode = false,
+  selectedPageIds: readonly string[] = [],
+  referenceCorner: {
+    characters: Character[];
+    referenceSets: CharacterReferenceSetView[];
+    expanded: boolean;
+    busyId: string | null;
+  } = { characters: [], referenceSets: [], expanded: true, busyId: null }
+): string {
   const { project, pages } = book;
   const selectedSet = new Set(selectedPageIds);
   const selectedCount = pages.filter((page) => selectedSet.has(page.id)).length;
@@ -50,6 +61,7 @@ export function renderBookView(book: BookPages, selectionMode = false, selectedP
             </div>
           </div>
         </div>
+        ${renderReferenceCorner(referenceCorner)}
         ${renderSelectionToolbar(selectionMode, selectedCount, pages.length)}
         <div class="image-grid page-grid">
           ${pages.map((page, index) => renderPageCard(page, index, selectionMode, selectedSet.has(page.id))).join("")}
@@ -57,6 +69,131 @@ export function renderBookView(book: BookPages, selectionMode = false, selectedP
         </div>
       </section>
     </main>
+  `;
+}
+
+function renderReferenceCorner(input: {
+  characters: Character[];
+  referenceSets: CharacterReferenceSetView[];
+  expanded: boolean;
+  busyId: string | null;
+}): string {
+  const latest = new Map<string, CharacterReferenceSetView>();
+  const adoptedVersions = new Map<string, number>();
+  for (const set of input.referenceSets) {
+    const key = `${set.characterId}:${set.variantId}:${set.modelFamily}`;
+    if (!latest.has(key)) latest.set(key, set);
+    if (set.approvedAt && !adoptedVersions.has(key)) adoptedVersions.set(key, set.version);
+  }
+  return `
+    <section class="reference-corner${input.expanded ? " is-expanded" : ""}" aria-label="レファレンスコーナー">
+      <div class="reference-corner-heading">
+        <button class="reference-corner-toggle" type="button" data-action="toggle-reference-corner" aria-expanded="${input.expanded}">
+          <span><b>レファレンスコーナー</b><small>承認済みの顔・全身をモデル別に固定</small></span>
+          <span aria-hidden="true">${input.expanded ? "−" : "+"}</span>
+        </button>
+        <button class="button-secondary compact" type="button" data-action="refresh-reference-corner">更新</button>
+      </div>
+      ${input.expanded ? `<div class="reference-character-list">${input.characters.length === 0
+        ? `<p class="reference-empty">脚本画面でキャラクターを追加すると、ここでReference Setを作成できます。</p>`
+        : input.characters.map((character) => {
+            const variants = new Set(input.referenceSets.filter((set) => set.characterId === character.id).map((set) => set.variantId));
+            if (variants.size === 0) variants.add(`${character.id}:default`);
+            return [...variants].map((variantId) => renderReferenceCharacter(character, variantId, latest, adoptedVersions, input.busyId)).join("");
+          }).join("")}</div>` : ""}
+    </section>
+  `;
+}
+
+function renderReferenceCharacter(
+  character: Character,
+  variantId: string,
+  latest: Map<string, CharacterReferenceSetView>,
+  adoptedVersions: Map<string, number>,
+  busyId: string | null
+): string {
+  const chromaKey = `${character.id}:${variantId}:chroma`;
+  const animaKey = `${character.id}:${variantId}:anima`;
+  const chroma = latest.get(chromaKey) ?? null;
+  const anima = latest.get(animaKey) ?? null;
+  const chromaAdopted = adoptedVersions.get(chromaKey) ?? null;
+  const animaAdopted = adoptedVersions.get(animaKey) ?? null;
+  return `
+    <article class="reference-character-card">
+      <header><div><h2>${escapeHtml(character.name)}</h2><span>variant: ${escapeHtml(variantId)}</span></div>
+        <div class="reference-readiness">${statusBadge(chroma, "chroma", chromaAdopted)}${statusBadge(anima, "anima", animaAdopted)}</div></header>
+      <div class="reference-family-grid">
+        ${renderReferenceFamily(character, variantId, "chroma", chroma, chromaAdopted, busyId)}
+        ${renderReferenceFamily(character, variantId, "anima", anima, animaAdopted, busyId)}
+      </div>
+    </article>
+  `;
+}
+
+function statusBadge(set: CharacterReferenceSetView | null, family: ReferenceModelFamily, adoptedVersion: number | null): string {
+  const needsRegeneration = Boolean(set && adoptedVersion && set.version > adoptedVersion && set.status === "draft");
+  const label = !set ? "未設定"
+    : set.status === "approved" ? `${family === "chroma" ? "Chroma" : "Anima"} Ready`
+      : set.status === "generating" ? "生成中"
+        : set.status === "review" ? "確認待ち"
+          : set.status === "stale" || needsRegeneration ? "要再生成"
+            : "未設定";
+  return `<span class="reference-status is-${set?.status ?? "unset"}">${escapeHtml(label)}</span>`;
+}
+
+function renderReferenceFamily(
+  character: Character,
+  variantId: string,
+  family: ReferenceModelFamily,
+  set: CharacterReferenceSetView | null,
+  adoptedVersion: number | null,
+  busyId: string | null
+): string {
+  const busy = Boolean(busyId && (busyId === set?.id || busyId === character.id));
+  const face = set?.images.find((image) => image.role === "face") ?? null;
+  const fullBody = set?.images.find((image) => image.role === "full_body") ?? null;
+  return `
+    <section class="reference-family-card" data-reference-family-card data-character-id="${escapeAttr(character.id)}" data-model-family="${family}">
+      <div class="reference-family-title"><b>${family === "chroma" ? "Chroma · PuLID(face)" : "Anima · face + full body"}</b>${set ? `<span>v${set.version}${adoptedVersion ? ` · 採用 v${adoptedVersion}` : ""}</span>` : ""}</div>
+      <label>variant ID<input name="variantId" value="${escapeAttr(variantId)}" /></label>
+      <label>外見設定（日本語）<textarea name="appearanceJa" rows="2" placeholder="髪、顔、年齢、衣装、装飾">${escapeHtml(set?.appearanceJa ?? "")}</textarea></label>
+      <label>Appearance prompt (English)<textarea name="appearancePromptEn" rows="2" placeholder="silver bob hair, blue eyes…">${escapeHtml(set?.appearancePromptEn ?? "")}</textarea></label>
+      <label>Must not change（1行1条件）<textarea name="mustNotChange" rows="2" placeholder="hair color&#10;left-eye scar">${escapeHtml(set?.mustNotChange.join("\n") ?? "")}</textarea></label>
+      ${set && (set.status === "stale" || Boolean(adoptedVersion && set.version > adoptedVersion)) ? `<p class="reference-stale-note">採用後に設定が変わりました。新しいversionの生成・承認が必要です。</p>` : ""}
+      <div class="reference-slot-grid">
+        ${renderReferenceSlot(set, "顔", face, "face", busy)}
+        ${renderReferenceSlot(set, "全身", fullBody, "full_body", busy, family === "chroma")}
+      </div>
+      <div class="reference-family-actions">
+        <button class="button-secondary compact" type="button" data-action="create-reference-set" data-character-id="${escapeAttr(character.id)}" data-model-family="${family}" ${busy ? "disabled" : ""}>${set ? "設定変更を新versionへ" : "設定を保存"}</button>
+        ${set ? `<button class="button-secondary compact" type="button" data-action="${set.status === "draft" ? "generate-reference-set" : "regenerate-reference-set"}" data-id="${escapeAttr(set.id)}" data-character-id="${escapeAttr(character.id)}" ${busy ? "disabled" : ""}>${set.status === "draft" ? "自動生成" : "再生成"}</button>
+          <button class="button-primary compact" type="button" data-action="approve-reference-set" data-id="${escapeAttr(set.id)}" ${busy || set.status === "generating" || set.status === "approved" ? "disabled" : ""}>承認</button>` : ""}
+      </div>
+      ${busy ? `<p class="reference-busy">処理中…</p>` : ""}
+    </section>
+  `;
+}
+
+function renderReferenceSlot(
+  set: CharacterReferenceSetView | null,
+  label: string,
+  image: CharacterReferenceImageView | null,
+  role: "face" | "full_body",
+  busy: boolean,
+  optional = false
+): string {
+  const candidates = image?.candidates ?? [];
+  return `
+    <div class="reference-slot${optional ? " is-optional" : ""}">
+      <div class="reference-slot-label"><b>${label}</b>${optional ? "<span>Chromaでは任意</span>" : ""}</div>
+      <div class="reference-slot-preview">${image?.imageUrl
+        ? `<img src="${escapeAttr(image.imageUrl)}" alt="${escapeAttr(label)}参照" loading="lazy" />`
+        : `<span>未設定</span>`}</div>
+      ${set ? `<label class="button-secondary compact reference-upload">アップロード<input type="file" accept="image/png,image/jpeg,image/webp" data-reference-upload="${role}" data-reference-set-id="${escapeAttr(set.id)}" ${busy ? "disabled" : ""} /></label>` : ""}
+      ${candidates.length > 0 ? `<details class="reference-candidates" open><summary>候補比較 (${candidates.length})</summary><div>${candidates.map((candidate, index) => `
+        <label><input type="radio" data-candidate-role="${role}" name="candidate-${escapeAttr(set!.id)}-${role}" value="${escapeAttr(candidate.assetId)}" ${index === 0 ? "checked" : ""} />
+          <img src="${escapeAttr(candidate.thumbnailUrl)}" alt="候補${index + 1}" loading="lazy" /><span>${candidate.width ?? "?"}×${candidate.height ?? "?"}</span></label>`).join("")}</div></details>` : ""}
+    </div>
   `;
 }
 

@@ -45,7 +45,9 @@ test("scriptMangaPrepareRequest always prepares a review run without generating 
     scriptId: "script-1",
     ...settings,
     generateImages: false,
-    candidateSelectionPolicy: "review"
+    candidateSelectionPolicy: "review",
+    requireReferenceSets: true,
+    allowReferenceFallback: false
   });
 });
 

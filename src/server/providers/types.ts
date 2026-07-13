@@ -82,6 +82,7 @@ export interface ProviderSubmittedJob {
   /** 進捗監視のための不透明な購読識別子(Comfy: WebSocket clientId)。
    *  `generation_jobs.client_id`(既存列、リネームなし)へそのまま保存する。省略時は jobRef を使う。 */
   watchRef?: string | null;
+  warnings?: string[];
 }
 
 export interface ProviderCollectContext {
@@ -166,7 +167,7 @@ export interface PreparedGenerationIntent {
   source?: { imagePath: string; denoise: number } | null;
   inpaint?: { maskPath: string; maskedContent: MaskedContent; padding: number; feather: number } | null;
   control?: Array<{ kind: "pose" | "edge"; imagePath: string; strength: number; range: [number, number] }>;
-  identity?: { faceImagePath: string } | null;
+  identity?: { faceImagePath: string; fullBodyImagePath?: string } | null;
   styles?: GenerationIntent["styles"];
   output?: GenerationIntent["output"];
   target: GenerationTarget;
@@ -203,7 +204,10 @@ export function resolveIntentArtifacts(intent: GenerationIntent): PreparedGenera
       strength: entry.strength,
       range: entry.range
     })),
-    identity: intent.identity ? { faceImagePath: resolveArtifactRefPath(intent.identity.face) } : intent.identity ?? null,
+    identity: intent.identity ? {
+      faceImagePath: resolveArtifactRefPath(intent.identity.face),
+      ...(intent.identity.fullBody ? { fullBodyImagePath: resolveArtifactRefPath(intent.identity.fullBody) } : {})
+    } : intent.identity ?? null,
     styles: intent.styles,
     output: intent.output,
     target: intent.target,
@@ -237,6 +241,19 @@ function resolveArtifactRefPath(ref: ArtifactRef): string {
     const candidate = typeof binding.faceImagePath === "string" ? resolve(binding.faceImagePath) : "";
     if (!candidate || !isPathInside(candidate, resolve(dataRoot))) {
       throw new HttpError(404, `Character binding for "${ref.characterId}" was not found`);
+    }
+    return candidate;
+  }
+  if (ref.kind === "referenceSet") {
+    const row = getRow<{ file_path: string | null }>(
+      `SELECT ri.file_path FROM character_reference_images ri
+       JOIN character_reference_sets rs ON rs.id = ri.reference_set_id
+       WHERE rs.id = ? AND rs.version = ? AND ri.role = ?`,
+      [ref.setId, ref.version, ref.role]
+    );
+    const candidate = row?.file_path ? resolve(row.file_path) : "";
+    if (!candidate || !isPathInside(candidate, resolve(dataRoot))) {
+      throw new HttpError(404, `Reference Set image "${ref.setId}@${ref.version}:${ref.role}" was not found`);
     }
     return candidate;
   }

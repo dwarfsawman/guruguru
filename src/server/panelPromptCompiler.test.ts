@@ -108,4 +108,22 @@ describe("compilePanelPrompt", () => {
     expect(result.positive).toMatch(/white humanoid mecha/);
     expect(result.positive).not.toMatch(/[\u3040-\u30ff\u3400-\u9fff]|0characters/);
   });
+
+  test("approved Reference Set appearance is injected even for english-directed prompts", () => {
+    const result = compilePanelConditioning({
+      panel,
+      basePrompt: "A character waits beside a train",
+      entities: [entity],
+      dialogueById: new Map(),
+      narrativeMetadata: "english-directed",
+      referenceAppearances: [{
+        setId: "refset-1", characterId: entity.id, variantId: `${entity.id}:default`, modelFamily: "anima",
+        version: 3, appearanceJa: "銀髪、青い目", appearancePromptEn: "short silver bob hair, vivid blue eyes, navy combat coat",
+        mustNotChange: ["silver bob hair", "star-shaped left earring"], appearanceHash: "hash", images: []
+      }]
+    });
+    expect(result.positive).toContain("short silver bob hair");
+    expect(result.positive).toContain("star-shaped left earring");
+    expect(result.positive).not.toContain("銀髪");
+  });
 });

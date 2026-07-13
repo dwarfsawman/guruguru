@@ -1,0 +1,44 @@
+.reference-corner { margin: 18px 0 14px; border: 1px solid var(--line); background: var(--panel2); border-radius: 6px; }
+.reference-corner-heading { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+.reference-corner-toggle { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0; border: 0; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.reference-corner-toggle span:first-child { display: flex; align-items: baseline; gap: 10px; }
+.reference-corner-toggle b { font-size: 14px; }
+.reference-corner-toggle small { color: var(--muted); font-weight: 400; }
+.reference-character-list { display: grid; gap: 12px; padding: 0 12px 12px; }
+.reference-character-card { border: 1px solid var(--line); border-radius: 5px; background: var(--panel); overflow: hidden; }
+.reference-character-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.reference-character-card h2 { display: inline; margin: 0 8px 0 0; font-size: 15px; }
+.reference-character-card header span { color: var(--muted); font: 11px/1.2 var(--mono); }
+.reference-readiness { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.reference-status { padding: 3px 7px; border: 1px solid var(--line2); border-radius: 999px; background: var(--panel2); font: 10px/1 var(--mono); }
+.reference-status.is-approved { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+.reference-status.is-generating { color: var(--accent); }
+.reference-status.is-review { color: #e0a94f; }
+.reference-status.is-stale { color: #ef7777; }
+.reference-family-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 10px; }
+.reference-family-card { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel2); }
+.reference-family-title { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.reference-family-title span { color: var(--accent); font: 11px/1 var(--mono); }
+.reference-family-card > label { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; }
+.reference-family-card input[type="text"], .reference-family-card input:not([type]), .reference-family-card textarea { width: 100%; box-sizing: border-box; margin-top: 4px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 3px; background: var(--input); color: var(--ink); font: 12px/1.35 var(--font); resize: vertical; }
+.reference-stale-note { margin: 8px 0 0; color: #ef7777; font-size: 11px; }
+.reference-slot-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.reference-slot { min-width: 0; padding: 7px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel); }
+.reference-slot-label { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin-bottom: 6px; font-size: 11px; }
+.reference-slot-label span { color: var(--faint); font-size: 9px; }
+.reference-slot-preview { display: grid; place-items: center; aspect-ratio: 4/3; overflow: hidden; border: 1px dashed var(--line2); border-radius: 2px; color: var(--faint); font-size: 11px; }
+.reference-slot-preview img { width: 100%; height: 100%; object-fit: contain; background: #09090b; }
+.reference-upload { position: relative; width: 100%; margin-top: 6px; overflow: hidden; }
+.reference-upload input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.reference-candidates { margin-top: 7px; }
+.reference-candidates summary { cursor: pointer; color: var(--muted); font-size: 10px; }
+.reference-candidates > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin-top: 6px; }
+.reference-candidates label { position: relative; display: block; cursor: pointer; }
+.reference-candidates input { position: absolute; left: 4px; top: 4px; z-index: 1; }
+.reference-candidates img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border: 2px solid transparent; border-radius: 3px; }
+.reference-candidates input:checked + img { border-color: var(--accent); }
+.reference-candidates label span { display: block; margin-top: 2px; color: var(--faint); font: 9px/1 var(--mono); text-align: center; }
+.reference-family-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.reference-busy, .reference-empty { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
+@media (max-width: 1100px) { .reference-family-grid { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .reference-slot-grid { grid-template-columns: 1fr; } .reference-corner-toggle small { display: none; } }

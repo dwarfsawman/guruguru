@@ -23,6 +23,7 @@ import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
 import { confirmDialog } from "./confirmDialogController";
 import { openImageExport } from "./imageExportController";
+import { clearReferenceCorner, loadReferenceCorner } from "./referenceSetController";
 
 /** Book を開く（グリッド表示）。単一プロジェクトの openProject に相当するプロジェクトセッション初期化 + ページ一覧取得。 */
 export async function openBook(projectId: string) {
@@ -59,6 +60,7 @@ export async function openBook(projectId: string) {
   // 顔スタイル参照(PuLID)可用性と LoRA 候補を先取りしておく(ページを開いた時に使う)。
   void refreshModelCheck("chroma");
   void refreshLoraChoices();
+  void loadReferenceCorner(projectId);
 }
 
 /** ページを開く（そのページに絞った1枚生成 UI へ）。 */
@@ -144,6 +146,7 @@ export function clearBookSession() {
   state.pagePanelLightbox = null;
   state.pagePanelAssignments = [];
   state.activePanelTarget = null;
+  clearReferenceCorner();
 }
 
 async function reloadPages() {

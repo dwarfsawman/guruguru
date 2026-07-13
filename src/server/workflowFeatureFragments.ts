@@ -153,7 +153,8 @@ export function assembleFeatureFragments(
     strength?: number;
     startPercent?: number;
     endPercent?: number;
-  } = {}
+  } = {},
+  fullBodyReferenceImageName: string | null = null
 ): JsonObject {
   if (loras.length === 0 && !enabled.pulid && !enabled.animaInContext) {
     return workflow;
@@ -275,7 +276,7 @@ export function assembleFeatureFragments(
       }
     });
     const refImageNodeId = ensureReferenceImageNode();
-    const refEncodeNodeId = addNode(workflow, {
+    const faceEncodeNodeId = addNode(workflow, {
       class_type: "AnimaRefEncode",
       inputs: {
         vae: [animaVaeNodeId!, 0],
@@ -284,11 +285,36 @@ export function assembleFeatureFragments(
         ...(animaOptions.height ? { target_height: animaOptions.height } : {})
       }
     });
+    let referenceLatent: unknown[] = [faceEncodeNodeId, 0];
+    if (fullBodyReferenceImageName) {
+      const fullBodyImageNodeId = addNode(workflow, {
+        class_type: "LoadImage",
+        inputs: { image: fullBodyReferenceImageName }
+      });
+      const fullBodyEncodeNodeId = addNode(workflow, {
+        class_type: "AnimaRefEncode",
+        inputs: {
+          vae: [animaVaeNodeId!, 0],
+          image: [fullBodyImageNodeId, 0],
+          ...(animaOptions.width ? { target_width: animaOptions.width } : {}),
+          ...(animaOptions.height ? { target_height: animaOptions.height } : {})
+        }
+      });
+      const latentBatchNodeId = addNode(workflow, {
+        class_type: "AnimaRefLatentBatch",
+        inputs: {
+          ref_latent_1: [faceEncodeNodeId, 0],
+          ref_latent_2: [fullBodyEncodeNodeId, 0],
+          fit_mode: "pad"
+        }
+      });
+      referenceLatent = [latentBatchNodeId, 0];
+    }
     const applyNodeId = addNode(workflow, {
       class_type: "AnimaInContextApply",
       inputs: {
         model: [adapterNodeId, 0],
-        ref_latent: [refEncodeNodeId, 0],
+        ref_latent: referenceLatent,
         strength: animaOptions.strength ?? 1.0,
         start_percent: animaOptions.startPercent ?? 0.0,
         end_percent: animaOptions.endPercent ?? 1.0,

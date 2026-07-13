@@ -90,6 +90,7 @@ import "./imageLightboxController";
 import "./modelCheckController";
 import "./confirmDialogController";
 import "./scriptMangaController";
+import "./referenceSetController";
 import { importImagesAsPages } from "./bookController";
 import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
 import { closeImageExport } from "./imageExportController";
@@ -851,7 +852,12 @@ function render(_options: RenderOptions = {}) {
             scriptMangaVlmStatus: state.scriptMangaVlmStatus
           })
         : state.book
-          ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds)
+          ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds, {
+              characters: state.characters,
+              referenceSets: state.referenceSets,
+              expanded: state.referenceCornerExpanded,
+              busyId: state.referenceSetBusyId
+            })
           : renderHome(
             state.projects,
             state.settings,

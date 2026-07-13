@@ -78,6 +78,12 @@ export interface ReferenceImageOptions {
   imagePath?: string | null;
   /** Server-resolved Character appearance binding. The client cannot provide a local file path. */
   characterBinding?: { characterId: string; providerId: string } | null;
+  /** Approved Reference Set. The server validates ownership/version and copies its files per Round. */
+  referenceSet?: { setId: string; version: number } | null;
+  /** Server-populated per-Round copies. Clients must never provide these local paths. */
+  images?: { facePath?: string | null; fullBodyPath?: string | null } | null;
+  /** Automatic manga sets this so missing adapter/node packs fail instead of silently falling back. */
+  strict?: boolean;
   face: { enabled: boolean };
   /** Experimental Anima identity conditioning. Availability is gated server-side per workflow family. */
   animaInContext?: {

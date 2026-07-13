@@ -37,6 +37,7 @@ import type { StyleLoraSelection } from "../shared/types";
 import type { BookReaderSettings } from "./bookReader";
 import { DEFAULT_BOOK_READER_SETTINGS } from "./bookReader";
 import type { ScriptMangaRunView, ScriptMangaUiSettings, VlmAuditServiceStatus } from "../shared/scriptMangaApi";
+import type { CharacterReferenceSetView } from "../shared/referenceSets";
 
 /**
  * Consistent Character(Docs/Feature-ConsistentCharacter.md)の参照画像。フォームレベルの
@@ -331,6 +332,9 @@ export interface AppState {
   currentProjectId: string | null;
   /** Book: 開いている book のプロジェクト+ページ一覧(page grid 表示用)。single/home では null。 */
   book: BookPages | null;
+  referenceSets: CharacterReferenceSetView[];
+  referenceCornerExpanded: boolean;
+  referenceSetBusyId: string | null;
   /** Book: 開いているページ id。null=page grid 表示中(または single)。set=そのページの1枚生成 UI。 */
   activePageId: string | null;
   /** Book: ページ一覧で複数ページを選ぶモード。 */
@@ -575,6 +579,9 @@ export const state: AppState = {
   detail: null,
   currentProjectId: null,
   book: null,
+  referenceSets: [],
+  referenceCornerExpanded: true,
+  referenceSetBusyId: null,
   activePageId: null,
   bookSelectionMode: false,
   selectedBookPageIds: [],

@@ -18,6 +18,9 @@ export interface PanelPreflightReport {
     dialogueMapped: boolean;
     referencesTraceable: boolean;
     promptHasNoDialogueText: boolean;
+    castNormalized: boolean;
+    offscreenSpeakersExcluded: boolean;
+    requiredReferencesReady: boolean;
   };
   violations: PreflightViolation[];
 }
@@ -49,6 +52,10 @@ export function validatePanelPreflight(input: {
   layout: PageLayout;
   layoutPanelId: string;
   dialogueTexts: string[];
+  castNormalized?: boolean;
+  offscreenSpeakerIds?: string[];
+  requireReferences?: boolean;
+  missingReferenceIds?: string[];
 }): PanelPreflightReport {
   const { panel, layout, layoutPanelId } = input;
   const violations: PreflightViolation[] = [];
@@ -96,6 +103,18 @@ export function validatePanelPreflight(input: {
       message: "Provider request can condition only the focal identity; remaining cast references are preserved for review/repair"
     });
   }
+  const castNormalized = input.castNormalized !== false;
+  if (!castNormalized) violations.push({ code: "cast-not-normalized", severity: "error", message: "Panel cast contains duplicate character/variant entries" });
+  const offscreenSpeakersExcluded = (input.offscreenSpeakerIds ?? []).every((id) => !panel.cast.some((member) => member.characterId === id));
+  if (!offscreenSpeakersExcluded) violations.push({ code: "offscreen-speaker-in-cast", severity: "error", message: "An off-screen-only speaker remains in the visual cast" });
+  const requiredReferencesReady = !input.requireReferences || (input.missingReferenceIds ?? []).length === 0;
+  if (!requiredReferencesReady) {
+    violations.push({
+      code: "required-reference-missing",
+      severity: "error",
+      message: `Approved Reference Set is missing for: ${(input.missingReferenceIds ?? []).join(", ")}`
+    });
+  }
   return {
     passed: !violations.some((violation) => violation.severity === "error"),
     panelSpecId: panel.id,
@@ -106,7 +125,10 @@ export function validatePanelPreflight(input: {
       sourceTraceable,
       dialogueMapped,
       referencesTraceable,
-      promptHasNoDialogueText
+      promptHasNoDialogueText,
+      castNormalized,
+      offscreenSpeakersExcluded,
+      requiredReferencesReady
     },
     violations
   };

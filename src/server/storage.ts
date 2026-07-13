@@ -44,7 +44,8 @@ export function ensureProjectStorage(projectId: string) {
     pasteSources: join(projectRoot, "paste_sources"),
     composites: join(projectRoot, "composites"),
     pageMedia: join(projectRoot, "page_media"),
-    characterFaces: join(projectRoot, "character_faces")
+    characterFaces: join(projectRoot, "character_faces"),
+    referenceSets: join(projectRoot, "character_reference_sets")
   };
 
   for (const path of Object.values(paths)) {
@@ -207,6 +208,37 @@ export interface StoredCharacterFace {
   filePath: string;
   width: number | null;
   height: number | null;
+}
+
+export interface StoredCharacterReferenceImage {
+  filePath: string;
+  width: number | null;
+  height: number | null;
+}
+
+/** Immutable Reference Set image copy. Versions never share a mutable file. */
+export async function storeCharacterReferenceImage(
+  projectId: string,
+  characterId: string,
+  referenceSetId: string,
+  role: "face" | "full_body",
+  ext: string,
+  bytes: Buffer
+): Promise<StoredCharacterReferenceImage> {
+  const storage = ensureProjectStorage(projectId);
+  const directory = resolve(join(storage.referenceSets, sanitizeBaseName(characterId), sanitizeBaseName(referenceSetId)));
+  if (!isPathInside(directory, resolve(storage.projectRoot))) {
+    throw new Error("Reference Set storage path is outside the project directory");
+  }
+  mkdirSync(directory, { recursive: true });
+  const normalizedExt = [".png", ".jpg", ".jpeg", ".webp"].includes(ext.toLowerCase()) ? ext.toLowerCase() : ".png";
+  const filePath = resolve(join(directory, `${role}${normalizedExt}`));
+  if (!isPathInside(filePath, resolve(storage.projectRoot))) {
+    throw new Error("Reference Set image path is outside the project directory");
+  }
+  await writeFile(filePath, bytes);
+  const size = readImageSize(bytes);
+  return { filePath, width: size?.width ?? null, height: size?.height ?? null };
 }
 
 /**

@@ -85,3 +85,19 @@ test("panel preflight rejects a panel id missing from the selected layout", () =
   assert.equal(report.checks.geometryValid, false);
   assert.ok(report.violations.some((violation) => violation.code === "layout-panel-missing"));
 });
+
+test("panel preflight blocks required missing references and off-screen speakers left in visual cast", () => {
+  const report = validatePanelPreflight({
+    panel: panel(),
+    layout: splashLayout(),
+    layoutPanelId: "r1c1",
+    dialogueTexts: ["ここはどこ？"],
+    requireReferences: true,
+    missingReferenceIds: ["character-1"],
+    offscreenSpeakerIds: ["character-1"]
+  });
+  assert.equal(report.passed, false);
+  assert.equal(report.checks.requiredReferencesReady, false);
+  assert.equal(report.checks.offscreenSpeakersExcluded, false);
+  assert.ok(report.violations.some((violation) => violation.code === "required-reference-missing"));
+});

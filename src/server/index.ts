@@ -11,6 +11,14 @@ import { HttpError, readBuffer, readJson, sendJson } from "./http";
 import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
 import { createTemplate, deleteTemplate, listTemplates, updateTemplatePromptProfile } from "./templates";
 import { adoptCharacterSheetAsset, createCharacterSheetRun } from "./characterSheets";
+import {
+  approveReferenceSet,
+  createReferenceSet,
+  listProjectReferenceSets,
+  serveReferenceSetImage,
+  uploadReferenceSetImage
+} from "./referenceSets";
+import { generateReferenceSetCandidates } from "./referenceSetGeneration";
 import { serveAssetFile, updateAssetStatus } from "./assets";
 import { createProject, deleteProject, getProjectDetail, listProjects } from "./projects";
 import {
@@ -691,6 +699,40 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const charactersCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/characters$/);
   if (method === "GET" && charactersCollectionMatch) {
     sendJson(res, 200, { characters: listCharacters(charactersCollectionMatch[1]!) });
+    return;
+  }
+
+  const projectReferenceSetsMatch = path.match(/^\/api\/projects\/([^/]+)\/reference-sets$/);
+  if (method === "GET" && projectReferenceSetsMatch) {
+    sendJson(res, 200, { referenceSets: listProjectReferenceSets(projectReferenceSetsMatch[1]!) });
+    return;
+  }
+
+  const characterReferenceSetsMatch = path.match(/^\/api\/characters\/([^/]+)\/reference-sets$/);
+  if (method === "POST" && characterReferenceSetsMatch) {
+    sendJson(res, 201, { referenceSet: createReferenceSet(characterReferenceSetsMatch[1]!, await readJson(req)) });
+    return;
+  }
+
+  const referenceSetImageMatch = path.match(/^\/api\/reference-sets\/([^/]+)\/images\/(face|full_body)$/);
+  if (method === "PUT" && referenceSetImageMatch) {
+    sendJson(res, 200, { referenceSet: await uploadReferenceSetImage(referenceSetImageMatch[1]!, referenceSetImageMatch[2]!, await readJson(req)) });
+    return;
+  }
+
+  const referenceSetActionMatch = path.match(/^\/api\/reference-sets\/([^/]+)\/(generate|approve)$/);
+  if (method === "POST" && referenceSetActionMatch) {
+    const result = referenceSetActionMatch[2] === "generate"
+      ? await generateReferenceSetCandidates(referenceSetActionMatch[1]!, await readJson(req))
+      : await approveReferenceSet(referenceSetActionMatch[1]!, await readJson(req));
+    sendJson(res, referenceSetActionMatch[2] === "generate" ? 202 : 200,
+      referenceSetActionMatch[2] === "generate" ? result : { referenceSet: result });
+    return;
+  }
+
+  const referenceImageMatch = path.match(/^\/api\/reference-images\/([^/]+)$/);
+  if (method === "GET" && referenceImageMatch) {
+    serveReferenceSetImage(res, referenceImageMatch[1]!);
     return;
   }
   if (method === "POST" && charactersCollectionMatch) {

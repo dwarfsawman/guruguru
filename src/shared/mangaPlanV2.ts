@@ -4,7 +4,7 @@ import type { DialogueUnit } from "./dialogueAdaptation";
 
 export const MANGA_PLAN_VERSION = 2 as const;
 export const MANGA_PLANNER_VERSION = "manga-plan-v2.1";
-export const PANEL_PROMPT_COMPILER_VERSION = "panel-prompt-v3.0";
+export const PANEL_PROMPT_COMPILER_VERSION = "panel-prompt-v3.1";
 
 export type DialoguePolicy = "preserve" | "adapt" | "fill" | "generate";
 export type NarrativeEntityKind = "character" | "setting" | "prop" | "vehicle" | "unknown";

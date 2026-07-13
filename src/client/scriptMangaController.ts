@@ -76,7 +76,9 @@ export function scriptMangaPrepareRequest(
     scriptId,
     ...settings,
     generateImages: false,
-    candidateSelectionPolicy: "review"
+    candidateSelectionPolicy: "review",
+    requireReferenceSets: true,
+    allowReferenceFallback: false
   };
 }
 

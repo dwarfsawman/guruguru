@@ -1,4 +1,5 @@
 import type { DialoguePolicy, MangaPlanV2, MangaPlanValidationReport } from "./mangaPlanV2";
+import type { ScriptMangaReferenceSnapshot } from "./referenceSets";
 
 export type ScriptMangaPlanningMode = "heuristic" | "llm";
 export type ScriptMangaAuditMode = "manual" | "vlm";
@@ -31,6 +32,8 @@ export interface PrepareScriptMangaRunRequest extends ScriptMangaUiSettings {
   scriptId: string;
   generateImages: false;
   candidateSelectionPolicy: "review";
+  requireReferenceSets: true;
+  allowReferenceFallback: false;
 }
 
 export interface ScriptMangaTaskView {
@@ -63,6 +66,7 @@ export interface ScriptMangaRunView {
   evaluation: unknown;
   exportManifest: unknown;
   generationBudget: unknown;
+  referenceSnapshot: ScriptMangaReferenceSnapshot | null;
   auditMode: ScriptMangaAuditMode;
   lastError: unknown;
   plan: MangaPlanV2 | null;

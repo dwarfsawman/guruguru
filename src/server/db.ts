@@ -36,8 +36,12 @@ export const jsonColumnNames = new Map<string, string>([
   ["provider_snapshot_json", "providerSnapshot"],
   ["aliases_json", "aliases"],
   ["binding_json", "binding"],
+  ["must_not_change_json", "mustNotChange"],
+  ["mask_json", "mask"],
+  ["reference_snapshot_json", "referenceSnapshot"],
   ["parsed_json", "parsed"],
   ["warnings_json", "warnings"],
+  ["warning_json", "warning"],
   ["items_json", "items"],
   ["plan_json", "plan"],
   ["validation_json", "validation"],
@@ -329,6 +333,48 @@ export function initializeDb() {
       FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE
     );
 
+    -- Versioned, human-approved character identity references. Appearance text is intentionally
+    -- separate from characters.notes (voice/personality/relationships). Image paths remain server
+    -- private and always point inside the external OS user-data root.
+    CREATE TABLE IF NOT EXISTS character_reference_sets (
+      id TEXT PRIMARY KEY,
+      character_id TEXT NOT NULL,
+      variant_id TEXT NOT NULL DEFAULT 'default',
+      model_family TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      source TEXT NOT NULL DEFAULT 'uploaded',
+      appearance_ja TEXT NOT NULL DEFAULT '',
+      appearance_prompt_en TEXT NOT NULL DEFAULT '',
+      must_not_change_json TEXT NOT NULL DEFAULT '[]',
+      appearance_hash TEXT NOT NULL,
+      approved_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (character_id) REFERENCES characters(id) ON DELETE CASCADE,
+      UNIQUE (character_id, variant_id, model_family, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS character_reference_images (
+      id TEXT PRIMARY KEY,
+      reference_set_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      file_path TEXT,
+      width INTEGER,
+      height INTEGER,
+      crop_json TEXT,
+      mask_json TEXT,
+      checksum TEXT NOT NULL DEFAULT '',
+      asset_id TEXT,
+      round_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (reference_set_id) REFERENCES character_reference_sets(id) ON DELETE CASCADE,
+      FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL,
+      FOREIGN KEY (round_id) REFERENCES generation_rounds(id) ON DELETE SET NULL,
+      UNIQUE (reference_set_id, role)
+    );
+
     CREATE TABLE IF NOT EXISTS manga_scripts (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
@@ -521,6 +567,12 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_dialogue_placements_line ON dialogue_placements(line_id);
     CREATE INDEX IF NOT EXISTS idx_dialogue_placements_page ON dialogue_placements(page_id);
     CREATE INDEX IF NOT EXISTS idx_dialogue_proposals_project ON dialogue_proposals(project_id);
+    CREATE INDEX IF NOT EXISTS idx_character_reference_sets_character
+      ON character_reference_sets(character_id, variant_id, model_family, version DESC);
+    CREATE INDEX IF NOT EXISTS idx_character_reference_sets_status
+      ON character_reference_sets(status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_character_reference_images_set
+      ON character_reference_images(reference_set_id, role);
     CREATE INDEX IF NOT EXISTS idx_dialogue_proposals_page ON dialogue_proposals(page_id);
     CREATE INDEX IF NOT EXISTS idx_script_manga_runs_project ON script_manga_runs(project_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_script_manga_plans_project ON script_manga_plans(project_id, created_at);
@@ -573,6 +625,7 @@ export function initializeDb() {
   ensureColumn("generation_rounds", "intent_json", "TEXT");
   // submit() 時点の ProviderCapabilities スナップショット。旧行は NULL。
   ensureColumn("generation_rounds", "provider_snapshot_json", "TEXT");
+  ensureColumn("generation_rounds", "warning_json", "TEXT");
   // S1 v2: Provider 中立のネイティブジョブ参照。comfy は prompt_id と同値を二重書きする
   // (レガシー列の宣言は下記コメント参照)。読み側は `provider_job_ref ?? prompt_id` を読み、
   // v2 導入前の旧行(NULL)にも後方互換で動く(rounds.ts の jobNativeRef)。
@@ -603,6 +656,7 @@ export function initializeDb() {
   ensureColumn("script_manga_runs", "evaluation_json", "TEXT");
   ensureColumn("script_manga_runs", "export_manifest_json", "TEXT");
   ensureColumn("script_manga_runs", "generation_budget_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("script_manga_runs", "reference_snapshot_json", "TEXT");
   ensureColumn("script_manga_tasks", "panel_spec_json", "TEXT");
   ensureColumn("script_manga_tasks", "reference_manifest_json", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("script_manga_tasks", "candidate_asset_ids_json", "TEXT NOT NULL DEFAULT '[]'");

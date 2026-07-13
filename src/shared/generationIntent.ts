@@ -9,6 +9,7 @@ export type ArtifactRef =
   | { kind: "asset"; assetId: string }
   | { kind: "roundAttachment"; roundId: string; attachment: "mask" | "pose" | "reference" | "composite" }
   | { kind: "characterBinding"; characterId: string; providerId: string; role: "face" }
+  | { kind: "referenceSet"; setId: string; version: number; role: "face" | "full_body" }
   | { kind: "pageMedia"; mediaId: string }; // S2 で導入(前景画像等)。S1 では構築されない。
 
 export type GenerationTask = "create" | "transform" | "inpaint" | "upscale" | "detail";
@@ -43,7 +44,7 @@ export interface GenerationIntent {
   /** 構図制御。kind は中立語彙(pose/edge)。 */
   control?: Array<{ kind: "pose" | "edge"; image: ArtifactRef; strength: number; range: [number, number] }>;
   /** 人物同一性の参照(現実装は PuLID 顔参照。ipadapter モードの親画像もここへ写像する。下記 resolveIdentity 参照)。 */
-  identity?: { face: ArtifactRef } | null;
+  identity?: { face: ArtifactRef; fullBody?: ArtifactRef } | null;
   /** 絵柄スタイル。id は provider スコープの不透明文字列(Comfy では LoRA choice verbatim)。 */
   styles?: Array<{ id: string; strength: number }>;
   /** 将来: 透過出力の要求。既定 "none"(現行 Provider には alpha 情報源が無いため常に省略)。 */
@@ -209,6 +210,14 @@ function resolveControl(request: GenerationRequest, ctx: ToGenerationIntentConte
  */
 function resolveIdentity(request: GenerationRequest, ctx: ToGenerationIntentContext): GenerationIntent["identity"] {
   const reference = request.reference;
+  if ((reference?.face?.enabled || reference?.animaInContext?.enabled) && reference.referenceSet) {
+    return {
+      face: { kind: "referenceSet", setId: reference.referenceSet.setId, version: reference.referenceSet.version, role: "face" },
+      ...(reference.images?.fullBodyPath
+        ? { fullBody: { kind: "referenceSet" as const, setId: reference.referenceSet.setId, version: reference.referenceSet.version, role: "full_body" as const } }
+        : {})
+    };
+  }
   if ((reference?.face?.enabled || reference?.animaInContext?.enabled) && reference.imagePath) {
     return { face: { kind: "roundAttachment", roundId: ctx.roundId, attachment: "reference" } };
   }

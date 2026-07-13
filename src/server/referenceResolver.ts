@@ -1,8 +1,11 @@
 import { resolve } from "node:path";
 import type { PanelCastSpec, ReferenceSpec } from "../shared/mangaPlanV2";
 import type { StyleLoraSelection } from "../shared/types";
+import type { ReferenceModelFamily, ReferenceSetSnapshot, ScriptMangaReferenceSnapshot } from "../shared/referenceSets";
+import { referenceSnapshotKey } from "../shared/referenceSets";
 import { dataRoot, getRows } from "./db";
 import { isPathInside } from "./paths";
+import { findApprovedReferenceSet } from "./referenceSets";
 
 interface BindingRow {
   character_id: string;
@@ -20,6 +23,9 @@ export interface ResolvedPanelReferences {
   loras: StyleLoraSelection[];
   /** Symbolic binding compiled into GenerationRequest; rounds.ts copies it into a round attachment. */
   primaryCharacterBinding: { characterId: string; providerId: string } | null;
+  primaryReferenceSet: { setId: string; version: number } | null;
+  appearances: ReferenceSetSnapshot[];
+  missingReferenceIds: string[];
 }
 
 function parseBinding(raw: string): ParsedBinding {
@@ -62,9 +68,15 @@ export function resolvePanelReferences(input: {
   cast: PanelCastSpec[];
   focalSubjectId: string;
   globalLoras: StyleLoraSelection[];
+  modelFamily?: ReferenceModelFamily;
+  frozenSnapshot?: ScriptMangaReferenceSnapshot | null;
 }): ResolvedPanelReferences {
+  const modelFamily = input.modelFamily ?? "chroma";
   const ids = [...new Set(input.cast.map((member) => member.characterId))];
-  if (ids.length === 0) return { manifest: [], loras: mergeLoras([], input.globalLoras), primaryCharacterBinding: null };
+  if (ids.length === 0) return {
+    manifest: [], loras: mergeLoras([], input.globalLoras), primaryCharacterBinding: null,
+    primaryReferenceSet: null, appearances: [], missingReferenceIds: []
+  };
   const placeholders = ids.map(() => "?").join(", ");
   const rows = getRows<BindingRow>(
     `SELECT cb.character_id, cb.binding_json
@@ -83,10 +95,36 @@ export function resolvePanelReferences(input: {
   const manifest: ReferenceSpec[] = [];
   const characterLoras: StyleLoraSelection[] = [];
   let primaryCharacterBinding: { characterId: string; providerId: string } | null = null;
+  let primaryReferenceSet: { setId: string; version: number } | null = null;
+  const appearances: ReferenceSetSnapshot[] = [];
+  const missingReferenceIds: string[] = [];
+  const frozenByKey = new Map((input.frozenSnapshot?.sets ?? []).map((set) => [referenceSnapshotKey(set.characterId, set.variantId), set]));
   for (const member of orderedCast) {
     const binding = parsedByCharacter.get(member.characterId);
-    if (!binding) continue;
-    if (binding.faceImagePath) {
+    const frozen = frozenByKey.get(referenceSnapshotKey(member.characterId, member.variantId));
+    const live = input.frozenSnapshot ? null : findApprovedReferenceSet({
+      projectId: input.projectId,
+      characterId: member.characterId,
+      variantId: member.variantId,
+      modelFamily
+    });
+    const snapshot = frozen ?? live?.snapshot ?? null;
+    if (snapshot) {
+      appearances.push(snapshot);
+      for (const image of snapshot.images) {
+        manifest.push({
+          entityId: member.characterId,
+          variantId: member.variantId,
+          artifact: { kind: "referenceSet", setId: snapshot.setId, version: snapshot.version, role: image.role },
+          targetRegion: member.bbox,
+          role: image.role === "face" ? "identity" : "outfit",
+          strength: 1
+        });
+      }
+      if (member.characterId === input.focalSubjectId && !primaryReferenceSet) {
+        primaryReferenceSet = { setId: snapshot.setId, version: snapshot.version };
+      }
+    } else if (modelFamily === "chroma" && binding?.faceImagePath) {
       manifest.push({
         entityId: member.characterId,
         variantId: member.variantId,
@@ -95,9 +133,13 @@ export function resolvePanelReferences(input: {
         role: "identity",
         strength: 1
       });
-      primaryCharacterBinding ??= { characterId: member.characterId, providerId: input.providerId };
+      if (member.characterId === input.focalSubjectId && !primaryCharacterBinding) {
+        primaryCharacterBinding = { characterId: member.characterId, providerId: input.providerId };
+      }
+    } else {
+      missingReferenceIds.push(member.characterId);
     }
-    if (binding.loraName) {
+    if (binding?.loraName) {
       manifest.push({
         entityId: member.characterId,
         variantId: member.variantId,
@@ -117,6 +159,9 @@ export function resolvePanelReferences(input: {
   return {
     manifest,
     loras: mergeLoras(characterLoras, input.globalLoras),
-    primaryCharacterBinding
+    primaryCharacterBinding,
+    primaryReferenceSet,
+    appearances,
+    missingReferenceIds: [...new Set(missingReferenceIds)]
   };
 }

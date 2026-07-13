@@ -142,6 +142,9 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   }
   state.generationDraftsByRound[roundId] = state.generationDraft;
   state.message = `ComfyUIに送信しました。prompt_id: ${response.promptId}`;
+  if (response.round.warning?.length) {
+    pushToast(response.round.warning.join(" "), "info");
+  }
   state.busy = false;
   await refreshProject(roundId, null);
   requestRender();

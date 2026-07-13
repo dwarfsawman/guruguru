@@ -14,6 +14,8 @@ import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPl
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import type { ScriptMangaPlanView, ScriptMangaRunView, ScriptMangaTaskView } from "../shared/scriptMangaApi";
 import type { DialogueBalloonStyle, DialogueSemanticKind } from "../shared/apiTypes";
+import type { ReferenceModelFamily, ScriptMangaReferenceSnapshot } from "../shared/referenceSets";
+import { referenceSnapshotKey } from "../shared/referenceSets";
 import { updateAssetStatus } from "./assets";
 import { constrainBalloonTailTipToBounds, initialBalloonTailTip } from "../shared/balloonTailAim";
 import { balloonContentMaxWidth, balloonInscribedFactor } from "../shared/balloonShape";
@@ -67,6 +69,7 @@ interface RunRow {
   evaluation_json: string | null;
   export_manifest_json: string | null;
   generation_budget_json: string;
+  reference_snapshot_json: string | null;
   last_error_json: string | null;
   created_at: string;
   updated_at: string;
@@ -128,6 +131,8 @@ interface ScriptMangaRunConfig {
   sampler: string;
   scheduler: string;
   planOptions: ScriptMangaPlanOptions;
+  requireReferenceSets: boolean;
+  allowReferenceFallback: boolean;
 }
 
 const SCRIPT_MANGA_FONT_SCALE = 0.88;
@@ -246,6 +251,7 @@ function runView(row: RunRow): ScriptMangaRunView {
     evaluation: parseJson<unknown>(row.evaluation_json, null),
     exportManifest: parseJson<unknown>(row.export_manifest_json, null),
     generationBudget: parseJson<unknown>(row.generation_budget_json, {}),
+    referenceSnapshot: parseJson<ScriptMangaReferenceSnapshot | null>(row.reference_snapshot_json, null),
     auditMode: parseConfig(row).auditMode,
     lastError: parseJson<unknown>(row.last_error_json, null),
     plan: planRow ? planFromRow(planRow) : null,
@@ -479,6 +485,52 @@ function templatePromptProfile(templateId: string) {
     qualityTags: row?.quality_tags || inferred.qualityTags,
     negativeBase: row?.negative_base || inferred.negativeBase,
     workflowJson: row?.workflow_json ?? ""
+  };
+}
+
+function referenceModelFamily(templateId: string): ReferenceModelFamily | null {
+  const workflowJson = templatePromptProfile(templateId).workflowJson;
+  if (!workflowJson) return null;
+  if (/anima|qwen_3_06b_base/iu.test(workflowJson)) return "anima";
+  if (/chroma|auraflow|ModelSamplingAuraFlow/iu.test(workflowJson)) return "chroma";
+  return null;
+}
+
+function frozenReferenceSnapshot(run: RunRow): ScriptMangaReferenceSnapshot | null {
+  return parseJson<ScriptMangaReferenceSnapshot | null>(run.reference_snapshot_json, null);
+}
+
+function collectReferenceSnapshot(run: RunRow, plan: MangaPlanV2, config: ScriptMangaRunConfig): ScriptMangaReferenceSnapshot | null {
+  const modelFamily = referenceModelFamily(config.templateId);
+  if (!modelFamily) return null;
+  const sets = new Map<string, ScriptMangaReferenceSnapshot["sets"][number]>();
+  const missing = new Set<string>();
+  const dialogueById = new Map(plan.dialogueSnapshots.map((line) => [line.id, line]));
+  for (const panel of plan.pages.flatMap((page) => page.panels)) {
+    const normalized = normalizePanelCast(panel, dialogueById);
+    const resolved = resolvePanelReferences({
+      projectId: run.project_id,
+      providerId: config.providerId,
+      cast: normalized.cast,
+      focalSubjectId: panel.shot.focalSubjectId,
+      globalLoras: config.loras,
+      modelFamily
+    });
+    for (const set of resolved.appearances) sets.set(referenceSnapshotKey(set.characterId, set.variantId), set);
+    const appearanceKeys = new Set(resolved.appearances.map((set) => referenceSnapshotKey(set.characterId, set.variantId)));
+    for (const member of normalized.cast) {
+      if (!appearanceKeys.has(referenceSnapshotKey(member.characterId, member.variantId))) missing.add(member.characterId);
+    }
+    for (const characterId of resolved.missingReferenceIds) missing.add(characterId);
+  }
+  if (config.requireReferenceSets && missing.size > 0 && !config.allowReferenceFallback) {
+    throw new HttpError(422, `Approved ${modelFamily} Reference Set is required for: ${[...missing].join(", ")}`);
+  }
+  return {
+    modelFamily,
+    approvedAt: new Date().toISOString(),
+    allowFallback: config.allowReferenceFallback,
+    sets: [...sets.values()]
   };
 }
 
@@ -731,6 +783,33 @@ function upsertPreparedTask(input: {
   );
 }
 
+function normalizePanelCast(panel: PanelSpec, dialogueById: Map<string, StoryGraphDialogueInput>): {
+  cast: PanelSpec["cast"];
+  excludedOffscreenIds: string[];
+} {
+  const offscreenStyles = new Set(["telecom", "machine", "vo", "caption", "monitor"]);
+  const excludedOffscreenIds: string[] = [];
+  const byKey = new Map<string, PanelSpec["cast"][number]>();
+  for (const member of panel.cast) {
+    const lines = member.speakingLineIds.map((id) => dialogueById.get(id)).filter((line): line is StoryGraphDialogueInput => Boolean(line));
+    const offscreenOnly = member.characterId !== panel.shot.focalSubjectId && lines.length > 0 && lines.every((line) =>
+      line.semanticKind === "narration" || offscreenStyles.has(line.balloonStyle ?? "")
+    );
+    if (offscreenOnly) {
+      excludedOffscreenIds.push(member.characterId);
+      continue;
+    }
+    const key = referenceSnapshotKey(member.characterId, member.variantId);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...member, speakingLineIds: [...new Set(member.speakingLineIds)] });
+      continue;
+    }
+    existing.speakingLineIds = [...new Set([...existing.speakingLineIds, ...member.speakingLineIds])];
+  }
+  return { cast: [...byKey.values()], excludedOffscreenIds: [...new Set(excludedOffscreenIds)] };
+}
+
 function materializeRun(runId: string): void {
   const run = requireRun(runId);
   if (!run.plan_id) throw new HttpError(409, "Run has no persisted MangaPlanV2");
@@ -754,6 +833,8 @@ function materializeRun(runId: string): void {
   const dialogueById = new Map(dialogueRows.map((line) => [line.id, line]));
   const dialogueSnapshots = new Map(plan.dialogueSnapshots.map((snapshot) => [snapshot.id, snapshot]));
   const promptProfile = templatePromptProfile(config.templateId);
+  const modelFamily = referenceModelFamily(config.templateId);
+  const referenceSnapshot = frozenReferenceSnapshot(run);
   removeUnusedStarterPage(run.project_id);
 
   for (const pageSpec of plan.pages) {
@@ -777,13 +858,17 @@ function materializeRun(runId: string): void {
     for (let index = 0; index < pageSpec.panels.length; index += 1) {
       const panel = pageSpec.panels[index]!;
       const layoutPanel = layoutPanels[index]!;
+      const castNormalization = normalizePanelCast(panel, dialogueById);
+      panel.cast = castNormalization.cast;
       panel.textSafeZones = actualTextSafeZones(pageId, layout, layoutPanel.id);
       const references = resolvePanelReferences({
         projectId: run.project_id,
         providerId: config.providerId,
         cast: panel.cast,
         focalSubjectId: panel.shot.focalSubjectId,
-        globalLoras: config.loras
+        globalLoras: config.loras,
+        modelFamily: modelFamily ?? "chroma",
+        frozenSnapshot: referenceSnapshot
       });
       panel.referenceManifest = references.manifest;
       panel.compiledPrompt = compilePanelConditioning({
@@ -799,13 +884,18 @@ function materializeRun(runId: string): void {
         dialect: promptProfile.dialect,
         qualityTags: promptProfile.qualityTags,
         negativeBase: promptProfile.negativeBase,
-        sceneBible: plan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === panel.settingId)
+        sceneBible: plan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === panel.settingId),
+        referenceAppearances: references.appearances
       }).positive;
       const preflight = validatePanelPreflight({
         panel,
         layout,
         layoutPanelId: layoutPanel.id,
-        dialogueTexts: panel.dialogueLineIds.map((lineId) => dialogueById.get(lineId)?.text ?? "")
+        dialogueTexts: panel.dialogueLineIds.map((lineId) => dialogueById.get(lineId)?.text ?? ""),
+        requireReferences: config.requireReferenceSets && Boolean(modelFamily) && !config.allowReferenceFallback,
+        missingReferenceIds: references.missingReferenceIds,
+        castNormalized: true,
+        offscreenSpeakerIds: castNormalization.excludedOffscreenIds
       });
       upsertPreparedTask({ runId: run.id, pageId, layoutPanelId: layoutPanel.id, panel, preflight });
     }
@@ -847,21 +937,25 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
     }
     const layout = pageLayout(task.page_id);
     const promptProfile = templatePromptProfile(config.templateId);
-    const family = /chroma|auraflow/iu.test(promptProfile.workflowJson) ? "chroma" : "sdxl";
-    const size = panelGenerationSize(layout, task.panel_id, config.longEdge, family);
+    const detectedFamily = referenceModelFamily(config.templateId);
+    const size = panelGenerationSize(layout, task.panel_id, config.longEdge, detectedFamily ? "chroma" : "sdxl");
     const references = resolvePanelReferences({
       projectId: run.project_id,
       providerId: config.providerId,
       cast: panel.cast,
       focalSubjectId: panel.shot.focalSubjectId,
-      globalLoras: config.loras
+      globalLoras: config.loras,
+      modelFamily: detectedFamily ?? "chroma",
+      frozenSnapshot: frozenReferenceSnapshot(run)
     });
     panel.referenceManifest = references.manifest;
     const frozenPlan = planFromRow(requirePlan(run.plan_id!));
     const conditioning = compilePanelConditioning({ panel, basePrompt: panel.promptBase, entities: frozenPlan.narrativeGraph.entities,
       dialogueById: new Map(), narrativeMetadata: "english-directed", dialect: promptProfile.dialect,
       qualityTags: promptProfile.qualityTags, negativeBase: promptProfile.negativeBase,
-      sceneBible: frozenPlan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === panel.settingId) });
+      sceneBible: frozenPlan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === panel.settingId),
+      referenceAppearances: references.appearances });
+    panel.compiledPrompt = conditioning.positive;
     const request: GenerationRequest & { providerId?: string } = {
       templateId: config.templateId,
       prompt: panel.compiledPrompt,
@@ -878,7 +972,14 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
       height: size.height,
       generationMode: "txt2img",
       loras: references.loras,
-      reference: references.primaryCharacterBinding
+      reference: references.primaryReferenceSet
+        ? {
+            referenceSet: references.primaryReferenceSet,
+            face: { enabled: detectedFamily === "chroma" },
+            animaInContext: { enabled: detectedFamily === "anima" },
+            strict: true
+          }
+        : references.primaryCharacterBinding
         ? {
             characterBinding: references.primaryCharacterBinding,
             face: { enabled: true },
@@ -1394,7 +1495,9 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     cfg: typeof input.cfg === "number" ? input.cfg : 5,
     sampler: stringOr(input.sampler, "euler"),
     scheduler: stringOr(input.scheduler, "beta"),
-    planOptions
+    planOptions,
+    requireReferenceSets: providerId === "comfy" && (input.requireReferenceSets === true || generateImages),
+    allowReferenceFallback: input.allowReferenceFallback === true
   };
   const generationBudget = {
     maxAttemptsPerPanel: 3,
@@ -1495,7 +1598,7 @@ export function updateScriptMangaPlan(planId: string, body: unknown): ScriptMang
       runSql(
         `UPDATE script_manga_runs SET status = 'preparing', phase = 'planning', approval_status = 'pending', page_count = ?,
          panel_count = ?, completed_count = 0, failed_count = 0, evaluation_json = NULL, completed_at = NULL,
-         last_error_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+         last_error_json = NULL, reference_snapshot_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
         [candidate.pages.length, candidate.panelCount, run.id]
       );
       materializeRun(run.id);
@@ -1515,11 +1618,12 @@ export function approveScriptMangaRun(runId: string): ScriptMangaRunView {
   const plan = requirePlan(run.plan_id);
   const validation = parseJson<MangaPlanValidationReport>(plan.validation_json, { ok: false, issues: [] });
   if (!validation.ok) throw new HttpError(422, "Plan validation must pass before approval");
+  const snapshot = collectReferenceSnapshot(run, planFromRow(plan), parseConfig(run));
   runSql("UPDATE script_manga_plans SET status = 'approved', approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [plan.id]);
   runSql(
     `UPDATE script_manga_runs SET status = 'approved', phase = 'preparing_references', approval_status = 'approved',
-     updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [run.id]
+     reference_snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [snapshot ? JSON.stringify(snapshot) : null, run.id]
   );
   return runView(requireRun(run.id));
 }

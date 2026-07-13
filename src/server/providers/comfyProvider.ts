@@ -177,15 +177,29 @@ async function submit(ctx: ProviderSubmitContext): Promise<ProviderSubmittedJob[
   const uploadedReferenceImage = firstRequest.reference?.imagePath
     ? await uploadImageToComfy(firstRequest.reference.imagePath)
     : null;
+  const uploadedFullBodyReferenceImage = firstRequest.reference?.images?.fullBodyPath
+    ? await uploadImageToComfy(firstRequest.reference.images.fullBodyPath)
+    : null;
 
   // Unified-switch templates keep every branch's LoadImage nodes in the graph; unused image
   // inputs are pointed at a pre-uploaded 1px dummy so ComfyUI's graph-wide filename validation
   // passes (lazy evaluation never actually reads it).
   const isUnifiedSwitch = isUnifiedSwitchWorkflow(workflow);
   const dummyImageName = isUnifiedSwitch ? await ensureDummyComfyImage() : null;
+  const modelFamily = detectWorkflowModelFamily(workflow);
   const featureAvailability: FeatureAvailabilityFlags | null = isUnifiedSwitch
-    ? await resolveFeatureAvailability(detectWorkflowModelFamily(workflow))
+    ? await resolveFeatureAvailability(modelFamily)
     : null;
+  const fallbackWarnings: string[] = [];
+  if (firstRequest.reference?.face?.enabled && modelFamily === "chroma" && !featureAvailability?.pulid) {
+    fallbackWarnings.push("PuLIDが未導入のため、顔Reference Setなしのbase生成へfallbackしました。");
+  }
+  if (firstRequest.reference?.animaInContext?.enabled && modelFamily === "anima" && !featureAvailability?.animaInContext) {
+    fallbackWarnings.push("Anima In-Context adapterまたはnode packが未導入のため、Reference Setなしのbase生成へfallbackしました。");
+  }
+  if (fallbackWarnings.length > 0 && firstRequest.reference?.strict) {
+    throw new Error(`Reference preflight failed: ${fallbackWarnings.join(" ")}`);
+  }
 
   const clientId = createId("comfy_client");
   const queuedPromptIds: string[] = [];
@@ -201,13 +215,14 @@ async function submit(ctx: ProviderSubmitContext): Promise<ProviderSubmittedJob[
         uploadedMaskName: uploadedMask?.name ?? null,
         uploadedControlImageName: uploadedControlImage?.name ?? null,
         uploadedReferenceImageName: uploadedReferenceImage?.name ?? null,
+        uploadedFullBodyReferenceImageName: uploadedFullBodyReferenceImage?.name ?? null,
         featureAvailability,
         dummyImageName
       });
 
       const promptId = await queuePrompt(patchedWorkflow, clientId);
       queuedPromptIds.push(promptId);
-      submitted.push({ jobRef: promptId, nativeSubmission: patchedWorkflow, seed: job.seed, watchRef: clientId });
+      submitted.push({ jobRef: promptId, nativeSubmission: patchedWorkflow, seed: job.seed, watchRef: clientId, warnings: fallbackWarnings });
     }
     return submitted;
   } catch (error) {

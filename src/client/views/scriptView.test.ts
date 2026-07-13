@@ -47,6 +47,7 @@ function run(): ScriptMangaRunView {
     evaluation: null,
     exportManifest: null,
     generationBudget: null,
+    referenceSnapshot: null,
     auditMode: "vlm",
     lastError: null,
     plan: null,

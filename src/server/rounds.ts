@@ -30,6 +30,7 @@ import { toGenerationIntent } from "../shared/generationIntent";
 import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, MaskedContent, ReferenceImageOptions } from "../shared/types";
 import type { Asset, PageRow, Round } from "../shared/apiTypes";
 import { isPathInside } from "./paths";
+import { approvedReferenceSetFiles } from "./referenceSets";
 
 export type { RoundAttachmentKind } from "./roundAttachments";
 export { roundAttachmentPathFromRequest, resolveRoundAttachmentPath, serveRoundAttachment } from "./roundAttachments";
@@ -281,8 +282,8 @@ export async function createGenerationRound(
 
     const first = submitted[0] ?? null;
     runSql(
-      "UPDATE generation_rounds SET prompt_id = ?, patched_workflow_json = ?, status = 'running' WHERE id = ?",
-      [first?.jobRef ?? null, first ? JSON.stringify(first.nativeSubmission) : null, roundId]
+      "UPDATE generation_rounds SET prompt_id = ?, patched_workflow_json = ?, warning_json = ?, status = 'running' WHERE id = ?",
+      [first?.jobRef ?? null, first ? JSON.stringify(first.nativeSubmission) : null, first?.warnings?.length ? JSON.stringify(first.warnings) : null, roundId]
     );
     if (submitted.length > 0) {
       ensureRoundMonitor(roundId);
@@ -497,11 +498,36 @@ async function prepareReferenceRequest(
     : null;
   const characterId = typeof rawBinding?.characterId === "string" ? rawBinding.characterId.trim() : "";
   const providerId = typeof rawBinding?.providerId === "string" ? rawBinding.providerId.trim() : "";
+  const rawSet = isJsonObject(rawReference?.referenceSet)
+    ? rawReference.referenceSet as Record<string, unknown>
+    : null;
+  const referenceSetId = typeof rawSet?.setId === "string" ? rawSet.setId.trim() : "";
+  const referenceSetVersion = typeof rawSet?.version === "number" ? Math.trunc(rawSet.version) : 0;
 
-  if (!hasImageDataUrl && (!characterId || !providerId)) {
+  if (!hasImageDataUrl && (!characterId || !providerId) && (!referenceSetId || referenceSetVersion < 1)) {
     return {
       ...normalizedRequest,
       reference: null
+    };
+  }
+
+  if (referenceSetId && referenceSetVersion > 0) {
+    const resolvedSet = approvedReferenceSetFiles(referenceSetId, referenceSetVersion, projectId);
+    const faceBytes = await readFile(resolvedSet.facePath);
+    const faceExt = extname(resolvedSet.facePath).toLowerCase();
+    const storedFace = await storeReferenceImage(projectId, `${roundId}_face`, faceExt, faceBytes);
+    let fullBodyPath: string | null = null;
+    if (resolvedSet.fullBodyPath) {
+      const fullBodyBytes = await readFile(resolvedSet.fullBodyPath);
+      const fullBodyExt = extname(resolvedSet.fullBodyPath).toLowerCase();
+      fullBodyPath = (await storeReferenceImage(projectId, `${roundId}_full_body`, fullBodyExt, fullBodyBytes)).referencePath;
+    }
+    return {
+      ...normalizedRequest,
+      reference: normalizeReferenceOptions(rawReference ?? {}, storedFace.referencePath, fullBodyPath, {
+        setId: resolvedSet.snapshot.setId,
+        version: resolvedSet.snapshot.version
+      })
     };
   }
 
@@ -540,7 +566,12 @@ async function prepareReferenceRequest(
   };
 }
 
-function normalizeReferenceOptions(rawReference: Record<string, unknown>, imagePath: string): ReferenceImageOptions {
+function normalizeReferenceOptions(
+  rawReference: Record<string, unknown>,
+  imagePath: string,
+  fullBodyPath: string | null = null,
+  referenceSet: { setId: string; version: number } | null = null
+): ReferenceImageOptions {
   const rawFace = isJsonObject(rawReference.face) ? (rawReference.face as Record<string, unknown>) : null;
   const rawAnima = isJsonObject(rawReference.animaInContext)
     ? (rawReference.animaInContext as Record<string, unknown>)
@@ -548,6 +579,9 @@ function normalizeReferenceOptions(rawReference: Record<string, unknown>, imageP
   return {
     imageDataUrl: null,
     imagePath,
+    referenceSet,
+    images: { facePath: imagePath, fullBodyPath },
+    strict: rawReference.strict === true,
     face: { enabled: Boolean(rawFace?.enabled) },
     animaInContext: rawAnima
       ? {

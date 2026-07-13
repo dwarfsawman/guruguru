@@ -41,6 +41,7 @@ export interface PatchContext {
   uploadedControlImageName?: string | null;
   // Consistent Character reference image (PuLID / experimental Anima In-Context).
   uploadedReferenceImageName?: string | null;
+  uploadedFullBodyReferenceImageName?: string | null;
   featureAvailability?: FeatureAvailabilityFlags | null;
   // Placeholder image filename (already uploaded to ComfyUI) for image inputs on branches a
   // unified-switch template does not execute; unused by the dynamic-patch path.

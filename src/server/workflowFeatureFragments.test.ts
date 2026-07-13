@@ -168,6 +168,33 @@ test("assembleFeatureFragments: Anima In-Context inserts adapter, reference enco
   assert.equal(patched[refImageNodeId].inputs.image, "anima-reference.png");
 });
 
+test("assembleFeatureFragments: Anima face + full_body encodes both and combines only that character in LatentBatch", () => {
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: {} },
+    "2": { class_type: "VAELoader", inputs: {} },
+    "3": { class_type: "CFGGuider", inputs: { model: ["1", 0] } }
+  };
+  const patched = assembleFeatureFragments(
+    workflow,
+    flags({ animaInContext: true }),
+    "face.png",
+    [],
+    { width: 768, height: 1024 },
+    "full-body.png"
+  ) as Record<string, any>;
+
+  const apply = patched[patched["3"].inputs.model[0]];
+  const batch = patched[apply.inputs.ref_latent[0]];
+  assert.equal(batch.class_type, "AnimaRefLatentBatch");
+  assert.equal(batch.inputs.fit_mode, "pad");
+  const faceEncode = patched[batch.inputs.ref_latent_1[0]];
+  const fullEncode = patched[batch.inputs.ref_latent_2[0]];
+  assert.equal(patched[faceEncode.inputs.image[0]].inputs.image, "face.png");
+  assert.equal(patched[fullEncode.inputs.image[0]].inputs.image, "full-body.png");
+  assert.equal(Object.values(patched).filter((node: any) => node.class_type === "AnimaRefEncode").length, 2);
+  assert.equal(Object.values(patched).filter((node: any) => node.class_type === "AnimaRefLatentBatch").length, 1);
+});
+
 test("assembleFeatureFragments: user LoRAs remain before the dedicated Anima In-Context adapter", () => {
   const workflow = {
     "1": { class_type: "UNETLoader", inputs: {} },

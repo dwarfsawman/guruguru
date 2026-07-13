@@ -246,6 +246,8 @@ export interface Round {
   intent?: GenerationIntent | null;
   /** submit() 時点の ProviderCapabilities スナップショット(recipe 単位)。server 専用型のため緩く保持する。旧行は null。 */
   providerSnapshot?: Record<string, unknown> | null;
+  /** Explicit interactive fallback warnings (for example, optional identity adapter unavailable). */
+  warning?: string[] | null;
   createdAt: string;
   completedAt?: string | null;
   assetCount?: number;

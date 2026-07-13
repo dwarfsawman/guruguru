@@ -1,5 +1,6 @@
 import type { NarrativeEntity, NormalizedBox, PanelSpec } from "../shared/mangaPlanV2";
 import type { StoryGraphDialogueInput } from "./storyGraphBuilder";
+import type { ReferenceSetSnapshot } from "../shared/referenceSets";
 
 export type PromptDialect = "natural" | "tags";
 export interface PanelConditioning { positive: string; negative: string }
@@ -198,6 +199,7 @@ export function compilePanelConditioning(input: {
   negativeBase?: string;
   maxTerms?: number;
   sceneBible?: { set: string; lighting: string; palette: string };
+  referenceAppearances?: ReferenceSetSnapshot[];
 }): PanelConditioning {
   const cleanPanel = { ...input.panel, mustNotShow: [] };
   const raw = compilePanelPrompt({ ...input, panel: cleanPanel });
@@ -210,13 +212,17 @@ export function compilePanelConditioning(input: {
       .filter((value): value is string => Boolean(value?.trim()) && !/[\u3040-\u30ff\u3400-\u9fff]/u.test(value!));
     return descriptions;
   });
+  const approvedAppearances = (input.referenceAppearances ?? []).flatMap((reference) => [
+    reference.appearancePromptEn,
+    reference.mustNotChange.length > 0 ? `identity invariants: ${reference.mustNotChange.join(", ")}` : ""
+  ]).filter(Boolean);
   const quality = input.qualityTags?.trim() || "masterpiece, best quality, high detail";
   const scene = input.sceneBible ? [input.sceneBible.set, input.sceneBible.lighting, input.sceneBible.palette] : [];
   const castCount = input.panel.cast.length === 0 ? "" : input.panel.cast.length === 1 ? "1character" : `${input.panel.cast.length}characters`;
   const positiveParts = input.dialect === "tags"
-    ? [quality, castCount, ...identities,
+    ? [quality, castCount, ...approvedAppearances, ...identities,
         `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), ...scene, input.basePrompt].map((part) => tagSafeVisual(part ?? ""))
-    : [naturalRaw, ...identities, ...scene.map((part) => /[\u3040-\u30ff\u3400-\u9fff]/u.test(part) ? tagSafeVisual(part) : part)];
+    : [naturalRaw, ...approvedAppearances, ...identities, ...scene.map((part) => /[\u3040-\u30ff\u3400-\u9fff]/u.test(part) ? tagSafeVisual(part) : part)];
   const maxTerms = Math.max(12, input.maxTerms ?? 75);
   const positive = positiveParts.flatMap((part) => part?.split(/\s*,\s*|\.\s+/) ?? []).filter(Boolean).slice(0, maxTerms).join(input.dialect === "tags" ? ", " : ". ");
   const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);
