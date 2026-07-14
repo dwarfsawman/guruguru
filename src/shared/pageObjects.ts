@@ -153,6 +153,14 @@ export interface ToneParams {
    */
   startRatio?: number;
   endRatio?: number;
+  /**
+   * gradient のみ・**optional**(2026-07-15 追補)。濃度遷移の始点/終点(オブジェクトローカル座標。
+   * center と同方式: 中心=原点・回転前)。両方有効な時だけ遷移軸として使われ、未指定は従来どおり
+   * angle 方向に領域全体で遷移する(`toneSvg.ts` の `effectiveGradientPoints` へフォールバック)。
+   * ステージ上の始点/終点ハンドルのドラッグで編集する(数値入力は設けない、center と同じ方針)。
+   */
+  gradStart?: PageVec;
+  gradEnd?: PageVec;
   /** lines: 線幅/間隔比 0..1。 */
   lineRatio?: number;
   /** speed/focus/flash/snow: 本数(≤400。snow は前面+背面の合計)。 */
@@ -516,7 +524,9 @@ export function defaultToneParams(toneType: ToneKind): ToneParams {
       // outerRadius は optional(追補) -- 既定値は「未指定」(領域端まで、toneSvg.ts の outerRadiusFor)。
       return { center: { x: 0, y: 0 }, innerRadius: 0.12, count: 72, lineWidth: 0.012, jitter: 0.5 };
     case "flash":
-      return { center: { x: 0, y: 0 }, innerRadius: 0.18, count: 72, lineWidth: 0.012, jitter: 0.5 };
+      // lineWidth は flash では「棘の長さ」(基準突出量、2026-07-15 描画刷新)。innerRadius に対して
+      // はっきり視認できる突出量を既定にする(focus の「基部太さ」既定 0.012 とは意味が異なる)。
+      return { center: { x: 0, y: 0 }, innerRadius: 0.18, count: 72, lineWidth: 0.08, jitter: 0.5 };
     case "noise":
       // angle/startRatio/endRatio は optional(追補) -- 既定は濃度グラデ無し。
       return { density: 0.35, grain: 0.003 };
@@ -565,6 +575,22 @@ function normalizeToneParams(toneType: ToneKind, raw: unknown): ToneParams {
   if (toneType === "gradient") {
     params.startRatio = clampNumber(source.startRatio, 0, 1, fallback.startRatio!);
     params.endRatio = clampNumber(source.endRatio, 0, 1, fallback.endRatio!);
+    // 始点/終点ハンドル(2026-07-15 追補)は optional -- 有効な PageVec の時だけ保持する(往復保持の罠対策)。
+    // 実際に遷移軸として使うかは toneSvg.ts 側が「両方有効かつ十分離れている」で判定する。範囲は center と同じ。
+    const gradStart = asVec(source.gradStart);
+    if (gradStart) {
+      params.gradStart = {
+        x: clampNumber(gradStart.x, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, 0),
+        y: clampNumber(gradStart.y, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, 0)
+      };
+    }
+    const gradEnd = asVec(source.gradEnd);
+    if (gradEnd) {
+      params.gradEnd = {
+        x: clampNumber(gradEnd.x, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, 0),
+        y: clampNumber(gradEnd.y, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, 0)
+      };
+    }
   }
   if (toneType === "lines") {
     params.lineRatio = clampNumber(source.lineRatio, 0, 1, fallback.lineRatio!);

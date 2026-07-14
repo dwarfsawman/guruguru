@@ -432,13 +432,32 @@
   cursor: grabbing;
 }
 
-/* トーン(focus/flash)の中心ハンドル(Docs/Feature-ScreenTones.md)。tail のオレンジと区別できる色にする。 */
+/* トーン(focus/flash)の中心ハンドル(Docs/Feature-ScreenTones.md)。tail のオレンジと区別できる色にする。
+   gradient の始点ハンドルも同じ緑を共用する(「掴んで位置を動かす点」の色を揃える)。 */
 .page-object-gizmo-tone-center-handle {
   fill: var(--good);
 }
 
 .page-object-gizmo-tone-center-handle:active {
   cursor: grabbing;
+}
+
+/* グラデトーンの終点ハンドル(2026-07-15)。始点の緑と対で見分けられる青(トークンに青が無いため直値)。 */
+.page-object-gizmo-tone-grad-end-handle {
+  fill: #60a5fa;
+}
+
+.page-object-gizmo-tone-grad-end-handle:active {
+  cursor: grabbing;
+}
+
+/* グラデ始点→終点の軸線(遷移方向の可視化のみ。クリック/ドラッグは拾わない)。 */
+.page-object-gizmo-grad-axis {
+  stroke: color-mix(in srgb, var(--good) 65%, #60a5fa);
+  stroke-width: 1.5px;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
 }
 
 .page-object-toolbar {
@@ -927,6 +946,16 @@
 .page-object-balloon-shape {
   /* 選択/ドラッグの当たり判定は外接矩形の .page-object-hit-area が担う(雲形/フラッシュの凹凸で
      当たり判定が抜けるのを避けるため)。本体パス自体はクリックを拾わない。 */
+  pointer-events: none;
+}
+
+/* --- トーンオブジェクト(Docs/Feature-ScreenTones.md) --- */
+
+.page-object-tone-shape {
+  /* balloon と同じく、本体(パターン/線群/ベタ塗り)はクリックを拾わず、当たり判定は外接矩形の
+     .page-object-hit-area が担う。この指定が無いと塗りのある種別(flash のベタ塗りや halftone/lines/
+     noise のパターン rect)が兄弟のヒット矩形を覆い、data-page-object を持たないため pointerdown が
+     「背景クリック=選択解除」扱いになり、本体ドラッグでの移動が始められない(2026-07-15 修正)。 */
   pointer-events: none;
 }
 
