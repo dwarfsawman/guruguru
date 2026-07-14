@@ -154,10 +154,12 @@ export interface ToneParams {
   startRatio?: number;
   endRatio?: number;
   /**
-   * gradient のみ・**optional**(2026-07-15 追補)。濃度遷移の始点/終点(オブジェクトローカル座標。
-   * center と同方式: 中心=原点・回転前)。両方有効な時だけ遷移軸として使われ、未指定は従来どおり
-   * angle 方向に領域全体で遷移する(`toneSvg.ts` の `effectiveGradientPoints` へフォールバック)。
+   * gradient / lines・**optional**(gradient: 2026-07-15 追補、lines: 同日追補2)。濃度遷移の始点/終点
+   * (オブジェクトローカル座標。center と同方式: 中心=原点・回転前)。両方有効な時だけ遷移軸として
+   * 使われ、未指定は従来どおり angle 由来の方向に領域全体で遷移する(`toneSvg.ts` の
+   * `effectiveGradientPoints` へフォールバック。gradient は angle 方向、lines は縞と直交の angle+90 方向)。
    * ステージ上の始点/終点ハンドルのドラッグで編集する(数値入力は設けない、center と同じ方針)。
+   * lines では濃度グラデ(startRatio/endRatio)有効時のみ意味を持ち、縞の向きも遷移軸と直交へ追従する。
    */
   gradStart?: PageVec;
   gradEnd?: PageVec;
@@ -575,8 +577,16 @@ function normalizeToneParams(toneType: ToneKind, raw: unknown): ToneParams {
   if (toneType === "gradient") {
     params.startRatio = clampNumber(source.startRatio, 0, 1, fallback.startRatio!);
     params.endRatio = clampNumber(source.endRatio, 0, 1, fallback.endRatio!);
-    // 始点/終点ハンドル(2026-07-15 追補)は optional -- 有効な PageVec の時だけ保持する(往復保持の罠対策)。
-    // 実際に遷移軸として使うかは toneSvg.ts 側が「両方有効かつ十分離れている」で判定する。範囲は center と同じ。
+  }
+  if (toneType === "lines") {
+    params.lineRatio = clampNumber(source.lineRatio, 0, 1, fallback.lineRatio!);
+    // 濃度グラデは optional(追補) -- 指定されたキーだけ保持する(両方 undefined なら「グラデ無し」)。
+    normalizeOptionalGradientRatios(source, params);
+  }
+  if (toneType === "gradient" || toneType === "lines") {
+    // 始点/終点ハンドル(gradient: 2026-07-15 追補、lines: 同日追補2)は optional -- 有効な PageVec の
+    // 時だけ保持する(往復保持の罠対策)。実際に遷移軸として使うかは toneSvg.ts 側が「両方有効かつ十分
+    // 離れている」(lines はさらに濃度グラデ有効時のみ)で判定する。範囲は center と同じ。
     const gradStart = asVec(source.gradStart);
     if (gradStart) {
       params.gradStart = {
@@ -591,11 +601,6 @@ function normalizeToneParams(toneType: ToneKind, raw: unknown): ToneParams {
         y: clampNumber(gradEnd.y, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, 0)
       };
     }
-  }
-  if (toneType === "lines") {
-    params.lineRatio = clampNumber(source.lineRatio, 0, 1, fallback.lineRatio!);
-    // 濃度グラデは optional(追補) -- 指定されたキーだけ保持する(両方 undefined なら「グラデ無し」)。
-    normalizeOptionalGradientRatios(source, params);
   }
   if (toneType === "speed") {
     params.angle = clampNumber(source.angle, -360000, 360000, fallback.angle!);

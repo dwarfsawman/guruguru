@@ -48,7 +48,7 @@ export interface ToneObject extends PageObjectBase {
 | --- | --- | --- |
 | halftone(網点) | `pitch`(ドット間隔 0.004–0.1)、`dotRatio`(濃度 0–1)、`angle` | 0.015 / 0.45 / 45 |
 | gradient(グラデトーン) | halftone + `startRatio`/`endRatio`(角度方向に濃度遷移)+ 任意の `gradStart`/`gradEnd`(2026-07-15: 遷移軸のローカル2点。ステージ上のハンドルで編集、両方有効な時だけ使い、2点の外側は最寄り端の濃度で平坦。未指定は従来どおり angle 方向に領域全体で遷移) | 0.7 → 0.05 / 2点は未指定 |
-| lines(線トーン) | `pitch`、`lineRatio`(線幅/間隔 0–1)、`angle` | 0.012 / 0.35 / 0 |
+| lines(線トーン) | `pitch`、`lineRatio`(線幅/間隔 0–1)、`angle` + 任意の `startRatio`/`endRatio`(2026-07-14 追補の濃度グラデ)+ 任意の `gradStart`/`gradEnd`(2026-07-15 追補2: 遷移軸のローカル2点。gradient と同じステージ上のハンドルで編集。指定時は縞の向きも軸と直交へ追従し、2点の外側は最寄り端の濃度で平坦。未指定は従来どおり angle の縞+angle+90 方向に領域全体で遷移) | 0.012 / 0.35 / 0 / グラデなし |
 | speed(スピード線) | `angle`、`count`(≤400)、`length`(平均長 0–1)、`lineWidth`、`jitter`(0–1) | 45 / 90 / 0.7 / 0.004 / 0.5 |
 | focus(集中線) | `center: PageVec`(**ローカル座標**: オブジェクト中心=原点、balloon tail.tip と同方式)、`innerRadius`(中心の空白半径)、`count`(≤400)、`lineWidth`(外周側の基部太さ)、`jitter` | (0,0) / 0.12 / 72 / 0.012 / 0.5 |
 | flash(ベタフラッシュ) | focus と同じフィールド構成(領域を色で塗り、中心に星形の白抜き)。`lineWidth` は flash では**棘の長さ**(山の基準突出量)の意味(2026-07-15 刷新) | innerRadius 0.18 / lineWidth 0.08 |
@@ -94,6 +94,22 @@ export interface ToneObject extends PageObjectBase {
   -18%)+低確率の長い棘(1.7倍)に効く。既存オブジェクト(lineWidth 0.012 のまま)は棘が短く出るが、
   種別を切り替え直すか「棘の長さ」を上げれば新既定の見た目になる。
 
+### 追補2(2026-07-15 ユーザーフィードバック続き)
+
+- **lines にも始点/終点ハンドル**(gradient と同じ UX): 濃度グラデ(startRatio/endRatio)有効時のみ、
+  緑=始点/青=終点のハンドルと破線の軸線をステージへ常時表示し、ドラッグで遷移の向きと範囲を指定できる
+  (optional な `params.gradStart`/`gradEnd` を lines でも正規化保持)。実効2点は共通の
+  `effectiveGradientPoints(toneType, ...)` -- lines のフォールバック方向は縞と直交の **angle+90**
+  (gradient は angle そのもの)なので、未指定時の見た目は従来と一致する。
+  - mask の線形グラデは bbox 基準の rotate をやめ、実効2点へ `gradientUnits="userSpaceOnUse"` で直接
+    張る(非正方形領域でも遷移方向がハンドルの軸線と厳密に一致する)。spreadMethod 既定(pad)により
+    **2点の外側は最寄り端の濃度で平坦**(始点より手前=開始濃度、終点より先=終了濃度)。
+  - **縞の向きは遷移軸と直交へ追従**する(「遷移=縞をまたぐ方向」の関係を維持)。「角度」を入力すると
+    gradient と同様に gradStart/gradEnd を削除して角度指定へ戻す(最後の編集が勝つ)。
+  - 濃度グラデのチェックを外したら gradStart/gradEnd も一緒に破棄する(再有効化は angle 由来の軸から。
+    残すと再有効化時に古い軸が復活して角度編集を無視するため)。noise の濃度グラデは従来どおり
+    angle+bbox mask のまま(ハンドルなし、対象外)。
+
 - 角度パラメータは **deg で保存**(UI の number 入力と一致させる。object.rotation(rad)とは別物で、
   rotation は領域ごと回す)。
 - `normalizePageObjects` に tone の正規化を追加: 範囲 clamp(pitch 下限 0.004 は要素数爆発防止の
@@ -133,11 +149,13 @@ export interface ToneObject extends PageObjectBase {
   パターンで `"tone-center"` ジェスチャを追加し、ステージ上で中心をドラッグできるようにする
   (ローカル座標への変換・回転の扱いは tail の実装を踏襲)。ハンドル色は tail のオレンジと
   区別できる色に。innerRadius は v1 は number 入力で可(リングハンドルは任意)。
-- **gradient は始点/終点ハンドル**(2026-07-15 追補): 緑=始点(tone-center と同色)/青=終点
-  (`"tone-grad-start"`/`"tone-grad-end"` ジェスチャ)。2点間に破線の軸線を描いて遷移方向を可視化する。
-  gradStart/gradEnd 未指定でも実効位置(angle 由来)にハンドルを常に出し、最初のドラッグで両方を
-  materialize する。数値入力は設けない(center と同じ方針)。「角度」を入力するとハンドル指定は
-  リセットされ角度指定へ戻る。flash のパラメータ欄は「線幅」ラベルを「棘の長さ」にする。
+- **gradient / lines は始点/終点ハンドル**(2026-07-15 追補、lines は同日追補2): 緑=始点(tone-center
+  と同色)/青=終点(`"tone-grad-start"`/`"tone-grad-end"` ジェスチャ)。2点間に破線の軸線を描いて
+  遷移方向を可視化する。gradStart/gradEnd 未指定でも実効位置(angle 由来)にハンドルを常に出し、
+  最初のドラッグで両方を materialize する。数値入力は設けない(center と同じ方針)。「角度」を入力すると
+  ハンドル指定はリセットされ角度指定へ戻る。lines のハンドルは**濃度グラデ有効時のみ**表示する
+  (表示条件は mask を掛ける判定と同じ `hasOptionalGradient` -- グラデ無しでは操作対象が無いため)。
+  flash のパラメータ欄は「線幅」ラベルを「棘の長さ」にする。
 - ギズモ(移動/拡縮/回転)は box と同等(`gizmoBoxForPageObject` へ tone を追加)。
 - レイヤ一覧: 名前「トーン」、type 欄に種別の日本語(網点/グラデ/線/スピード線/集中線/フラッシュ/ノイズ/雪)。
 - **追補(2026-07-14)の optional パラメータ欄**: lines/noise の濃度グラデ(startRatio/endRatio)、
@@ -180,3 +198,6 @@ export interface ToneObject extends PageObjectBase {
   ドラッグ移動が「背景クリック=選択解除」化していたバグを CSS で修正、(2) gradient に始点/終点ハンドル
   (gradStart/gradEnd、緑/青のハンドル+破線軸線、角度入力でリセット)、(3) flash の描画を山谷交互の
   星形へ刷新(lineWidth=棘の長さ・既定 0.08、UI ラベル変更)。
+- 2026-07-15: 追補2を実装。lines(線トーン)にも gradient と同じ始点/終点ハンドルを追加(濃度グラデ
+  有効時のみ表示、gradStart/gradEnd を lines でも保持、mask は実効2点への userSpaceOnUse 線形グラデ=
+  2点の外側は最寄り端の濃度で平坦、縞の向きは遷移軸と直交へ追従、角度入力・グラデ無効化でリセット)。
