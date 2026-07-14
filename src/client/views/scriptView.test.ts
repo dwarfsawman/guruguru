@@ -140,6 +140,7 @@ test("script manga card shows ready, on-demand and unreachable VLM service state
 
 test("script manga card renders run state and reviewable asset candidates", () => {
   const html = renderScriptMangaControlCard(props(run()));
+  assert.match(html, /data-action="prepare-script-manga-run" disabled/);
   assert.match(html, /awaiting_review/);
   assert.match(html, /auditing/);
   assert.match(html, /revision-1/);
