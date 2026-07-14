@@ -67,10 +67,11 @@ import {
 import type { FontSummary } from "../shared/apiTypes";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
-import { registerActions } from "./actionRegistry";
+import { registerActions, registerEventBinder } from "./actionRegistry";
 import { notifyChroniclePageObjectManualEdit } from "./chronicleController";
 import { clampNumber } from "./clientUtils";
 import { isTextEntryTarget } from "./clientUtils";
+import { pageLayerBand, reorderPageObjectLayer, stepPageObjectLayer, type PageLayerDropPosition } from "./pageLayers";
 import { ensureTextLayout } from "./textLayoutClient";
 
 /** ギズモで動かせるオブジェクトの型(box/text/balloon/image)。 */
@@ -459,6 +460,153 @@ function sendSelectedToBack(): void {
     if (item) {
       objects.unshift(item);
     }
+  });
+}
+
+/** レイヤ一覧の D&D / 上下ボタンで得た新しい配列を、通常の z 順変更と同じ履歴・保存経路へ流す。 */
+function commitPageObjectLayerOrder(next: PageObject[]): void {
+  if (next.length !== state.pageObjectsDraft.length || next.every((item, index) => item.id === state.pageObjectsDraft[index]?.id)) {
+    return;
+  }
+  flushTextHistoryCommit();
+  const previous = currentSnapshot();
+  pushPageObjectHistory(objectHistory, previous);
+  state.pageObjectsDraft = next;
+  requestRender();
+  scheduleSave();
+}
+
+function movePageLayerRelative(draggedId: string, targetId: string, position: PageLayerDropPosition): void {
+  commitPageObjectLayerOrder(reorderPageObjectLayer(state.pageObjectsDraft, draggedId, targetId, position));
+}
+
+function stepPageLayer(objectId: string, direction: "up" | "down"): void {
+  commitPageObjectLayerOrder(stepPageObjectLayer(state.pageObjectsDraft, objectId, direction));
+}
+
+function selectPageLayer(id: string): void {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || lightbox.cropPanelId) {
+    return;
+  }
+  const separator = id.indexOf(":");
+  const kind = separator >= 0 ? id.slice(0, separator) : "";
+  const layerId = separator >= 0 ? id.slice(separator + 1) : "";
+  if (!layerId) {
+    return;
+  }
+  flushTextHistoryCommit();
+  if (kind === "object" && state.pageObjectsDraft.some((object) => object.id === layerId)) {
+    state.selectedPageObjectId = layerId;
+    lightbox.selectedPanelId = null;
+  } else if (kind === "panel") {
+    state.selectedPageObjectId = null;
+    lightbox.selectedPanelId = layerId;
+  } else {
+    return;
+  }
+  state.dialogueDrawerOpen = false;
+  requestRender();
+}
+
+function togglePageLayerVisibility(id: string): void {
+  const separator = id.indexOf(":");
+  const kind = separator >= 0 ? id.slice(0, separator) : "";
+  const layerId = separator >= 0 ? id.slice(separator + 1) : "";
+  if (!layerId) {
+    return;
+  }
+  if (kind === "object") {
+    const hidden = new Set(state.pageLayerHiddenObjectIds);
+    hidden.has(layerId) ? hidden.delete(layerId) : hidden.add(layerId);
+    state.pageLayerHiddenObjectIds = [...hidden];
+  } else if (kind === "panel") {
+    const hidden = new Set(state.pageLayerHiddenPanelIds);
+    hidden.has(layerId) ? hidden.delete(layerId) : hidden.add(layerId);
+    state.pageLayerHiddenPanelIds = [...hidden];
+  } else {
+    return;
+  }
+  requestRender();
+}
+
+function togglePageLayerHideNonImage(): void {
+  state.pageLayerHideNonImage = !state.pageLayerHideNonImage;
+  requestRender();
+}
+
+function showAllPageLayers(): void {
+  state.pageLayerHiddenObjectIds = [];
+  state.pageLayerHiddenPanelIds = [];
+  state.pageLayerHideNonImage = false;
+  requestRender();
+}
+
+let draggedPageLayer: { objectId: string; band: "front" | "back" } | null = null;
+
+function clearPageLayerDropState(app: HTMLElement): void {
+  app.querySelectorAll<HTMLElement>(".page-layer-row.is-dragging, .page-layer-row.is-drop-before, .page-layer-row.is-drop-after").forEach((row) => {
+    row.classList.remove("is-dragging", "is-drop-before", "is-drop-after");
+  });
+}
+
+function bindPageLayerEvents(app: HTMLElement): void {
+  app.addEventListener("dragstart", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("button, input, select, textarea")) {
+      event.preventDefault();
+      return;
+    }
+    const row = target?.closest<HTMLElement>("[data-page-layer-object-id]");
+    const objectId = row?.dataset.pageLayerObjectId;
+    const object = objectId ? state.pageObjectsDraft.find((item) => item.id === objectId) : null;
+    if (!row || !objectId || !object) {
+      return;
+    }
+    draggedPageLayer = { objectId, band: pageLayerBand(object) };
+    row.classList.add("is-dragging");
+    event.dataTransfer?.setData("text/plain", objectId);
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+    }
+  });
+
+  app.addEventListener("dragover", (event) => {
+    if (!draggedPageLayer) {
+      return;
+    }
+    const target = event.target instanceof Element ? event.target : null;
+    const row = target?.closest<HTMLElement>("[data-page-layer-object-id]");
+    if (!row || row.dataset.pageLayerObjectId === draggedPageLayer.objectId || row.dataset.pageLayerBand !== draggedPageLayer.band) {
+      return;
+    }
+    event.preventDefault();
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = "move";
+    }
+    clearPageLayerDropState(app);
+    const position: PageLayerDropPosition = event.clientY < row.getBoundingClientRect().top + row.offsetHeight / 2 ? "before" : "after";
+    row.classList.add(position === "before" ? "is-drop-before" : "is-drop-after");
+    row.dataset.pageLayerDropPosition = position;
+  });
+
+  app.addEventListener("drop", (event) => {
+    const dragged = draggedPageLayer;
+    const target = event.target instanceof Element ? event.target : null;
+    const row = target?.closest<HTMLElement>("[data-page-layer-object-id]");
+    const targetId = row?.dataset.pageLayerObjectId;
+    const position = row?.dataset.pageLayerDropPosition as PageLayerDropPosition | undefined;
+    if (dragged && row && targetId && position && row.dataset.pageLayerBand === dragged.band) {
+      event.preventDefault();
+      movePageLayerRelative(dragged.objectId, targetId, position);
+    }
+    draggedPageLayer = null;
+    clearPageLayerDropState(app);
+  });
+
+  app.addEventListener("dragend", () => {
+    draggedPageLayer = null;
+    clearPageLayerDropState(app);
   });
 }
 
@@ -858,9 +1006,10 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
   const { objectId, handleKind } = objectIdFromEventTarget(target);
   if (!objectId) {
     // 背景(ステージの空き領域)クリック = 選択解除。
-    if (state.selectedPageObjectId) {
+    if (state.selectedPageObjectId || lightbox.selectedPanelId) {
       flushTextHistoryCommit();
       state.selectedPageObjectId = null;
+      lightbox.selectedPanelId = null;
       requestRender();
     }
     return true;
@@ -875,6 +1024,8 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
   if (state.selectedPageObjectId !== objectId) {
     flushTextHistoryCommit();
     state.selectedPageObjectId = objectId;
+    lightbox.selectedPanelId = null;
+    state.dialogueDrawerOpen = false;
     requestRender();
   }
 
@@ -1205,6 +1356,12 @@ registerActions({
   "delete-selected-page-object": () => deleteSelectedPageObject(),
   "page-object-bring-front": () => bringSelectedToFront(),
   "page-object-send-back": () => sendSelectedToBack(),
+  "select-page-layer": (id) => selectPageLayer(id),
+  "toggle-page-layer-visibility": (id) => togglePageLayerVisibility(id),
+  "toggle-page-layer-hide-non-image": () => togglePageLayerHideNonImage(),
+  "show-all-page-layers": () => showAllPageLayers(),
+  "move-page-layer-up": (id) => stepPageLayer(id, "up"),
+  "move-page-layer-down": (id) => stepPageLayer(id, "down"),
   "page-objects-undo": () => undoPageObjectsAction(),
   "page-objects-redo": () => redoPageObjectsAction(),
   "toggle-page-object-image-picker": (id) => togglePageObjectImagePicker(id),
@@ -1212,3 +1369,5 @@ registerActions({
     void pickPageObjectImage(id);
   }
 });
+
+registerEventBinder(bindPageLayerEvents);

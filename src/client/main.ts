@@ -1128,6 +1128,11 @@ function renderPagePanelLightboxView(): string {
       busy: state.dialogueProposalBusy
     },
     {
+      hiddenObjectIds: state.pageLayerHiddenObjectIds,
+      hiddenPanelIds: state.pageLayerHiddenPanelIds,
+      hideNonImage: state.pageLayerHideNonImage
+    },
+    {
       status: state.chronicle.status,
       errorMessage: state.chronicle.errorMessage,
       collapsed: state.chronicle.collapsed,

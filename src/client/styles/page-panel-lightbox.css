@@ -6,14 +6,20 @@
  */
 
 .page-panel-dialog {
-  /* 行 = ヘッダー / モードタブ / ステージ / ツールバー / Chronicle バー の5行。既存の罠(タブ行を
-     数えず3行定義のままにすると、タブが minmax(0,1fr) 行に入って高さ0に潰れ、ステージが暗黙 auto 行
-     で溢れる)と同型のため、Chronicle バー追加時も行数を必ず更新すること
-     (Docs/Feature-ChroniclePageFlow.md フェーズI)。バー非表示時(脚本0件)は空文字列を返すので
-     5行目は auto で 0 高さに落ちる。 */
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
-  width: min(760px, calc(100vw - 48px));
+  /* ヘッダー / モードタブ / (固定キャンバス + 右サイドバー)。設定・Chronicle は右列内で
+     独立スクロールし、選択した吹き出しのフォーム量でキャンバスを縮めない。 */
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(1320px, calc(100vw - 48px));
+  height: min(860px, calc(100vh - 48px));
   max-height: calc(100vh - 48px);
+}
+
+.page-panel-editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 390px);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .page-panel-stage {
@@ -28,6 +34,22 @@
   overflow: hidden;
   border-radius: 2px;
   background: var(--panel-strong);
+}
+
+.page-panel-sidebar {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.page-panel-sidebar-scroll {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px;
 }
 
 .page-panel-svg {
@@ -149,6 +171,14 @@
   padding-top: 12px;
 }
 
+.page-panel-sidebar .page-panel-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  border-top: 0;
+  padding-top: 0;
+}
+
 .page-panel-hint-text {
   margin: 0;
   color: var(--muted);
@@ -166,7 +196,7 @@
   flex: none;
 }
 
-/* --- モードタブ(コマ / オブジェクト) --- */
+/* --- モードタブ(レイヤ / コマ枠 / モザイク) --- */
 
 .page-panel-mode-tabs {
   display: flex;
@@ -403,8 +433,8 @@
 }
 
 .page-object-toolbar {
+  display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 10px;
 }
 
@@ -415,11 +445,309 @@
   flex-wrap: wrap;
 }
 
+.page-sidebar-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+}
+
+.page-sidebar-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.page-sidebar-tab svg {
+  width: 14px;
+  height: 14px;
+}
+
+.page-sidebar-tab.is-active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.page-object-add-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.page-layer-visibility-actions,
+.page-panel-layer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.page-layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(34vh, 310px);
+  min-height: 96px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+}
+
+.page-layer-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.page-layer-group-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1px 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.page-layer-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px 26px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 42px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--panel);
+  transition: border-color 0.12s ease, opacity 0.12s ease, transform 0.12s ease;
+}
+
+.page-layer-row:hover {
+  border-color: var(--line-strong, var(--line));
+}
+
+.page-layer-row.is-selected {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.page-layer-row.is-hidden {
+  opacity: 0.52;
+}
+
+.page-layer-row.is-dragging {
+  opacity: 0.3;
+}
+
+.page-layer-row.is-drop-before::before,
+.page-layer-row.is-drop-after::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  right: 4px;
+  left: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.page-layer-row.is-drop-before::before {
+  top: -3px;
+}
+
+.page-layer-row.is-drop-after::after {
+  bottom: -3px;
+}
+
+.page-layer-grip,
+.page-layer-fixed-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  cursor: grab;
+}
+
+.page-layer-grip svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  stroke: none;
+}
+
+.page-layer-fixed-mark {
+  font-size: 8px;
+  cursor: default;
+}
+
+.page-layer-visibility,
+.page-layer-order-actions button,
+.page-layer-delete-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.page-layer-visibility {
+  width: 26px;
+  height: 30px;
+  padding: 5px;
+}
+
+.page-layer-visibility svg,
+.page-layer-delete-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.page-layer-visibility:disabled,
+.page-layer-order-actions button:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.page-layer-select {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 7px;
+  min-width: 0;
+  padding: 5px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.page-layer-thumbnail {
+  grid-row: 1 / 3;
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--panel-strong);
+}
+
+.page-layer-thumbnail.is-empty {
+  border: 1px dashed var(--line);
+}
+
+.page-layer-name,
+.page-layer-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-layer-name {
+  grid-column: 2;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.page-layer-select > .page-layer-name:first-child {
+  grid-column: 1 / 3;
+}
+
+.page-layer-type {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.page-layer-select > .page-layer-name:first-child + .page-layer-type {
+  grid-column: 1 / 3;
+}
+
+.page-layer-order-actions {
+  display: flex;
+  flex-direction: column;
+  padding-right: 3px;
+}
+
+.page-layer-order-actions button {
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  font-size: 11px;
+}
+
+.page-layer-panel-row {
+  grid-template-columns: 22px 26px minmax(0, 1fr);
+}
+
+.page-layer-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.page-layer-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.page-layer-settings-header .section-kicker,
+.page-layer-settings-header h3 {
+  margin: 0;
+}
+
+.page-layer-settings-header h3 {
+  max-width: 285px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.page-layer-delete-button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+  border-radius: 6px;
+  color: var(--danger);
+}
+
+.page-panel-crop-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .page-object-property-row {
   display: flex;
   align-items: center;
   gap: 14px;
   flex-wrap: wrap;
+}
+
+.page-panel-sidebar .page-object-property-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
 }
 
 .page-object-property-field {
@@ -428,6 +756,11 @@
   gap: 6px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.page-panel-sidebar .page-object-property-field {
+  justify-content: space-between;
+  width: 100%;
 }
 
 .page-object-property-field input[type="color"] {
@@ -534,22 +867,32 @@
 }
 
 /* objects モードの非活性背景(コマ画像+コマ枠)。ぶち抜き位置を見ながら編集できるよう薄く表示する。 */
-.page-object-panel-background,
-.page-object-panel-frame {
+.page-object-panel-background {
   pointer-events: none;
 }
 
+.page-object-panel-frame {
+  pointer-events: auto;
+}
+
 .page-object-panel-bg-image {
-  opacity: 0.5;
+  opacity: 1;
   pointer-events: none;
 }
 
 .page-object-panel-bg-outline {
-  fill: none;
+  fill: transparent;
   stroke: color-mix(in srgb, var(--layout-koma, #17140f) 35%, transparent);
   stroke-width: 1px;
   vector-effect: non-scaling-stroke;
-  pointer-events: none;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.page-object-panel-bg-outline:hover,
+.page-object-panel-bg-outline.is-selected {
+  stroke: var(--accent);
+  stroke-width: 2px;
 }
 
 .page-object-image-picker {
@@ -723,4 +1066,26 @@
 .dialogue-proposal-item-actions {
   display: flex;
   gap: 6px;
+}
+
+@media (max-width: 1000px) {
+  .page-panel-dialog {
+    width: calc(100vw - 24px);
+    height: calc(100vh - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .page-panel-editor-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(300px, 1fr) minmax(220px, 40vh);
+  }
+
+  .page-panel-sidebar {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .page-layer-list {
+    max-height: 220px;
+  }
 }

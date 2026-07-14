@@ -43,7 +43,8 @@ import { gizmoBoxForPageObject } from "../pageObjectGizmoBox";
 import { getCachedTextLayout } from "../textLayoutClient";
 import type { PagePanelLightboxState } from "../appState";
 import { escapeAttr, escapeHtml } from "../format";
-import { iconClose, iconPlus, iconScript, iconSparkle, iconTrash } from "../icons";
+import { iconClose, iconEye, iconEyeOff, iconGrip, iconPlus, iconScript, iconSparkle, iconTrash } from "../icons";
+import { pageLayerBand, visiblePageObjects } from "../pageLayers";
 import { num, panelShapeElement, shapeCenter } from "./pageLayoutSvg";
 import { renderChronicleBar, type ChronicleBarViewState } from "./chronicleBarView";
 
@@ -102,6 +103,13 @@ export interface DialogueDrawerViewState {
   busy: boolean;
 }
 
+/** レイヤパネルの可視性は編集セッションだけの状態で、PageObject/書き出しデータへは保存しない。 */
+export interface PageLayerViewState {
+  hiddenObjectIds: string[];
+  hiddenPanelIds: string[];
+  hideNonImage: boolean;
+}
+
 export function renderPagePanelLightbox(
   page: PageSummary,
   lightbox: PagePanelLightboxState,
@@ -113,6 +121,7 @@ export function renderPagePanelLightbox(
   mosaicEdit: MosaicEditViewState,
   imageObjects: ImageObjectViewState,
   dialogueDrawer: DialogueDrawerViewState,
+  layerView: PageLayerViewState,
   chronicleBar: ChronicleBarViewState
 ): string {
   if (lightbox.pageId !== page.id) {
@@ -120,12 +129,13 @@ export function renderPagePanelLightbox(
   }
   const layout = page.layout ?? null;
   // レイアウトの無いページ(1枚絵)は "objects"/"mosaic" のみ開ける(呼び出し側が open 時に決める)。
-  const mode = layout ? lightbox.mode : lightbox.mode === "mosaic" ? "mosaic" : "objects";
+  const mode = layout ? (lightbox.mode === "panels" ? "objects" : lightbox.mode) : lightbox.mode === "mosaic" ? "mosaic" : "objects";
   const label = page.title.trim() || "ページ";
   const pageHeight = lightbox.pageHeight;
+  const cropActive = mode === "objects" && Boolean(layout && lightbox.cropPanelId);
 
   const stageContent =
-    mode === "panels" && layout
+    cropActive && layout
       ? renderPanelsStageContent(layout, lightbox, assignments)
       : mode === "shapes" && layout
         ? renderShapesStageContent(shapeEdit, pageHeight)
@@ -138,18 +148,16 @@ export function renderPagePanelLightbox(
               layout,
               assignments,
               imageObjects.missingMediaIds,
+              lightbox.selectedPanelId,
+              layerView,
               chronicleBar.preview?.objects ?? []
             );
   const toolbar =
-    mode === "panels" && layout
-      ? layout.panels.some((panel) => panel.id === lightbox.cropPanelId)
-        ? renderCropToolbar()
-        : renderSelectToolbar(lightbox)
-      : mode === "shapes" && layout
+    mode === "shapes" && layout
         ? renderShapesToolbar(shapeEdit)
         : mode === "mosaic"
           ? renderMosaicToolbar(mosaicEdit)
-          : renderObjectsToolbar(objects, selectedObjectId, fonts, layout, imageObjects, dialogueDrawer);
+          : renderObjectsToolbar(objects, selectedObjectId, fonts, layout, assignments, lightbox, imageObjects, dialogueDrawer, layerView);
 
   return `
     <div class="workflow-modal page-panel-lightbox" role="dialog" aria-modal="true" aria-label="${escapeAttr(label)} のページ編集">
@@ -162,13 +170,19 @@ export function renderPagePanelLightbox(
           <button class="icon-button" type="button" data-action="close-page-panels" aria-label="閉じる" title="閉じる">${iconClose()}</button>
         </header>
         ${renderModeTabs(lightbox, Boolean(layout))}
-        <div class="page-panel-stage" style="aspect-ratio: 1 / ${num(pageHeight)}">
-          <svg class="page-panel-svg" viewBox="0 0 ${VIEWBOX_SCALE} ${num(VIEWBOX_SCALE * pageHeight)}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"${mode === "objects" ? ` data-page-object-stage="1"` : ""}>
-            ${stageContent}
-          </svg>
+        <div class="page-panel-editor-body">
+          <div class="page-panel-stage" style="aspect-ratio: 1 / ${num(pageHeight)}">
+            <svg class="page-panel-svg" viewBox="0 0 ${VIEWBOX_SCALE} ${num(VIEWBOX_SCALE * pageHeight)}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg"${mode === "objects" && !cropActive ? ` data-page-object-stage="1"` : ""}>
+              ${stageContent}
+            </svg>
+          </div>
+          <aside class="page-panel-sidebar" aria-label="ページ編集サイドバー">
+            <div class="page-panel-sidebar-scroll">
+              ${toolbar}
+              ${renderChronicleBar(chronicleBar)}
+            </div>
+          </aside>
         </div>
-        ${toolbar}
-        ${renderChronicleBar(chronicleBar)}
       </section>
     </div>
   `;
@@ -182,9 +196,9 @@ function renderModeTabs(lightbox: PagePanelLightboxState, hasLayout: boolean): s
   const tab = (mode: "panels" | "objects" | "shapes" | "mosaic", labelText: string) =>
     `<button type="button" class="page-panel-mode-tab${lightbox.mode === mode ? " is-active" : ""}" data-action="set-page-panel-mode" data-id="${mode}" role="tab" aria-selected="${lightbox.mode === mode ? "true" : "false"}">${escapeHtml(labelText)}</button>`;
   if (!hasLayout) {
-    return `<div class="page-panel-mode-tabs" role="tablist">${tab("objects", "オブジェクト")}${tab("mosaic", "モザイク")}</div>`;
+    return `<div class="page-panel-mode-tabs" role="tablist">${tab("objects", "レイヤ")}${tab("mosaic", "モザイク")}</div>`;
   }
-  return `<div class="page-panel-mode-tabs" role="tablist">${tab("panels", "コマ")}${tab("objects", "オブジェクト")}${tab("shapes", "コマ枠")}${tab("mosaic", "モザイク")}</div>`;
+  return `<div class="page-panel-mode-tabs" role="tablist">${tab("objects", "レイヤ")}${tab("shapes", "コマ枠")}${tab("mosaic", "モザイク")}</div>`;
 }
 
 /** 「コマ」モードの `<svg>` 中身。P1 以前と完全に同一の内容(関数抽出のみ、ロジック変更なし)。 */
@@ -674,8 +688,8 @@ function isBackBandObject(object: PageObject): boolean {
  * コマ画像の下に敷いて「ぶち抜き位置を見ながら編集できる」ようにする(受け入れ条件)。
  * clip は panels モードと同じ `panelClipId` を再利用する(defs も共有)。
  */
-function renderObjectsPanelBackgroundImage(panel: LayoutPanel, assignment: PagePanelAssignment | null): string {
-  if (!assignment) {
+function renderObjectsPanelBackgroundImage(panel: LayoutPanel, assignment: PagePanelAssignment | null, hidden: boolean): string {
+  if (!assignment || hidden) {
     return "";
   }
   const crop = assignment.crop;
@@ -686,8 +700,11 @@ function renderObjectsPanelBackgroundImage(panel: LayoutPanel, assignment: PageP
   return `<g clip-path="url(#${panelClipId(panel.id)})" pointer-events="none">${image}</g>`;
 }
 
-function renderObjectsPanelBackgroundOutline(panel: LayoutPanel): string {
-  return panelShapeElement(panel.shape, `class="page-object-panel-bg-outline" fill="none" pointer-events="none"`);
+function renderObjectsPanelBackgroundOutline(panel: LayoutPanel, selected: boolean): string {
+  return panelShapeElement(
+    panel.shape,
+    `class="page-object-panel-bg-outline${selected ? " is-selected" : ""}" data-panel-id="${escapeAttr(panel.id)}" fill="transparent"`
+  );
 }
 
 /**
@@ -702,19 +719,23 @@ function renderObjectsStageContent(
   layout: PageLayout | null,
   assignments: PagePanelAssignment[],
   missingMediaIds: string[],
+  selectedPanelId: string | null,
+  layerView: PageLayerViewState,
   chroniclePreviewObjects: PageObject[] = []
 ): string {
-  const selected = objects.find((object) => object.id === selectedObjectId);
+  const visibleObjects = visiblePageObjects(objects, layerView.hiddenObjectIds, layerView.hideNonImage);
+  const selected = visibleObjects.find((object) => object.id === selectedObjectId);
   const selectedEditable = selected && isEditablePageObject(selected) ? selected : null;
-  const backObjects = objects.filter(isBackBandObject);
-  const frontObjects = objects.filter((object) => !isBackBandObject(object));
+  const backObjects = visibleObjects.filter(isBackBandObject);
+  const frontObjects = visibleObjects.filter((object) => !isBackBandObject(object));
   const assignmentByPanel = new Map(assignments.map((assignment) => [assignment.panelId, assignment]));
   const panels = layout ? [...layout.panels].sort((a, b) => a.order - b.order) : [];
+  const hiddenPanels = new Set(layerView.hiddenPanelIds);
   const panelBackground = layout
-    ? `<g class="page-object-panel-background">${panels.map((panel) => renderObjectsPanelBackgroundImage(panel, assignmentByPanel.get(panel.id) ?? null)).join("")}</g>`
+    ? `<g class="page-object-panel-background">${panels.map((panel) => renderObjectsPanelBackgroundImage(panel, assignmentByPanel.get(panel.id) ?? null, hiddenPanels.has(panel.id))).join("")}</g>`
     : "";
   const panelFrame = layout
-    ? `<g class="page-object-panel-frame" pointer-events="none">${panels.map(renderObjectsPanelBackgroundOutline).join("")}</g>`
+    ? `<g class="page-object-panel-frame">${panels.map((panel) => renderObjectsPanelBackgroundOutline(panel, panel.id === selectedPanelId)).join("")}</g>`
     : "";
   return `
     <defs>${panels.map(renderPanelClipPath).join("")}</defs>
@@ -725,7 +746,7 @@ function renderObjectsStageContent(
       ${panelFrame}
       ${frontObjects.map((object) => renderPageObjectShape(object, object.id === selectedObjectId, missingMediaIds)).join("")}
       ${selectedEditable ? renderPageObjectGizmo(selectedEditable, pageHeight) : ""}
-      ${renderChroniclePreviewGhosts(chroniclePreviewObjects)}
+      ${layerView.hideNonImage ? "" : renderChroniclePreviewGhosts(chroniclePreviewObjects)}
     </g>
   `;
 }
@@ -956,8 +977,11 @@ function renderObjectsToolbar(
   selectedObjectId: string | null,
   fonts: FontSummary[],
   layout: PageLayout | null,
+  assignments: PagePanelAssignment[],
+  lightbox: PagePanelLightboxState,
   imageObjects: ImageObjectViewState,
-  dialogueDrawer: DialogueDrawerViewState
+  dialogueDrawer: DialogueDrawerViewState,
+  layerView: PageLayerViewState
 ): string {
   const selected = objects.find((object) => object.id === selectedObjectId);
   const selectedBox = selected && selected.kind === "box" ? selected : null;
@@ -969,38 +993,192 @@ function renderObjectsToolbar(
   // (選択解除後もピッカーが浮いたままにならないようにする。state 自体はここではリセットしない)。
   const rawPickerMode = imageObjects.picker?.mode ?? null;
   const pickerMode = rawPickerMode === "replace" && !selectedImage ? null : rawPickerMode;
+  const selectedPanel = layout?.panels.find((panel) => panel.id === lightbox.selectedPanelId) ?? null;
+  const selectedPanelAssignment = selectedPanel
+    ? assignments.find((assignment) => assignment.panelId === selectedPanel.id) ?? null
+    : null;
   return `
-    <footer class="page-panel-toolbar page-object-toolbar">
-      <div class="page-object-toolbar-row">
-        <button class="button-secondary compact" type="button" data-action="add-page-object-box">${iconPlus()}ボックス追加</button>
-        <button class="button-secondary compact" type="button" data-action="add-page-object-balloon">${iconPlus()}吹き出し追加</button>
-        <button class="button-secondary compact" type="button" data-action="add-page-object-text">${iconPlus()}テキスト追加</button>
-        <button class="button-secondary compact${pickerMode === "add" ? " is-active" : ""}" type="button" data-action="toggle-page-object-image-picker" data-id="add">${iconPlus()}画像追加</button>
-        <button class="button-secondary compact${dialogueDrawer.open ? " is-active" : ""}" type="button" data-action="toggle-dialogue-drawer">${iconScript()}セリフ</button>
-        ${
-          hasSelection
-            ? `
-              <button class="button-secondary compact" type="button" data-action="page-object-bring-front" title="最前面へ">前面へ</button>
-              <button class="button-secondary compact" type="button" data-action="page-object-send-back" title="最背面へ">背面へ</button>
-              <button class="button-danger compact" type="button" data-action="delete-selected-page-object" title="削除(Delete キー)">${iconTrash()}削除</button>
-            `
-            : ""
-        }
+    <section class="page-object-toolbar">
+      <div class="page-sidebar-tabs" role="tablist" aria-label="サイドバー表示">
+        <button class="page-sidebar-tab${dialogueDrawer.open ? "" : " is-active"}" type="button"${dialogueDrawer.open ? ` data-action="toggle-dialogue-drawer"` : ""} role="tab" aria-selected="${dialogueDrawer.open ? "false" : "true"}">レイヤ</button>
+        <button class="page-sidebar-tab${dialogueDrawer.open ? " is-active" : ""}" type="button" data-action="toggle-dialogue-drawer" role="tab" aria-selected="${dialogueDrawer.open ? "true" : "false"}">${iconScript()}セリフ</button>
       </div>
-      ${dialogueDrawer.open ? renderDialogueDrawer(dialogueDrawer, objects) : ""}
-      ${pickerMode ? renderImageObjectPicker(imageObjects.pickerAssets) : ""}
       ${
-        selectedBox
-          ? renderBoxPropertyPanel(selectedBox, fonts)
-          : selectedBalloon
-            ? renderBalloonPropertyPanel(selectedBalloon, fonts)
-            : selectedText
-              ? renderTextObjectPanel(selectedText, fonts)
-              : selectedImage
-                ? renderImageObjectPropertyPanel(selectedImage, layout, imageObjects.missingMediaIds.includes(selectedImage.mediaId))
-                : `<p class="page-panel-hint-text">ボックス/吹き出し/テキスト/画像をクリックして選択(ドラッグで移動・コーナーで拡縮・上のハンドルで回転・Delete で削除)</p>`
+        dialogueDrawer.open
+          ? renderDialogueDrawer(dialogueDrawer, objects)
+          : `
+            <div class="page-object-add-grid" aria-label="レイヤを追加">
+              <button class="button-secondary compact" type="button" data-action="add-page-object-balloon">${iconPlus()}吹き出し</button>
+              <button class="button-secondary compact" type="button" data-action="add-page-object-text">${iconPlus()}テキスト</button>
+              <button class="button-secondary compact" type="button" data-action="add-page-object-box">${iconPlus()}ボックス</button>
+              <button class="button-secondary compact${pickerMode === "add" ? " is-active" : ""}" type="button" data-action="toggle-page-object-image-picker" data-id="add">${iconPlus()}画像</button>
+            </div>
+            ${pickerMode ? renderImageObjectPicker(imageObjects.pickerAssets) : ""}
+            <div class="page-layer-visibility-actions">
+              <button class="button-secondary compact${layerView.hideNonImage ? " is-active" : ""}" type="button" data-action="toggle-page-layer-hide-non-image" aria-pressed="${layerView.hideNonImage ? "true" : "false"}">
+                ${layerView.hideNonImage ? iconEyeOff() : iconEye()}画像以外を${layerView.hideNonImage ? "表示" : "隠す"}
+              </button>
+              <button class="button-secondary compact" type="button" data-action="show-all-page-layers">すべて表示</button>
+            </div>
+            ${renderPageLayerList(objects, selectedObjectId, layout, assignments, lightbox.selectedPanelId, layerView)}
+            <section class="page-layer-settings" aria-label="選択レイヤの設定">
+              <div class="page-layer-settings-header">
+                <div>
+                  <p class="section-kicker">Settings</p>
+                  <h3>${
+                    selectedPanel
+                      ? `コマ ${selectedPanel.order}`
+                      : selected
+                        ? escapeHtml(pageObjectLayerName(selected).title)
+                        : "レイヤを選択"
+                  }</h3>
+                </div>
+                ${
+                  hasSelection
+                    ? `<button class="page-layer-delete-button" type="button" data-action="delete-selected-page-object" title="削除(Delete キー)" aria-label="選択レイヤを削除">${iconTrash()}</button>`
+                    : ""
+                }
+              </div>
+              ${
+                selectedPanel
+                  ? renderPanelLayerPropertyPanel(selectedPanel, selectedPanelAssignment, lightbox.cropPanelId === selectedPanel.id)
+                  : selectedBox
+                    ? renderBoxPropertyPanel(selectedBox, fonts)
+                    : selectedBalloon
+                      ? renderBalloonPropertyPanel(selectedBalloon, fonts)
+                      : selectedText
+                        ? renderTextObjectPanel(selectedText, fonts)
+                        : selectedImage
+                          ? renderImageObjectPropertyPanel(selectedImage, layout, imageObjects.missingMediaIds.includes(selectedImage.mediaId))
+                          : `<p class="page-panel-hint-text">紙面またはレイヤ一覧から対象を選択してください。ドラッグで移動、コーナーで拡縮、上のハンドルで回転できます。</p>`
+              }
+            </section>
+          `
       }
-    </footer>
+    </section>
+  `;
+}
+
+function pageObjectLayerName(object: PageObject): { title: string; type: string } {
+  const text =
+    object.kind === "text"
+      ? object.content.text
+      : object.kind === "balloon" || object.kind === "box"
+        ? object.content?.text ?? ""
+        : "";
+  const compactText = text.replace(/\s+/g, " ").trim();
+  if (object.kind === "image") {
+    return { title: "画像", type: object.band === "back" ? "背景画像" : "前景画像" };
+  }
+  if (object.kind === "balloon") {
+    return { title: compactText || "吹き出し", type: "吹き出し" };
+  }
+  if (object.kind === "text") {
+    return { title: compactText || "テキスト", type: "テキスト" };
+  }
+  return { title: compactText || "ボックス", type: "ボックス" };
+}
+
+function renderPageObjectLayerRow(
+  object: PageObject,
+  index: number,
+  count: number,
+  selectedObjectId: string | null,
+  layerView: PageLayerViewState
+): string {
+  const band = pageLayerBand(object);
+  const individuallyHidden = layerView.hiddenObjectIds.includes(object.id);
+  const globallyHidden = layerView.hideNonImage && object.kind !== "image";
+  const hidden = individuallyHidden || globallyHidden;
+  const name = pageObjectLayerName(object);
+  return `
+    <div class="page-layer-row${selectedObjectId === object.id ? " is-selected" : ""}${hidden ? " is-hidden" : ""}"
+      draggable="true" data-page-layer-object-id="${escapeAttr(object.id)}" data-page-layer-band="${band}">
+      <span class="page-layer-grip" title="ドラッグして並べ替え">${iconGrip()}</span>
+      <button class="page-layer-visibility" type="button" data-action="toggle-page-layer-visibility" data-id="object:${escapeAttr(object.id)}"
+        aria-label="${escapeAttr(name.type)}を${individuallyHidden ? "表示" : "非表示"}" title="${globallyHidden ? "画像以外を一括非表示中" : hidden ? "表示" : "非表示"}"${globallyHidden ? " disabled" : ""}>
+        ${hidden ? iconEyeOff() : iconEye()}
+      </button>
+      <button class="page-layer-select" type="button" data-action="select-page-layer" data-id="object:${escapeAttr(object.id)}">
+        <span class="page-layer-name">${escapeHtml(name.title)}</span>
+        <span class="page-layer-type">${escapeHtml(name.type)}</span>
+      </button>
+      <div class="page-layer-order-actions" aria-label="重なり順">
+        <button type="button" data-action="move-page-layer-up" data-id="${escapeAttr(object.id)}" title="1つ前面へ" aria-label="1つ前面へ"${index === 0 ? " disabled" : ""}>↑</button>
+        <button type="button" data-action="move-page-layer-down" data-id="${escapeAttr(object.id)}" title="1つ背面へ" aria-label="1つ背面へ"${index === count - 1 ? " disabled" : ""}>↓</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPanelLayerRow(
+  panel: LayoutPanel,
+  assignment: PagePanelAssignment | null,
+  selectedPanelId: string | null,
+  hidden: boolean
+): string {
+  return `
+    <div class="page-layer-row page-layer-panel-row${selectedPanelId === panel.id ? " is-selected" : ""}${hidden ? " is-hidden" : ""}">
+      <span class="page-layer-fixed-mark" title="コマ枠の順序はコマ枠タブで管理">固定</span>
+      <button class="page-layer-visibility" type="button" data-action="toggle-page-layer-visibility" data-id="panel:${escapeAttr(panel.id)}"
+        aria-label="コマ ${panel.order} の画像を${hidden ? "表示" : "非表示"}" title="${hidden ? "表示" : "非表示"}"${assignment ? "" : " disabled"}>
+        ${hidden || !assignment ? iconEyeOff() : iconEye()}
+      </button>
+      <button class="page-layer-select" type="button" data-action="select-page-layer" data-id="panel:${escapeAttr(panel.id)}">
+        ${assignment ? `<img class="page-layer-thumbnail" src="${escapeAttr(assignment.assetImageUrl)}" alt="" loading="lazy" draggable="false" />` : `<span class="page-layer-thumbnail is-empty"></span>`}
+        <span class="page-layer-name">コマ ${panel.order}</span>
+        <span class="page-layer-type">${assignment ? "コマ画像" : "未生成"}</span>
+      </button>
+    </div>
+  `;
+}
+
+function renderPageLayerList(
+  objects: PageObject[],
+  selectedObjectId: string | null,
+  layout: PageLayout | null,
+  assignments: PagePanelAssignment[],
+  selectedPanelId: string | null,
+  layerView: PageLayerViewState
+): string {
+  const assignmentByPanel = new Map(assignments.map((assignment) => [assignment.panelId, assignment]));
+  const front = objects.filter((object) => pageLayerBand(object) === "front").reverse();
+  const back = objects.filter((object) => pageLayerBand(object) === "back").reverse();
+  const panels = layout ? [...layout.panels].sort((a, b) => b.order - a.order) : [];
+  const group = (label: string, content: string, count: number) =>
+    count > 0
+      ? `<div class="page-layer-group"><div class="page-layer-group-label"><span>${escapeHtml(label)}</span><span>${count}</span></div>${content}</div>`
+      : "";
+  return `
+    <div class="page-layer-list" aria-label="レイヤ一覧">
+      ${group("前景", front.map((object, index) => renderPageObjectLayerRow(object, index, front.length, selectedObjectId, layerView)).join(""), front.length)}
+      ${group(
+        "コマ画像",
+        panels
+          .map((panel) => renderPanelLayerRow(panel, assignmentByPanel.get(panel.id) ?? null, selectedPanelId, layerView.hiddenPanelIds.includes(panel.id)))
+          .join(""),
+        panels.length
+      )}
+      ${group("背景", back.map((object, index) => renderPageObjectLayerRow(object, index, back.length, selectedObjectId, layerView)).join(""), back.length)}
+      ${objects.length === 0 && panels.length === 0 ? `<p class="page-panel-hint-text">レイヤはまだありません。</p>` : ""}
+    </div>
+  `;
+}
+
+function renderPanelLayerPropertyPanel(
+  panel: LayoutPanel,
+  assignment: PagePanelAssignment | null,
+  cropActive: boolean
+): string {
+  if (cropActive) {
+    return `<div class="page-panel-crop-sidebar"><p class="page-panel-hint-text">ドラッグで移動、コーナーで拡大縮小、上のハンドルで回転できます。</p>${renderCropToolbar()}</div>`;
+  }
+  return `
+    <div class="page-panel-layer-actions">
+      <button class="button-primary compact" type="button" data-action="generate-selected-panel">${iconSparkle()}${assignment ? "コマを再生成" : "コマを生成"}</button>
+      <button class="button-secondary compact" type="button" data-action="edit-selected-panel-crop"${assignment ? "" : " disabled"}>切り抜きを調整</button>
+    </div>
+    <p class="page-panel-hint-text">紙面上のコマをダブルクリックしても生成／切り抜き調整を開けます。</p>
   `;
 }
 

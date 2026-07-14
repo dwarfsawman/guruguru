@@ -467,3 +467,41 @@
   opacity: 0.85;
   font-family: inherit;
 }
+
+/* ページ編集を2カラム化した後は Chronicle も右サイドバー内へ置く。横長バーの既定値を
+   サイド幅向けの縦リストへ切り替え、中央キャンバスの高さへ影響させない。 */
+.page-panel-sidebar .chronicle-bar {
+  max-height: none;
+  margin-top: 14px;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line);
+  overflow: visible;
+  background: transparent;
+}
+
+.page-panel-sidebar .chronicle-bar-track {
+  flex-direction: column;
+  overflow: visible;
+}
+
+.page-panel-sidebar .chronicle-beat {
+  width: 100%;
+  max-width: none;
+}
+
+.page-panel-sidebar .chronicle-bar-toolbar {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.page-panel-sidebar .chronicle-bar-header,
+.page-panel-sidebar .chronicle-beat-preview-header,
+.page-panel-sidebar .chronicle-selection-stats,
+.page-panel-sidebar .chronicle-layout-preview-stats {
+  flex-wrap: wrap;
+}
+
+.page-panel-sidebar .chronicle-beat-preview-note {
+  width: 100%;
+  margin-left: 0;
+}

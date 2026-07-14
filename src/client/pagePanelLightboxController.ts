@@ -70,7 +70,7 @@ function findPanel(page: PageSummary | null | undefined, panelId: string | null)
 /**
  * ページのコマ選択/オブジェクト編集 lightbox を開く。`page.layout` の有無に関わらず開ける
  * (Docs/Feature-CGCollectionSuite.md P1: レイアウトの無い1枚絵ページでもオブジェクト編集は必要)。
- * 既定モードはレイアウトがあれば "panels"(従来通り)、無ければ "objects"。
+ * 既定モードはレイアウトの有無にかかわらず、コマ画像とオブジェクトを合成表示する "objects"。
  */
 export async function openPagePanelLightbox(pageId: string) {
   const page = state.book?.pages.find((item) => item.id === pageId);
@@ -80,7 +80,7 @@ export async function openPagePanelLightbox(pageId: string) {
   }
   state.pagePanelLightbox = {
     pageId,
-    mode: page.layout ? "panels" : "objects",
+    mode: "objects",
     selectedPanelId: null,
     cropPanelId: null,
     cropDraft: null,
@@ -89,6 +89,9 @@ export async function openPagePanelLightbox(pageId: string) {
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
   state.selectedPageObjectId = null;
+  state.pageLayerHiddenObjectIds = [];
+  state.pageLayerHiddenPanelIds = [];
+  state.pageLayerHideNonImage = false;
   state.pagePanelLightboxAssets = [];
   state.pagePanelLightboxMissingMediaIds = [];
   state.pageObjectImagePicker = null;
@@ -171,6 +174,9 @@ export function closePagePanelLightbox() {
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
   state.selectedPageObjectId = null;
+  state.pageLayerHiddenObjectIds = [];
+  state.pageLayerHiddenPanelIds = [];
+  state.pageLayerHideNonImage = false;
   state.pagePanelLightboxAssets = [];
   state.pagePanelLightboxMissingMediaIds = [];
   state.pageObjectImagePicker = null;
@@ -210,11 +216,12 @@ export function closePagePanelLightbox() {
  */
 export function setPagePanelMode(mode: string) {
   const lightbox = state.pagePanelLightbox;
-  if (!lightbox || (mode !== "panels" && mode !== "objects" && mode !== "shapes" && mode !== "mosaic") || lightbox.mode === mode) {
+  const nextMode = mode === "panels" ? "objects" : mode;
+  if (!lightbox || (nextMode !== "objects" && nextMode !== "shapes" && nextMode !== "mosaic") || lightbox.mode === nextMode) {
     return;
   }
-  lightbox.mode = mode;
-  if (mode === "objects") {
+  lightbox.mode = nextMode;
+  if (nextMode === "objects") {
     ensureFontsLoaded();
     ensureAllPageObjectTextLayouts(state.pageObjectsDraft);
   }
@@ -238,6 +245,8 @@ function selectPanel(panelId: string) {
     return;
   }
   lightbox.selectedPanelId = panelId;
+  state.selectedPageObjectId = null;
+  state.dialogueDrawerOpen = false;
   requestRender();
 }
 
@@ -250,6 +259,14 @@ function openCropEditorFor(panelId: string, assignment: PagePanelAssignment) {
   lightbox.cropPanelId = panelId;
   lightbox.cropDraft = { ...assignment.crop };
   requestRender();
+}
+
+function editSelectedPanelCrop() {
+  const panelId = state.pagePanelLightbox?.selectedPanelId;
+  const assignment = panelId ? state.pagePanelAssignments.find((item) => item.panelId === panelId) : null;
+  if (panelId && assignment) {
+    openCropEditorFor(panelId, assignment);
+  }
 }
 
 function handlePanelDoubleClick(panelId: string) {
@@ -935,6 +952,7 @@ registerActions({
   "open-page-panels": (id) => openPagePanelLightbox(id),
   "close-page-panels": () => closePagePanelLightbox(),
   "generate-selected-panel": () => generateSelectedPanel(),
+  "edit-selected-panel-crop": () => editSelectedPanelCrop(),
   "close-panel-crop": () => closeCropEditor(),
   "reset-panel-crop": () => resetPanelCrop(),
   "clear-panel-target": () => clearPanelTarget(),

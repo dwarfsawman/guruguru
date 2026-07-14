@@ -424,6 +424,12 @@ export interface AppState {
   pageObjectsDraft: PageObject[];
   /** ページオブジェクト編集: 選択中オブジェクト id。null=未選択。 */
   selectedPageObjectId: string | null;
+  /** レイヤ UI: 編集キャンバス上だけで一時非表示にしている PageObject id。書き出しには影響しない。 */
+  pageLayerHiddenObjectIds: string[];
+  /** レイヤ UI: 編集キャンバス上だけで一時非表示にしているコマ画像の panel id。 */
+  pageLayerHiddenPanelIds: string[];
+  /** レイヤ UI: コマ画像と画像オブジェクト以外を編集キャンバス上で一括非表示にする。 */
+  pageLayerHideNonImage: boolean;
   /**
    * テキストオブジェクト編集(Docs/Feature-CGCollectionSuite.md P2): `GET /api/fonts` の取得状態+結果。
    * 初回オブジェクトモード表示時に取得しキャッシュする(`ensureFontsLoaded`)。
@@ -653,6 +659,9 @@ export const state: AppState = {
   pagePanelAssignments: [],
   pageObjectsDraft: [],
   selectedPageObjectId: null,
+  pageLayerHiddenObjectIds: [],
+  pageLayerHiddenPanelIds: [],
+  pageLayerHideNonImage: false,
   pageObjectFonts: { status: "idle", fonts: [] },
   pagePanelLightboxAssets: [],
   pagePanelLightboxMissingMediaIds: [],
