@@ -367,8 +367,46 @@ test("normalizePageObjects: gradient の gradStart/gradEnd は指定時のみ保
       params: { ...defaultToneParams("halftone"), gradStart: { x: 0.1, y: 0.1 }, gradEnd: { x: 0.2, y: 0.2 } }
     }
   ])[0] as ToneObject;
-  assert.ok(!("gradStart" in otherType.params), "gradient 以外の種別には混入しない");
+  assert.ok(!("gradStart" in otherType.params), "gradient/lines 以外の種別には混入しない");
   assert.ok(!("gradEnd" in otherType.params));
+});
+
+test("normalizePageObjects: lines も gradStart/gradEnd を指定時のみ保持し ±2 へ clamp する(2026-07-15 追補2)", () => {
+  const withPoints = normalizePageObjects([
+    {
+      id: "t",
+      kind: "tone",
+      position: { x: 0.1, y: 0.1 },
+      size: { x: 0.2, y: 0.2 },
+      toneType: "lines",
+      seed: 1,
+      params: { ...defaultToneParams("lines"), startRatio: 0.9, endRatio: 0.1, gradStart: { x: -0.05, y: 0.02 }, gradEnd: { x: 999, y: -999 } }
+    }
+  ])[0] as ToneObject;
+  assert.deepEqual(withPoints.params.gradStart, { x: -0.05, y: 0.02 }, "有効な始点はそのまま往復保持");
+  assert.deepEqual(withPoints.params.gradEnd, { x: 2, y: -2 }, "範囲外は center と同じ ±2 へ clamp");
+  assert.equal(withPoints.params.startRatio, 0.9, "濃度グラデ本体(optional)も同時に往復保持");
+
+  // 濃度グラデ(startRatio/endRatio)が無くても点自体は保持する(使うかどうかは描画側の判定。
+  // UI 側はグラデ無効化トグルで点も一緒に削除するので、通常この形は import 由来のデータのみ)。
+  const withoutRatios = normalizePageObjects([
+    {
+      id: "t2",
+      kind: "tone",
+      position: { x: 0.1, y: 0.1 },
+      size: { x: 0.2, y: 0.2 },
+      toneType: "lines",
+      seed: 1,
+      params: { ...defaultToneParams("lines"), gradStart: { x: 0.01, y: 0 }, gradEnd: { x: 0.02, y: 0 } }
+    }
+  ])[0] as ToneObject;
+  assert.deepEqual(withoutRatios.params.gradStart, { x: 0.01, y: 0 });
+
+  const withoutPoints = normalizePageObjects([
+    { id: "t3", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "lines", seed: 1, params: defaultToneParams("lines") }
+  ])[0] as ToneObject;
+  assert.ok(!("gradStart" in withoutPoints.params), "未指定ならキー自体を持たない(angle+90 由来の従来挙動)");
+  assert.ok(!("gradEnd" in withoutPoints.params));
 });
 
 test("normalizePageObjects: tone の toneType は候補外なら halftone にフォールバック(balloon.shape と同じ扱い、オブジェクト自体は捨てない)", () => {

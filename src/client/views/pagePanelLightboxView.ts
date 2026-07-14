@@ -44,7 +44,7 @@ import {
 } from "../../shared/pageObjects";
 import { balloonContentMaxWidth, renderBalloonSvg } from "../../shared/balloonShape";
 import { renderTextSvg } from "../../shared/textSvg";
-import { effectiveGradientPoints, renderToneSvg } from "../../shared/toneSvg";
+import { effectiveGradientPoints, hasOptionalGradient, renderToneSvg } from "../../shared/toneSvg";
 import {
   MOSAIC_GRANULARITY_MAX,
   MOSAIC_GRANULARITY_MIN,
@@ -995,12 +995,13 @@ function toneCenterHandlePoint(object: ToneObject): { x: number; y: number } {
 }
 
 /**
- * グラデトーンの始点/終点ハンドルの世界(ページ)座標(2026-07-15)。ローカル座標は
- * `effectiveGradientPoints`(gradStart/gradEnd 未指定時は angle から導出した領域両端)を使うので、
- * ハンドル位置と実際の濃度遷移が常に一致する。世界座標への変換は toneCenterHandlePoint と同じ。
+ * グラデ/線トーンの始点/終点ハンドルの世界(ページ)座標(2026-07-15。lines は同日追補2)。ローカル座標は
+ * `effectiveGradientPoints`(gradStart/gradEnd 未指定時は angle から導出した領域両端。フォールバック
+ * 方向は種別依存なので toneType を渡す)を使うので、ハンドル位置と実際の濃度遷移が常に一致する。
+ * 世界座標への変換は toneCenterHandlePoint と同じ。
  */
 function toneGradHandlePoints(object: ToneObject): { start: { x: number; y: number }; end: { x: number; y: number } } {
-  const local = effectiveGradientPoints(object.params, Math.max(1e-6, object.size.x / 2), Math.max(1e-6, object.size.y / 2));
+  const local = effectiveGradientPoints(object.toneType, object.params, Math.max(1e-6, object.size.x / 2), Math.max(1e-6, object.size.y / 2));
   const toWorld = (point: PageVec) => {
     const rotated = rotatePointAround(point, { x: 0, y: 0 }, object.rotation);
     return { x: object.position.x + rotated.x, y: object.position.y + rotated.y };
@@ -1043,11 +1044,13 @@ function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): 
           return `<circle id="pageObjectGizmoToneCenter" class="page-object-gizmo-handle page-object-gizmo-tone-center-handle" style="cursor:move;" data-page-object-handle="tone-center" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(point.x)}" cy="${num(point.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />`;
         })()
       : "";
-  // グラデトーンの始点/終点ハンドル(2026-07-15)。緑=始点(tone-center と同色)/青=終点。gradStart/
-  // gradEnd 未指定でも実効位置(angle 由来)に常に出し、最初のドラッグで controller 側が materialize する。
-  // 2点間には遷移方向を可視化する破線の軸線を敷く(pointer-events はハンドルのみ)。
+  // グラデ/線トーンの始点/終点ハンドル(2026-07-15。lines は同日追補2)。緑=始点(tone-center と同色)/
+  // 青=終点。gradStart/gradEnd 未指定でも実効位置(angle 由来)に常に出し、最初のドラッグで controller
+  // 側が materialize する。2点間には遷移方向を可視化する破線の軸線を敷く(pointer-events はハンドルのみ)。
+  // lines は濃度グラデ有効時のみ(mask を掛ける toneSvg.ts と同じ hasOptionalGradient 判定 -- グラデ無し
+  // なら操作対象の遷移が存在せず、「動かせるのに効かない」ハンドルになるため出さない)。
   const toneGradHandles =
-    object.kind === "tone" && object.toneType === "gradient"
+    object.kind === "tone" && (object.toneType === "gradient" || (object.toneType === "lines" && hasOptionalGradient(object.params)))
       ? (() => {
           const { start, end } = toneGradHandlePoints(object);
           return `<line id="pageObjectGizmoGradAxis" class="page-object-gizmo-grad-axis" x1="${num(start.x)}" y1="${num(start.y)}" x2="${num(end.x)}" y2="${num(end.y)}" />
@@ -1744,6 +1747,11 @@ function renderToneParamsFields(object: ToneObject): string {
           </label>
         </div>
         ${renderOptionalGradientFields(params)}
+        ${
+          hasOptionalGradient(params)
+            ? `<p class="page-panel-hint-text">緑=始点 / 青=終点のハンドルをドラッグでグラデの向きと範囲を指定できます(縞は軸と直交に追従、角度を入力するとハンドル指定はリセット)</p>`
+            : ""
+        }
       `;
     case "noise":
       return `

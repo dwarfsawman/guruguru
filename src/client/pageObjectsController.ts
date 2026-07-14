@@ -993,6 +993,11 @@ function updateToneOwnField(tone: ToneObject, field: string, target: HTMLInputEl
     } else {
       delete params.startRatio;
       delete params.endRatio;
+      // 遷移軸ハンドル(lines、2026-07-15 追補2)もグラデ無効化と同時に破棄する。残すと正規化では保持
+      // され続け、再有効化した時に(その間の角度編集を無視して)古い軸が突然復活してしまうため --
+      // 再有効化は常に angle 由来の軸から始める。noise には gradStart/gradEnd がそもそも無いので無害。
+      delete params.gradStart;
+      delete params.gradEnd;
     }
     return { ...tone, params };
   }
@@ -1031,9 +1036,10 @@ function updateToneParamField(tone: ToneObject, field: string, target: HTMLInput
       break;
     case "angle":
       params.angle = parsed;
-      if (tone.toneType === "gradient") {
+      if (tone.toneType === "gradient" || tone.toneType === "lines") {
         // 始点/終点ハンドル指定中に角度を入力したら、ハンドル指定を解除して角度指定へ戻す(最後の編集が
-        // 勝つ。残したままだと gradStart/gradEnd が優先されて角度入力が見た目に効かず混乱するため)。
+        // 勝つ。残したままだと gradStart/gradEnd が優先されて角度入力が見た目に効かず混乱するため。
+        // lines は縞の向きも遷移軸由来(軸と直交)になるので、gradient と同じ扱いにする)。
         delete params.gradStart;
         delete params.gradEnd;
       }
@@ -1581,10 +1587,12 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
       const nextCenter = clampToneCenter({ x: startCenter.x + localDx, y: startCenter.y + localDy });
       updated = { ...drag.startObject, params: { ...drag.startObject.params, center: nextCenter } };
     } else {
-      // グラデ始点/終点(2026-07-15)。gradStart/gradEnd 未指定(angle 由来の実効位置)のままドラッグを
-      // 始めたら、その実効2点を基準に**両方**を materialize する -- 片方だけ保存すると、もう片方が
-      // 「angle 由来」のまま領域サイズ変更などで動いてしまい、掴んだ時の見た目とずれるため。
+      // グラデ始点/終点(2026-07-15。lines は同日追補2)。gradStart/gradEnd 未指定(angle 由来の実効
+      // 位置)のままドラッグを始めたら、その実効2点を基準に**両方**を materialize する -- 片方だけ保存
+      // すると、もう片方が「angle 由来」のまま領域サイズ変更などで動いてしまい、掴んだ時の見た目とずれるため。
+      // 実効位置のフォールバック方向は種別依存(gradient=angle / lines=angle+90)なので toneType を渡す。
       const eff = effectiveGradientPoints(
+        drag.startObject.toneType,
         drag.startObject.params,
         Math.max(1e-6, drag.startObject.size.x / 2),
         Math.max(1e-6, drag.startObject.size.y / 2)

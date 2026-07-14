@@ -12,6 +12,10 @@
  * - halftone/lines: `<pattern patternUnits="userSpaceOnUse">` + `patternTransform="rotate(...)"` を
  *   領域 rect に敷く(無限タイルなので回転の基準点はどこでもよい)。lines は startRatio/endRatio が
  *   指定時のみ、縞と直交方向の `<mask>`(線形グラデ)を追加で重ねる(2026-07-14 追補、任意)。
+ *   2026-07-15 追補2: 濃度グラデの遷移軸は gradient と同じく optional な params.gradStart/gradEnd
+ *   (ステージ上のハンドル)で指定できる。mask の線形グラデは userSpaceOnUse で実効2点そのものに張り
+ *   (`effectiveGradientPoints`)、spreadMethod 既定(pad)により2点の外側は最寄り端の濃度で平坦になる。
+ *   縞の向きは常に遷移軸と直交(=遷移は縞をまたぐ方向、という従来の関係を維持)。
  * - gradient: 2026-07-14 追補で v1(ドット径固定+マスク減衰の近似)から、角度方向に沿ってドット半径を
  *   start→end へ実際に補間する行生成(`<circle>` 群、PRNG 不要の決定的格子)へ強化した。領域面積/pitch²
  *   が要素数バジェット(約2万)を超える場合は実効 pitch を自動で粗くする(`effectiveGradientPitch`)。
@@ -40,7 +44,7 @@
  * **id 衝突禁止**: pattern/mask/gradient/filter/clipPath の id は `object.id` を含めて一意化する
  * (サーバは1つの SVG に複数オブジェクトを並べるため必須。`panelClipId`/`image-object-clip-*` の前例踏襲)。
  */
-import type { PageVec, ToneObject, ToneParams } from "./pageObjects";
+import type { PageVec, ToneKind, ToneObject, ToneParams } from "./pageObjects";
 import { TONE_COUNT_MAX, TONE_NOISE_GRAIN_MAX, TONE_NOISE_GRAIN_MIN, TONE_PITCH_MAX, TONE_PITCH_MIN } from "./pageObjects";
 
 /** 数値の SVG 属性向け文字列化(`balloonShape.ts` と同じ絶対 6 桁丸め)。 */
@@ -147,9 +151,11 @@ function renderHalftoneBody(params: ToneParams, color: string, uid: string, hx: 
 
 /**
  * startRatio/endRatio のどちらかが指定されていれば「濃度グラデ有効」(2026-07-14 追補: lines/noise は
- * 任意グラデ。gradient(必須グラデ)はこの判定を使わず常に両方セットする)。
+ * 任意グラデ。gradient(必須グラデ)はこの判定を使わず常に両方セットする)。export するのは
+ * クライアント(`pagePanelLightboxView.ts`)が lines の始点/終点ハンドルの表示可否をこれと同じ判定で
+ * 決めるため(mask を掛ける条件とハンドルの表示条件がずれると「動かせるのに効かない」ハンドルになる)。
  */
-function hasOptionalGradient(params: ToneParams): boolean {
+export function hasOptionalGradient(params: ToneParams): boolean {
   return typeof params.startRatio === "number" || typeof params.endRatio === "number";
 }
 
@@ -157,6 +163,9 @@ function hasOptionalGradient(params: ToneParams): boolean {
  * angle 方向の白(不透明度 startRatio→endRatio)線形グラデを領域全面に敷いた `<mask>` 断片。旧
  * renderGradientBody(v1)のマスク近似を lines/noise の「任意の濃度グラデ」向けに切り出したもの
  * (`hasOptionalGradient` で有効と判定した時だけ呼ぶこと)。id は種別ごとに prefix で分ける。
+ * 2026-07-15 追補2以降は noise 専用 -- lines は始点/終点ハンドル対応で、実効2点へ直接張る
+ * `opacityMaskPointsFragment`(userSpaceOnUse)へ移行した(bbox 基準の rotate は非正方形領域で
+ * 遷移方向が歪み、ハンドルの軸線と一致しないため)。
  */
 function opacityMaskFragment(params: ToneParams, uid: string, prefix: string, hx: number, hy: number): { maskId: string; defs: string } {
   const gradientId = `tone-${prefix}-gradient-${uid}`;
@@ -171,23 +180,51 @@ function opacityMaskFragment(params: ToneParams, uid: string, prefix: string, hx
 }
 
 /**
+ * 遷移軸の実効2点(ローカル座標)へ直接張った白線形グラデの `<mask>` 断片(2026-07-15 追補2、lines の
+ * 始点/終点ハンドル用)。`opacityMaskFragment`(bbox 基準の rotate)と違い gradientUnits="userSpaceOnUse"
+ * なので、非正方形の領域でも遷移方向がハンドルの軸線と厳密に一致する。spreadMethod は既定の pad --
+ * 始点より手前は開始濃度・終点より先は終了濃度で平坦になる(gradient のドット径 clamp と同じ外側挙動)。
+ */
+function opacityMaskPointsFragment(
+  start: PageVec,
+  end: PageVec,
+  params: ToneParams,
+  uid: string,
+  prefix: string,
+  hx: number,
+  hy: number
+): { maskId: string; defs: string } {
+  const gradientId = `tone-${prefix}-gradient-${uid}`;
+  const maskId = `tone-${prefix}-mask-${uid}`;
+  const startRatio = clamp(num(params.startRatio, 0.7), 0, 1);
+  const endRatio = clamp(num(params.endRatio, 0.05), 0, 1);
+  const gradient = `<linearGradient id="${gradientId}" gradientUnits="userSpaceOnUse" x1="${fmt(start.x)}" y1="${fmt(start.y)}" x2="${fmt(end.x)}" y2="${fmt(end.y)}"><stop offset="0" stop-color="#fff" stop-opacity="${fmt(startRatio)}" /><stop offset="1" stop-color="#fff" stop-opacity="${fmt(endRatio)}" /></linearGradient>`;
+  const rectAttrs = `x="${fmt(-hx)}" y="${fmt(-hy)}" width="${fmt(hx * 2)}" height="${fmt(hy * 2)}"`;
+  const mask = `<mask id="${maskId}"><rect ${rectAttrs} fill="url(#${gradientId})" /></mask>`;
+  return { maskId, defs: `${gradient}${mask}` };
+}
+
+/**
  * lines は縞パターンに、startRatio/endRatio が指定時のみ濃度 `<mask>` を追加する(2026-07-14 追補)。
- * 縞の伸びる向きは angle(patternTransform で回す)、グラデの遷移方向はそれと直交=縞をまたぐ方向
- * なので、mask 側には angle+90° を渡す。
+ * 遷移方向は縞と直交=縞をまたぐ方向、という関係を常に保つ。2026-07-15 追補2: 遷移軸は
+ * `effectiveGradientPoints` の実効2点(gradStart/gradEnd 指定時はその2点、未指定は angle+90 方向の
+ * 領域両端)で決め、mask はその2点へ userSpaceOnUse で直接張る(2点の外側は最寄り端の濃度で平坦)。
+ * 縞の向きは軸と直交へ追従する -- 未指定時は軸が angle+90 なので縞は従来どおり angle のまま。
  */
 function renderLinesBody(params: ToneParams, color: string, uid: string, hx: number, hy: number): string {
   const pitch = resolvedPitch(params);
   const lineRatio = clamp(num(params.lineRatio, 0.35), 0, 1);
-  const angle = num(params.angle, 0);
   const patternId = `tone-lines-${uid}`;
-  const pattern = `<pattern id="${patternId}" patternUnits="userSpaceOnUse" width="${fmt(pitch)}" height="${fmt(pitch)}" patternTransform="rotate(${fmt(angle)})"><rect x="0" y="0" width="${fmt(pitch)}" height="${fmt(pitch * lineRatio)}" fill="${escapeAttr(color)}" /></pattern>`;
+  const patternFor = (stripeAngleDeg: number) =>
+    `<pattern id="${patternId}" patternUnits="userSpaceOnUse" width="${fmt(pitch)}" height="${fmt(pitch)}" patternTransform="rotate(${fmt(stripeAngleDeg)})"><rect x="0" y="0" width="${fmt(pitch)}" height="${fmt(pitch * lineRatio)}" fill="${escapeAttr(color)}" /></pattern>`;
   const rectAttrs = `x="${fmt(-hx)}" y="${fmt(-hy)}" width="${fmt(hx * 2)}" height="${fmt(hy * 2)}"`;
-  const rect = `<rect ${rectAttrs} fill="url(#${patternId})" />`;
   if (!hasOptionalGradient(params)) {
-    return `<defs>${pattern}</defs>${rect}`;
+    return `<defs>${patternFor(num(params.angle, 0))}</defs><rect ${rectAttrs} fill="url(#${patternId})" />`;
   }
-  const { maskId, defs } = opacityMaskFragment({ ...params, angle: angle + 90 }, uid, "lines", hx, hy);
-  return `<defs>${pattern}${defs}</defs><rect ${rectAttrs} fill="url(#${patternId})" mask="url(#${maskId})" />`;
+  const { start, end } = effectiveGradientPoints("lines", params, hx, hy);
+  const axisDeg = (Math.atan2(end.y - start.y, end.x - start.x) * 180) / Math.PI;
+  const { maskId, defs } = opacityMaskPointsFragment(start, end, params, uid, "lines", hx, hy);
+  return `<defs>${patternFor(axisDeg - 90)}${defs}</defs><rect ${rectAttrs} fill="url(#${patternId})" mask="url(#${maskId})" />`;
 }
 
 /** gradient(網グラデ)の要素数バジェット。領域面積/pitch² がこれを超えたら実効 pitch を粗くする(仕様書追補)。 */
@@ -207,13 +244,15 @@ function effectiveGradientPitch(pitch: number, hx: number, hy: number): number {
 }
 
 /**
- * gradient の濃度遷移の始点/終点(ローカル座標)。params.gradStart/gradEnd が両方有効かつ十分離れて
- * いればそれを使い(2026-07-15 追補、ステージ上のハンドルで編集)、そうでなければ従来どおり
- * 「angle 方向に領域全体で遷移」に相当する2点(領域を angle 方向へ投影した両端)を返す。
+ * gradient / lines(2026-07-15 追補2)の濃度遷移の始点/終点(ローカル座標)。params.gradStart/gradEnd が
+ * 両方有効かつ十分離れていればそれを使い(ステージ上のハンドルで編集)、そうでなければ従来どおり
+ * 「angle 由来の方向に領域全体で遷移」に相当する2点(領域をその方向へ投影した両端)を返す。
+ * フォールバックの方向は種別で異なる: gradient は angle そのもの(既定 45)、lines は縞(angle、既定 0)
+ * と直交=縞をまたぐ方向の angle+90(2026-07-14 追補の従来挙動と一致させる)。
  * クライアントのギズモ(ハンドル位置の描画・ドラッグ開始時の実効値 materialize)と描画
- * (`renderGradientBody`)の両方がこれを使うことで、ハンドル位置と見た目を常に一致させる。
+ * (`renderGradientBody` / `renderLinesBody`)の両方がこれを使うことで、ハンドル位置と見た目を常に一致させる。
  */
-export function effectiveGradientPoints(params: ToneParams, hx: number, hy: number): { start: PageVec; end: PageVec } {
+export function effectiveGradientPoints(toneType: ToneKind, params: ToneParams, hx: number, hy: number): { start: PageVec; end: PageVec } {
   const start = params.gradStart;
   const end = params.gradEnd;
   if (
@@ -227,7 +266,7 @@ export function effectiveGradientPoints(params: ToneParams, hx: number, hy: numb
   ) {
     return { start: { ...start }, end: { ...end } };
   }
-  const angleDeg = num(params.angle, 45);
+  const angleDeg = toneType === "lines" ? num(params.angle, 0) + 90 : num(params.angle, 45);
   const rad = (angleDeg * Math.PI) / 180;
   const dir: PageVec = { x: Math.cos(rad), y: Math.sin(rad) };
   const alongHalf = Math.abs(dir.x) * hx + Math.abs(dir.y) * hy;
@@ -249,7 +288,7 @@ function renderGradientBody(params: ToneParams, color: string, uid: string, hx: 
   const pitch = effectiveGradientPitch(resolvedPitch(params), hx, hy);
   const startRatio = clamp(num(params.startRatio, 0.7), 0, 1);
   const endRatio = clamp(num(params.endRatio, 0.05), 0, 1);
-  const { start, end } = effectiveGradientPoints(params, hx, hy);
+  const { start, end } = effectiveGradientPoints("gradient", params, hx, hy);
   const axisLen = Math.max(1e-6, Math.hypot(end.x - start.x, end.y - start.y));
   const dir: PageVec = { x: (end.x - start.x) / axisLen, y: (end.y - start.y) / axisLen };
   const perp: PageVec = { x: -dir.y, y: dir.x };
