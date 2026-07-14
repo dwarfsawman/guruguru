@@ -5,7 +5,13 @@ import JSZip from "jszip";
 import { createId, getRow, initializeDb, runSql } from "./db.ts";
 import { createProject } from "./projects.ts";
 import { storeImage } from "./storage.ts";
-import { assertSafeZipRelativePath, exportProject, importProject, importProjectFromStream } from "./projectTransfer.ts";
+import {
+  assertSafeZipRelativePath,
+  exportProject,
+  importProject,
+  importProjectFromStream,
+  withProjectExportArchive
+} from "./projectTransfer.ts";
 import { HttpError } from "./http.ts";
 
 initializeDb();
@@ -254,6 +260,24 @@ test("guruzip HTTP経路: 分割チャンクを一時ファイルへ逐次受信
   const imported = await importProjectFromStream(chunks());
   assert.notEqual(String(imported.project.id), fixture.projectId);
   assert.match(String(imported.project.storage_dir), /projects[\\/]+project_/);
+});
+
+test("guruzip HTTPエクスポート経路: Rust作成ZIPをcallback中だけ保持して終了後に削除する", async () => {
+  const fixture = await buildFixtureProject("export-stream");
+  const fs = await import("node:fs/promises");
+  let temporaryArchivePath = "";
+  await withProjectExportArchive(fixture.projectId, async (archive) => {
+    temporaryArchivePath = archive.archivePath;
+    assert.equal(archive.engine, "rust");
+    assert.match(archive.filename, /\.guruzip$/);
+    assert.ok(archive.byteLength > 0);
+    const bytes = await fs.readFile(archive.archivePath);
+    const zip = await JSZip.loadAsync(bytes);
+    assert.ok(zip.file("manifest.json"));
+    assert.ok(zip.file("data.json"));
+  });
+  assert.ok(temporaryArchivePath);
+  await assert.rejects(fs.stat(temporaryArchivePath), { code: "ENOENT" });
 });
 
 test("guruzip ラウンドトリップ: 進行中ステータスは failed へ正規化される(§4)", async () => {

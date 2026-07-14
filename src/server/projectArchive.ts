@@ -7,6 +7,7 @@ import { isPathInside } from "./paths";
 import { ensureParentDir } from "./storage";
 
 const PROJECT_FILE_IO_CONCURRENCY = 8;
+const MIB = 1024 * 1024;
 
 export type ProjectArchiveEngine = "rust" | "jszip";
 
@@ -21,6 +22,15 @@ export interface ExtractedProjectArchive {
 interface RustArchiveStats {
   files?: number;
   fileBytes?: number;
+  archiveBytes?: number;
+  bufferBytes?: number;
+}
+
+export interface CreatedProjectArchive {
+  engine: "rust";
+  fileCount: number;
+  fileBytes?: number;
+  archiveBytes?: number;
 }
 
 /**
@@ -50,6 +60,86 @@ export function configuredProjectArchiveEngine(): ProjectArchiveEngine {
   throw new HttpError(500, `GURUGURU_PROJECT_IMPORT_ENGINE must be "rust" or "jszip" (received ${configured})`);
 }
 
+export function configuredProjectExportEngine(): ProjectArchiveEngine {
+  const configured = process.env.GURUGURU_PROJECT_EXPORT_ENGINE?.trim().toLowerCase();
+  if (!configured || configured === "rust") {
+    return "rust";
+  }
+  if (configured === "jszip") {
+    return "jszip";
+  }
+  throw new HttpError(500, `GURUGURU_PROJECT_EXPORT_ENGINE must be "rust" or "jszip" (received ${configured})`);
+}
+
+export function configuredArchiveBufferBytes(): number {
+  const raw = process.env.GURUGURU_ARCHIVE_BUFFER_MIB?.trim();
+  if (!raw) {
+    return 10 * MIB;
+  }
+  const mib = Number(raw);
+  if (!Number.isInteger(mib) || mib < 1 || mib > 64) {
+    throw new HttpError(500, `GURUGURU_ARCHIVE_BUFFER_MIB must be an integer from 1 to 64 (received ${raw})`);
+  }
+  return mib * MIB;
+}
+
+/**
+ * manifest/dataとprojectRoot配下の通常ファイルをRust helperで逐次読み、完成ZIPをarchivePathへ書く。
+ * Bun側にはファイル内容も最終ZIPも保持しない。
+ */
+export async function createProjectArchiveWithRust(
+  sourceRoot: string,
+  manifestPath: string,
+  dataPath: string,
+  archivePath: string
+): Promise<CreatedProjectArchive> {
+  const executable = resolveNativeArchiveExecutable();
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = Bun.spawn(
+      [
+        executable,
+        "create",
+        "--archive",
+        archivePath,
+        "--source",
+        sourceRoot,
+        "--manifest",
+        manifestPath,
+        "--data",
+        dataPath,
+        "--buffer-bytes",
+        String(configuredArchiveBufferBytes())
+      ],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+  } catch (error) {
+    throw new HttpError(500, `Rust .guruzip creatorの起動に失敗しました: ${errorMessage(error)}`);
+  }
+
+  const stdoutPromise = new Response(child.stdout as ReadableStream<Uint8Array>).text();
+  const stderrPromise = new Response(child.stderr as ReadableStream<Uint8Array>).text();
+  const exitCode = await child.exited;
+  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+  if (exitCode !== 0) {
+    const detail = stderr.trim() || stdout.trim() || `exit code ${exitCode}`;
+    throw new HttpError(500, `.guruzip の作成に失敗しました: ${detail}`);
+  }
+
+  let stats: RustArchiveStats = {};
+  try {
+    stats = JSON.parse(stdout) as RustArchiveStats;
+  } catch {
+    // helper統計は診断用。完成ファイルの存在とサイズは呼び出し側で改めて確認する。
+  }
+  return {
+    engine: "rust",
+    fileCount: typeof stats.files === "number" ? stats.files : 0,
+    ...(typeof stats.fileBytes === "number" ? { fileBytes: stats.fileBytes } : {}),
+    ...(typeof stats.archiveBytes === "number" ? { archiveBytes: stats.archiveBytes } : {})
+  };
+}
+
 async function extractProjectArchiveWithRust(
   archivePath: string,
   destinationRoot: string,
@@ -71,7 +161,9 @@ async function extractProjectArchiveWithRust(
         "--manifest-out",
         manifestPath,
         "--data-out",
-        dataPath
+        dataPath,
+        "--buffer-bytes",
+        String(configuredArchiveBufferBytes())
       ],
       { stdout: "pipe", stderr: "pipe" }
     );
@@ -117,7 +209,7 @@ function resolveNativeArchiveExecutable(): string {
   if (!executable) {
     throw new HttpError(
       500,
-      `Rust .guruzip extractorが見つかりません。bun run build:native を実行してください (${candidates.join(", ")})`
+      `Rust .guruzip helperが見つかりません。bun run build:native を実行してください (${candidates.join(", ")})`
     );
   }
   return executable;

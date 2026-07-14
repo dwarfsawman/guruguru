@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
 import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
@@ -115,7 +117,7 @@ import {
   listScriptMangaPlanCandidates
 } from "./scriptMangaPlanCandidates";
 import { applySpeakerAnchors } from "./speakerAnchors";
-import { exportProject, importProjectFromStream } from "./projectTransfer";
+import { importProjectFromStream, withProjectExportArchive } from "./projectTransfer";
 import { fitPageBalloonText } from "./balloonTextFit";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
@@ -417,13 +419,22 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   // .guruzip プロジェクトエクスポート(Docs/Feature-ProjectImportExport.md §5)。
   const projectExportMatch = path.match(/^\/api\/projects\/([^/]+)\/export$/);
   if (method === "GET" && projectExportMatch) {
-    const result = await exportProject(projectExportMatch[1]!);
-    res.writeHead(200, {
-      "content-type": result.contentType,
-      "content-length": String(result.buffer.byteLength),
-      "content-disposition": `attachment; filename="${result.filename}"`
+    await withProjectExportArchive(projectExportMatch[1]!, async (result) => {
+      res.writeHead(200, {
+        "content-type": result.contentType,
+        "content-length": String(result.byteLength),
+        "content-disposition": `attachment; filename="${result.filename}"`
+      });
+      try {
+        await pipeline(createReadStream(result.archivePath), res);
+      } catch {
+        // 応答header送信後の切断・読込失敗ではJSONエラーへ切り替えられない。接続を閉じ、
+        // withProjectExportArchiveのfinallyで一時ZIPを削除する。
+        if (!res.destroyed) {
+          res.destroy();
+        }
+      }
     });
-    res.end(result.buffer);
     return;
   }
 

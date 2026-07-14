@@ -1,6 +1,6 @@
 /**
  * Project import / export (`.guruzip`, Docs/Feature-ProjectImportExport.md). A `.guruzip` file is a
- * plain ZIP (JSZip export / Rust native import) containing:
+ * plain ZIP (Rust native export / import; JSZip is retained for A/B diagnostics) containing:
  *   manifest.json  … format identification / counts / warnings
  *   data.json      … raw DB rows (snake_case, straight `SELECT *` dumps, not `toApiRow`)
  *   files/<rel>    … every file under the project's storage directory, relative to projectRoot
@@ -31,6 +31,8 @@ import { deleteProjectStorage, ensureProjectStorage } from "./storage";
 import { isPathInside, isPathInsideOrEqual } from "./paths";
 import { safeAsciiName } from "./openRasterExport";
 import {
+  configuredProjectExportEngine,
+  createProjectArchiveWithRust,
   extractProjectArchive,
   type ProjectArchiveEngine
 } from "./projectArchive";
@@ -145,7 +147,72 @@ export interface ProjectExportResult {
   buffer: Buffer;
 }
 
-export async function exportProject(projectId: string): Promise<ProjectExportResult> {
+export interface ProjectExportArchiveResult {
+  filename: string;
+  contentType: string;
+  archivePath: string;
+  byteLength: number;
+  engine: ProjectArchiveEngine;
+}
+
+export interface ProjectExportOptions {
+  /** 通常はrust。jszipはA/B性能比較と緊急診断だけに使う。 */
+  engine?: ProjectArchiveEngine;
+}
+
+interface PreparedProjectExport {
+  filename: string;
+  contentType: string;
+  projectRoot: string;
+  manifestJson: string;
+  dataJson: string;
+  fileEntries: ProjectFileEntry[];
+}
+
+/**
+ * Bufferを必要とする既存の内部呼び出し向け。通常のHTTP経路はwithProjectExportArchiveを使い、
+ * Rustが作成した巨大ZIPをBunへ読み戻さない。
+ */
+export async function exportProject(
+  projectId: string,
+  options: ProjectExportOptions = {}
+): Promise<ProjectExportResult> {
+  const prepared = await prepareProjectExport(projectId);
+  const engine = options.engine ?? configuredProjectExportEngine();
+  if (engine === "jszip") {
+    return {
+      filename: prepared.filename,
+      contentType: prepared.contentType,
+      buffer: await createProjectZipBufferWithJsZip(prepared)
+    };
+  }
+  return withExportTempDir("buffer", async (dir) => {
+    const archive = await createPreparedProjectArchive(prepared, dir, engine);
+    return {
+      filename: archive.filename,
+      contentType: archive.contentType,
+      buffer: await readFile(archive.archivePath)
+    };
+  });
+}
+
+/**
+ * HTTP配信用。callbackの完了まで一時ZIPを保持し、成功・失敗を問わずその後に安全確認して削除する。
+ */
+export async function withProjectExportArchive<T>(
+  projectId: string,
+  operation: (archive: ProjectExportArchiveResult) => Promise<T>,
+  options: ProjectExportOptions = {}
+): Promise<T> {
+  const prepared = await prepareProjectExport(projectId);
+  const engine = options.engine ?? configuredProjectExportEngine();
+  return withExportTempDir("archive", async (dir) => {
+    const archive = await createPreparedProjectArchive(prepared, dir, engine);
+    return operation(archive);
+  });
+}
+
+async function prepareProjectExport(projectId: string): Promise<PreparedProjectExport> {
   const projectRow = getRow<Row>("SELECT * FROM projects WHERE id = ?", [projectId]);
   if (!projectRow) {
     throw new HttpError(404, "Project was not found");
@@ -191,18 +258,57 @@ export async function exportProject(projectId: string): Promise<ProjectExportRes
     shared
   };
 
+  const filename = `${safeAsciiName(String(projectRow.name ?? ""), "guruguru-project")}.guruzip`;
+  return {
+    filename,
+    contentType: "application/zip",
+    projectRoot,
+    manifestJson: JSON.stringify(manifest, null, 2),
+    dataJson: JSON.stringify(data, null, 2),
+    fileEntries
+  };
+}
+
+async function createPreparedProjectArchive(
+  prepared: PreparedProjectExport,
+  tempDir: string,
+  engine: ProjectArchiveEngine
+): Promise<ProjectExportArchiveResult> {
+  const archivePath = join(tempDir, "project.guruzip");
+  if (engine === "rust") {
+    const manifestPath = join(tempDir, "manifest.json");
+    const dataPath = join(tempDir, "data.json");
+    await Promise.all([
+      writeFile(manifestPath, prepared.manifestJson, { encoding: "utf8", flag: "wx" }),
+      writeFile(dataPath, prepared.dataJson, { encoding: "utf8", flag: "wx" })
+    ]);
+    await createProjectArchiveWithRust(prepared.projectRoot, manifestPath, dataPath, archivePath);
+  } else {
+    await writeFile(archivePath, await createProjectZipBufferWithJsZip(prepared), { flag: "wx" });
+  }
+  const archiveStats = await stat(archivePath);
+  if (!archiveStats.isFile() || archiveStats.size === 0) {
+    throw new HttpError(500, ".guruzip の作成結果が空です。");
+  }
+  return {
+    filename: prepared.filename,
+    contentType: prepared.contentType,
+    archivePath,
+    byteLength: archiveStats.size,
+    engine
+  };
+}
+
+async function createProjectZipBufferWithJsZip(prepared: PreparedProjectExport): Promise<Buffer> {
   const zip = new JSZip();
-  zip.file("manifest.json", JSON.stringify(manifest, null, 2), { compression: "DEFLATE" });
-  zip.file("data.json", JSON.stringify(data, null, 2), { compression: "DEFLATE" });
-  for (const entry of fileEntries) {
+  zip.file("manifest.json", prepared.manifestJson, { compression: "DEFLATE" });
+  zip.file("data.json", prepared.dataJson, { compression: "DEFLATE" });
+  for (const entry of prepared.fileEntries) {
     const bytes = await readFile(entry.absolutePath);
     zip.file(`files/${entry.relativePath}`, bytes, { compression: projectFileCompression(entry.relativePath) });
   }
-
-  // 全体の既定は STORE。圧縮するエントリは上で明示し、PNG/JPEG 等の再DEFLATEを避ける。
-  const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
-  const filename = `${safeAsciiName(String(projectRow.name ?? ""), "guruguru-project")}.guruzip`;
-  return { filename, contentType: "application/zip", buffer };
+  // 全体の既定はSTORE。圧縮するエントリは上で明示し、PNG/JPEG等の再DEFLATEを避ける。
+  return zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
 }
 
 function projectFileCompression(relativePath: string): "STORE" | "DEFLATE" {
@@ -548,6 +654,24 @@ async function removeImportTempDir(dir: string): Promise<void> {
   const tempRoot = resolve(tmpdir());
   if (!isPathInside(resolved, tempRoot) || !basename(resolved).startsWith("guruguru-import-")) {
     throw new Error(`Refusing to remove unverified import temp directory: ${resolved}`);
+  }
+  await rm(resolved, { recursive: true, force: true });
+}
+
+async function withExportTempDir<T>(purpose: string, operation: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(resolve(tmpdir()), `guruguru-export-${purpose}-`));
+  try {
+    return await operation(dir);
+  } finally {
+    await removeExportTempDir(dir).catch(() => {});
+  }
+}
+
+async function removeExportTempDir(dir: string): Promise<void> {
+  const resolved = resolve(dir);
+  const tempRoot = resolve(tmpdir());
+  if (!isPathInside(resolved, tempRoot) || !basename(resolved).startsWith("guruguru-export-")) {
+    throw new Error(`Refusing to remove unverified export temp directory: ${resolved}`);
   }
   await rm(resolved, { recursive: true, force: true });
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 
 const archivePath = resolve(process.argv[2] ?? "");
 if (!process.argv[2]) {
-  throw new Error("usage: bun scripts/benchmark-project-import.mjs <archive.guruzip> [--repeat N] [--transport archive|stream]");
+  throw new Error("usage: bun scripts/benchmark-project-import.mjs <archive.guruzip> [--repeat N] [--transport archive|stream] [--buffer-mib N]");
 }
 const repeatIndex = process.argv.indexOf("--repeat");
 const repeat = repeatIndex >= 0 ? Number(process.argv[repeatIndex + 1]) : 1;
@@ -15,6 +15,13 @@ const transportIndex = process.argv.indexOf("--transport");
 const transport = transportIndex >= 0 ? process.argv[transportIndex + 1] : "archive";
 if (transport !== "archive" && transport !== "stream") {
   throw new Error("--transport must be archive or stream");
+}
+const bufferIndex = process.argv.indexOf("--buffer-mib");
+const bufferMiB = bufferIndex >= 0
+  ? Number(process.argv[bufferIndex + 1])
+  : Number(process.env.GURUGURU_ARCHIVE_BUFFER_MIB ?? 10);
+if (!Number.isInteger(bufferMiB) || bufferMiB < 1 || bufferMiB > 64) {
+  throw new Error("--buffer-mib must be an integer from 1 to 64");
 }
 if (!archivePath.toLowerCase().endsWith(".guruzip")) {
   throw new Error(`benchmark input must use the .guruzip extension: ${archivePath}`);
@@ -46,7 +53,7 @@ const summary = ["jszip", "rust"].map((engine) => {
   };
 });
 console.table(summary);
-console.log(JSON.stringify({ archivePath, archiveBytes: archiveStat.size, repeat, transport, summary, results }, null, 2));
+console.log(JSON.stringify({ archivePath, archiveBytes: archiveStat.size, repeat, transport, bufferMiB, summary, results }, null, 2));
 
 async function runBenchmark(engine, iteration) {
   const dataDir = await mkdtemp(join(resolve(tmpdir()), `guruzip-benchmark-${engine}-`));
@@ -58,7 +65,8 @@ async function runBenchmark(engine, iteration) {
         env: {
           ...process.env,
           GURUGURU_TEST_DB: "1",
-          GURUGURU_TEST_DATA_DIR: dataDir
+          GURUGURU_TEST_DATA_DIR: dataDir,
+          GURUGURU_ARCHIVE_BUFFER_MIB: String(bufferMiB)
         },
         stdout: "pipe",
         stderr: "pipe"

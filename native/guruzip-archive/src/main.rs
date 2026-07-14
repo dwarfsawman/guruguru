@@ -1,16 +1,26 @@
 use std::collections::HashSet;
 use std::env;
 use std::error::Error;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 
-use zip::{CompressionMethod, ZipArchive};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const FILE_EXTRACTION_CONCURRENCY: usize = 8;
-const COPY_BUFFER_BYTES: usize = 1024 * 1024;
+const DEFAULT_COPY_BUFFER_BYTES: usize = 10 * 1024 * 1024;
+const MIN_COPY_BUFFER_BYTES: usize = 64 * 1024;
+const MAX_COPY_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Debug)]
+enum CommandArgs {
+    Extract(ExtractArgs),
+    Create(CreateArgs),
+}
 
 #[derive(Debug)]
 struct ExtractArgs {
@@ -18,6 +28,22 @@ struct ExtractArgs {
     destination: PathBuf,
     manifest_out: PathBuf,
     data_out: PathBuf,
+    copy_buffer_bytes: usize,
+}
+
+#[derive(Debug)]
+struct CreateArgs {
+    archive: PathBuf,
+    source: PathBuf,
+    manifest: PathBuf,
+    data: PathBuf,
+    copy_buffer_bytes: usize,
+}
+
+#[derive(Debug)]
+struct SourceFile {
+    absolute_path: PathBuf,
+    archive_path: String,
 }
 
 #[derive(Debug)]
@@ -41,6 +67,13 @@ struct ExtractStats {
     data_bytes: u64,
 }
 
+#[derive(Default)]
+struct CreateStats {
+    file_count: usize,
+    file_bytes: u64,
+    archive_bytes: u64,
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -49,28 +82,48 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let args = parse_args()?;
-    let stats = extract_archive(&args)?;
-    println!(
-        "{{\"files\":{},\"fileBytes\":{},\"manifestBytes\":{},\"dataBytes\":{}}}",
-        stats.file_count, stats.file_bytes, stats.manifest_bytes, stats.data_bytes
-    );
+    match parse_args()? {
+        CommandArgs::Extract(args) => {
+            let stats = extract_archive(&args)?;
+            println!(
+                "{{\"files\":{},\"fileBytes\":{},\"manifestBytes\":{},\"dataBytes\":{},\"bufferBytes\":{}}}",
+                stats.file_count,
+                stats.file_bytes,
+                stats.manifest_bytes,
+                stats.data_bytes,
+                args.copy_buffer_bytes
+            );
+        }
+        CommandArgs::Create(args) => {
+            let stats = create_archive(&args)?;
+            println!(
+                "{{\"files\":{},\"fileBytes\":{},\"archiveBytes\":{},\"bufferBytes\":{}}}",
+                stats.file_count, stats.file_bytes, stats.archive_bytes, args.copy_buffer_bytes
+            );
+        }
+    }
     Ok(())
 }
 
-fn parse_args() -> Result<ExtractArgs> {
+fn parse_args() -> Result<CommandArgs> {
     let mut args = env::args_os().skip(1);
     let command = args
         .next()
-        .ok_or_else(|| invalid_input("usage: guruzip-archive extract --archive <path> --destination <path> --manifest-out <path> --data-out <path>"))?;
-    if command != "extract" {
-        return Err(invalid_input("only the 'extract' command is supported").into());
+        .ok_or_else(|| invalid_input("usage: guruzip-archive <extract|create> [options]"))?;
+    match command.to_string_lossy().as_ref() {
+        "extract" => Ok(CommandArgs::Extract(parse_extract_args(args)?)),
+        "create" => Ok(CommandArgs::Create(parse_create_args(args)?)),
+        other => Err(invalid_input(format!("unsupported command: {other}")).into()),
     }
+}
 
+fn parse_extract_args(args: impl Iterator<Item = OsString>) -> Result<ExtractArgs> {
     let mut archive = None;
     let mut destination = None;
     let mut manifest_out = None;
     let mut data_out = None;
+    let mut copy_buffer_bytes = DEFAULT_COPY_BUFFER_BYTES;
+    let mut args = args.peekable();
     while let Some(flag) = args.next() {
         let value = args.next().ok_or_else(|| {
             invalid_input(format!("missing value for {}", flag.to_string_lossy()))
@@ -80,6 +133,7 @@ fn parse_args() -> Result<ExtractArgs> {
             "--destination" => destination = Some(PathBuf::from(value)),
             "--manifest-out" => manifest_out = Some(PathBuf::from(value)),
             "--data-out" => data_out = Some(PathBuf::from(value)),
+            "--buffer-bytes" => copy_buffer_bytes = parse_copy_buffer_bytes(&value)?,
             other => return Err(invalid_input(format!("unknown argument: {other}")).into()),
         }
     }
@@ -89,7 +143,218 @@ fn parse_args() -> Result<ExtractArgs> {
         destination: destination.ok_or_else(|| invalid_input("--destination is required"))?,
         manifest_out: manifest_out.ok_or_else(|| invalid_input("--manifest-out is required"))?,
         data_out: data_out.ok_or_else(|| invalid_input("--data-out is required"))?,
+        copy_buffer_bytes,
     })
+}
+
+fn parse_create_args(args: impl Iterator<Item = OsString>) -> Result<CreateArgs> {
+    let mut archive = None;
+    let mut source = None;
+    let mut manifest = None;
+    let mut data = None;
+    let mut copy_buffer_bytes = DEFAULT_COPY_BUFFER_BYTES;
+    let mut args = args.peekable();
+    while let Some(flag) = args.next() {
+        let value = args.next().ok_or_else(|| {
+            invalid_input(format!("missing value for {}", flag.to_string_lossy()))
+        })?;
+        match flag.to_string_lossy().as_ref() {
+            "--archive" => archive = Some(PathBuf::from(value)),
+            "--source" => source = Some(PathBuf::from(value)),
+            "--manifest" => manifest = Some(PathBuf::from(value)),
+            "--data" => data = Some(PathBuf::from(value)),
+            "--buffer-bytes" => copy_buffer_bytes = parse_copy_buffer_bytes(&value)?,
+            other => return Err(invalid_input(format!("unknown argument: {other}")).into()),
+        }
+    }
+
+    Ok(CreateArgs {
+        archive: archive.ok_or_else(|| invalid_input("--archive is required"))?,
+        source: source.ok_or_else(|| invalid_input("--source is required"))?,
+        manifest: manifest.ok_or_else(|| invalid_input("--manifest is required"))?,
+        data: data.ok_or_else(|| invalid_input("--data is required"))?,
+        copy_buffer_bytes,
+    })
+}
+
+fn parse_copy_buffer_bytes(value: &OsString) -> Result<usize> {
+    let parsed = value
+        .to_str()
+        .ok_or_else(|| invalid_input("--buffer-bytes must be UTF-8"))?
+        .parse::<usize>()
+        .map_err(|_| invalid_input("--buffer-bytes must be an integer"))?;
+    if !(MIN_COPY_BUFFER_BYTES..=MAX_COPY_BUFFER_BYTES).contains(&parsed) {
+        return Err(invalid_input(format!(
+            "--buffer-bytes must be between {MIN_COPY_BUFFER_BYTES} and {MAX_COPY_BUFFER_BYTES}"
+        ))
+        .into());
+    }
+    Ok(parsed)
+}
+
+fn create_archive(args: &CreateArgs) -> Result<CreateStats> {
+    if !args.source.is_dir() {
+        return Err(invalid_input(format!(
+            "project source directory does not exist: {}",
+            args.source.display()
+        ))
+        .into());
+    }
+    if !args.manifest.is_file() || !args.data.is_file() {
+        return Err(invalid_input("manifest and data inputs must be files").into());
+    }
+
+    let source_files = collect_source_files(&args.source)?;
+    ensure_parent(&args.archive)?;
+    let archive_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&args.archive)?;
+    let mut writer = ZipWriter::new(BufWriter::new(archive_file));
+    let mut copy_buffer = vec![0; args.copy_buffer_bytes];
+
+    write_zip_entry(
+        &mut writer,
+        "manifest.json",
+        &args.manifest,
+        CompressionMethod::Deflated,
+        &mut copy_buffer,
+    )?;
+    write_zip_entry(
+        &mut writer,
+        "data.json",
+        &args.data,
+        CompressionMethod::Deflated,
+        &mut copy_buffer,
+    )?;
+
+    let mut stats = CreateStats::default();
+    for source_file in source_files {
+        let compression = project_file_compression(&source_file.archive_path);
+        let archive_path = format!("files/{}", source_file.archive_path);
+        stats.file_bytes += write_zip_entry(
+            &mut writer,
+            &archive_path,
+            &source_file.absolute_path,
+            compression,
+            &mut copy_buffer,
+        )?;
+        stats.file_count += 1;
+    }
+
+    let mut output = writer.finish()?;
+    output.flush()?;
+    drop(output);
+    stats.archive_bytes = fs::metadata(&args.archive)?.len();
+    Ok(stats)
+}
+
+fn collect_source_files(source_root: &Path) -> Result<Vec<SourceFile>> {
+    let mut files = Vec::new();
+    collect_source_files_recursive(source_root, source_root, &mut files)?;
+    files.sort_by(|left, right| left.archive_path.cmp(&right.archive_path));
+    Ok(files)
+}
+
+fn collect_source_files_recursive(
+    source_root: &Path,
+    directory: &Path,
+    files: &mut Vec<SourceFile>,
+) -> Result<()> {
+    let mut entries = fs::read_dir(directory)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        let absolute_path = entry.path();
+        if file_type.is_dir() {
+            collect_source_files_recursive(source_root, &absolute_path, files)?;
+        } else if file_type.is_file() {
+            let relative = absolute_path.strip_prefix(source_root)?;
+            let archive_path = relative
+                .iter()
+                .map(|segment| {
+                    segment.to_str().ok_or_else(|| {
+                        invalid_input(format!(
+                            "project file path is not valid UTF-8: {}",
+                            absolute_path.display()
+                        ))
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?
+                .join("/");
+            validate_relative_path(&archive_path)?;
+            files.push(SourceFile {
+                absolute_path,
+                archive_path,
+            });
+        }
+        // Symlinks and other special filesystem entries are intentionally omitted, matching the
+        // TypeScript exporter that only includes ordinary files and directories.
+    }
+    Ok(())
+}
+
+fn project_file_compression(archive_path: &str) -> CompressionMethod {
+    let extension = Path::new(archive_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if matches!(
+        extension.as_str(),
+        "css"
+            | "csv"
+            | "fountain"
+            | "htm"
+            | "html"
+            | "ini"
+            | "js"
+            | "json"
+            | "log"
+            | "md"
+            | "mjs"
+            | "svg"
+            | "toml"
+            | "ts"
+            | "txt"
+            | "xml"
+            | "yaml"
+            | "yml"
+    ) {
+        CompressionMethod::Deflated
+    } else {
+        CompressionMethod::Stored
+    }
+}
+
+fn write_zip_entry<W: Write + Seek>(
+    writer: &mut ZipWriter<W>,
+    archive_path: &str,
+    source_path: &Path,
+    compression: CompressionMethod,
+    copy_buffer: &mut [u8],
+) -> Result<u64> {
+    let source_bytes = fs::metadata(source_path)?.len();
+    let mut options = SimpleFileOptions::default()
+        .compression_method(compression)
+        .large_file(source_bytes >= u32::MAX as u64)
+        .unix_permissions(0o644);
+    if compression == CompressionMethod::Deflated {
+        options = options.compression_level(Some(6));
+    }
+    writer.start_file(archive_path, options)?;
+
+    let mut source = BufReader::new(File::open(source_path)?);
+    let mut copied = 0;
+    loop {
+        let read = source.read(copy_buffer)?;
+        if read == 0 {
+            break;
+        }
+        writer.write_all(&copy_buffer[..read])?;
+        copied += read as u64;
+    }
+    Ok(copied)
 }
 
 fn extract_archive(args: &ExtractArgs) -> Result<ExtractStats> {
@@ -105,7 +370,7 @@ fn extract_archive(args: &ExtractArgs) -> Result<ExtractStats> {
     ensure_parent(&args.data_out)?;
 
     let mut stats = ExtractStats::default();
-    let mut copy_buffer = vec![0; COPY_BUFFER_BYTES];
+    let mut copy_buffer = vec![0; args.copy_buffer_bytes];
     stats.manifest_bytes = extract_entry(
         &mut archive,
         plan.manifest_index,
@@ -118,12 +383,14 @@ fn extract_archive(args: &ExtractArgs) -> Result<ExtractStats> {
         &args.data_out,
         &mut copy_buffer,
     )?;
+    drop(copy_buffer);
 
     let (file_count, file_bytes) = extract_project_files_parallel(
         &args.archive,
         &args.destination,
         plan.files,
         FILE_EXTRACTION_CONCURRENCY,
+        args.copy_buffer_bytes,
     )?;
     stats.file_count = file_count;
     stats.file_bytes = file_bytes;
@@ -136,6 +403,7 @@ fn extract_project_files_parallel(
     destination_root: &Path,
     files: Vec<FilePlan>,
     concurrency: usize,
+    copy_buffer_bytes: usize,
 ) -> Result<(usize, u64)> {
     if files.is_empty() {
         return Ok((0, 0));
@@ -154,7 +422,7 @@ fn extract_project_files_parallel(
         let mut workers = Vec::with_capacity(batches.len());
         for batch in batches {
             workers.push(scope.spawn(move || {
-                extract_file_batch(archive_path, destination_root, batch)
+                extract_file_batch(archive_path, destination_root, batch, copy_buffer_bytes)
                     .map_err(|error| error.to_string())
             }));
         }
@@ -180,12 +448,13 @@ fn extract_file_batch(
     archive_path: &Path,
     destination_root: &Path,
     files: Vec<FilePlan>,
+    copy_buffer_bytes: usize,
 ) -> Result<(usize, u64)> {
     let archive_file = File::open(archive_path)?;
     let mut archive = ZipArchive::new(BufReader::new(archive_file))?;
     let mut count = 0;
     let mut bytes = 0;
-    let mut copy_buffer = vec![0; COPY_BUFFER_BYTES];
+    let mut copy_buffer = vec![0; copy_buffer_bytes];
     for file_plan in files {
         let destination = destination_root.join(&file_plan.relative_path);
         ensure_parent(&destination)?;
@@ -343,7 +612,8 @@ fn invalid_input(message: impl Into<String>) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_relative_path;
+    use super::{project_file_compression, validate_relative_path};
+    use zip::CompressionMethod;
 
     #[test]
     fn accepts_normal_project_paths() {
@@ -369,5 +639,17 @@ mod tests {
                 "{path} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn stores_precompressed_assets_and_deflates_text() {
+        assert_eq!(
+            project_file_compression("assets/original/image.png"),
+            CompressionMethod::Stored
+        );
+        assert_eq!(
+            project_file_compression("notes/README.MD"),
+            CompressionMethod::Deflated
+        );
     }
 }

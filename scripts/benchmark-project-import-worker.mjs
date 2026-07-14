@@ -31,6 +31,7 @@ try {
     `GURUZIP_BENCHMARK_RESULT=${JSON.stringify({
       engine,
       transport,
+      archiveBufferMiB: Number(process.env.GURUGURU_ARCHIVE_BUFFER_MIB ?? 10),
       wallMs,
       initialRss,
       peakRss,
