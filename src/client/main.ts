@@ -860,7 +860,8 @@ function render(_options: RenderOptions = {}) {
           ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds, {
               characters: state.characters,
               referenceSets: state.referenceSets,
-              expanded: state.referenceCornerExpanded,
+              open: state.referenceCornerOpen,
+              selectedCharacterId: state.referenceCornerCharacterId,
               busyId: state.referenceSetBusyId
             })
           : renderHome(

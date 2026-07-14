@@ -45,6 +45,8 @@ export async function openBook(projectId: string) {
   state.sidebarOpen = false;
   state.pagePanelLightbox = null;
   state.pagePanelAssignments = [];
+  state.referenceCornerOpen = false;
+  state.referenceCornerCharacterId = null;
   state.activePanelTarget = null;
   restoreOrResetProjectDrafts(projectId);
   clearPasteCaches();
