@@ -21,13 +21,17 @@
  *   座標なので、中心固定の拡縮であればそのままオブジェクトと一緒にスケールするだけでよい)。
  * - しっぽの tip 専用ドラッグハンドル(`data-page-object-handle="tail"`)。画面デルタを -rotation 回して
  *   ローカル座標へ変換する(`pagePanelLightboxController.ts` の crop パンと同じ考え方)。
+ *
+ * 追記(Docs/Feature-PageEditSidebarUx.md 課題A、2026-07-14): box/balloon の「テキストを載せる」(hasContent)
+ * トグルは撤去した。本文編集は SETTINGS 見出しフィールド(pagePanelLightboxView.ts の renderObjectsToolbar)に
+ * 一本化し、`updatePageObjectTextFromInput` が content 無し box/balloon への入力時に content を新規作成する
+ * (空文字にしても content を null へは戻さない -- 「OFF→ON で入力済みテキストが消える」旧バグの解消)。
  */
 import {
   BALLOON_TAIL_TIP_CLAMP,
   DEFAULT_BALLOON_TAIL_WIDTH,
   DEFAULT_BOX_SIZE,
   DEFAULT_TEXT_STYLE,
-  DEFAULT_TEXT_STRING,
   PAGE_OBJECT_MAX_SIZE,
   PAGE_OBJECT_MIN_SIZE,
   TEXT_SIZE_MAX,
@@ -720,15 +724,6 @@ function applyTextStyleField(style: TextStyle, field: string, target: HTMLInputE
 }
 
 function updateBoxOwnField(box: BoxObject, field: string, target: HTMLInputElement): BoxObject | null {
-  if (field === "hasContent") {
-    const updated: BoxObject = { ...box };
-    if (target.checked) {
-      updated.content = { text: DEFAULT_TEXT_STRING, style: { ...DEFAULT_TEXT_STYLE, direction: "horizontal" } };
-    } else {
-      updated.content = null;
-    }
-    return updated;
-  }
   if (field === "fill" || field === "strokeColor") {
     return { ...box, [field]: target.value };
   }
@@ -771,17 +766,12 @@ function updateBoxContentField(box: BoxObject, field: string, target: HTMLInputE
 
 const BALLOON_SHAPE_VALUES = new Set<BalloonShape>(["ellipse", "rounded", "cloud", "jagged", "thought", "compound", "spike", "roundRect", "caption"]);
 
-/** balloon 自身のプロパティ(shape/塗り/線/しっぽ トグル+幅/テキストを載せる)。content の中身は updateBalloonContentField。 */
+/**
+ * balloon 自身のプロパティ(shape/塗り/線/しっぽ トグル+幅)。content の中身は updateBalloonContentField。
+ * A-2: 「テキストを載せる」(hasContent)トグルは撤去済み -- 本文編集は SETTINGS 見出しフィールド経由の
+ * updatePageObjectTextFromInput に一本化し、そちらが content の新規作成も担う。
+ */
 function updateBalloonOwnField(balloon: BalloonObject, field: string, target: HTMLInputElement | HTMLSelectElement): BalloonObject | null {
-  if (field === "hasContent") {
-    const updated: BalloonObject = { ...balloon };
-    if ((target as HTMLInputElement).checked) {
-      updated.content = balloon.content ?? { text: "", style: { ...DEFAULT_TEXT_STYLE } };
-    } else {
-      updated.content = null;
-    }
-    return updated;
-  }
   if (field === "shape") {
     const value = target.value;
     if (!BALLOON_SHAPE_VALUES.has(value as BalloonShape)) {
@@ -928,8 +918,19 @@ export function updatePageObjectTextFromInput(target: HTMLTextAreaElement): void
   let updated: PageObject;
   if (object.kind === "text") {
     updated = { ...object, content: { ...object.content, text: target.value } };
-  } else if ((object.kind === "box" || object.kind === "balloon") && object.content) {
-    updated = { ...object, content: { ...object.content, text: target.value } };
+  } else if (object.kind === "box") {
+    // content が無い box への入力(A-1): 旧「テキストを載せる」ON 時と同じ既定スタイル(横書き)で新規作成する。
+    const content: TextContent = object.content
+      ? { ...object.content, text: target.value }
+      : { text: target.value, style: { ...DEFAULT_TEXT_STYLE, direction: "horizontal" } };
+    updated = { ...object, content };
+  } else if (object.kind === "balloon") {
+    // balloon は createBalloonObject 時点から content を持つため通常は既存 content の text 更新のみだが、
+    // 手動編集などで content が欠けているケースに備えて box と同じ新規作成フォールバックを用意する。
+    const content: TextContent = object.content
+      ? { ...object.content, text: target.value }
+      : { text: target.value, style: { ...DEFAULT_TEXT_STYLE } };
+    updated = { ...object, content };
   } else {
     return;
   }

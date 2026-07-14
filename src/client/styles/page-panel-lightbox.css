@@ -705,7 +705,9 @@
 
 .page-layer-settings-header {
   display: flex;
-  align-items: center;
+  /* flex-start: 見出しが編集フィールド化(.page-layer-settings-heading)して複数行に伸びても、
+     削除ボタンが行の中央へ流されず kicker と揃った位置に固定されるようにする。 */
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
@@ -721,6 +723,44 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 14px;
+}
+
+/*
+ * A-1(Docs/Feature-PageEditSidebarUx.md 課題A): SETTINGS 見出しの本文編集フィールド。balloon/box/text
+ * 選択時、静的な <h3> の代わりにこれを差し込む(`renderSettingsHeadingField`)。「見出し風」を保つため
+ * 素の状態では枠線・背景を消し、hover/focus で初めて「編集できる」ことを示す。
+ */
+.page-layer-settings-heading {
+  field-sizing: content;
+  /* 約6行分(font-size 14px × line-height 1.4 × 6行 ≈ 118px)+ padding/border の余裕。 */
+  max-height: 132px;
+  min-height: 0;
+  overflow-y: auto;
+  resize: none;
+  margin: 0;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.page-layer-settings-heading:hover {
+  border-color: var(--line);
+}
+
+.page-layer-settings-heading:focus {
+  border-color: var(--accent);
+  background: var(--input);
+}
+
+.page-layer-settings-heading::placeholder {
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .page-layer-delete-button {
@@ -775,15 +815,40 @@
 
 .page-object-property-field input[type="number"] {
   width: 72px;
+  /* UA 任せにせず明示的にダーク化(A-3)。 */
+  background: var(--input);
+  color: var(--ink);
 }
 
+/*
+ * A-3(Docs/Feature-PageEditSidebarUx.md 課題A): select は `var(--surface, #fff)` -- `--surface` は
+ * どのトークンファイルにも定義が無く、常にフォールバックの白 #fff が発動していた(ダーク UI の中で
+ * 浮いて見える眩しさの根本原因)。実在トークンへ置換し、`appearance: none` + data-URI シェブロンで
+ * 「選択式コントロール」であることを見た目でも示す(素の box/textarea との誤認を防ぐ)。
+ * シェブロンは icons.ts の `iconChevron()` と同じ path(m6 9 6 6 6-6 / viewBox 0 0 24 24)。
+ * data-URI 内では CSS カスタムプロパティを参照できないため、stroke 色は --ink の実値を直書きしている。
+ */
 .page-object-property-field select {
+  appearance: none;
   font-size: 12px;
-  padding: 2px 4px;
-  border: 1px solid var(--line);
+  padding: 2px 22px 2px 4px;
+  border: 1px solid var(--line-strong);
   border-radius: 4px;
-  background: var(--surface, #fff);
-  color: inherit;
+  background: var(--panel-strong)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f4f4f5' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+    no-repeat right 6px center;
+  background-size: 11px 11px;
+  color: var(--ink);
+}
+
+.page-object-property-field select:hover {
+  border-color: var(--line-strong);
+  background-color: var(--panel-soft);
+}
+
+/* tokens-base.css の `select:focus` と同specificityで source order 依存になるため、明示的に上書きする。 */
+.page-object-property-field select:focus {
+  border-color: var(--accent);
 }
 
 .page-object-property-field-wide {
@@ -792,6 +857,10 @@
 
 .page-object-checkbox-field {
   gap: 4px;
+}
+
+.page-object-checkbox-field input[type="checkbox"] {
+  accent-color: var(--accent);
 }
 
 /* --- text オブジェクト(Docs/Feature-CGCollectionSuite.md P2) --- */
@@ -815,19 +884,6 @@
   stroke-dasharray: 3 3;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
-}
-
-.page-object-textarea {
-  width: 100%;
-  min-height: 52px;
-  resize: vertical;
-  font-size: 13px;
-  padding: 6px 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface, #fff);
-  color: inherit;
-  font-family: inherit;
 }
 
 .page-object-font-license-note {
