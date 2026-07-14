@@ -13,7 +13,7 @@ const isTestRun = process.env.GURUGURU_TEST_DB === "1";
 const appPort = await resolveAppPort();
 const reloadPort = await resolveReloadPort();
 const bunExecutable = process.execPath;
-const watchedDirs = ["src", "scripts"];
+const watchedDirs = ["src", "scripts", "native"];
 
 let appProcess = null;
 let rebuildTimer = null;
@@ -51,7 +51,7 @@ startWatchers();
 setupShutdown();
 
 if (process.stdin.isTTY) {
-  console.log("Watching src/ and scripts/. Press q or Ctrl+C to stop.");
+  console.log("Watching src/, scripts/, and native/. Press q or Ctrl+C to stop.");
   process.stdin.setRawMode(true);
   process.stdin.resume();
   process.stdin.on("data", (chunk) => {
@@ -80,7 +80,7 @@ function startWatchers() {
 }
 
 function shouldIgnoreChange(path) {
-  return path.includes("/.") || path.endsWith("~") || path.endsWith(".tmp") || path.endsWith(".log");
+  return path.includes("/target/") || path.includes("/.") || path.endsWith("~") || path.endsWith(".tmp") || path.endsWith(".log");
 }
 
 function scheduleRebuild(reason) {

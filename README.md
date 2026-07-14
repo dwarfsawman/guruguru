@@ -36,6 +36,7 @@ PDFは全85ページ。ファイルサイズが大きいため、GitHub Release 
 ## 必要なもの
 
 - [Bun](https://bun.sh/) 1.3.14以上
+- [Rust](https://www.rust-lang.org/) 1.88以上（`.guruzip`のネイティブ展開処理をビルド）
 - 起動済みのComfyUI（既定の接続先は `http://127.0.0.1:8188`）
 - 使用するワークフローに応じたComfyUIのモデルとカスタムノード
 
@@ -48,6 +49,8 @@ bun install
 bun run build
 bun run start
 ```
+
+`bun run build`はRustのrelease binaryもビルドして`dist/native/`へ配置する。
 
 起動後のアクセス先は [http://127.0.0.1:5177](http://127.0.0.1:5177)。ComfyUIを別のURLで動かしている場合は、GURUGURUの設定画面でBase URLとWebSocket URLを変更。
 

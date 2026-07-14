@@ -325,7 +325,7 @@ async function deleteProject(projectId: string) {
 
 /**
  * Docs/Feature-ProjectImportExport.md §6: プロジェクトカードの「エクスポート」。
- * `GET /api/projects/:id/export` の .gguru バイト列を `<a download>` 経由で保存する
+ * `GET /api/projects/:id/export` の .guruzip バイト列を `<a download>` 経由で保存する
  * (imageExportController.ts と同じ fetch → blob → downloadBlob の導線)。
  */
 async function exportProject(projectId: string) {
@@ -336,7 +336,7 @@ async function exportProject(projectId: string) {
       throw new Error(await responseErrorMessage(response));
     }
     const blob = await response.blob();
-    const fallbackName = `${project?.name || "guruguru-project"}.gguru`;
+    const fallbackName = `${project?.name || "guruguru-project"}.guruzip`;
     const filename = filenameFromContentDisposition(response.headers.get("content-disposition")) ?? fallbackName;
     downloadBlob(blob, filename);
     pushToast("Projectをエクスポートしました。", "info");
@@ -346,7 +346,7 @@ async function exportProject(projectId: string) {
 }
 
 /**
- * Docs/Feature-ProjectImportExport.md §6: 一覧ヘッダの「インポート」。選択された .gguru を
+ * Docs/Feature-ProjectImportExport.md §6: 一覧ヘッダの「インポート」。選択された .guruzip を
  * `POST /api/projects/import` へ生バイトのまま送る(base64 化しない。multipart でもない)。
  * 成功した新規Projectを一覧の先頭へ差し込み、warnings があればそれぞれトーストで表示する。
  */

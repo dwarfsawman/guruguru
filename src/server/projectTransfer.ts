@@ -1,6 +1,6 @@
 /**
- * Project import / export (`.gguru`, Docs/Feature-ProjectImportExport.md). A `.gguru` file is a
- * plain ZIP (JSZip, same mechanism as ORA/PPTX export) containing:
+ * Project import / export (`.guruzip`, Docs/Feature-ProjectImportExport.md). A `.guruzip` file is a
+ * plain ZIP (JSZip export / Rust native import) containing:
  *   manifest.json  … format identification / counts / warnings
  *   data.json      … raw DB rows (snake_case, straight `SELECT *` dumps, not `toApiRow`)
  *   files/<rel>    … every file under the project's storage directory, relative to projectRoot
@@ -21,21 +21,28 @@
  * - Shared entities (workflow_templates / layout_templates / generation_presets) keep their
  *   original id: reused if already present in the target DB, inserted as-is otherwise.
  */
-import { readFile, readdir, writeFile } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import JSZip from "jszip";
 import { createId, dataRoot, getRow, getRows, jsonColumnNames, runSql } from "./db";
 import { HttpError } from "./http";
-import { deleteProjectStorage, ensureParentDir, ensureProjectStorage } from "./storage";
+import { deleteProjectStorage, ensureProjectStorage } from "./storage";
 import { isPathInside, isPathInsideOrEqual } from "./paths";
 import { safeAsciiName } from "./openRasterExport";
+import {
+  extractProjectArchive,
+  type ProjectArchiveEngine
+} from "./projectArchive";
+
+export { assertSafeZipRelativePath } from "./projectArchive";
 
 const APP_ID = "guruguru";
 const KIND = "project-export";
 const FORMAT_VERSION = 1;
 const GGURU_PREFIX = "gguru://project/";
 const IMPORTED_WHILE_IN_PROGRESS = JSON.stringify({ message: "imported while in progress" });
-const PROJECT_FILE_IO_CONCURRENCY = 8;
+const IMPORT_STREAM_WRITE_BUFFER_BYTES = 1024 * 1024;
 
 /** files/ 配下で再圧縮する価値がある、可読テキスト形式。その他は既圧縮バイナリを想定して STORE にする。 */
 const DEFLATED_PROJECT_FILE_EXTENSIONS = new Set([
@@ -194,7 +201,7 @@ export async function exportProject(projectId: string): Promise<ProjectExportRes
 
   // 全体の既定は STORE。圧縮するエントリは上で明示し、PNG/JPEG 等の再DEFLATEを避ける。
   const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
-  const filename = `${safeAsciiName(String(projectRow.name ?? ""), "guruguru-project")}.gguru`;
+  const filename = `${safeAsciiName(String(projectRow.name ?? ""), "guruguru-project")}.guruzip`;
   return { filename, contentType: "application/zip", buffer };
 }
 
@@ -347,73 +354,117 @@ export interface ProjectImportResult {
   warnings: string[];
 }
 
-export async function importProject(zipBytes: Buffer): Promise<ProjectImportResult> {
+export interface ProjectImportOptions {
+  /** 通常はrust。jszipはA/B性能比較と緊急診断だけに使う。 */
+  engine?: ProjectArchiveEngine;
+}
+
+/**
+ * 既存のBuffer呼び出し互換。HTTP本番経路はimportProjectFromStreamを使い、巨大Buffer自体を作らない。
+ */
+export async function importProject(zipBytes: Buffer, options: ProjectImportOptions = {}): Promise<ProjectImportResult> {
   if (zipBytes.length === 0) {
     throw new HttpError(400, "インポートするファイルが空です。");
   }
-
-  let zip: JSZip;
-  try {
-    zip = await JSZip.loadAsync(zipBytes);
-  } catch {
-    throw new HttpError(400, "アップロードされたファイルは有効な .gguru(ZIP)ではありません。");
-  }
-
-  const manifestEntry = zip.file("manifest.json");
-  const dataEntry = zip.file("data.json");
-  if (!manifestEntry || !dataEntry) {
-    throw new HttpError(400, ".gguru に manifest.json / data.json が含まれていません。");
-  }
-
-  let manifest: Record<string, unknown>;
-  let data: { project: Row; tables?: Record<string, Row[]>; shared?: Record<string, Row[]> };
-  try {
-    manifest = JSON.parse(await manifestEntry.async("string"));
-    data = JSON.parse(await dataEntry.async("string"));
-  } catch {
-    throw new HttpError(400, "manifest.json / data.json の解析に失敗しました。");
-  }
-
-  if (manifest.app !== APP_ID || manifest.kind !== KIND) {
-    throw new HttpError(400, "guruguruのプロジェクトエクスポートファイルではありません。");
-  }
-  const formatVersion = manifest.formatVersion;
-  if (typeof formatVersion !== "number" || !Number.isInteger(formatVersion) || formatVersion > FORMAT_VERSION) {
-    throw new HttpError(400, `対応していない formatVersion です(${String(formatVersion)})。`);
-  }
-  if (!data.project || typeof data.project !== "object") {
-    throw new HttpError(400, "data.json に project 行がありません。");
-  }
-
-  // Zip Slip 検証を先に済ませ、files/ 配下のエントリを集める(未検証のパスは一切使わない)。
-  const fileEntries: Array<{ zipPath: string; relativePath: string }> = [];
-  zip.forEach((entryPath, entry) => {
-    if (entry.dir || !entryPath.startsWith("files/")) {
-      return;
-    }
-    const relativePath = entryPath.slice("files/".length);
-    assertSafeZipRelativePath(relativePath);
-    fileEntries.push({ zipPath: entryPath, relativePath });
+  return withImportTempDir("buffer", async (dir) => {
+    const archivePath = join(dir, "upload.guruzip");
+    await writeFile(archivePath, zipBytes);
+    return importProjectFromArchive(archivePath, options);
   });
+}
+
+/** HTTPリクエストを外部一時ファイルへ逐次保存し、Nodeの全Buffer保持を避ける。 */
+export async function importProjectFromStream(
+  source: AsyncIterable<unknown>,
+  options: ProjectImportOptions = {}
+): Promise<ProjectImportResult> {
+  return withImportTempDir("upload", async (dir) => {
+    const archivePath = join(dir, "upload.guruzip");
+    const handle = await open(archivePath, "wx");
+    let byteLength = 0;
+    const writeBuffer = Buffer.allocUnsafe(IMPORT_STREAM_WRITE_BUFFER_BYTES);
+    let bufferedBytes = 0;
+    try {
+      for await (const chunk of source) {
+        const bytes = toBufferChunk(chunk);
+        let sourceOffset = 0;
+        while (sourceOffset < bytes.length) {
+          const copyBytes = Math.min(writeBuffer.length - bufferedBytes, bytes.length - sourceOffset);
+          bytes.copy(writeBuffer, bufferedBytes, sourceOffset, sourceOffset + copyBytes);
+          bufferedBytes += copyBytes;
+          sourceOffset += copyBytes;
+          if (bufferedBytes === writeBuffer.length) {
+            await writeAll(handle, writeBuffer, bufferedBytes);
+            bufferedBytes = 0;
+          }
+        }
+        byteLength += bytes.length;
+      }
+      if (bufferedBytes > 0) {
+        await writeAll(handle, writeBuffer, bufferedBytes);
+      }
+    } finally {
+      await handle.close();
+    }
+    if (byteLength === 0) {
+      throw new HttpError(400, "インポートするファイルが空です。");
+    }
+    return importProjectFromArchive(archivePath, options);
+  });
+}
+
+/**
+ * ディスク上の`.guruzip`を指定engineで展開してDBへ取り込む。ベンチマークはこの入口を別プロセスで呼ぶ。
+ */
+export async function importProjectFromArchive(
+  archivePath: string,
+  options: ProjectImportOptions = {}
+): Promise<ProjectImportResult> {
+  let archiveSize: number;
+  try {
+    archiveSize = (await stat(archivePath)).size;
+  } catch {
+    throw new HttpError(400, "インポートするファイルを読み込めません。");
+  }
+  if (archiveSize === 0) {
+    throw new HttpError(400, "インポートするファイルが空です。");
+  }
 
   const newProjectId = createId("project");
   const storage = ensureProjectStorage(newProjectId);
   const newProjectRoot = resolve(storage.projectRoot);
-
-  const warnings: string[] = Array.isArray(manifest.warnings)
-    ? manifest.warnings.filter((item): item is string => typeof item === "string")
-    : [];
+  let metadataDir: string;
+  try {
+    metadataDir = await createImportTempDir("metadata");
+  } catch (error) {
+    await deleteProjectStorage(newProjectRoot).catch(() => {});
+    throw new HttpError(500, error instanceof Error ? error.message : "guruzip一時領域の作成に失敗しました。");
+  }
 
   try {
-    await forEachWithConcurrency(fileEntries, PROJECT_FILE_IO_CONCURRENCY, async (entry) => {
-      const destPath = resolve(join(newProjectRoot, entry.relativePath));
-      if (!isPathInside(destPath, newProjectRoot)) {
-        throw new HttpError(400, "files/ 配下に不正なパスを検出しました。");
-      }
-      const bytes = await zip.file(entry.zipPath)!.async("nodebuffer");
-      ensureParentDir(destPath);
-      await writeFile(destPath, bytes);
-    });
+    const extracted = await extractProjectArchive(archivePath, newProjectRoot, metadataDir, options.engine);
+    let manifest: Record<string, unknown>;
+    let data: { project: Row; tables?: Record<string, Row[]>; shared?: Record<string, Row[]> };
+    try {
+      manifest = JSON.parse(extracted.manifestJson);
+      data = JSON.parse(extracted.dataJson);
+    } catch {
+      throw new HttpError(400, "manifest.json / data.json の解析に失敗しました。");
+    }
+
+    if (manifest.app !== APP_ID || manifest.kind !== KIND) {
+      throw new HttpError(400, "guruguruのプロジェクトエクスポートファイルではありません。");
+    }
+    const formatVersion = manifest.formatVersion;
+    if (typeof formatVersion !== "number" || !Number.isInteger(formatVersion) || formatVersion > FORMAT_VERSION) {
+      throw new HttpError(400, `対応していない formatVersion です(${String(formatVersion)})。`);
+    }
+    if (!data.project || typeof data.project !== "object") {
+      throw new HttpError(400, "data.json に project 行がありません。");
+    }
+    const warnings: string[] = Array.isArray(manifest.warnings)
+      ? manifest.warnings.filter((item): item is string => typeof item === "string")
+      : [];
 
     const idMap = new Map<string, string>();
     const oldProjectId = data.project.id;
@@ -474,38 +525,58 @@ export async function importProject(zipBytes: Buffer): Promise<ProjectImportResu
       throw error;
     }
     throw new HttpError(400, error instanceof Error ? error.message : "Projectのインポートに失敗しました。");
+  } finally {
+    await removeImportTempDir(metadataDir).catch(() => {});
   }
 }
 
-/**
- * 同時に保持する展開済みBufferとwriteFileを抑えつつI/Oを重ねる。最初の失敗後も実行中workerを
- * 待ってからthrowし、呼び出し側のstorage cleanupと書き込みが競合しないようにする。
- */
-async function forEachWithConcurrency<T>(
-  items: readonly T[],
-  concurrency: number,
-  operation: (item: T) => Promise<void>
+async function withImportTempDir<T>(purpose: string, operation: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await createImportTempDir(purpose);
+  try {
+    return await operation(dir);
+  } finally {
+    await removeImportTempDir(dir).catch(() => {});
+  }
+}
+
+async function createImportTempDir(purpose: string): Promise<string> {
+  return mkdtemp(join(resolve(tmpdir()), `guruguru-import-${purpose}-`));
+}
+
+async function removeImportTempDir(dir: string): Promise<void> {
+  const resolved = resolve(dir);
+  const tempRoot = resolve(tmpdir());
+  if (!isPathInside(resolved, tempRoot) || !basename(resolved).startsWith("guruguru-import-")) {
+    throw new Error(`Refusing to remove unverified import temp directory: ${resolved}`);
+  }
+  await rm(resolved, { recursive: true, force: true });
+}
+
+function toBufferChunk(chunk: unknown): Buffer {
+  if (Buffer.isBuffer(chunk)) {
+    return chunk;
+  }
+  if (typeof chunk === "string") {
+    return Buffer.from(chunk);
+  }
+  if (chunk instanceof Uint8Array) {
+    return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  }
+  throw new HttpError(400, "インポートリクエストに不正なバイナリチャンクを検出しました。");
+}
+
+async function writeAll(
+  handle: Awaited<ReturnType<typeof open>>,
+  buffer: Buffer,
+  length: number
 ): Promise<void> {
-  let nextIndex = 0;
-  let firstError: unknown = null;
-  const workerCount = Math.min(concurrency, items.length);
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (firstError === null) {
-      const index = nextIndex;
-      nextIndex += 1;
-      if (index >= items.length) {
-        return;
-      }
-      try {
-        await operation(items[index]!);
-      } catch (error) {
-        firstError ??= error;
-      }
+  let offset = 0;
+  while (offset < length) {
+    const result = await handle.write(buffer, offset, length - offset, null);
+    if (result.bytesWritten === 0) {
+      throw new Error("guruzip一時ファイルへの書き込みが進みませんでした。");
     }
-  });
-  await Promise.all(workers);
-  if (firstError !== null) {
-    throw firstError;
+    offset += result.bytesWritten;
   }
 }
 
@@ -605,27 +676,6 @@ function normalizeSqlValue(value: unknown): string | number | bigint | boolean |
     return JSON.stringify(value);
   }
   return value as string | number | bigint | boolean;
-}
-
-/**
- * Zip Slip 対策(§5)。`files/` 配下のエントリ名の直接検証: `..` セグメント・先頭 `/`・ドライブレター・
- * `\` を含むものは拒否する。exported for direct unit testing -- in practice JSZip itself already
- * resolves `..` segments when round-tripping through `generateAsync`/`loadAsync` (an entry that tries
- * to escape `files/` ends up outside the `files/` prefix entirely and is filtered out before this
- * function even runs), so this function is the defense-in-depth layer the spec calls for and is
- * exercised directly by tests rather than through a JSZip-normalized fixture.
- */
-export function assertSafeZipRelativePath(relativePath: string) {
-  if (!relativePath) {
-    throw new HttpError(400, "files/ 配下に空のパスを検出しました。");
-  }
-  if (relativePath.includes("\\") || relativePath.startsWith("/") || /^[a-zA-Z]:/.test(relativePath)) {
-    throw new HttpError(400, `files/ 配下に不正なパスを検出しました: ${relativePath}`);
-  }
-  const segments = relativePath.split("/");
-  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
-    throw new HttpError(400, `files/ 配下に不正なパスを検出しました: ${relativePath}`);
-  }
 }
 
 function importRewriteRow(row: Row, idMap: Map<string, string>, newProjectRoot: string): Row {

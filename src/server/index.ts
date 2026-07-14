@@ -7,7 +7,7 @@ import { installModelPreset } from "./modelPresets";
 import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection, toLlmSettingsView } from "./llm";
 import { getVlmAuditSettings, getVlmAuditStatus } from "./vlmAudit";
 import { serveStatic } from "./files";
-import { HttpError, readBuffer, readJson, sendJson } from "./http";
+import { HttpError, readJson, sendJson } from "./http";
 import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
 import { createTemplate, deleteTemplate, listTemplates, updateTemplatePromptProfile } from "./templates";
 import { adoptCharacterSheetAsset, createCharacterSheetRun } from "./characterSheets";
@@ -115,7 +115,7 @@ import {
   listScriptMangaPlanCandidates
 } from "./scriptMangaPlanCandidates";
 import { applySpeakerAnchors } from "./speakerAnchors";
-import { exportProject, importProject } from "./projectTransfer";
+import { exportProject, importProjectFromStream } from "./projectTransfer";
 import { fitPageBalloonText } from "./balloonTextFit";
 import {
   DEFAULT_WEB_SAM_MODEL_BASE_URL,
@@ -394,11 +394,11 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
-  // .gguru プロジェクトインポート(Docs/Feature-ProjectImportExport.md §5)。ボディは .gguru
+  // .guruzip プロジェクトインポート(Docs/Feature-ProjectImportExport.md §5)。ボディはZIP
   // バイナリそのもの(multipart にはしない)。/api/projects/:id と衝突しないよう先に判定する
   // (":id" 部分に "import" は入り得ないため実害はないが、意図を明確にする)。
   if (method === "POST" && path === "/api/projects/import") {
-    const result = await importProject(await readBuffer(req));
+    const result = await importProjectFromStream(req);
     sendJson(res, 201, result);
     return;
   }
@@ -414,7 +414,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
 
-  // .gguru プロジェクトエクスポート(Docs/Feature-ProjectImportExport.md §5)。
+  // .guruzip プロジェクトエクスポート(Docs/Feature-ProjectImportExport.md §5)。
   const projectExportMatch = path.match(/^\/api\/projects\/([^/]+)\/export$/);
   if (method === "GET" && projectExportMatch) {
     const result = await exportProject(projectExportMatch[1]!);

@@ -19,7 +19,7 @@ mkdirSync(dirname(dbPath), { recursive: true });
 
 export const db = new Database(dbPath);
 
-// projectTransfer.ts(.gguru エクスポート/インポート)が「この列は JSON なので parse して
+// projectTransfer.ts(.guruzip エクスポート/インポート)が「この列は JSON なので parse して
 // 再帰的にパス/ID を書き換える」判定に使うため export する(toApiRow のロジックとは独立に必要)。
 export const jsonColumnNames = new Map<string, string>([
   ["workflow_json", "workflowJson"],

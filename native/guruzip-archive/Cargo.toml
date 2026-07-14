@@ -1,0 +1,12 @@
+[package]
+name = "guruzip-archive"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+
+[profile.release]
+lto = "thin"
+strip = true

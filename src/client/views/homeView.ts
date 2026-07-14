@@ -40,9 +40,9 @@ export function renderHome(
             <h1>Project一覧</h1>
           </div>
           <span class="panel-count"><b>${projects.length}</b> projects · <b>${totalAssets}</b> assets</span>
-          <label class="button-secondary compact source-upload-button" title=".gguru ファイルからProjectをインポート">
+          <label class="button-secondary compact source-upload-button" title=".guruzip ファイルからProjectをインポート">
             ${iconMangaPanelImport()}インポート
-            <input data-project-import="1" type="file" accept=".gguru,application/zip" />
+            <input data-project-import="1" type="file" accept=".guruzip,application/zip" />
           </label>
         </div>
         <form id="project-form" class="form-stack">
@@ -104,7 +104,7 @@ export function renderProjectCard(project: ProjectSummary) {
       </div>
       <div class="project-actions">
         <button class="button-secondary" type="button" data-action="open-project" data-id="${project.id}">開く</button>
-        <button class="button-secondary" type="button" data-action="export-project" data-id="${project.id}" title=".gguruファイルとしてエクスポート">${iconDownload()}エクスポート</button>
+        <button class="button-secondary" type="button" data-action="export-project" data-id="${project.id}" title=".guruzipファイルとしてエクスポート">${iconDownload()}エクスポート</button>
         <button class="button-danger" type="button" data-action="delete-project" data-id="${project.id}">${iconTrash()}削除</button>
       </div>
     </article>

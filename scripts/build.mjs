@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { buildNative } from "./build-native.mjs";
 
 const root = resolve(".");
 
@@ -10,6 +11,7 @@ export async function buildAll() {
   await mkdir(join(root, "dist", "public"), { recursive: true });
   await mkdir(join(root, "dist", "public", "ort"), { recursive: true });
   await mkdir(join(root, "dist", "public", "mediapipe-wasm"), { recursive: true });
+  await buildNative();
 
   await bundle({
     entrypoint: "src/server/index.ts",
