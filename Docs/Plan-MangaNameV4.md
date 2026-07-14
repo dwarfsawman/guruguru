@@ -1,7 +1,28 @@
 # Plan: ネームV4 — LLMコマ割りの強化(ビート層・複数候補比較・棒人間ControlNet)
 
-> 状態: 起票(2026-07-14)。承認待ち。
+> 状態: **P1〜P4・P6 実装完了(2026-07-14)**。P5(数理エンジン)は計画どおり保留。
+> 実装コミット: P1 `c623f6a` / P2 `714245e` / P3 `ba1e7b1` / P4 `3d66290` / P6 `9cd870e`(feature/manga-name-v4)。
 > 前提仕様: [Plan-MangaQualityV3.md](Plan-MangaQualityV3.md)(ネーム規格v3、実装済み)、[Feature-MangaPlanV2.md](Feature-MangaPlanV2.md)、[Reference-MangaCompositions.md](Reference-MangaCompositions.md)。
+
+## 先行研究: MangaFlow の参照(2026-07-14)
+
+実装前に MangaFlow(arXiv 2605.28173, "An End-to-End Agentic Framework for Controllable Story to
+Manga Generation")を調査し、次を取り込んだ/確認した。
+
+- **レイアウトソースの優先順位**(ユーザー指定 > テンプレ検索 > 生成)は本計画の
+  「provided/候補採用 > importance による決定的事前選択 > 決定的フォールバック」と同型。
+  D1/D3 の設計を変えずに裏付けとして採用。
+- **決定的検証射影 Π**(コマ数・重なり・ページ内包・gutter の検証を LLM 出力へ機械適用)は、
+  本アプリの validate→reject→再生成(`generateStructuredJson`)と同じ思想。D1 の
+  hero×強調スロット整合検証、D6 の候補参加要件(コマ数1〜6・rect/polygon・bleedOvershoot)へ反映。
+- **ステージ独立のパイプライン**に倣い、監督バッチを「失敗しても未演出で進める」バッチ単位
+  フォールバックへ変更した(生成が止まらない不変条件の実装、P3 で導入)。
+- **MangaFlow に無いもの**: ビート(物語の瞬間)を重み付きでコマ割りの入力にする層は
+  MangaFlow に存在しない(論文自身が panel size/arrangement/reading order は pacing に効くと
+  述べつつ、beat 駆動の面積配分は行っていない)。D2 のビート層と D1 の importance×面積
+  スコアリングは本計画独自の拡張として妥当と確認。
+- **将来メモ**: MangaGen-MetaBench の Manga Readability Score(生成結果を LLM で要約させ
+  原作との一致率で読解性を測る)は、既存 VLM 監査の将来拡張として相性が良い(未着手)。
 
 ## 目的
 
@@ -157,16 +178,36 @@ Fountain
 
 ## 実装フェーズ
 
-| フェーズ | 内容 | 主対象 | 規模 | 依存 |
-| --- | --- | --- | --- | --- |
-| P1 | D1: importance/turnHook 保持・面積プロファイル・レイアウト事前選択・監督への伝搬・hero付き5/6コマプリセット追加 | `scriptMangaPageNaming.ts` `scriptMangaPlan.ts` `layoutPresets.ts` `scriptMangaDirector.ts` `mangaPlanV2.ts` | 小〜中 | なし |
-| P2 | D2: 原子分割・ビート注釈ステージ(キャッシュ付き)・N1入力のビート化・beats前段引き継ぎ | `preLayoutBeat.ts`(新) `scriptBeatAnnotator.ts`(新) `scriptMangaDirector.ts` `scriptMangaPlanV2.ts` `db.ts` | 中〜大 | P1 |
-| P3 | D3: 候補テーブル・候補API・共有ワイヤーフレーム描画・比較UI・candidateId採用ルート | `db.ts` `scriptManga.ts` `index.ts` `scriptMangaApi.ts` `pageLayoutSvg.ts`(shared化) `scriptView.ts` `scriptMangaController.ts` | 中〜大 | P1(P2があると候補品質向上) |
-| P4 | D4: ポーズプリセット・骨格復元・サーバーSVG→PNG・request注入・ON/OFF/部分モードUI | `posePresetLibrary.ts`(新) `panelPoseReconstructor.ts`(新) `poseSkeletonSvg.ts`(新) `poseTypes.ts`(shared化) `scriptManga.ts` `scriptMangaApi.ts` `scriptView.ts` | 中 | **P1〜P3と独立**(並行可) |
-| P5 | D5: 数理エンジン(scorer/optimizer)・温度UI・選好ログ | `mangaNameOptimizer.ts`(新) `mangaNameScorer.ts`(新) | 大 | P2+P3。**低優先** |
-| P6 | D6: 規格v0.3対応(autoManga読取・候補プール参加・bleedOvershoot取り込み検証・export API・見開き分割・ラウンドトリップテスト) | `pageLayout.ts` `layoutTemplates.ts` `layoutPresets.ts` `pageLayoutExport.ts`(新) `index.ts` | 小〜中 | P1(面積プロファイル)。**P2〜P5と独立**(並行可) |
+| フェーズ | 内容 | 主対象 | 規模 | 依存 | 状況 |
+| --- | --- | --- | --- | --- | --- |
+| P1 | D1: importance/turnHook 保持・面積プロファイル・レイアウト事前選択・監督への伝搬・hero付き5/6コマプリセット追加 | `scriptMangaPageNaming.ts` `scriptMangaPlan.ts` `layoutPresets.ts` `scriptMangaDirector.ts` `mangaPlanV2.ts` | 小〜中 | なし | **完了** `c623f6a` |
+| P2 | D2: 原子分割・ビート注釈ステージ(キャッシュ付き)・N1入力のビート化・beats前段引き継ぎ | `preLayoutBeat.ts`(新) `scriptBeatAnnotator.ts`(新) `scriptMangaDirector.ts` `scriptMangaPlanV2.ts` `db.ts` | 中〜大 | P1 | **完了** `714245e`(N1は ビート化→従来→決定的 の三段フォールバック) |
+| P3 | D3: 候補テーブル・候補API・共有ワイヤーフレーム描画・比較UI・candidateId採用ルート | `db.ts` `scriptManga.ts` `index.ts` `scriptMangaApi.ts` `pageLayoutSvg.ts`(shared化) `scriptView.ts` `scriptMangaController.ts` | 中〜大 | P1(P2があると候補品質向上) | **完了** `ba1e7b1`(監督のバッチ単位フォールバックも導入) |
+| P4 | D4: ポーズプリセット・骨格復元・サーバーSVG→PNG・request注入・ON/OFF/部分モードUI | `posePresetLibrary.ts`(新) `panelPoseReconstructor.ts`(新) `poseSkeletonSvg.ts`(新) `poseTypes.ts`(shared化) `scriptManga.ts` `scriptMangaApi.ts` `scriptView.ts` | 中 | **P1〜P3と独立**(並行可) | **完了** `3d66290`(既定OFF。未決#3の実機品質確認は残) |
+| P5 | D5: 数理エンジン(scorer/optimizer)・温度UI・選好ログ | `mangaNameOptimizer.ts`(新) `mangaNameScorer.ts`(新) | 大 | P2+P3。**低優先** | 保留(計画どおり) |
+| P6 | D6: 規格v0.3対応(autoManga読取・候補プール参加・bleedOvershoot取り込み検証・export API・見開き分割・ラウンドトリップテスト) | `pageLayout.ts` `layoutTemplates.ts` `layoutPresets.ts` `pageLayoutExport.ts`(新) `index.ts` | 小〜中 | P1(面積プロファイル)。**P2〜P5と独立**(並行可) | **完了** `9cd870e` |
 
 推奨着手順: P1 → P2 → P3(P4・P6はいつでも並行可、P5は保留)。P1単独でも「heroが平凡なグリッドに潰される」「revealがページ中腹に埋まる」の改善が見込める。規格側(SPEC v0.3)の改定は実施済みなので、P6はアプリ側の追従のみ。
+
+### 実装メモ(2026-07-14、計画からの差分)
+
+- **N1のフォールバックは三段**: ビート化N1(D2)が検証を通らない場合、従来のコマ束ねN1(D1)へ、
+  それも失敗したら決定的プランナーへ倒す。計画のD2は置換を想定していたが、弱いローカルLLMでの
+  頑健性のため従来N1を中間フォールバックとして残した。
+- **監督のバッチ単位フォールバック**: 監督LLMが4頁バッチで失敗しても、そのバッチだけ未演出の
+  まま進める(「監督のどこで失敗しても生成が止まらない」不変条件の実装)。
+- **候補生成の重複排除**: LLM不通時は全候補が同一の決定的プランになるため、決定的候補は
+  グループに1件だけ保存する。
+- **ページ書き出し(export-layout)のルート**は既存規約に合わせ `GET /api/projects/:projectId/pages/:pageId/export-layout`
+  とした(計画の `/api/pages/:id/export-layout` から変更)。
+- **poseControl のUI**は enabled+mode を1つのセレクタ(off/full/upper/face)に統合。strength/endPercent は
+  API では指定可(オブジェクト形)、UIは既定値(0.5 / 0.6)。
+- **未決#2(action文spanと sourceElementIds 契約)**は「span分割時、連続コマが同一 element id を重複保持」で
+  実装(計画の初期案どおり)。V2 の `inferSourceIds`・provided validator への破壊的変更は不要だった
+  (コマ内一意性のみが既存契約で、コマ間重複は元々許容)。
+- **未決#1(めくりパリティ)**は計画どおりソフト指示(奇数index想定)のみ。
+- **未決#3(openpose CNモデル)**: 実装はテンプレ側 `ControlNetApplyAdvanced` の有無で自動スキップする
+  ガード付き・既定OFFのため、モデル未導入でも安全。品質確認(8288)は次回の実機検証で行う。
 
 ## 変えないこと
 
@@ -207,5 +248,8 @@ Fountain
 
 ## 変更履歴
 
+- 2026-07-14: **P1〜P4・P6 実装完了**(feature/manga-name-v4 → main)。MangaFlow(arXiv 2605.28173)の
+  調査結果と取り込み点を「先行研究」節へ、計画との差分を「実装メモ」へ追記。P5は計画どおり保留。
+  検証: typecheck / bun test 906件 / bun run check すべて緑。
 - 2026-07-14: D6(レイアウトテンプレ規格v0.3対応とimport/export)とP6を追加。規格側 `guruguru-layout-template` を SPEC v0.3 へ改定(role正式化・bleedOvershoot・com.guruguru.autoManga・エクスポート/ラウンドトリップ要件、v0.3例ファイル追加)。ギャップ台帳へG7を追記。
 - 2026-07-14: 初版。現状調査(ギャップ台帳G1〜G6)、設計D1〜D5、フェーズP1〜P5を起票。
