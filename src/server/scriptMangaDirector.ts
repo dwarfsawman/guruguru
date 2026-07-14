@@ -106,7 +106,17 @@ const ANGLES = new Set(["eye-level", "low", "high", "overhead", "dutch", "pov"])
 const POSITIONS = new Set(["upper-left", "upper-center", "upper-right", "middle-left", "middle-center", "middle-right", "lower-left", "lower-center", "lower-right"]);
 const NON_ENGLISH_OR_NEGATION = /[\u3040-\u30ff\u3400-\u9fff]|\b(?:no|not|without|never)\b/iu;
 
-export function validateDirectedMangaBatch(raw: unknown, sourcePages: ScriptMangaPagePlan[], entityNames: string[] = []): DirectedBatch | null {
+export interface DirectedBatchValidationOptions {
+  /** ネームv4 D3: 採用候補のレイアウトを固定(監督はレイアウト変更不可)。 */
+  lockLayouts?: boolean;
+}
+
+export function validateDirectedMangaBatch(
+  raw: unknown,
+  sourcePages: ScriptMangaPagePlan[],
+  entityNames: string[] = [],
+  validationOptions: DirectedBatchValidationOptions = {}
+): DirectedBatch | null {
 
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as DirectedBatch).pages)) return null;
   const pages = (raw as DirectedBatch).pages;
@@ -122,14 +132,19 @@ export function validateDirectedMangaBatch(raw: unknown, sourcePages: ScriptMang
       !Array.isArray(page.panels) ||
       page.panels.length !== source.panels.length
     ) return null;
-    if (!scriptMangaLayoutCandidates(source.panels.length).includes(page.layoutTemplateId)) return null;
-    // ネームv4 D1: 監督がレイアウトを差し替える場合も hero×強調スロット整合を守らせる。
-    // 整合可能な候補が1つも無い importance 構成では強制しない(判定はどの候補でも false になるため)。
-    const importances = source.panels.map((panel) => panel.importance ?? "normal");
-    if (!scriptMangaLayoutAlignsImportance(page.layoutTemplateId, importances)) {
-      const anyAligned = scriptMangaLayoutCandidates(source.panels.length)
-        .some((candidateId) => scriptMangaLayoutAlignsImportance(candidateId, importances));
-      if (anyAligned) return null;
+    if (validationOptions.lockLayouts) {
+      // 採用候補のレイアウトは人間が見比べて選んだもの。監督には変更させない。
+      if (page.layoutTemplateId !== source.layoutTemplateId) return null;
+    } else {
+      if (!scriptMangaLayoutCandidates(source.panels.length).includes(page.layoutTemplateId)) return null;
+      // ネームv4 D1: 監督がレイアウトを差し替える場合も hero×強調スロット整合を守らせる。
+      // 整合可能な候補が1つも無い importance 構成では強制しない(判定はどの候補でも false になるため)。
+      const importances = source.panels.map((panel) => panel.importance ?? "normal");
+      if (!scriptMangaLayoutAlignsImportance(page.layoutTemplateId, importances)) {
+        const anyAligned = scriptMangaLayoutCandidates(source.panels.length)
+          .some((candidateId) => scriptMangaLayoutAlignsImportance(candidateId, importances));
+        if (anyAligned) return null;
+      }
     }
     for (let p = 0; p < page.panels.length; p += 1) {
       const panel = page.panels[p];
@@ -159,9 +174,10 @@ export function validateDirectedMangaBatch(raw: unknown, sourcePages: ScriptMang
 export function applyScriptMangaDirectorBatch(
   raw: unknown,
   sourcePages: ScriptMangaPagePlan[],
-  stylePrompt?: string
+  stylePrompt?: string,
+  validationOptions: DirectedBatchValidationOptions = {}
 ): ScriptMangaPagePlan[] | null {
-  const directed = validateDirectedMangaBatch(raw, sourcePages);
+  const directed = validateDirectedMangaBatch(raw, sourcePages, [], validationOptions);
   if (!directed) return null;
   return sourcePages.map((source, pageIndex) => {
     const directedPage = directed.pages[pageIndex]!;
@@ -344,17 +360,73 @@ export async function planScriptMangaWithDirectorDetailed(
   options: ScriptMangaPlanOptions = {}
 ): Promise<{ plan: ScriptMangaPlan; beatAnnotation: BeatAnnotationResult | null }> {
   const settings = getLlmSettings();
-  const fixedIdentity = options.characterBible?.trim() ?? "";
-  const sceneBibles = deriveSceneBibles(doc, "director-input").map((bible, sceneIndex) => ({ sceneIndex, set: bible.set, lighting: bible.lighting, palette: bible.palette }));
   const n1 = await generateScriptMangaN1Plan(doc, options);
   const base = n1.plan;
-  const pageNamingProvenance = n1.pageNaming;
+  const directed = await directScriptMangaPages(doc, base.pages, options);
+  return {
+    plan: {
+      ...base,
+      pages: directed.pages,
+      plannerProvenance: {
+        kind: "llm-director",
+        model: settings.model,
+        batches: directed.batches,
+        pageNaming: n1.pageNaming
+      }
+    },
+    beatAnnotation: n1.beatAnnotation
+  };
+}
+
+/**
+ * 採用済みプラン候補(ネームv4 D3)へ監督を適用する。候補のページ割り・レイアウトは
+ * 人間が選んだものなので監督は変更できない(lockLayouts)。
+ */
+export async function directAdoptedCandidatePlan(
+  doc: FountainDoc,
+  candidatePlan: ScriptMangaPlan,
+  options: ScriptMangaPlanOptions = {}
+): Promise<ScriptMangaPlan> {
+  const settings = getLlmSettings();
+  const directed = await directScriptMangaPages(doc, candidatePlan.pages, options, { lockLayouts: true });
+  return {
+    ...candidatePlan,
+    pages: directed.pages,
+    plannerProvenance: {
+      kind: "llm-director",
+      model: settings.model,
+      batches: directed.batches,
+      pageNaming: candidatePlan.plannerProvenance?.pageNaming
+    }
+  };
+}
+
+interface DirectedPagesResult {
+  pages: ScriptMangaPagePlan[];
+  batches: Array<{ rawOutput: string; messages: Array<{ role: string; content: string }> }>;
+}
+
+/**
+ * ネーム監督をページバッチ(4頁毎)で適用する。バッチ単位で失敗時は未演出のまま進める
+ * (LLM障害でも生成を止めない、プランの追跡情報は不変)。
+ */
+async function directScriptMangaPages(
+  doc: FountainDoc,
+  basePages: ScriptMangaPagePlan[],
+  options: ScriptMangaPlanOptions = {},
+  validationOptions: DirectedBatchValidationOptions = {}
+): Promise<DirectedPagesResult> {
+  const settings = getLlmSettings();
+  const fixedIdentity = options.characterBible?.trim() ?? "";
+  const sceneBibles = deriveSceneBibles(doc, "director-input").map((bible, sceneIndex) => ({ sceneIndex, set: bible.set, lighting: bible.lighting, palette: bible.palette }));
   const batches: ScriptMangaPagePlan[][] = [];
   const provenanceBatches: Array<{ rawOutput: string; messages: Array<{ role: string; content: string }> }> = [];
-  for (let offset = 0; offset < base.pages.length; offset += 4) batches.push(base.pages.slice(offset, offset + 4));
+  for (let offset = 0; offset < basePages.length; offset += 4) batches.push(basePages.slice(offset, offset + 4));
 
   const directedPages: ScriptMangaPagePlan[] = [];
   for (const batch of batches) {
+    const pageAllowedLayouts = (page: ScriptMangaPagePlan): string[] =>
+      validationOptions.lockLayouts ? [page.layoutTemplateId] : scriptMangaLayoutCandidates(page.panels.length);
     const compact = batch.map((page) => ({
       index: page.index,
       title: page.title,
@@ -362,16 +434,17 @@ export async function planScriptMangaWithDirectorDetailed(
       pageIntent: page.pageIntent,
       turnHook: page.turnHook,
       preselectedLayout: page.layoutTemplateId,
-      allowedLayouts: scriptMangaLayoutCandidates(page.panels.length),
+      allowedLayouts: pageAllowedLayouts(page),
       panels: page.panels.map((panel) => ({
         id: panel.id, scene: panel.sceneHeading, importance: panel.importance, source: panel.sourceText
       }))
     }));
     // バッチ内で許可されている全レイアウトの説明(bleed/figure スロットの意味と読み順位置を含む)。
     const layoutGuide = describeScriptMangaLayouts([
-      ...new Set(batch.flatMap((page) => scriptMangaLayoutCandidates(page.panels.length)))
+      ...new Set(batch.flatMap((page) => pageAllowedLayouts(page)))
     ]);
-    const result = await generateStructuredJson<ScriptMangaPagePlan[]>({
+    try {
+      const result = await generateStructuredJson<ScriptMangaPagePlan[]>({
       settings,
       systemPrompt: [
         "あなたは商業SF漫画のネーム監督です。右綴じ・右から左へ読む日本漫画として、視線誘導と緩急を設計してください。",
@@ -387,26 +460,22 @@ export async function planScriptMangaWithDirectorDetailed(
         fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
         `登場話者: ${speakerNames(doc).join(", ")}`
       ].join("\n"),
-      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Layout guide: ${JSON.stringify(layoutGuide)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
+      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. ${validationOptions.lockLayouts ? "The layoutTemplateId of every page is locked — echo it back unchanged. " : ""}Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Layout guide: ${JSON.stringify(layoutGuide)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
       schema,
-      validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt),
+      validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt, validationOptions),
       temperature: 0.35,
       timeoutMs: 180000
-    });
-    provenanceBatches.push({ rawOutput: result.rawOutput, messages: result.messages });
-    directedPages.push(...result.value);
+      });
+      provenanceBatches.push({ rawOutput: result.rawOutput, messages: result.messages });
+      directedPages.push(...result.value);
+    } catch (error) {
+      // 監督のどこで失敗しても生成は止めない: このバッチは未演出(N1/候補のまま)で進める。
+      provenanceBatches.push({
+        rawOutput: `[director-batch-fallback] ${error instanceof Error ? error.message : String(error)}`,
+        messages: []
+      });
+      directedPages.push(...batch);
+    }
   }
-  return {
-    plan: {
-      ...base,
-      pages: directedPages,
-      plannerProvenance: {
-        kind: "llm-director",
-        model: settings.model,
-        batches: provenanceBatches,
-        pageNaming: pageNamingProvenance
-      }
-    },
-    beatAnnotation: n1.beatAnnotation
-  };
+  return { pages: directedPages, batches: provenanceBatches };
 }

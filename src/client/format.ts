@@ -1,14 +1,5 @@
-export function escapeHtml(value: unknown) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-export function escapeAttr(value: unknown) {
-  return escapeHtml(value).replaceAll("'", "&#039;");
-}
+// 実装は shared/htmlEscape.ts(共有SVG描画からも使うため共有化)。既存importは変えない。
+export { escapeAttr, escapeHtml } from "../shared/htmlEscape";
 
 export function formatDate(value: string) {
   return value ? new Date(value).toLocaleString() : "-";

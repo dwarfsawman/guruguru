@@ -477,6 +477,28 @@ export function initializeDb() {
       FOREIGN KEY (script_revision_id) REFERENCES script_revisions(id) ON DELETE CASCADE
     );
 
+    -- プラン候補(ネームv4 D3)。候補 = N1結果(ページ割り+importance/turnHook+事前選択レイアウト)。
+    -- 再生成を複数回走らせて貯め、ワイヤーフレームで見比べて採用する。採用/破棄の履歴は
+    -- status で残す(将来の ranker 学習データ)。既存 script_manga_plans/runs の FK 意味論には触れない。
+    CREATE TABLE IF NOT EXISTS script_manga_plan_candidates (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      script_id TEXT NOT NULL,
+      script_revision_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      profile TEXT,
+      temperature REAL,
+      plan_json TEXT NOT NULL,
+      provenance_json TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      adopted_run_id TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE CASCADE,
+      FOREIGN KEY (script_revision_id) REFERENCES script_revisions(id) ON DELETE CASCADE,
+      FOREIGN KEY (adopted_run_id) REFERENCES script_manga_runs(id) ON DELETE SET NULL
+    );
+
     -- Fountain revision から構築した、編集・検証可能な MangaPlanV2。画像生成より先に必ず保存する。
     CREATE TABLE IF NOT EXISTS script_manga_plans (
       id TEXT PRIMARY KEY,
@@ -592,6 +614,10 @@ export function initializeDb() {
     CREATE INDEX IF NOT EXISTS idx_script_manga_plans_revision ON script_manga_plans(script_revision_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_script_manga_tasks_run ON script_manga_tasks(run_id, status);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_script_manga_tasks_panel ON script_manga_tasks(run_id, page_id, panel_id);
+    CREATE INDEX IF NOT EXISTS idx_script_manga_plan_candidates_script
+      ON script_manga_plan_candidates(script_id, script_revision_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_script_beat_annotations_revision
+      ON script_beat_annotations(script_revision_id, annotator_version);
 
     CREATE INDEX IF NOT EXISTS idx_paste_sources_project ON paste_sources(project_id);
     CREATE INDEX IF NOT EXISTS idx_page_media_project ON page_media(project_id);

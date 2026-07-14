@@ -765,3 +765,147 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* --- プラン候補比較(ネームv4 D3) --- */
+
+.script-plan-candidates-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised, var(--surface));
+}
+
+.plan-candidate-generate {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.plan-candidate-count-field {
+  min-width: 72px;
+}
+
+.plan-candidate-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-candidate-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.plan-candidate-group-heading h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.plan-candidate-group-heading h3 span {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+.plan-candidate-row {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.plan-candidate {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 520px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.plan-candidate.is-adopted {
+  border-color: var(--accent, #2563eb);
+}
+
+.plan-candidate-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-candidate-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.plan-candidate-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.plan-candidate-badge.is-beats {
+  color: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.plan-candidate-badge.is-deterministic {
+  color: #b45309;
+  border-color: #b45309;
+}
+
+.plan-candidate-badge.is-adopted-badge {
+  color: #15803d;
+  border-color: #15803d;
+}
+
+.plan-candidate-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.plan-candidate-pages {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.plan-candidate-page {
+  flex: 0 0 auto;
+  width: 64px;
+}
+
+.plan-candidate-page svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.plan-candidate-page.is-unknown,
+.plan-candidate-page.is-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 88px;
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.plan-candidate-actions {
+  display: flex;
+  gap: 8px;
+}

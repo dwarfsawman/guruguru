@@ -102,6 +102,11 @@ import {
   startScriptMangaRun,
   updateScriptMangaPlan
 } from "./scriptManga";
+import {
+  archiveScriptMangaPlanCandidate,
+  createScriptMangaPlanCandidates,
+  listScriptMangaPlanCandidates
+} from "./scriptMangaPlanCandidates";
 import { applySpeakerAnchors } from "./speakerAnchors";
 import { exportProject, importProject } from "./projectTransfer";
 import { fitPageBalloonText } from "./balloonTextFit";
@@ -569,6 +574,22 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const scriptMangaRunMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)$/);
   if (method === "GET" && scriptMangaRunMatch) {
     sendJson(res, 200, getScriptMangaRun(scriptMangaRunMatch[1]!));
+    return;
+  }
+  // プラン候補(ネームv4 D3): 複数生成して見比べ、planCandidateId 付き run 作成で採用する。
+  const scriptMangaCandidatesMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-plan-candidates$/);
+  if (method === "POST" && scriptMangaCandidatesMatch) {
+    sendJson(res, 201, await createScriptMangaPlanCandidates(scriptMangaCandidatesMatch[1]!, await readJson(req)));
+    return;
+  }
+  if (method === "GET" && scriptMangaCandidatesMatch) {
+    const scriptId = url.searchParams.get("scriptId") ?? "";
+    sendJson(res, 200, listScriptMangaPlanCandidates(scriptMangaCandidatesMatch[1]!, scriptId));
+    return;
+  }
+  const scriptMangaCandidateArchiveMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/archive$/);
+  if (method === "POST" && scriptMangaCandidateArchiveMatch) {
+    sendJson(res, 200, archiveScriptMangaPlanCandidate(scriptMangaCandidateArchiveMatch[1]!));
     return;
   }
   const scriptMangaPlanMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)$/);

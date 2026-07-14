@@ -849,7 +849,12 @@ function render(_options: RenderOptions = {}) {
             scriptMangaSettings: state.scriptMangaSettings,
             scriptMangaRun: state.scriptMangaRun,
             scriptMangaBusy: state.scriptMangaBusy,
-            scriptMangaVlmStatus: state.scriptMangaVlmStatus
+            scriptMangaVlmStatus: state.scriptMangaVlmStatus,
+            scriptMangaCandidates: state.scriptMangaCandidates,
+            scriptMangaCandidateBeatKinds: state.scriptMangaCandidateBeatKinds,
+            scriptMangaCandidateDialogueChars: state.scriptMangaCandidateDialogueChars,
+            scriptMangaCandidatesBusy: state.scriptMangaCandidatesBusy,
+            scriptMangaCandidateCount: state.scriptMangaCandidateCount
           })
         : state.book
           ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds, {

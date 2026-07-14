@@ -36,7 +36,12 @@ import type { PoseDraft } from "./poseTypes";
 import type { StyleLoraSelection } from "../shared/types";
 import type { BookReaderSettings } from "./bookReader";
 import { DEFAULT_BOOK_READER_SETTINGS } from "./bookReader";
-import type { ScriptMangaRunView, ScriptMangaUiSettings, VlmAuditServiceStatus } from "../shared/scriptMangaApi";
+import type {
+  ScriptMangaPlanCandidateView,
+  ScriptMangaRunView,
+  ScriptMangaUiSettings,
+  VlmAuditServiceStatus
+} from "../shared/scriptMangaApi";
 import type { CharacterReferenceSetView } from "../shared/referenceSets";
 
 /**
@@ -532,6 +537,16 @@ export interface AppState {
   scriptMangaBusy: boolean;
   /** VLM監査サービスの非ブロッキング接続状態。脚本画面を開いた時に取得する。 */
   scriptMangaVlmStatus: VlmAuditServiceStatus | null;
+  /** プラン候補(ネームv4 D3)。最新revisionの非archived一覧。脚本画面を開いた時に取得する。 */
+  scriptMangaCandidates: ScriptMangaPlanCandidateView[];
+  /** 注釈ビート id → kind(候補ワイヤーフレームのアイコン用)。 */
+  scriptMangaCandidateBeatKinds: Record<string, string>;
+  /** dialogueOrderIndex → 台詞文字数(候補ワイヤーフレームの台詞量バー用)。 */
+  scriptMangaCandidateDialogueChars: number[];
+  /** 候補生成・破棄の多重送信を防ぐ専用busy(run系のscriptMangaBusyとは独立)。 */
+  scriptMangaCandidatesBusy: boolean;
+  /** 「候補を生成」で一度に走らせるN1回数(1..6)。 */
+  scriptMangaCandidateCount: number;
   /** そのプロジェクトのキャラクタ一覧。脚本画面を開いた時に取得する。 */
   characters: Character[];
   /** キャラクタ一覧で選択中(編集対象)の id。null=未選択。 */
@@ -689,6 +704,11 @@ export const state: AppState = {
   scriptMangaRun: null,
   scriptMangaBusy: false,
   scriptMangaVlmStatus: null,
+  scriptMangaCandidates: [],
+  scriptMangaCandidateBeatKinds: {},
+  scriptMangaCandidateDialogueChars: [],
+  scriptMangaCandidatesBusy: false,
+  scriptMangaCandidateCount: 3,
   characters: [],
   selectedCharacterId: null,
   selectedCharacterBinding: null,

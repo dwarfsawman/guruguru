@@ -46,8 +46,10 @@ import { resolvePanelReferences } from "./referenceResolver";
 import { createGenerationRound, ensureRoundMonitor, interruptRound } from "./rounds";
 import { createImageExport, type ImageExportResult } from "./imageExport";
 import { createOpenRasterExport, type OpenRasterExportResult } from "./openRasterExport";
-import { planScriptMangaWithDirectorDetailed } from "./scriptMangaDirector";
-import type { BeatAnnotationResult } from "./scriptBeatAnnotator";
+import { directAdoptedCandidatePlan, planScriptMangaWithDirectorDetailed } from "./scriptMangaDirector";
+import { readCachedBeatAnnotation, type BeatAnnotationResult } from "./scriptBeatAnnotator";
+import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
+import { adoptablePlanCandidate, markPlanCandidateAdopted } from "./scriptMangaPlanCandidates";
 import { buildMangaPlanV2 } from "./scriptMangaPlanV2";
 import { acquireVlmModel, getVlmAuditSettings, releaseVlmModel } from "./vlmAudit";
 import type { StoryGraphCharacterInput, StoryGraphDialogueInput } from "./storyGraphBuilder";
@@ -1495,9 +1497,26 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     if (input.maxDialoguesPerPanel === undefined) planOptions.maxDialoguesPerPanel = 1;
   }
   const revision = latestRevision(scriptId);
+  const planCandidateId = typeof input.planCandidateId === "string" && input.planCandidateId.trim()
+    ? input.planCandidateId.trim()
+    : null;
   let beatAnnotation: BeatAnnotationResult | null = null;
   let fullPlan: ScriptMangaPlan | null;
-  if (planningMode === "llm") {
+  if (planCandidateId) {
+    // ネームv4 D3: 採用候補のページ割り・レイアウトは監督が変更できない(lockLayouts)。
+    const adoptable = adoptablePlanCandidate(planCandidateId, projectId, scriptId, revision.id);
+    fullPlan = await directAdoptedCandidatePlan(revision.doc, adoptable.plan, {
+      ...planOptions,
+      scriptRevisionId: revision.id,
+      characterBible: stringOr(input.characterBible, "") || undefined
+    });
+    // 候補がビート化N1由来なら、キャッシュ済み注釈から beats を引き継ぐ(無ければ従来経路)。
+    const units = buildPreLayoutUnits(revision.doc);
+    const cachedBeats = readCachedBeatAnnotation(revision.id, units);
+    beatAnnotation = cachedBeats
+      ? { units, beats: cachedBeats, fallback: false, cached: true }
+      : null;
+  } else if (planningMode === "llm") {
     const detailed = await planScriptMangaWithDirectorDetailed(revision.doc, {
       ...planOptions,
       scriptRevisionId: revision.id,
@@ -1557,7 +1576,8 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     templateId,
     providerId,
     batchSize: 1,
-    planningMode,
+    // 候補採用run はN1+監督由来(english-directed)なので llm として扱う。
+    planningMode: planCandidateId ? "llm" : planningMode,
     pageLimit,
     loras,
     generateImages,
@@ -1613,6 +1633,8 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     );
     throw error;
   }
+  // run 準備が成立した時点で候補を採用済みとして記録する(履歴は ranker の学習データにもなる)。
+  if (planCandidateId) markPlanCandidateAdopted(planCandidateId, runId);
   return runView(refreshRunStatus(runId));
 }
 
