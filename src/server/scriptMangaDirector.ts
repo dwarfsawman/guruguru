@@ -1,6 +1,10 @@
 import type { FountainDoc } from "../shared/fountain";
 import { deriveSceneBibles } from "./storyGraphBuilder";
-import { describeScriptMangaLayouts, scriptMangaLayoutCandidates } from "../shared/layoutPresets";
+import {
+  describeScriptMangaLayouts,
+  scriptMangaLayoutAlignsImportance,
+  scriptMangaLayoutCandidates
+} from "../shared/layoutPresets";
 import {
   planScriptManga,
   type ScriptMangaPagePlan,
@@ -113,6 +117,14 @@ export function validateDirectedMangaBatch(raw: unknown, sourcePages: ScriptMang
       page.panels.length !== source.panels.length
     ) return null;
     if (!scriptMangaLayoutCandidates(source.panels.length).includes(page.layoutTemplateId)) return null;
+    // ネームv4 D1: 監督がレイアウトを差し替える場合も hero×強調スロット整合を守らせる。
+    // 整合可能な候補が1つも無い importance 構成では強制しない(判定はどの候補でも false になるため)。
+    const importances = source.panels.map((panel) => panel.importance ?? "normal");
+    if (!scriptMangaLayoutAlignsImportance(page.layoutTemplateId, importances)) {
+      const anyAligned = scriptMangaLayoutCandidates(source.panels.length)
+        .some((candidateId) => scriptMangaLayoutAlignsImportance(candidateId, importances));
+      if (anyAligned) return null;
+    }
     for (let p = 0; p < page.panels.length; p += 1) {
       const panel = page.panels[p];
       if (
@@ -188,7 +200,12 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
     }));
     const named = await generateStructuredJson<ScriptMangaPlan>({
       settings,
-      systemPrompt: "You are the N1 manga page-naming editor. Preserve every sourcePanelId exactly once and in order. Never combine scenes. Use 1-6 panels per page; splash means one panel on its page. Design page turns and hero beats.",
+      systemPrompt: [
+        "You are the N1 manga page-naming editor. Preserve every sourcePanelId exactly once and in order. Never combine scenes. Use 1-6 panels per page; splash means one panel on its page. Design page turns and hero beats.",
+        "Mark at most one or two panels per page as importance=hero (the page's visual peak); use importance=splash only for a full-page single-panel moment.",
+        // ネームv4 D1: めくりパリティ(未決#1)はソフト指示に留める。右綴じ・表紙別で奇数indexがめくり直前になる想定。
+        "Set turnHook=reveal or cliffhanger only on pages that end right before a physical page turn (assume odd page indexes in this right-bound book), and put the disclosure at the top of the next page."
+      ].join("\n"),
       userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Source panels: ${JSON.stringify(sourcePanels)}`,
       schema: PAGE_NAMING_SCHEMA,
       validate: (raw) => applyPageNaming(raw, deterministicBase, targetPageCount),
@@ -209,8 +226,14 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
     const compact = batch.map((page) => ({
       index: page.index,
       title: page.title,
+      // ネームv4 D1: N1 の意図(pageIntent/turnHook/importance)と事前選択レイアウトを監督にも渡す。
+      pageIntent: page.pageIntent,
+      turnHook: page.turnHook,
+      preselectedLayout: page.layoutTemplateId,
       allowedLayouts: scriptMangaLayoutCandidates(page.panels.length),
-      panels: page.panels.map((panel) => ({ id: panel.id, scene: panel.sceneHeading, source: panel.sourceText }))
+      panels: page.panels.map((panel) => ({
+        id: panel.id, scene: panel.sceneHeading, importance: panel.importance, source: panel.sourceText
+      }))
     }));
     // バッチ内で許可されている全レイアウトの説明(bleed/figure スロットの意味と読み順位置を含む)。
     const layoutGuide = describeScriptMangaLayouts([
@@ -227,6 +250,8 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
         "Write prompt in English with panel-specific visual facts only. Never include appearance/style attributes, dialogue, non-English text, or the words no/not/without/never. Put exclusions in avoid as English noun phrases.",
         "Layout ids containing 'bleed' extend panels past the page edge (borderless art) — pick them for climactic, atmospheric, or montage pages instead of always using framed grids.",
         "Layouts with a figureSlot render that reading position as a borderless full-body character cut-out standing over the page (punch-out). Panels are mapped to layout slots in reading order, so the panel at that position becomes the figure: give it a single character-defining beat, set its subject to full body, and keep its dialogue minimal.",
+        "Panels marked importance=hero must land on the layout's largest slot (panels map to slots in reading order). Keep preselectedLayout unless another allowedLayout also keeps every hero on an emphasized slot.",
+        "On pages with turnHook=reveal, stage the final panel as a tease and leave the disclosure to the next page's first panel. On turnHook=cliffhanger pages, end at peak tension mid-action.",
         fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
         `登場話者: ${speakerNames(doc).join(", ")}`
       ].join("\n"),

@@ -4,8 +4,12 @@ import {
   LAYOUT_PRESETS,
   builtinLayoutPanelCount,
   describeScriptMangaLayouts,
+  emphasizedSlotIndex,
   findLayoutPreset,
-  scriptMangaLayoutCandidates
+  layoutAreaProfile,
+  scriptMangaLayoutAlignsImportance,
+  scriptMangaLayoutCandidates,
+  selectScriptMangaLayoutId
 } from "./layoutPresets.ts";
 import { PANEL_BLEED_OVERSHOOT, normalizeEditedPageLayout, panelBounds } from "./pageLayout.ts";
 
@@ -32,8 +36,8 @@ test("script manga layout candidates cover every panel count from one through si
     assert.ok(candidates.length > 0, `missing candidates for ${panelCount} panels`);
     for (const id of candidates) assert.equal(builtinLayoutPanelCount(id), panelCount, id);
   }
-  assert.deepEqual(scriptMangaLayoutCandidates(5), ["builtin:five-panel"]);
-  assert.deepEqual(scriptMangaLayoutCandidates(6), ["builtin:six-panel"]);
+  assert.deepEqual(scriptMangaLayoutCandidates(5), ["builtin:five-panel", "builtin:five-hero-top"]);
+  assert.deepEqual(scriptMangaLayoutCandidates(6), ["builtin:six-panel", "builtin:six-hero-right"]);
   assert.deepEqual(scriptMangaLayoutCandidates(0), []);
   assert.deepEqual(scriptMangaLayoutCandidates(7), []);
 });
@@ -97,6 +101,103 @@ test("describeScriptMangaLayouts: figureSlot は reading order の位置(1始ま
   assert.equal(four?.figureSlot, 3);
   assert.equal(hero?.figureSlot, undefined);
   assert.ok((three?.description ?? "").includes("punch-out"));
+});
+
+// --- 面積プロファイルとレイアウト事前選択(ネームv4 D1) ---
+
+test("layoutAreaProfile: 全プリセットの reading-order 面積比スナップショット", () => {
+  const expected: Record<string, number[]> = {
+    "builtin:cover": [0.1829, 0.8171],
+    "builtin:splash": [1],
+    "builtin:splash-bleed": [1],
+    "builtin:two-horizontal": [0.5, 0.5],
+    "builtin:two-vertical": [0.5, 0.5],
+    "builtin:two-bleed-hero-top": [0.7078, 0.2922],
+    "builtin:three-horizontal": [0.3333, 0.3333, 0.3333],
+    "builtin:three-hero-top": [0.5542, 0.2229, 0.2229],
+    "builtin:three-side-hero": [0.2228, 0.526, 0.2512],
+    "builtin:three-hero-bottom": [0.1614, 0.1614, 0.6771],
+    "builtin:three-bleed-hero-top": [0.6705, 0.1647, 0.1647],
+    "builtin:three-bleed-vertical": [0.3384, 0.3232, 0.3384],
+    "builtin:three-diagonal": [0.2941, 0.356, 0.3499],
+    "builtin:three-figure-left": [0.2818, 0.3146, 0.4036],
+    "builtin:four-grid": [0.25, 0.25, 0.25, 0.25],
+    "builtin:four-hero-bottom": [0.1141, 0.1141, 0.1711, 0.6006],
+    "builtin:four-vertical-hero": [0.179, 0.4631, 0.179, 0.179],
+    "builtin:four-figure-left": [0.205, 0.205, 0.385, 0.205],
+    "builtin:five-panel": [0.1654, 0.1654, 0.1654, 0.1654, 0.3382],
+    "builtin:five-hero-top": [0.4388, 0.1403, 0.1403, 0.1403, 0.1403],
+    "builtin:six-panel": [0.1667, 0.1667, 0.1667, 0.1667, 0.1667, 0.1667],
+    "builtin:six-hero-right": [0.1316, 0.1316, 0.3199, 0.1445, 0.1362, 0.1362],
+    "builtin:yonkoma": [0.25, 0.25, 0.25, 0.25]
+  };
+  for (const template of LAYOUT_PRESETS) {
+    const profile = layoutAreaProfile(template.id);
+    assert.ok(profile, template.id);
+    const pinned = expected[template.id];
+    assert.ok(pinned, `snapshot missing for ${template.id}`);
+    assert.equal(profile!.length, pinned!.length, template.id);
+    assert.ok(Math.abs(profile!.reduce((sum, share) => sum + share, 0) - 1) < 1e-9, `${template.id} sums to 1`);
+    profile!.forEach((share, index) => {
+      assert.ok(Math.abs(share - pinned![index]!) < 5e-4, `${template.id}[${index}] = ${share} ≠ ${pinned![index]}`);
+    });
+  }
+  assert.equal(layoutAreaProfile("builtin:unknown"), null);
+});
+
+test("emphasizedSlotIndex: 均等グリッドと単コマは強調なし、大ゴマ持ちは最大スロット", () => {
+  assert.equal(emphasizedSlotIndex([1]), null);
+  assert.equal(emphasizedSlotIndex([0.25, 0.25, 0.25, 0.25]), null);
+  assert.equal(emphasizedSlotIndex(layoutAreaProfile("builtin:three-hero-top")!), 0);
+  assert.equal(emphasizedSlotIndex(layoutAreaProfile("builtin:three-side-hero")!), 1);
+  assert.equal(emphasizedSlotIndex(layoutAreaProfile("builtin:three-hero-bottom")!), 2);
+  assert.equal(emphasizedSlotIndex(layoutAreaProfile("builtin:three-diagonal")!), null, "斜めゴマは強調扱いしない");
+  assert.equal(emphasizedSlotIndex(layoutAreaProfile("builtin:five-panel")!), 4);
+  assert.equal(emphasizedSlotIndex(layoutAreaProfile("builtin:five-hero-top")!), 0);
+  assert.equal(emphasizedSlotIndex(layoutAreaProfile("builtin:six-hero-right")!), 2);
+});
+
+test("selectScriptMangaLayoutId: splash→裁ち切り、hero位置×強調スロット一致、全normalは候補先頭", () => {
+  assert.equal(selectScriptMangaLayoutId(["splash"]), "builtin:splash-bleed");
+  assert.equal(selectScriptMangaLayoutId(["normal"]), "builtin:splash");
+  assert.equal(selectScriptMangaLayoutId(["normal", "normal", "normal"]), "builtin:three-horizontal");
+  assert.equal(selectScriptMangaLayoutId(["hero", "normal"]), "builtin:two-bleed-hero-top");
+  assert.equal(selectScriptMangaLayoutId(["hero", "normal", "normal"]), "builtin:three-hero-top");
+  assert.equal(selectScriptMangaLayoutId(["normal", "hero", "normal"]), "builtin:three-side-hero");
+  assert.equal(selectScriptMangaLayoutId(["normal", "normal", "hero"]), "builtin:three-hero-bottom",
+    "figure レイアウトも hero@2 に整合するが、事前選択では figure を避ける");
+  assert.equal(selectScriptMangaLayoutId(["normal", "hero", "normal", "normal"]), "builtin:four-vertical-hero");
+  assert.equal(selectScriptMangaLayoutId(["normal", "normal", "normal", "hero"]), "builtin:four-hero-bottom");
+  assert.equal(selectScriptMangaLayoutId(["hero", "normal", "normal", "normal", "normal"]), "builtin:five-hero-top");
+  assert.equal(selectScriptMangaLayoutId(["normal", "normal", "normal", "normal", "hero"]), "builtin:five-panel");
+  assert.equal(selectScriptMangaLayoutId(["normal", "normal", "hero", "normal", "normal", "normal"]), "builtin:six-hero-right");
+  // 整合可能な候補が無い hero 位置は、目標面積比への L1 フィットで穏当な候補へ倒す。
+  assert.equal(selectScriptMangaLayoutId(["normal", "hero"]), "builtin:two-horizontal");
+  assert.equal(selectScriptMangaLayoutId(["hero", "normal", "normal", "normal"]), "builtin:four-grid");
+  assert.equal(selectScriptMangaLayoutId([]), null);
+});
+
+test("scriptMangaLayoutAlignsImportance: heroなしは常に整合、heroは強調スロット一致のみ", () => {
+  assert.equal(scriptMangaLayoutAlignsImportance("builtin:three-horizontal", ["normal", "normal", "normal"]), true);
+  assert.equal(scriptMangaLayoutAlignsImportance("builtin:three-hero-top", ["hero", "normal", "normal"]), true);
+  assert.equal(scriptMangaLayoutAlignsImportance("builtin:three-horizontal", ["hero", "normal", "normal"]), false);
+  assert.equal(scriptMangaLayoutAlignsImportance("builtin:three-hero-top", ["normal", "normal", "hero"]), false);
+  assert.equal(scriptMangaLayoutAlignsImportance("builtin:three-figure-left", ["normal", "normal", "hero"]), true,
+    "監督が意図して選ぶ figure レイアウトは hero 整合として尊重する");
+  assert.equal(scriptMangaLayoutAlignsImportance("builtin:unknown", ["hero", "normal"]), true, "未解決は判定不能=整合扱い");
+});
+
+test("five-hero-top / six-hero-right: RTL順・ページ内・強調スロット", () => {
+  for (const [id, count] of [["builtin:five-hero-top", 5], ["builtin:six-hero-right", 6]] as const) {
+    const preset = findLayoutPreset(id);
+    assert.ok(preset, id);
+    assert.equal(preset!.layout.panels.length, count);
+    assert.deepEqual(preset!.layout.panels.map((panel) => panel.order), Array.from({ length: count }, (_, i) => i + 1));
+    for (const panel of preset!.layout.panels) {
+      const [x1, y1, x2, y2] = panelBounds(panel.shape);
+      assert.ok(x1 >= 0 && y1 >= 0 && x2 <= 1 && y2 <= preset!.layout.page.height, `${id}/${panel.id}`);
+    }
+  }
 });
 
 test("figure スロットの role/frame は normalizeEditedPageLayout の往復で保持される", () => {

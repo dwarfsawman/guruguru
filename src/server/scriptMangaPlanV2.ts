@@ -203,6 +203,8 @@ export function buildMangaPlanV2(input: {
       layoutTemplateId: page.layoutTemplateId,
       layoutSnapshot,
       pageIntent: pageIntent(page),
+      // ネームv4 D1: N1のページめくり演出を V2 へも引き継ぐ(additive)。
+      ...(page.turnHook !== undefined ? { turnHook: page.turnHook } : {}),
       panels: page.panels.map((legacyPanel, panelIndexOnPage): PanelSpec => {
       const layoutRole = orderedLayoutPanels[panelIndexOnPage]?.role;
       const direction = panelDirection(legacyPanel);
@@ -303,6 +305,7 @@ export function buildMangaPlanV2(input: {
       const provisional: PanelSpec = {
         id: legacyPanel.id,
         ...(layoutRole === "figure" ? { role: "figure" as const } : {}),
+        ...(legacyPanel.importance !== undefined ? { importance: legacyPanel.importance } : {}),
         sourceElementIds,
         beatIds: [beatId],
         preStateId,

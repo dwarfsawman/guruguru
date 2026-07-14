@@ -1,8 +1,9 @@
-import { scriptMangaLayoutCandidates } from "../shared/layoutPresets";
+import { scriptMangaLayoutCandidates, selectScriptMangaLayoutId } from "../shared/layoutPresets";
+import type { MangaPageTurnHook, MangaPanelImportance } from "../shared/mangaPlanV2";
 import type { ScriptMangaPagePlan, ScriptMangaPanelPlan, ScriptMangaPlan } from "../shared/scriptMangaPlan";
 
-export type PanelImportance = "splash" | "hero" | "normal";
-export type TurnHook = "reveal" | "cliffhanger" | "none";
+export type PanelImportance = MangaPanelImportance;
+export type TurnHook = MangaPageTurnHook;
 export interface PageNamingPanel { id: string; importance: PanelImportance; sourcePanelIds: string[] }
 export interface PageNamingPage { index: number; pageIntent: string; turnHook?: TurnHook; panels: PageNamingPanel[] }
 export interface PageNamingResult { pages: PageNamingPage[] }
@@ -40,11 +41,16 @@ export function applyPageNaming(raw: unknown, source: ScriptMangaPlan, targetPag
         sourceElementIds: concrete.flatMap((panel) => panel.sourceElementIds),
         sourceText: concrete.map((panel) => panel.sourceText).join("\n"),
         prompt: concrete.map((panel) => panel.prompt).join(" "),
-        dialogueOrderIndexes: concrete.flatMap((panel) => panel.dialogueOrderIndexes)
+        dialogueOrderIndexes: concrete.flatMap((panel) => panel.dialogueOrderIndexes),
+        importance: namedPanel.importance
       });
     }
+    // ネームv4 D1: 候補先頭固定をやめ、importance 構成(hero×強調スロット/splash→裁ち切り)で事前選択する。
+    const layoutTemplateId = selectScriptMangaLayoutId(panels.map((panel) => panel.importance ?? "normal"))
+      ?? scriptMangaLayoutCandidates(panels.length)[0]!;
     pages.push({ index: pageIndex, title: panels[0]!.sceneHeading || `Page ${pageIndex + 1}`,
-      layoutTemplateId: scriptMangaLayoutCandidates(panels.length)[0]!, pageIntent: page.pageIntent.trim(), panels });
+      layoutTemplateId, pageIntent: page.pageIntent.trim(),
+      ...(page.turnHook !== undefined ? { turnHook: page.turnHook } : {}), panels });
   }
   if (observedIds.length !== expectedIds.length || observedIds.some((id, index) => id !== expectedIds[index])) return null;
   return { ...source, pages, panelCount: pages.reduce((sum, page) => sum + page.panels.length, 0) };

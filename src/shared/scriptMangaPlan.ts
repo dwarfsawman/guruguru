@@ -1,5 +1,6 @@
 import type { FountainDoc, FountainElement } from "./fountain";
 import { scriptMangaLayoutCandidates } from "./layoutPresets";
+import type { MangaPageTurnHook, MangaPanelImportance } from "./mangaPlanV2";
 
 export interface ScriptMangaPanelDirection {
   shot: string;
@@ -27,6 +28,8 @@ export interface ScriptMangaPanelPlan {
   sourceText: string;
   dialogueOrderIndexes: number[];
   direction?: ScriptMangaPanelDirection;
+  /** N1ページネームのコマ重み(ネームv4 D1)。決定的プランナーでは未設定。 */
+  importance?: MangaPanelImportance;
 }
 
 export interface ScriptMangaPagePlan {
@@ -35,6 +38,8 @@ export interface ScriptMangaPagePlan {
   layoutTemplateId: string;
   panels: ScriptMangaPanelPlan[];
   pageIntent?: string;
+  /** N1ページネームのページめくり演出(ネームv4 D1)。決定的プランナーでは未設定。 */
+  turnHook?: MangaPageTurnHook;
 }
 
 export interface ScriptMangaPlan {

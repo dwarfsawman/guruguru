@@ -13,8 +13,9 @@
  * - ぶち抜き立ち絵スロット: `role: "figure"` + 枠なし。自動漫画ではこのスロットの選択候補が
  *   背景除去+白フチの切り抜き(ImageObject)としてコマ枠の前面へ重ねられる。
  */
-import { DEFAULT_PANEL_FRAME, PANEL_BLEED_OVERSHOOT, type LayoutPanel, type PageLayout } from "./pageLayout";
+import { DEFAULT_PANEL_FRAME, PANEL_BLEED_OVERSHOOT, panelBounds, type LayoutPanel, type PageLayout, type PanelShape } from "./pageLayout";
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
+import type { MangaPanelImportance } from "./mangaPlanV2";
 
 /** 内蔵テンプレの1件。id は `builtin:<slug>` で衝突を避ける。 */
 export interface BuiltinLayoutTemplate {
@@ -265,6 +266,46 @@ function threeFigureLeftPanels(): LayoutPanel[] {
   ];
 }
 
+/** 上段全幅の大ゴマ+2×2の5コマ構成(hero×最大スロット整合用、ネームv4 D1)。 */
+function fiveHeroTopPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroBottom = MARGIN + 0.56;
+  const half = (right - left - GUTTER) / 2;
+  const rowHeight = (bottom - heroBottom - GUTTER * 2) / 2;
+  const middleTop = heroBottom + GUTTER;
+  const bottomTop = middleTop + rowHeight + GUTTER;
+  return [
+    rectPanel("hero", 1, left, MARGIN, right, heroBottom),
+    rectPanel("middle-right", 2, left + half + GUTTER, middleTop, right, middleTop + rowHeight),
+    rectPanel("middle-left", 3, left, middleTop, left + half, middleTop + rowHeight),
+    rectPanel("bottom-right", 4, left + half + GUTTER, bottomTop, right, bottom),
+    rectPanel("bottom-left", 5, left, bottomTop, left + half, bottom)
+  ];
+}
+
+/** 上段2コマ→中段右の大ゴマ→下段2コマの6コマ構成(会話の溜め→見せ場→残響、ネームv4 D1)。 */
+function sixHeroRightPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const half = (right - left - GUTTER) / 2;
+  const topBottom = MARGIN + 0.34;
+  const middleTop = topBottom + GUTTER;
+  const middleBottom = middleTop + 0.6;
+  const bottomTop = middleBottom + GUTTER;
+  const heroLeft = 0.34;
+  return [
+    rectPanel("top-right", 1, left + half + GUTTER, MARGIN, right, topBottom),
+    rectPanel("top-left", 2, left, MARGIN, left + half, topBottom),
+    rectPanel("hero", 3, heroLeft, middleTop, right, middleBottom),
+    rectPanel("middle-left", 4, left, middleTop, heroLeft - GUTTER, middleBottom),
+    rectPanel("bottom-right", 5, left + half + GUTTER, bottomTop, right, bottom),
+    rectPanel("bottom-left", 6, left, bottomTop, left + half, bottom)
+  ];
+}
+
 /** 右3段+左ぶち抜き立ち絵スロット。 */
 function fourFigureLeftPanels(): LayoutPanel[] {
   const figureRight = 0.38;
@@ -299,7 +340,9 @@ export const LAYOUT_PRESETS: BuiltinLayoutTemplate[] = [
   preset("four-vertical-hero", "4コマ(右縦大ゴマ)", fourVerticalHeroPanels()),
   preset("four-figure-left", "4コマ(右3段+左ぶち抜き立ち絵)", fourFigureLeftPanels()),
   preset("five-panel", "5コマ(2列+下段大ゴマ)", fivePanelPanels()),
+  preset("five-hero-top", "5コマ(上段大ゴマ)", fiveHeroTopPanels()),
   preset("six-panel", "6コマ(3段×2)", gridPanels(3, 2)),
+  preset("six-hero-right", "6コマ(中段右大ゴマ)", sixHeroRightPanels()),
   preset("yonkoma", "4コマ(縦4段)", gridPanels(4, 1))
 ];
 
@@ -322,8 +365,8 @@ const SCRIPT_MANGA_LAYOUTS_BY_PANEL_COUNT: Readonly<Record<number, readonly stri
     "builtin:three-figure-left"
   ],
   4: ["builtin:four-grid", "builtin:four-hero-bottom", "builtin:four-vertical-hero", "builtin:four-figure-left"],
-  5: ["builtin:five-panel"],
-  6: ["builtin:six-panel"]
+  5: ["builtin:five-panel", "builtin:five-hero-top"],
+  6: ["builtin:six-panel", "builtin:six-hero-right"]
 };
 
 /** 自動漫画で選択可能な内蔵レイアウトを、正確なコマ数ごとに返す。 */
@@ -364,10 +407,138 @@ const SCRIPT_MANGA_LAYOUT_DESCRIPTIONS: Readonly<Record<string, string>> = {
   "builtin:four-figure-left":
     "three story panels stacked on the right plus a punch-out figure slot on the left: that panel renders its single character as a borderless full-body cut-out standing over the page frames; give it the character-defining beat and keep its dialogue minimal",
   "builtin:five-panel": "two rows of two panels plus a wide bottom payoff",
+  "builtin:five-hero-top": "wide hero panel on top, then a 2x2 grid of follow-up panels",
   "builtin:six-panel": "3x2 grid",
+  "builtin:six-hero-right": "two setup panels on top, a large hero panel on the middle right with a narrow side panel, two closing panels below",
   "builtin:yonkoma": "four vertical strips (4-koma)",
   "builtin:cover": "title band plus large art panel"
 };
+
+// --- 面積プロファイルとレイアウト事前選択(ネームv4 D1) ---
+
+/**
+ * shape の符号なし面積(page-width² 単位)。polygon は靴紐公式、ellipse は πab、
+ * path は外接矩形による近似(内蔵/取り込み候補の参加要件は rect/polygon のみ)。
+ */
+export function panelShapeArea(shape: PanelShape): number {
+  if (shape.type === "polygon") {
+    let doubled = 0;
+    for (let index = 0; index < shape.points.length; index += 1) {
+      const [x1, y1] = shape.points[index]!;
+      const [x2, y2] = shape.points[(index + 1) % shape.points.length]!;
+      doubled += x1 * y2 - x2 * y1;
+    }
+    return Math.abs(doubled) / 2;
+  }
+  if (shape.type === "ellipse") {
+    return Math.PI * Math.abs(shape.radius[0] * shape.radius[1]);
+  }
+  const [x1, y1, x2, y2] = panelBounds(shape);
+  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+}
+
+/**
+ * レイアウトの reading-order 面積プロファイル(合計1の面積比)。並びは実行時の
+ * plan panels[index] ↔ layout スロット対応と同じ `orderPanelsByReadingDirection`。
+ */
+export function pageLayoutAreaProfile(layout: PageLayout): number[] {
+  const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
+  const areas = ordered.map((panel) => panelShapeArea(panel.shape));
+  const total = areas.reduce((sum, area) => sum + area, 0);
+  if (!(total > 0)) return areas.map(() => 1 / Math.max(1, areas.length));
+  return areas.map((area) => area / total);
+}
+
+/** 内蔵レイアウト id の面積プロファイル(未知の id は null)。 */
+export function layoutAreaProfile(id: string): number[] | null {
+  const template = findLayoutPreset(id);
+  return template ? pageLayoutAreaProfile(template.layout) : null;
+}
+
+/** 「強調スロットあり」とみなす、最大面積スロットの対2位面積比の下限。均等グリッドを除外する。 */
+const LAYOUT_EMPHASIS_RATIO = 1.15;
+
+/**
+ * 面積プロファイルの強調スロット(reading-order index)。最大面積が2位の
+ * `LAYOUT_EMPHASIS_RATIO` 倍以上のときだけ「強調あり」。均等グリッドや単コマは null。
+ */
+export function emphasizedSlotIndex(areas: readonly number[]): number | null {
+  if (areas.length < 2) return null;
+  let maxIndex = 0;
+  for (let index = 1; index < areas.length; index += 1) {
+    if (areas[index]! > areas[maxIndex]!) maxIndex = index;
+  }
+  const second = Math.max(...areas.filter((_, index) => index !== maxIndex));
+  return areas[maxIndex]! >= second * LAYOUT_EMPHASIS_RATIO ? maxIndex : null;
+}
+
+export type ScriptMangaLayoutResolver = (id: string) => PageLayout | null;
+
+const builtinLayoutResolver: ScriptMangaLayoutResolver = (id) => findLayoutPreset(id)?.layout ?? null;
+
+function heroSlotIndexes(importances: readonly MangaPanelImportance[]): number[] {
+  return importances.flatMap((value, index) => (value === "hero" || value === "splash" ? [index] : []));
+}
+
+/**
+ * hero 構成とレイアウトの整合(heroコマが強調スロットに乗るか)。hero なし・単コマは常に整合。
+ * 未解決 id やコマ数不一致は「判定不能」として整合扱い(監督/呼び出し側の裁量に任せる)。
+ */
+export function scriptMangaLayoutAlignsImportance(
+  layoutTemplateId: string,
+  importances: readonly MangaPanelImportance[],
+  resolveLayout: ScriptMangaLayoutResolver = builtinLayoutResolver
+): boolean {
+  const heroes = heroSlotIndexes(importances);
+  if (heroes.length === 0 || importances.length < 2) return true;
+  const layout = resolveLayout(layoutTemplateId);
+  if (!layout || layout.panels.length !== importances.length) return true;
+  const slot = emphasizedSlotIndex(pageLayoutAreaProfile(layout));
+  return slot !== null && heroes.includes(slot);
+}
+
+/**
+ * N1 の importance 構成からレイアウトを決定的に事前選択する(ネームv4 D1)。
+ * - splash(単コマページ)→ 全面裁ち切り(bleed 候補)を優先。
+ * - hero あり → hero×強調スロット一致を最優先。次点は「hero=2 / normal=1」の
+ *   目標面積比との L1 距離が小さい候補。figure スロット付きは単独人物切り抜きへ
+ *   意味が変わるため事前選択では避ける(監督が明示的に選ぶのは可)。
+ * - 全 normal → 従来どおり候補先頭(既定構図の互換維持)。
+ */
+export function selectScriptMangaLayoutId(
+  importances: readonly MangaPanelImportance[],
+  resolveLayout: ScriptMangaLayoutResolver = builtinLayoutResolver
+): string | null {
+  const candidates = scriptMangaLayoutCandidates(importances.length);
+  if (candidates.length === 0) return null;
+  if (importances.length === 1) {
+    if (importances[0] !== "splash") return candidates[0]!;
+    return candidates.find((id) => id.includes("bleed")) ?? candidates[0]!;
+  }
+  const heroes = heroSlotIndexes(importances);
+  if (heroes.length === 0) return candidates[0]!;
+  const targetWeights = importances.map((value) => (value === "hero" || value === "splash" ? 2 : 1));
+  const targetTotal = targetWeights.reduce((sum, weight) => sum + weight, 0);
+  let best: { id: string; aligns: boolean; fit: number } | null = null;
+  for (const id of candidates) {
+    const layout = resolveLayout(id);
+    if (!layout || layout.panels.length !== importances.length) continue;
+    const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
+    if (ordered.some((panel) => panel.role === "figure")) continue;
+    const areas = pageLayoutAreaProfile(layout);
+    const slot = emphasizedSlotIndex(areas);
+    const aligns = slot !== null && heroes.includes(slot);
+    const fit = -importances.reduce(
+      (sum, _, position) => sum + Math.abs(targetWeights[position]! / targetTotal - (areas[position] ?? 0)),
+      0
+    );
+    // 候補順の走査なので、同点は常に先勝ち(既存並びの互換維持)。
+    if (!best || (aligns && !best.aligns) || (aligns === best.aligns && fit > best.fit + 1e-9)) {
+      best = { id, aligns, fit };
+    }
+  }
+  return best?.id ?? candidates[0]!;
+}
 
 export interface ScriptMangaLayoutDescriptor {
   id: string;
