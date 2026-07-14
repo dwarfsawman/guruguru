@@ -23,7 +23,7 @@
 ## データモデル
 
 ```ts
-export type ToneKind = "halftone" | "gradient" | "lines" | "speed" | "focus" | "flash";
+export type ToneKind = "halftone" | "gradient" | "lines" | "speed" | "focus" | "flash" | "noise" | "snow";
 
 export interface ToneObject extends PageObjectBase {
   kind: "tone";
@@ -52,6 +52,25 @@ export interface ToneObject extends PageObjectBase {
 | speed(スピード線) | `angle`、`count`(≤400)、`length`(平均長 0–1)、`lineWidth`、`jitter`(0–1) | 45 / 90 / 0.7 / 0.004 / 0.5 |
 | focus(集中線) | `center: PageVec`(**ローカル座標**: オブジェクト中心=原点、balloon tail.tip と同方式)、`innerRadius`(中心の空白半径)、`count`(≤400)、`lineWidth`(外周側の基部太さ)、`jitter` | (0,0) / 0.12 / 72 / 0.012 / 0.5 |
 | flash(ベタフラッシュ) | focus と同じ(領域を色で塗り、中心から innerRadius+ゆらぎのギザギザ白抜き) | innerRadius 0.18 |
+| noise(砂ノイズ) | `density`(0–1)、`grain`(粒サイズ、0.001–0.02)、任意で `angle`+`startRatio`/`endRatio`(角度方向の密度グラデ) | 0.35 / 0.003 / グラデなし |
+| snow(雪・玉ボケ) | `count`(≤400、前面+背面合計)、`frontRatio`(前面の割合 0–1)、`frontSize`/`backSize`(楕円長径)、`frontBlur`/`backBlur`(ぼかし強さ、サイズ比)、`angle`(落下方向=楕円の伸び方向)、`backColor`(#rrggbb、背面粒の色) | 120 / 0.4 / 0.05 / 0.03 / 0.5 / 0.3 / 115 / #aaaaaa |
+
+### 追補(2026-07-14 参考アプリとの突き合わせで追加)
+
+- **noise / snow を追加**(上表)。noise は seed 付き乱数の粒を**タイル化した `<pattern>`**で敷く
+  (全面に個別要素を撒くと要素数が爆発するため。タイルは領域の 1/2〜1/4 程度の大きさで、
+  タイル境界の繰り返しが目立たない粒数にする)。グラデは他種別と同じ `<mask>` 方式。
+  snow は seed 付きで楕円(angle 方向に伸びる)を前面/背面の2層生成し、`<filter>` の
+  `feGaussianBlur` でぼかす(librsvg の feGaussianBlur 対応は書き出しスモークテストで実証すること。
+  ぼかしフィルタの id もオブジェクト id で一意化)。前面=object.color、背面=params.backColor。
+- **lines に任意の濃度グラデ**: `startRatio`/`endRatio` を optional で追加(指定時のみ mask を掛ける。
+  遷移方向は線の伸びる向きと直交=縞をまたぐ方向)。
+- **gradient(網グラデ)をドット径の真の遷移へ強化**: v1 のマスク減衰近似をやめ、seed 不要の
+  行生成(角度方向に沿って各ドットの半径を start→end へ補間した `<circle>` 群)にする。
+  **要素数バジェット必須**: 領域面積/pitch² が約2万ドットを超える場合は実効 pitch を自動で
+  粗くして上限内に収める(書き出し時間と SVG サイズの暴走防止)。
+- **focus に `outerRadius`(任意)**: 指定時は線の外側の端を「領域端」ではなく center から
+  outerRadius の円周までにする(参考アプリの「最大半径」相当)。未指定は従来どおり領域端から。
 
 - 角度パラメータは **deg で保存**(UI の number 入力と一致させる。object.rotation(rad)とは別物で、
   rotation は領域ごと回す)。
