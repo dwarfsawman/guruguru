@@ -211,8 +211,13 @@ buffer容量も同じデータで比較した。
 速度改善との釣り合いから10MiBを採用した。`scripts/benchmark-project-export.mjs`と
 `scripts/benchmark-project-import.mjs`の`--repeat`/`--transport`/`--buffer-mib`で再計測できる。
 
+同じnative helperは汎用`pack --archive --entries --buffer-bytes`も持つ。entries JSONの順序を維持し、
+entryごとのSTORE/DEFLATE、通常ファイル検査、ZIP内パスと重複の拒否、ZIP64を担当する。画像ZIP、
+PPTX、ページORA、複数ORAの外側ZIPはこの経路を共有し、OOXML/stack.xml生成はTypeScript側に残す。
+
 ## 10. 変更履歴
 
+- 2026-07-15: Rust helperへ汎用`pack`を追加し、画像ZIP/PPTX/ORAのファイルストリーミング経路で共用。entry順・STORE/DEFLATE・パス安全性・ZIP64をnative側で担保。
 - 2026-07-14: エクスポートもRust native helperへ移行。projectRootを10MiB bufferで逐次読み、
   一時ZIPをHTTP配信後に削除する方式で、E02データはJSZip 4.371秒／終了時2,620.8MiBから
   Rust 1.511秒／291.6MiBへ改善。1MiB／10MiB比較を行い、インポート約9.6%短縮の10MiBを採用。

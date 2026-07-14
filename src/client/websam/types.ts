@@ -61,7 +61,11 @@ export interface WebSamModelUrls {
 export interface WebSamWorkerCandidate {
   index: number;
   score: number | null;
-  mask: ImageData;
+  mask: {
+    width: number;
+    height: number;
+    alpha: ArrayBuffer;
+  };
 }
 
 export interface WebSamWorkerProgress {
@@ -100,6 +104,7 @@ export type WebSamWorkerRequest =
       outputHeight: number;
       threshold: number;
       smoothing: number;
+      selectedIndex: number;
     }
   | {
       type: "destroy";
@@ -130,6 +135,7 @@ export type WebSamWorkerResponse =
       requestId: number;
       candidates: WebSamWorkerCandidate[];
       selectedIndex: number;
+      replaceCandidates: boolean;
     }
   | {
       type: "destroyed";

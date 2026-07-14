@@ -13,7 +13,8 @@
  * 異なるため分離)。
  */
 import sharp from "sharp";
-import JSZip from "jszip";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { PageRow } from "../shared/apiTypes";
 import {
   JPEG_FLATTEN_BACKGROUND,
@@ -26,7 +27,14 @@ import {
   safeAsciiName
 } from "./openRasterExport";
 import { createPptxExport } from "./pptxExport";
+import {
+  finalizeFileExport,
+  withMeasuredFileExport,
+  type FileExportMetrics,
+  type FileExportResult
+} from "./fileExport";
 import { HttpError } from "./http";
+import { packArchiveWithRust, type ArchivePackEntry } from "./projectArchive";
 import { objectBody } from "./validate";
 
 // computeExportCanvas は openRasterExport.ts で定義(pptxExport.ts との共用のため)。既存テスト
@@ -40,14 +48,29 @@ export const MIN_PIXEL_WIDTH = 256;
 export const MAX_PIXEL_WIDTH = 4096;
 export const DEFAULT_JPEG_QUALITY = 90;
 
-export interface ImageExportResult {
-  filename: string;
-  contentType: string;
-  buffer: Buffer;
-  pageCount: number;
+export type ImageExportResult = FileExportResult;
+
+export async function withImageExport<T>(
+  projectId: string,
+  body: unknown,
+  operation: (artifact: ImageExportResult) => Promise<T>
+): Promise<T> {
+  const format = parseImageExportFormat(objectBody(body).format);
+  return withMeasuredFileExport(
+    format === "pptx" ? "pptx" : "images",
+    format === "pptx" ? "pptx" : "images",
+    format,
+    (tempDir, metrics) => createImageExport(projectId, body, tempDir, metrics),
+    operation
+  );
 }
 
-export async function createImageExport(projectId: string, body: unknown): Promise<ImageExportResult> {
+async function createImageExport(
+  projectId: string,
+  body: unknown,
+  tempDir: string,
+  metrics: FileExportMetrics
+): Promise<ImageExportResult> {
   const project = requireProject(projectId);
   const input = objectBody(body);
   const format = parseImageExportFormat(input.format);
@@ -65,37 +88,54 @@ export async function createImageExport(projectId: string, body: unknown): Promi
   if (format === "pptx") {
     // PPTX は常に単一デッキ(複数ページでも zip 化しない)。OOXML 手組みは pptxExport.ts に分離。
     // 埋め込みは PNG なので quality は不要(jpeg 用の clamp 済み quality はここでは使わない)。
-    return createPptxExport(project, pages, pixelWidth);
+    return createPptxExport(project, pages, pixelWidth, tempDir, metrics);
   }
 
   const extension = format === "jpeg" ? "jpg" : "png";
-  const images: Array<{ filename: string; buffer: Buffer }> = [];
-  for (const page of pages) {
-    images.push({
-      filename: `${pageImageFileBase(page.pageIndex)}.${extension}`,
-      buffer: await renderPageImage(page, format, quality, pixelWidth)
-    });
+  const images: Array<{ filename: string; path: string }> = [];
+  const renderStartedAt = performance.now();
+  for (const [index, page] of pages.entries()) {
+    const filename = `${pageImageFileBase(page.pageIndex)}.${extension}`;
+    const buffer = await renderPageImage(page, format, quality, pixelWidth);
+    const path = join(tempDir, `image-${String(index + 1).padStart(4, "0")}.${extension}`);
+    await writeFile(path, buffer, { flag: "wx" });
+    metrics.inputBytes += buffer.byteLength;
+    images.push({ filename, path });
   }
+  metrics.renderMs += performance.now() - renderStartedAt;
 
   if (images.length === 1) {
-    return {
-      filename: images[0]!.filename,
-      contentType: contentTypeFor(format),
-      buffer: images[0]!.buffer,
-      pageCount: 1
-    };
+    return finalizeFileExport(
+      {
+        filename: images[0]!.filename,
+        contentType: contentTypeFor(format),
+        artifactPath: images[0]!.path,
+        pageCount: 1,
+        metrics
+      },
+      "画像の書き出し結果が空です。"
+    );
   }
 
-  const zip = new JSZip();
-  for (const image of images) {
-    zip.file(image.filename, image.buffer, { compression: "DEFLATE" });
-  }
-  return {
-    filename: `${safeAsciiName(project.name, "guruguru-book")}_images.zip`,
-    contentType: "application/zip",
-    buffer: await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }),
-    pageCount: images.length
-  };
+  const entries: ArchivePackEntry[] = images.map((image) => ({
+    source: image.path,
+    archivePath: image.filename,
+    compression: "store"
+  }));
+  const artifactPath = join(tempDir, "images.zip");
+  const zipStartedAt = performance.now();
+  await packArchiveWithRust(entries, artifactPath, join(tempDir, "image-entries.json"));
+  metrics.zipMs += performance.now() - zipStartedAt;
+  return finalizeFileExport(
+    {
+      filename: `${safeAsciiName(project.name, "guruguru-book")}_images.zip`,
+      contentType: "application/zip",
+      artifactPath,
+      pageCount: images.length,
+      metrics
+    },
+    "画像ZIPの作成結果が空です。"
+  );
 }
 
 async function renderPageImage(

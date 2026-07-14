@@ -152,9 +152,9 @@ debounce PATCH（1s）＋クローズ時 flush。
 
 ### 商用書き出し（P4）
 
-- `POST /api/projects/:id/export-images` body: `{ pageIds?, format: "png"|"jpeg", quality?,
+- `POST /api/projects/:id/export-images` body: `{ pageIds?, format: "png"|"jpeg"|"pptx", quality?,
   pixelWidth (既定 1280), naming?: "index" }` → 単ページは画像、複数ページは zip
-  （`001.png`, `002.png`, ...）。openraster-export と同じ配信パターン。
+  （`001.png`, `002.png`, ...）。PPTXは常に単一デッキ。全形式を一時ファイルからHTTPへstreamする。
 - レイヤ合成順: Paper → コマ画像（既存）→ コマ枠（既存）→ **ページオブジェクト**（P1〜P3、
   配列順）→ **モザイク**（P6、最前面・必須で最後）。`createPageLayers` にレイヤ供給関数を追加し、
   ORA 出力にも同レイヤが入る（ORA ではモザイクも独立レイヤ）。
@@ -207,6 +207,7 @@ debounce PATCH（1s）＋クローズ時 flush。
 
 ## 変更履歴
 
+- 2026-07-15: PNG/JPEG複数ページZIPをRust `pack`へ移行し、圧縮済み画像をSTORE、一時ファイルからHTTPへストリーミングする方式へ変更。
 - 2026-07-14: 旧「コマ」「オブジェクト」を「レイヤ」へ統合。固定キャンバス＋右サイドバーへ再構成し、
   コマ画像/オブジェクトの選択、編集専用の表示切替、同一帯域内の z 順並べ替え、Chronicle/セリフ表示を集約。
 - 2026-07-10: 初版（Fable 5 監督、要件確定: P1〜P6 全部・成人向けモザイク込み・縦書き自前レイアウト）。各フェーズの完了時に、実装での設計差分をここへ追記すること。

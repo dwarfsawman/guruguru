@@ -5,7 +5,7 @@
  * ページの画像・コマ枠・画像オブジェクトだけを背景 PNG に平坦化し、balloon/box/text は
  * PowerPoint の図形とテキストとして重ねる。吹き出し本体・しっぽ・文字はそれぞれ独立した
  * オブジェクトなので、書き出し後も PowerPoint 上で選択・移動・編集できる。
- * ライブラリ(pptxgenjs 等)は使わず、JSZip で OOXML(Office Open XML)パッケージを直接手組みする。
+ * ライブラリ(pptxgenjs 等)は使わず、OOXML(Office Open XML)を直接手組みし、Rust helperでpackする。
  *
  * OOXML の最小構成と罠(監督レビュー済み):
  * - `[Content_Types].xml` に png の Default と、各 xml パートの Override を漏らさず列挙する。
@@ -18,7 +18,8 @@
  * - `a:ext` の cx/cy(EMU)は正の整数であること。
  * - `a:blip` の `r:embed` は同じ slideN.xml.rels 内の画像 relationship Id と一致させる。
  */
-import JSZip from "jszip";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { PageRow } from "../shared/apiTypes";
 import type { BalloonObject, BoxObject, PageObject, TextContent, TextObject } from "../shared/pageObjects";
 import {
@@ -31,7 +32,8 @@ import {
   type ExportCanvas,
   type ExportProjectRow
 } from "./openRasterExport";
-import type { ImageExportResult } from "./imageExport";
+import { finalizeFileExport, type FileExportMetrics, type FileExportResult } from "./fileExport";
+import { packArchiveWithRust, type ArchivePackEntry } from "./projectArchive";
 
 const PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
@@ -60,50 +62,73 @@ interface RenderedSlidePage {
 export async function createPptxExport(
   project: ExportProjectRow,
   pages: PageRow[],
-  pixelWidth: number
-): Promise<ImageExportResult> {
-  const rendered: RenderedSlidePage[] = [];
-  for (const page of pages) {
-    rendered.push(await renderSlidePage(page, pixelWidth));
+  pixelWidth: number,
+  tempDir: string,
+  metrics: FileExportMetrics
+): Promise<FileExportResult> {
+  const rendered: Array<Omit<RenderedSlidePage, "png"> & { pngPath: string }> = [];
+  const renderStartedAt = performance.now();
+  for (const [index, page] of pages.entries()) {
+    const slide = await renderSlidePage(page, pixelWidth);
+    const pngPath = join(tempDir, `pptx-slide-${String(index + 1).padStart(4, "0")}.png`);
+    await writeFile(pngPath, slide.png, { flag: "wx" });
+    metrics.inputBytes += slide.png.byteLength;
+    rendered.push({ pngPath, canvas: slide.canvas, pageHeight: slide.pageHeight, editableObjects: slide.editableObjects });
   }
+  metrics.renderMs += performance.now() - renderStartedAt;
 
   const slideSize = computeSlideSize(rendered[0]!.canvas);
-  const zip = new JSZip();
+  const entries: ArchivePackEntry[] = [];
+  let textEntryIndex = 0;
+  const addTextEntry = async (archivePath: string, content: string) => {
+    textEntryIndex += 1;
+    const source = join(tempDir, `pptx-text-${String(textEntryIndex).padStart(4, "0")}.xml`);
+    await writeFile(source, content, { encoding: "utf8", flag: "wx" });
+    metrics.inputBytes += Buffer.byteLength(content);
+    entries.push({ source, archivePath, compression: "deflate" });
+  };
 
-  zip.file("[Content_Types].xml", renderContentTypesXml(rendered.length), { compression: "DEFLATE" });
-  zip.file("_rels/.rels", renderRootRelsXml(), { compression: "DEFLATE" });
-  zip.file("docProps/core.xml", renderCorePropsXml(project.name), { compression: "DEFLATE" });
-  zip.file("docProps/app.xml", renderAppPropsXml(rendered.length), { compression: "DEFLATE" });
+  const zipStartedAt = performance.now();
+  await addTextEntry("[Content_Types].xml", renderContentTypesXml(rendered.length));
+  await addTextEntry("_rels/.rels", renderRootRelsXml());
+  await addTextEntry("docProps/core.xml", renderCorePropsXml(project.name));
+  await addTextEntry("docProps/app.xml", renderAppPropsXml(rendered.length));
+  await addTextEntry("ppt/presentation.xml", renderPresentationXml(rendered.length, slideSize));
+  await addTextEntry("ppt/_rels/presentation.xml.rels", renderPresentationRelsXml(rendered.length));
+  await addTextEntry("ppt/presProps.xml", renderPresPropsXml());
+  await addTextEntry("ppt/viewProps.xml", renderViewPropsXml());
+  await addTextEntry("ppt/tableStyles.xml", renderTableStylesXml());
+  await addTextEntry("ppt/theme/theme1.xml", renderThemeXml());
+  await addTextEntry("ppt/slideMasters/slideMaster1.xml", renderSlideMasterXml());
+  await addTextEntry("ppt/slideMasters/_rels/slideMaster1.xml.rels", renderSlideMasterRelsXml());
+  await addTextEntry("ppt/slideLayouts/slideLayout1.xml", renderSlideLayoutXml());
+  await addTextEntry("ppt/slideLayouts/_rels/slideLayout1.xml.rels", renderSlideLayoutRelsXml());
 
-  zip.file("ppt/presentation.xml", renderPresentationXml(rendered.length, slideSize), { compression: "DEFLATE" });
-  zip.file("ppt/_rels/presentation.xml.rels", renderPresentationRelsXml(rendered.length), { compression: "DEFLATE" });
-  zip.file("ppt/presProps.xml", renderPresPropsXml(), { compression: "DEFLATE" });
-  zip.file("ppt/viewProps.xml", renderViewPropsXml(), { compression: "DEFLATE" });
-  zip.file("ppt/tableStyles.xml", renderTableStylesXml(), { compression: "DEFLATE" });
-
-  zip.file("ppt/theme/theme1.xml", renderThemeXml(), { compression: "DEFLATE" });
-  zip.file("ppt/slideMasters/slideMaster1.xml", renderSlideMasterXml(), { compression: "DEFLATE" });
-  zip.file("ppt/slideMasters/_rels/slideMaster1.xml.rels", renderSlideMasterRelsXml(), { compression: "DEFLATE" });
-  zip.file("ppt/slideLayouts/slideLayout1.xml", renderSlideLayoutXml(), { compression: "DEFLATE" });
-  zip.file("ppt/slideLayouts/_rels/slideLayout1.xml.rels", renderSlideLayoutRelsXml(), { compression: "DEFLATE" });
-
-  rendered.forEach((slide, index) => {
+  for (const [index, slide] of rendered.entries()) {
     const slideNumber = index + 1;
     const rect = computeSlidePicRect(slideSize, slide.canvas);
-    zip.file(`ppt/slides/slide${slideNumber}.xml`, renderSlideXml(rect, slide.pageHeight, slide.editableObjects), { compression: "DEFLATE" });
-    zip.file(`ppt/slides/_rels/slide${slideNumber}.xml.rels`, renderSlideRelsXml(slideNumber), {
-      compression: "DEFLATE"
-    });
-    zip.file(`ppt/media/image${slideNumber}.png`, slide.png, { compression: "DEFLATE" });
-  });
+    await addTextEntry(
+      `ppt/slides/slide${slideNumber}.xml`,
+      renderSlideXml(rect, slide.pageHeight, slide.editableObjects)
+    );
+    await addTextEntry(`ppt/slides/_rels/slide${slideNumber}.xml.rels`, renderSlideRelsXml(slideNumber));
+    // PNGは圧縮済みなのでSTOREし、再DEFLATEのCPUと一時メモリを使わない。
+    entries.push({ source: slide.pngPath, archivePath: `ppt/media/image${slideNumber}.png`, compression: "store" });
+  }
 
-  const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
-  return {
-    filename: `${safeAsciiName(project.name, "guruguru-book")}.pptx`,
-    contentType: PPTX_CONTENT_TYPE,
-    buffer,
-    pageCount: rendered.length
-  };
+  const artifactPath = join(tempDir, "export.pptx");
+  await packArchiveWithRust(entries, artifactPath, join(tempDir, "pptx-entries.json"));
+  metrics.zipMs += performance.now() - zipStartedAt;
+  return finalizeFileExport(
+    {
+      filename: `${safeAsciiName(project.name, "guruguru-book")}.pptx`,
+      contentType: PPTX_CONTENT_TYPE,
+      artifactPath,
+      pageCount: rendered.length,
+      metrics
+    },
+    "PPTXの作成結果が空です。"
+  );
 }
 
 /**

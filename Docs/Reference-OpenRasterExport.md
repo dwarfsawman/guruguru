@@ -8,6 +8,7 @@ Book ページを OpenRaster (`.ora`) として書き出すサーバー機能の
 - エクスポートは `POST /api/projects/:projectId/openraster-export` で行う。
 - `pageIds` 未指定なら Book 全体、指定ありならそのページだけを書き出す。
 - 対象が1ページなら `.ora`、複数ページなら各ページ `.ora` を zip にまとめる。
+- ORAと外側zipはOS一時ファイルへRust helperで逐次packし、HTTPへファイルストリーミングする。
 - 見開きは「隣接2ページを結合」ではなく「横長キャンバスの1論理ページ」として扱う。作成フォームの `見開きB5横(364:257)` プリセットを使う。
 
 ## ORA 構成
@@ -16,6 +17,7 @@ Book ページを OpenRaster (`.ora`) として書き出すサーバー機能の
 - `stack.xml` は OpenRaster の標準要素だけで構成する。
 - `data/layer-*.png` に全レイヤ PNG を入れる。
 - `mergedimage.png` と `Thumbnails/thumbnail.png` も生成する。
+- PNGと外側zip内の`.ora`はSTORE、`stack.xml`だけDEFLATEする。
 - OpenRaster の layer stack は先頭要素が最前面なので、`Panels` レイヤを `stack.xml` の先頭へ置く。
 - 紙地は `Paper` レイヤとして最背面に入れる。Krita で開いたときに透明チェッカーではなくページ地が見える。
 

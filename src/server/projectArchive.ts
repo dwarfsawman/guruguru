@@ -33,6 +33,20 @@ export interface CreatedProjectArchive {
   archiveBytes?: number;
 }
 
+export type ArchiveEntryCompression = "store" | "deflate";
+
+export interface ArchivePackEntry {
+  source: string;
+  archivePath: string;
+  compression: ArchiveEntryCompression;
+}
+
+export interface CreatedArchive {
+  fileCount: number;
+  fileBytes?: number;
+  archiveBytes?: number;
+}
+
 /**
  * `.guruzip` のメタデータを読み、files/ を新規 projectRoot へ展開する。
  * 通常経路はRust helperでZIPをディスクから逐次展開し、Nodeへ巨大Bufferを持ち込まない。
@@ -135,6 +149,58 @@ export async function createProjectArchiveWithRust(
   return {
     engine: "rust",
     fileCount: typeof stats.files === "number" ? stats.files : 0,
+    ...(typeof stats.fileBytes === "number" ? { fileBytes: stats.fileBytes } : {}),
+    ...(typeof stats.archiveBytes === "number" ? { archiveBytes: stats.archiveBytes } : {})
+  };
+}
+
+/**
+ * 任意の通常ファイルを指定順でZIPへ逐次格納する。画像系エクスポートでは、TypeScriptが
+ * 一時ファイルとして生成したXML/PNG/ORAだけを渡し、完成ZIPをBunメモリへ読み戻さない。
+ */
+export async function packArchiveWithRust(
+  entries: readonly ArchivePackEntry[],
+  archivePath: string,
+  entriesPath: string
+): Promise<CreatedArchive> {
+  await writeFile(entriesPath, JSON.stringify(entries), { encoding: "utf8", flag: "wx" });
+  const executable = resolveNativeArchiveExecutable();
+  let child: ReturnType<typeof Bun.spawn>;
+  try {
+    child = Bun.spawn(
+      [
+        executable,
+        "pack",
+        "--archive",
+        archivePath,
+        "--entries",
+        entriesPath,
+        "--buffer-bytes",
+        String(configuredArchiveBufferBytes())
+      ],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+  } catch (error) {
+    throw new HttpError(500, `Rust ZIP packerの起動に失敗しました: ${errorMessage(error)}`);
+  }
+
+  const stdoutPromise = new Response(child.stdout as ReadableStream<Uint8Array>).text();
+  const stderrPromise = new Response(child.stderr as ReadableStream<Uint8Array>).text();
+  const exitCode = await child.exited;
+  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+  if (exitCode !== 0) {
+    const detail = stderr.trim() || stdout.trim() || `exit code ${exitCode}`;
+    throw new HttpError(500, `ZIPの作成に失敗しました: ${detail}`);
+  }
+
+  let stats: RustArchiveStats = {};
+  try {
+    stats = JSON.parse(stdout) as RustArchiveStats;
+  } catch {
+    // helper統計は診断用。呼び出し側は完成ファイルをstatして検証する。
+  }
+  return {
+    fileCount: typeof stats.files === "number" ? stats.files : entries.length,
     ...(typeof stats.fileBytes === "number" ? { fileBytes: stats.fileBytes } : {}),
     ...(typeof stats.archiveBytes === "number" ? { archiveBytes: stats.archiveBytes } : {})
   };

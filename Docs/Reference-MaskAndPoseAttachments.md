@@ -12,6 +12,8 @@
 - 公開GitHub Release Assetから取得するため、`GURUGURU_GITHUB_TOKEN`、`GH_TOKEN`、`GITHUB_TOKEN`などの認証設定は不要。
 - サーバーのrelease asset proxy(`src/server/index.ts`の`serveReleaseAsset`)は「ファイル名 → 公開release download base URL」のレジストリ方式。WebSAM用(`slimsam-77-encoder.onnx` / `slimsam-77-decoder.onnx` → `websam-models-v1`)に加え、ポーズ検出モデル用(`pose_landmarker_full.task` → GitHub Release `pose-models-v1`、`GET /api/pose-models/:filename`)を同じハンドラでストリーミング配信する。
 - SlimSAM-77 のモデルファイルはブラウザの OPFS にキャッシュされる。2回目以降はキャッシュ済みファイルを優先する。OPFS非対応ブラウザでは手動マスク機能はそのまま使えるが、WebSAMのキャッシュは使えない。
+- WebSAM decode後のlogitsはWorker内に保持し、閾値化・平滑化は`Uint8Array`のalpha（1 byte/pixel）だけで行う。RGBAへの展開とPNG Data URL化は表示直前のクライアント側だけで行い、Workerからはalphaの`ArrayBuffer`をtransferする。
+- Threshold/Smoothingの連続変更はWorkerで「実行中1件+保留中の最新版1件」へcoalesceし、再処理は`selectedSamCandidateIndex`の1候補だけに限定する。`bun run benchmark:websam`の既定条件（1024×1446、Smoothing=4）で50msを超える状態が継続した場合だけRust/WASM化を再検討する。
 - スマート選択の最終マスクは `finalMask = (samMask OR manualIncludeMask) AND NOT manualEraseMask` として合成し、この白黒PNGだけを `maskDataUrl` として送る。SAM候補プレビューは「適用」するまで `samMask` として確定しない。
 - 手動ペン(`manual-include`)で描くときは `manualInclude` レイヤーに加えて同じストローク形状を `manualErase` レイヤーから `destination-out` で削除する。これにより「消しゴムで消した領域を後からペンで再描きして復活させる」ことができる。消しゴムは引き続き `manualErase` に追加し、SAM結果や手動追加を最終合成で抜く。
 - WebSAM Brush prompt のサンプリング間隔は `BRUSH_PROMPT_POINT_SPACING`(48px)/ `BRUSH_PROMPT_MAX_POINTS`(48点)で間引く。マジックナンバーではなく定数化し、過剰な点で decode が重くなるのを防ぐ。消しゴムによる点削除(`removeBrushPromptPointsNearSegment`)はブラシ半径ベースなので間引いた後も整合する。

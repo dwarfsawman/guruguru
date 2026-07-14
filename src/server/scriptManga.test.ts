@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createId, defaultVlmAuditSettings, getRow, getRows, initializeDb, runSql, setSetting } from "./db.ts";
 import { createCharacter, listCharacters, putCharacterBinding } from "./characters.ts";
 import { approveReferenceSet, createReferenceSet, uploadReferenceSetImage } from "./referenceSets.ts";
@@ -13,12 +13,12 @@ import {
   auditScriptMangaTask,
   cancelScriptMangaRun,
   createScriptMangaRun,
-  createScriptMangaRunExport,
   getScriptMangaRun,
   resumeScriptMangaRun,
   selectScriptMangaTaskCandidate,
   startScriptMangaRun,
-  updateScriptMangaPlan
+  updateScriptMangaPlan,
+  withScriptMangaRunExport
 } from "./scriptManga.ts";
 import { fakeProvider, resetFakeProvider } from "./providers/fakeProvider.ts";
 import { registerProvider } from "./providers/registry.ts";
@@ -28,6 +28,13 @@ registerProvider(fakeProvider);
 
 const TINY_PNG_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
+
+async function createScriptMangaRunExport(runId: string, body: unknown) {
+  return withScriptMangaRunExport(runId, body, async (artifact) => ({
+    ...artifact,
+    buffer: await readFile(artifact.artifactPath)
+  }));
+}
 
 function template(): string {
   initializeDb();

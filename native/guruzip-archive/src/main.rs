@@ -7,6 +7,7 @@ use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 
+use serde::Deserialize;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -20,6 +21,7 @@ const MAX_COPY_BUFFER_BYTES: usize = 64 * 1024 * 1024;
 enum CommandArgs {
     Extract(ExtractArgs),
     Create(CreateArgs),
+    Pack(PackArgs),
 }
 
 #[derive(Debug)]
@@ -38,6 +40,28 @@ struct CreateArgs {
     manifest: PathBuf,
     data: PathBuf,
     copy_buffer_bytes: usize,
+}
+
+#[derive(Debug)]
+struct PackArgs {
+    archive: PathBuf,
+    entries: PathBuf,
+    copy_buffer_bytes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PackEntry {
+    source: PathBuf,
+    archive_path: String,
+    compression: PackCompression,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PackCompression {
+    Store,
+    Deflate,
 }
 
 #[derive(Debug)]
@@ -101,6 +125,13 @@ fn run() -> Result<()> {
                 stats.file_count, stats.file_bytes, stats.archive_bytes, args.copy_buffer_bytes
             );
         }
+        CommandArgs::Pack(args) => {
+            let stats = pack_archive(&args)?;
+            println!(
+                "{{\"files\":{},\"fileBytes\":{},\"archiveBytes\":{},\"bufferBytes\":{}}}",
+                stats.file_count, stats.file_bytes, stats.archive_bytes, args.copy_buffer_bytes
+            );
+        }
     }
     Ok(())
 }
@@ -109,12 +140,37 @@ fn parse_args() -> Result<CommandArgs> {
     let mut args = env::args_os().skip(1);
     let command = args
         .next()
-        .ok_or_else(|| invalid_input("usage: guruzip-archive <extract|create> [options]"))?;
+        .ok_or_else(|| invalid_input("usage: guruzip-archive <extract|create|pack> [options]"))?;
     match command.to_string_lossy().as_ref() {
         "extract" => Ok(CommandArgs::Extract(parse_extract_args(args)?)),
         "create" => Ok(CommandArgs::Create(parse_create_args(args)?)),
+        "pack" => Ok(CommandArgs::Pack(parse_pack_args(args)?)),
         other => Err(invalid_input(format!("unsupported command: {other}")).into()),
     }
+}
+
+fn parse_pack_args(args: impl Iterator<Item = OsString>) -> Result<PackArgs> {
+    let mut archive = None;
+    let mut entries = None;
+    let mut copy_buffer_bytes = DEFAULT_COPY_BUFFER_BYTES;
+    let mut args = args.peekable();
+    while let Some(flag) = args.next() {
+        let value = args.next().ok_or_else(|| {
+            invalid_input(format!("missing value for {}", flag.to_string_lossy()))
+        })?;
+        match flag.to_string_lossy().as_ref() {
+            "--archive" => archive = Some(PathBuf::from(value)),
+            "--entries" => entries = Some(PathBuf::from(value)),
+            "--buffer-bytes" => copy_buffer_bytes = parse_copy_buffer_bytes(&value)?,
+            other => return Err(invalid_input(format!("unknown argument: {other}")).into()),
+        }
+    }
+
+    Ok(PackArgs {
+        archive: archive.ok_or_else(|| invalid_input("--archive is required"))?,
+        entries: entries.ok_or_else(|| invalid_input("--entries is required"))?,
+        copy_buffer_bytes,
+    })
 }
 
 fn parse_extract_args(args: impl Iterator<Item = OsString>) -> Result<ExtractArgs> {
@@ -242,6 +298,64 @@ fn create_archive(args: &CreateArgs) -> Result<CreateStats> {
         stats.file_count += 1;
     }
 
+    let mut output = writer.finish()?;
+    output.flush()?;
+    drop(output);
+    stats.archive_bytes = fs::metadata(&args.archive)?.len();
+    Ok(stats)
+}
+
+fn pack_archive(args: &PackArgs) -> Result<CreateStats> {
+    if !args.entries.is_file() {
+        return Err(invalid_input(format!(
+            "entry manifest does not exist: {}",
+            args.entries.display()
+        ))
+        .into());
+    }
+    let entries: Vec<PackEntry> =
+        serde_json::from_reader(BufReader::new(File::open(&args.entries)?))?;
+    let mut archive_paths = HashSet::with_capacity(entries.len());
+    for entry in &entries {
+        validate_archive_path(&entry.archive_path)?;
+        if !archive_paths.insert(entry.archive_path.as_str()) {
+            return Err(invalid_input(format!(
+                "entry manifest contains a duplicate archive path: {}",
+                entry.archive_path
+            ))
+            .into());
+        }
+        if !entry.source.is_file() {
+            return Err(invalid_input(format!(
+                "entry source is not a regular file: {}",
+                entry.source.display()
+            ))
+            .into());
+        }
+    }
+
+    ensure_parent(&args.archive)?;
+    let archive_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&args.archive)?;
+    let mut writer = ZipWriter::new(BufWriter::new(archive_file));
+    let mut copy_buffer = vec![0; args.copy_buffer_bytes];
+    let mut stats = CreateStats::default();
+    for entry in entries {
+        let compression = match entry.compression {
+            PackCompression::Store => CompressionMethod::Stored,
+            PackCompression::Deflate => CompressionMethod::Deflated,
+        };
+        stats.file_bytes += write_zip_entry(
+            &mut writer,
+            &entry.archive_path,
+            &entry.source,
+            compression,
+            &mut copy_buffer,
+        )?;
+        stats.file_count += 1;
+    }
     let mut output = writer.finish()?;
     output.flush()?;
     drop(output);
@@ -554,22 +668,22 @@ fn validate_supported_entry<R: io::Read>(
 }
 
 fn validate_relative_path(relative_path: &str) -> Result<()> {
-    if relative_path.is_empty() {
-        return Err(invalid_input("files/ contains an empty path").into());
-    }
-    if relative_path.contains('\\') || relative_path.starts_with('/') || relative_path.contains(':')
+    validate_archive_path(relative_path).map_err(|_| {
+        invalid_input(format!("files/ contains an unsafe path: {relative_path}")).into()
+    })
+}
+
+fn validate_archive_path(archive_path: &str) -> Result<()> {
+    if archive_path.is_empty()
+        || archive_path.contains('\0')
+        || archive_path.contains('\\')
+        || archive_path.starts_with('/')
+        || archive_path.contains(':')
+        || archive_path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
     {
-        return Err(
-            invalid_input(format!("files/ contains an unsafe path: {relative_path}")).into(),
-        );
-    }
-    if relative_path
-        .split('/')
-        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
-    {
-        return Err(
-            invalid_input(format!("files/ contains an unsafe path: {relative_path}")).into(),
-        );
+        return Err(invalid_input(format!("unsafe ZIP entry path: {archive_path}")).into());
     }
     Ok(())
 }
@@ -612,7 +726,7 @@ fn invalid_input(message: impl Into<String>) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{project_file_compression, validate_relative_path};
+    use super::{project_file_compression, validate_archive_path, validate_relative_path};
     use zip::CompressionMethod;
 
     #[test]
@@ -636,6 +750,19 @@ mod tests {
         ] {
             assert!(
                 validate_relative_path(path).is_err(),
+                "{path} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_generic_archive_paths() {
+        for path in ["mimetype", "ppt/media/image1.png", "日本語/画像.png"] {
+            validate_archive_path(path).unwrap();
+        }
+        for path in ["", "../evil", "/rooted", "C:/evil", "a\\evil", "a//evil"] {
+            assert!(
+                validate_archive_path(path).is_err(),
                 "{path} should be rejected"
             );
         }

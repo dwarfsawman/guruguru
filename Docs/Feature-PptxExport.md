@@ -8,8 +8,8 @@ Book の完成品を PowerPoint(.pptx)デッキとして書き出す機能。既
 
 - **API**: `POST /api/projects/:id/export-images` の `format` に `"pptx"` を追加。
   `src/server/imageExport.ts` の `parseImageExportFormat` が `"png" | "jpeg" | "pptx"` を受け付け、
-  `createImageExport` は `format === "pptx"` なら `pageIds` 解決後に `src/server/pptxExport.ts` の
-  `createPptxExport(project, pages, pixelWidth)` へ丸ごと委譲する(`quality` は PPTX には渡さない)。
+  `withImageExport` は `format === "pptx"` なら `pageIds` 解決後に `src/server/pptxExport.ts` の
+  `createPptxExport` へ委譲する(`quality` は PPTX には渡さない)。
 - **描画パイプラインの再利用**: 各ページは `computeExportCanvas(pixelWidth, resolvePageHeight(page, layout))`
   の解像度で `createPageLayers` + `renderMergedImage`(いずれも `openRasterExport.ts`)により平坦化する。
   PPTX への埋め込みは `renderMergedImage` が返す PNG バッファをそのまま使う(再エンコード・
@@ -21,17 +21,17 @@ Book の完成品を PowerPoint(.pptx)デッキとして書き出す機能。既
 - **循環 import 回避**: `computeExportCanvas` は元々 `imageExport.ts` にあったが、`pptxExport.ts`
   からも使うために `openRasterExport.ts` へ移設した(`imageExport.ts` は後方互換のため
   `computeExportCanvas` を re-export している)。`imageExport.ts` → `pptxExport.ts`
-  (`createPptxExport` 呼び出し)の一方向 import のみで、`pptxExport.ts` → `imageExport.ts` は
-  `import type { ImageExportResult }`(型のみ、実行時に消える)に留めてサイクルを作らない。
+  (`createPptxExport` 呼び出し)の一方向 import のみ。成果物型は`fileExport.ts`から参照し、
+  `pptxExport.ts`から`imageExport.ts`へのimportは持たない。
 - **スライドサイズ**: デッキ全体で1つ。幅は `9144000` EMU(10インチ)固定、高さは先頭ページの
   `resolvePageHeight` 比から `round(9144000 × 比)` で算出し、`914400`〜`51206400` EMU
   (PowerPoint が受け付ける1辺の範囲、1〜56インチ)へ clamp する。ページごとにアスペクト比が異なる
   場合は、そのページの画像をスライド中央へ「contain」配置する(`computeSlidePicRect`。はみ出す辺を
   スライド全幅/全高に合わせ、余る辺は中央寄せでレターボックス化)。
-- **戻り値**: 複数ページでも zip 化せず、常に単一 `.pptx` を返す(`ImageExportResult` 型をそのまま
-  流用)。ファイル名は `${safeAsciiName(project.name, "guruguru-book")}.pptx`。
+- **戻り値**: 複数ページでも外側zip化せず、常に単一 `.pptx` を返す。成果物はOS一時ファイルに作り、
+  callback完了まで保持してHTTPへストリーミングする。ファイル名は `${safeAsciiName(project.name, "guruguru-book")}.pptx`。
 
-## OOXML 構成(JSZip 手組み、ライブラリ非使用)
+## OOXML 構成(TypeScript生成 + Rust pack)
 
 `src/server/pptxExport.ts` が以下のパート一式を組み立てる:
 
@@ -64,7 +64,7 @@ ppt/media/imageN.png ×ページ数
 
 ## テスト
 
-`src/server/pptxExport.test.ts`(`createImageExport(projectId, { format: "pptx" })` 経由の
+`src/server/pptxExport.test.ts`(`withImageExport(projectId, { format: "pptx" }, callback)` 経由の
 E2E スタイル)で検証:
 
 - `[Content_Types].xml` に png Default と各 slide の Override が揃う
@@ -97,6 +97,7 @@ E2E スタイル)で検証:
 
 ## 変更履歴
 
+- 2026-07-15: ページPNGを逐次一時ファイル化し、XML/relsをTypeScriptで生成してRust `pack`でPPTXへまとめる方式へ変更。PNGはSTORE、XMLはDEFLATE、HTTPはファイルストリーミング化。
 - 2026-07-11: 三角形と本体の重ね合わせをPowerPoint標準の吹き出し図形へ変更。文字サイズをページ幅比で算出するよう修正。
 - 2026-07-11: 背景の平坦画像と、編集可能な吹き出し本体・しっぽ・文字を分離して出力する方式へ変更。
 - 2026-07-12: 吹き出し本体と内包文字をPowerPointのグループ図形として出力するよう変更。

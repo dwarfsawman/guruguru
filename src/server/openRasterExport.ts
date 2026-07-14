@@ -1,6 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { extname } from "node:path";
-import JSZip from "jszip";
+import { readFile, writeFile } from "node:fs/promises";
+import { extname, join } from "node:path";
 import sharp from "sharp";
 import type { PageRow } from "../shared/apiTypes";
 import {
@@ -30,7 +29,14 @@ import { balloonContentMaxWidth, renderBalloonSvg } from "../shared/balloonShape
 import { renderTextSvg } from "../shared/textSvg";
 import { renderToneSvg } from "../shared/toneSvg";
 import { getRow, getRows, toApiRow } from "./db";
+import {
+  finalizeFileExport,
+  withMeasuredFileExport,
+  type FileExportMetrics,
+  type FileExportResult
+} from "./fileExport";
 import { HttpError } from "./http";
+import { packArchiveWithRust, type ArchivePackEntry } from "./projectArchive";
 import { ensureAssetThumbnail } from "./storage";
 import { computeTextLayoutForContent } from "./textLayoutApi";
 import { objectBody } from "./validate";
@@ -99,14 +105,28 @@ export interface RasterLayer {
   png: Buffer;
 }
 
-export interface OpenRasterExportResult {
-  filename: string;
-  contentType: string;
-  buffer: Buffer;
-  pageCount: number;
+export type OpenRasterExportResult = FileExportResult;
+
+export async function withOpenRasterExport<T>(
+  projectId: string,
+  body: unknown,
+  operation: (artifact: OpenRasterExportResult) => Promise<T>
+): Promise<T> {
+  return withMeasuredFileExport(
+    "openraster",
+    "openraster",
+    "ora",
+    (tempDir, metrics) => createOpenRasterExport(projectId, body, tempDir, metrics),
+    operation
+  );
 }
 
-export async function createOpenRasterExport(projectId: string, body: unknown): Promise<OpenRasterExportResult> {
+async function createOpenRasterExport(
+  projectId: string,
+  body: unknown,
+  tempDir: string,
+  metrics: FileExportMetrics
+): Promise<OpenRasterExportResult> {
   const project = requireProject(projectId);
   const input = objectBody(body);
   const rawPageIds = input.pageIds ?? input.page_ids;
@@ -119,33 +139,42 @@ export async function createOpenRasterExport(projectId: string, body: unknown): 
   }
 
   const canvas = projectCanvas(project);
-  const oras: Array<{ filename: string; buffer: Buffer }> = [];
-  for (const page of pages) {
-    oras.push({
-      filename: `${pageFileBase(page)}.ora`,
-      buffer: await createPageOra(page, canvas)
-    });
+  const oras: Array<{ filename: string; path: string }> = [];
+  for (const [index, page] of pages.entries()) {
+    oras.push(await createPageOra(page, canvas, tempDir, index, metrics));
   }
 
   if (oras.length === 1) {
-    return {
-      filename: oras[0]!.filename,
-      contentType: OPENRASTER_MIME,
-      buffer: oras[0]!.buffer,
-      pageCount: 1
-    };
+    return finalizeFileExport(
+      {
+        filename: oras[0]!.filename,
+        contentType: OPENRASTER_MIME,
+        artifactPath: oras[0]!.path,
+        pageCount: 1,
+        metrics
+      },
+      "OpenRasterの作成結果が空です。"
+    );
   }
 
-  const zip = new JSZip();
-  for (const ora of oras) {
-    zip.file(ora.filename, ora.buffer, { compression: "DEFLATE" });
-  }
-  return {
-    filename: `${safeAsciiName(project.name, "guruguru-book")}-openraster.zip`,
-    contentType: "application/zip",
-    buffer: await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }),
-    pageCount: oras.length
-  };
+  const artifactPath = join(tempDir, "openraster.zip");
+  const zipStartedAt = performance.now();
+  await packArchiveWithRust(
+    oras.map((ora) => ({ source: ora.path, archivePath: ora.filename, compression: "store" })),
+    artifactPath,
+    join(tempDir, "openraster-entries.json")
+  );
+  metrics.zipMs += performance.now() - zipStartedAt;
+  return finalizeFileExport(
+    {
+      filename: `${safeAsciiName(project.name, "guruguru-book")}-openraster.zip`,
+      contentType: "application/zip",
+      artifactPath,
+      pageCount: oras.length,
+      metrics
+    },
+    "OpenRaster ZIPの作成結果が空です。"
+  );
 }
 
 export function requireProject(projectId: string): ExportProjectRow {
@@ -186,7 +215,14 @@ function safeDimension(value: number | null | undefined, fallback: number): numb
   return typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.trunc(value) : fallback;
 }
 
-async function createPageOra(page: PageRow, canvas: ExportCanvas): Promise<Buffer> {
+async function createPageOra(
+  page: PageRow,
+  canvas: ExportCanvas,
+  tempDir: string,
+  pageIndex: number,
+  metrics: FileExportMetrics
+): Promise<{ filename: string; path: string }> {
+  const renderStartedAt = performance.now();
   const layers = await createPageLayers(page, canvas);
   const indexed = layers.map((layer, index) => ({
     ...layer,
@@ -198,16 +234,36 @@ async function createPageOra(page: PageRow, canvas: ExportCanvas): Promise<Buffe
     .png()
     .toBuffer();
   const stackXml = renderStackXml(canvas, indexed);
+  const prefix = `ora-${String(pageIndex + 1).padStart(4, "0")}`;
+  let sourceIndex = 0;
+  const entries: ArchivePackEntry[] = [];
+  const writeEntry = async (
+    archivePath: string,
+    bytes: string | Buffer,
+    compression: ArchivePackEntry["compression"]
+  ) => {
+    sourceIndex += 1;
+    const source = join(tempDir, `${prefix}-source-${String(sourceIndex).padStart(4, "0")}`);
+    await writeFile(source, bytes, typeof bytes === "string" ? { encoding: "utf8", flag: "wx" } : { flag: "wx" });
+    metrics.inputBytes += typeof bytes === "string" ? Buffer.byteLength(bytes) : bytes.byteLength;
+    entries.push({ source, archivePath, compression });
+  };
 
-  const zip = new JSZip();
-  zip.file("mimetype", OPENRASTER_MIME, { compression: "STORE" });
-  zip.file("stack.xml", stackXml, { compression: "DEFLATE" });
+  // OpenRaster仕様上、mimetypeは必ず先頭かつSTORE。
+  await writeEntry("mimetype", OPENRASTER_MIME, "store");
+  await writeEntry("stack.xml", stackXml, "deflate");
   for (const layer of indexed) {
-    zip.file(layer.src, layer.png, { compression: "DEFLATE" });
+    await writeEntry(layer.src, layer.png, "store");
   }
-  zip.file("mergedimage.png", merged, { compression: "DEFLATE" });
-  zip.file("Thumbnails/thumbnail.png", thumbnail, { compression: "DEFLATE" });
-  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  await writeEntry("mergedimage.png", merged, "store");
+  await writeEntry("Thumbnails/thumbnail.png", thumbnail, "store");
+  metrics.renderMs += performance.now() - renderStartedAt;
+
+  const path = join(tempDir, `${prefix}.ora`);
+  const zipStartedAt = performance.now();
+  await packArchiveWithRust(entries, path, join(tempDir, `${prefix}-entries.json`));
+  metrics.zipMs += performance.now() - zipStartedAt;
+  return { filename: `${pageFileBase(page)}.ora`, path };
 }
 
 export async function createPagePreviewPng(

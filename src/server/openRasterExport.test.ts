@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -6,13 +6,20 @@ import assert from "node:assert/strict";
 import JSZip from "jszip";
 import sharp from "sharp";
 import { createId, initializeDb, runSql } from "./db.ts";
-import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport.ts";
+import { createPagePreviewPng, withOpenRasterExport } from "./openRasterExport.ts";
 import type { PageLayout } from "../shared/pageLayout.ts";
 import { createImageObject } from "../shared/pageObjects.ts";
 import { DEFAULT_TEXT_STYLE, defaultBalloonTail, defaultToneParams, type BalloonObject, type BoxObject, type TextObject, type ToneKind, type ToneObject } from "../shared/pageObjects.ts";
 
 // 1x1 の最小 PNG(page_media ファイル用)。src/server/pages.test.ts と同一。
 const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
+
+async function createOpenRasterExport(projectId: string, body: unknown) {
+  return withOpenRasterExport(projectId, body, async (artifact) => ({
+    ...artifact,
+    buffer: await readFile(artifact.artifactPath)
+  }));
+}
 
 test("createPagePreviewPng renders directly at the requested maximum dimension", async () => {
   initializeDb();

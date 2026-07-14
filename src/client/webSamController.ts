@@ -193,8 +193,8 @@ function ensureWebSamWorker() {
   return webSamWorker;
 }
 
-function postWebSamMessage(message: WebSamWorkerRequest) {
-  ensureWebSamWorker().postMessage(message);
+function postWebSamMessage(message: WebSamWorkerRequest, transfer: Transferable[] = []) {
+  ensureWebSamWorker().postMessage(message, transfer);
 }
 
 function nextWebSamRequestId() {
@@ -279,15 +279,21 @@ async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
     if (message.requestId !== latestWebSamDecodeRequestId) {
       return;
     }
-    const candidates = await Promise.all(message.candidates.map(candidateFromWorker));
-    const selectedIndex = candidates.some((candidate) => candidate.index === message.selectedIndex)
-      ? message.selectedIndex
-      : candidates[0]?.index ?? 0;
-    const selected = candidates.find((candidate) => candidate.index === selectedIndex) ?? candidates[0] ?? null;
+    const updates = await Promise.all(message.candidates.map(candidateFromWorker));
+    if (message.requestId !== latestWebSamDecodeRequestId) {
+      return;
+    }
     const current = inpaintDraftForAsset(assetId);
     if (!current) {
       return;
     }
+    const candidates = message.replaceCandidates
+      ? updates
+      : current.samCandidates.map((candidate) => updates.find((update) => update.index === candidate.index) ?? candidate);
+    const selectedIndex = candidates.some((candidate) => candidate.index === message.selectedIndex)
+      ? message.selectedIndex
+      : candidates[0]?.index ?? 0;
+    const selected = candidates.find((candidate) => candidate.index === selectedIndex) ?? candidates[0] ?? null;
     if (selected) {
       await drawCandidatePreview(assetId, selected.dataUrl);
     }
@@ -406,7 +412,10 @@ async function encodeActiveImageForWebSam() {
     webSamError: ""
   });
   requestRender();
-  postWebSamMessage({ type: "encode-image", requestId, imageData: raw });
+  postWebSamMessage(
+    { type: "encode-image", requestId, imageData: raw },
+    [raw.data.buffer as ArrayBuffer]
+  );
 }
 
 
@@ -498,7 +507,8 @@ export async function requestWebSamReprocess() {
     outputWidth: width,
     outputHeight: height,
     threshold: draft.threshold,
-    smoothing: draft.smoothing
+    smoothing: draft.smoothing,
+    selectedIndex: draft.selectedSamCandidateIndex
   });
 }
 
@@ -507,22 +517,35 @@ function hasWebSamPrompt(draft: InpaintDraft) {
 }
 
 function candidateFromWorker(candidate: WebSamWorkerCandidate): Promise<SamMaskCandidate> {
-  return imageDataToDataUrl(candidate.mask).then((dataUrl) => ({
+  return alphaMaskToDataUrl(candidate.mask).then((dataUrl) => ({
     index: candidate.index,
     score: candidate.score,
     dataUrl
   }));
 }
 
-function imageDataToDataUrl(imageData: ImageData) {
+function alphaMaskToDataUrl(mask: WebSamWorkerCandidate["mask"]) {
+  const alpha = new Uint8Array(mask.alpha);
+  if (alpha.length !== mask.width * mask.height) {
+    return Promise.resolve("");
+  }
+  const rgba = new Uint8ClampedArray(alpha.length * 4);
+  for (let pixel = 0; pixel < alpha.length; pixel += 1) {
+    const value = alpha[pixel]!;
+    const offset = pixel * 4;
+    rgba[offset] = value;
+    rgba[offset + 1] = value;
+    rgba[offset + 2] = value;
+    rgba[offset + 3] = value;
+  }
   const canvas = document.createElement("canvas");
-  canvas.width = imageData.width;
-  canvas.height = imageData.height;
+  canvas.width = mask.width;
+  canvas.height = mask.height;
   const context = canvas.getContext("2d");
   if (!context) {
     return Promise.resolve("");
   }
-  context.putImageData(imageData, 0, 0);
+  context.putImageData(new ImageData(rgba, mask.width, mask.height), 0, 0);
   return Promise.resolve(canvas.toDataURL("image/png"));
 }
 

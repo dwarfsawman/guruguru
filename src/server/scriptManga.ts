@@ -44,8 +44,8 @@ import { evaluatePanelCandidate } from "./panelVisualEvaluator";
 import { evaluateDeterministicPanelQuality } from "./deterministicPanelQuality";
 import { resolvePanelReferences } from "./referenceResolver";
 import { createGenerationRound, ensureRoundMonitor, interruptRound } from "./rounds";
-import { createImageExport, type ImageExportResult } from "./imageExport";
-import { createOpenRasterExport, type OpenRasterExportResult } from "./openRasterExport";
+import { withImageExport, type ImageExportResult } from "./imageExport";
+import { withOpenRasterExport, type OpenRasterExportResult } from "./openRasterExport";
 import sharp from "sharp";
 import { renderPoseSkeletonSvg } from "../shared/poseSkeletonSvg";
 import { reconstructPanelPoses, type PoseControlMode } from "./panelPoseReconstructor";
@@ -2105,10 +2105,11 @@ export async function auditScriptMangaTask(taskId: string): Promise<ScriptMangaR
 }
 
 /** Exports only the pages owned by a fully reviewed run and persists a reproducible manifest. */
-export async function createScriptMangaRunExport(
+export async function withScriptMangaRunExport<T>(
   runId: string,
-  body: unknown
-): Promise<ImageExportResult | OpenRasterExportResult> {
+  body: unknown,
+  operation: (artifact: ImageExportResult | OpenRasterExportResult) => Promise<T>
+): Promise<T> {
   const run = refreshRunStatus(runId);
   if (run.status !== "completed") {
     throw new HttpError(409, "Every panel candidate must be generated and selected before exporting this run");
@@ -2125,28 +2126,29 @@ export async function createScriptMangaRunExport(
     [run.id]
   );
   try {
-    const result = format === "ora"
-      ? await createOpenRasterExport(run.project_id, { pageIds })
-      : await createImageExport(run.project_id, {
-          pageIds,
-          format,
-          pixelWidth: input.pixelWidth,
-          quality: input.quality
-        });
-    const manifest = {
-      format,
-      filename: result.filename,
-      contentType: result.contentType,
-      pageCount: result.pageCount,
-      pageIds,
-      createdAt: new Date().toISOString()
+    const completeExport = async (result: ImageExportResult | OpenRasterExportResult) => {
+      const manifest = {
+        format,
+        filename: result.filename,
+        contentType: result.contentType,
+        pageCount: result.pageCount,
+        pageIds,
+        createdAt: new Date().toISOString()
+      };
+      runSql(
+        `UPDATE script_manga_runs SET status = 'completed', phase = 'completed', export_manifest_json = ?,
+           last_error_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [JSON.stringify(manifest), run.id]
+      );
+      return operation(result);
     };
-    runSql(
-      `UPDATE script_manga_runs SET status = 'completed', phase = 'completed', export_manifest_json = ?,
-         last_error_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [JSON.stringify(manifest), run.id]
-    );
-    return result;
+    return format === "ora"
+      ? await withOpenRasterExport(run.project_id, { pageIds }, completeExport)
+      : await withImageExport(
+          run.project_id,
+          { pageIds, format, pixelWidth: input.pixelWidth, quality: input.quality },
+          completeExport
+        );
   } catch (error) {
     runSql(
       `UPDATE script_manga_runs SET status = 'completed', phase = 'completed', last_error_json = ?,

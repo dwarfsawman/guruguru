@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import JSZip from "jszip";
 import sharp from "sharp";
 import { initializeDb, runSql } from "./db.ts";
-import { createImageExport, parseImageExportFormat } from "./imageExport.ts";
+import { parseImageExportFormat, withImageExport } from "./imageExport.ts";
 import { HttpError } from "./http.ts";
 import { DEFAULT_PANEL_FRAME, type PageLayout } from "../shared/pageLayout.ts";
 import { defaultToneParams } from "../shared/pageObjects.ts";
@@ -16,6 +16,13 @@ import { defaultToneParams } from "../shared/pageObjects.ts";
 const SLIDE_WIDTH_EMU = 9_144_000;
 const MIN_SLIDE_EMU = 914_400;
 const MAX_SLIDE_EMU = 51_206_400;
+
+async function createImageExport(projectId: string, body: unknown) {
+  return withImageExport(projectId, body, async (artifact) => ({
+    ...artifact,
+    buffer: await readFile(artifact.artifactPath)
+  }));
+}
 
 function clampEmu(value: number): number {
   return Math.min(MAX_SLIDE_EMU, Math.max(MIN_SLIDE_EMU, value));

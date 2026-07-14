@@ -10,10 +10,9 @@ import type {
   WebSamWorkerRequest,
   WebSamWorkerResponse
 } from "./types";
+import { postProcessMasks, reprocessMask } from "./maskPostprocess";
 
 const MODEL_INPUT_SIZE = 1024;
-const LOW_RES_MASK_SIZE = 256;
-const NUM_MASKS = 3;
 const IMAGE_MEAN = [0.485, 0.456, 0.406] as const;
 const IMAGE_STD = [0.229, 0.224, 0.225] as const;
 const CACHE_DIR = "guruguru-websam-models";
@@ -36,10 +35,13 @@ interface Sam1Embedding {
 
 interface CachedDecodeResult {
   rawLogits: Float32Array;
-  lowResMasks: Float32Array;
   scores: number[];
   selectedIndex: number;
+  outputWidth: number;
+  outputHeight: number;
 }
+
+type ReprocessRequest = Extract<WebSamWorkerRequest, { type: "reprocess" }>;
 
 let ortModule: OrtModule | null = null;
 let session: ModelSession | null = null;
@@ -47,6 +49,8 @@ let embedding: Sam1Embedding | null = null;
 let cachedDecode: CachedDecodeResult | null = null;
 let loadedImageSize: { width: number; height: number } | null = null;
 let queue: Promise<void> = Promise.resolve();
+let pendingReprocess: ReprocessRequest | null = null;
+let reprocessScheduled = false;
 
 function loadOrtModule() {
   return import("onnxruntime-web/webgpu");
@@ -63,29 +67,66 @@ function serialize<T>(task: () => Promise<T>): Promise<T> {
 
 self.addEventListener("message", (event: MessageEvent<WebSamWorkerRequest>) => {
   const message = event.data;
-  void serialize(async () => {
-    try {
-      if (message.type === "load-model") {
-        await loadModel(message.requestId, message.model, message.urls);
-      } else if (message.type === "encode-image") {
-        await encodeImage(message.requestId, message.imageData);
-      } else if (message.type === "decode") {
-        await decodePrompt(message.requestId, message.prompt, message.outputWidth, message.outputHeight, message.threshold, message.smoothing);
-      } else if (message.type === "reprocess") {
-        await reprocessPrompt(message.requestId, message.outputWidth, message.outputHeight, message.threshold, message.smoothing);
-      } else if (message.type === "destroy") {
-        await destroyCurrentSession();
-        post({ type: "destroyed", requestId: message.requestId });
-      }
-    } catch (error) {
-      post({
-        type: "error",
-        requestId: message.requestId,
-        message: error instanceof Error ? error.message : String(error)
-      });
-    }
-  });
+  if (message.type === "reprocess") {
+    pendingReprocess = message;
+    scheduleLatestReprocess();
+    return;
+  }
+  // 新しい画像・prompt・session操作は、それ以前のslider再処理を無効化する。
+  pendingReprocess = null;
+  void serialize(() => handleRequest(message));
 });
+
+function scheduleLatestReprocess() {
+  if (reprocessScheduled) {
+    return;
+  }
+  reprocessScheduled = true;
+  setTimeout(() => {
+    void serialize(async () => {
+      const message = pendingReprocess;
+      pendingReprocess = null;
+      if (message) {
+        await handleRequest(message);
+      }
+    }).finally(() => {
+      reprocessScheduled = false;
+      if (pendingReprocess) {
+        scheduleLatestReprocess();
+      }
+    });
+  }, 0);
+}
+
+async function handleRequest(message: WebSamWorkerRequest) {
+  try {
+    if (message.type === "load-model") {
+      await loadModel(message.requestId, message.model, message.urls);
+    } else if (message.type === "encode-image") {
+      await encodeImage(message.requestId, message.imageData);
+    } else if (message.type === "decode") {
+      await decodePrompt(message.requestId, message.prompt, message.outputWidth, message.outputHeight, message.threshold, message.smoothing);
+    } else if (message.type === "reprocess") {
+      await reprocessPrompt(
+        message.requestId,
+        message.outputWidth,
+        message.outputHeight,
+        message.threshold,
+        message.smoothing,
+        message.selectedIndex
+      );
+    } else if (message.type === "destroy") {
+      await destroyCurrentSession();
+      post({ type: "destroyed", requestId: message.requestId });
+    }
+  } catch (error) {
+    post({
+      type: "error",
+      requestId: message.requestId,
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
 
 async function loadModel(requestId: number, model: WebSamModelDefinition, urls: WebSamModelUrls) {
   await destroyCurrentSession();
@@ -250,37 +291,67 @@ async function decodePrompt(
   );
   cachedDecode = {
     rawLogits: postProcessed.rawLogits,
-    lowResMasks: postProcessed.lowResMasks,
     scores: postProcessed.scores,
-    selectedIndex: postProcessed.selectedIndex
+    selectedIndex: postProcessed.selectedIndex,
+    outputWidth,
+    outputHeight
   };
+  const candidates = postProcessed.masks.map((alpha, index) => alphaMaskCandidate(
+    index,
+    postProcessed.scores[index] ?? null,
+    outputWidth,
+    outputHeight,
+    alpha
+  ));
   post({
     type: "decoded",
     requestId,
-    candidates: postProcessed.masks.map((mask, index) => ({
-      index,
-      score: postProcessed.scores[index] ?? null,
-      mask
-    })),
-    selectedIndex: postProcessed.selectedIndex
-  });
+    candidates,
+    selectedIndex: postProcessed.selectedIndex,
+    replaceCandidates: true
+  }, candidates.map((candidate) => candidate.mask.alpha));
 }
 
-async function reprocessPrompt(requestId: number, outputWidth: number, outputHeight: number, threshold: number, smoothing: number) {
+async function reprocessPrompt(
+  requestId: number,
+  outputWidth: number,
+  outputHeight: number,
+  threshold: number,
+  smoothing: number,
+  selectedIndex: number
+) {
   if (!cachedDecode) {
     throw new Error("No cached WebSAM logits are available. Decode a prompt first.");
   }
-  const result = reprocessMasks(cachedDecode, outputWidth, outputHeight, threshold, smoothing);
+  if (cachedDecode.outputWidth !== outputWidth || cachedDecode.outputHeight !== outputHeight) {
+    throw new Error("Cached WebSAM logits do not match the requested output size.");
+  }
+  const alpha = reprocessMask(cachedDecode.rawLogits, outputWidth, outputHeight, selectedIndex, threshold, smoothing);
+  const candidate = alphaMaskCandidate(
+    selectedIndex,
+    cachedDecode.scores[selectedIndex] ?? null,
+    outputWidth,
+    outputHeight,
+    alpha
+  );
+  cachedDecode.selectedIndex = selectedIndex;
   post({
     type: "decoded",
     requestId,
-    candidates: result.masks.map((mask, index) => ({
-      index,
-      score: result.scores[index] ?? null,
-      mask
-    })),
-    selectedIndex: result.selectedIndex
-  });
+    candidates: [candidate],
+    selectedIndex,
+    replaceCandidates: false
+  }, [candidate.mask.alpha]);
+}
+
+function alphaMaskCandidate(
+  index: number,
+  score: number | null,
+  width: number,
+  height: number,
+  alpha: Uint8Array
+): WebSamWorkerCandidate {
+  return { index, score, mask: { width, height, alpha: alpha.buffer as ArrayBuffer } };
 }
 
 function preprocessImage(imageData: WebSamRawImageData): Float32Array {
@@ -355,190 +426,6 @@ function normalizeBox(box: WebSamBox | null) {
 function imageToModelCoords(imageX: number, imageY: number, imageWidth: number, imageHeight: number): [number, number] {
   const scale = MODEL_INPUT_SIZE / Math.max(imageWidth, imageHeight);
   return [imageX * scale, imageY * scale];
-}
-
-function postProcessMasks(
-  rawMasks: Float32Array,
-  rawScores: Float32Array,
-  maskWidth: number,
-  maskHeight: number,
-  outputWidth: number,
-  outputHeight: number,
-  threshold: number,
-  smoothing: number
-) {
-  const scores: number[] = [];
-  const masks: ImageData[] = [];
-  const totalPixelsPerMask = maskWidth * maskHeight;
-  const outputPixels = outputWidth * outputHeight;
-  const rawLogits = new Float32Array(NUM_MASKS * outputPixels);
-  const lowResMasks = new Float32Array(NUM_MASKS * LOW_RES_MASK_SIZE * LOW_RES_MASK_SIZE);
-  const maskScaleX = maskWidth / Math.max(outputWidth, outputHeight);
-  const maskScaleY = maskHeight / Math.max(outputWidth, outputHeight);
-  let selectedIndex = 0;
-  let bestScore = -Infinity;
-
-  for (let index = 0; index < NUM_MASKS; index += 1) {
-    const score = Number(rawScores[index] ?? 0);
-    scores.push(score);
-    if (score > bestScore) {
-      bestScore = score;
-      selectedIndex = index;
-    }
-  }
-
-  for (let maskIndex = 0; maskIndex < NUM_MASKS; maskIndex += 1) {
-    const maskOffset = maskIndex * totalPixelsPerMask;
-    const logitOffset = maskIndex * outputPixels;
-    const imageData = new ImageData(outputWidth, outputHeight);
-
-    for (let y = 0; y < outputHeight; y += 1) {
-      for (let x = 0; x < outputWidth; x += 1) {
-        const logit = bilinearSample(rawMasks, maskOffset, maskWidth, maskHeight, x * maskScaleX, y * maskScaleY);
-        const outputIndex = y * outputWidth + x;
-        const pixelIndex = outputIndex * 4;
-        const value = logit > threshold ? 255 : 0;
-        imageData.data[pixelIndex] = value;
-        imageData.data[pixelIndex + 1] = value;
-        imageData.data[pixelIndex + 2] = value;
-        imageData.data[pixelIndex + 3] = value;
-        rawLogits[logitOffset + outputIndex] = logit;
-      }
-    }
-
-    applySmoothing(imageData, smoothing);
-    masks.push(imageData);
-
-    const lowResOffset = maskIndex * LOW_RES_MASK_SIZE * LOW_RES_MASK_SIZE;
-    const lowResScaleX = LOW_RES_MASK_SIZE / maskWidth;
-    const lowResScaleY = LOW_RES_MASK_SIZE / maskHeight;
-    for (let y = 0; y < LOW_RES_MASK_SIZE; y += 1) {
-      for (let x = 0; x < LOW_RES_MASK_SIZE; x += 1) {
-        lowResMasks[lowResOffset + y * LOW_RES_MASK_SIZE + x] = bilinearSample(
-          rawMasks,
-          maskOffset,
-          maskWidth,
-          maskHeight,
-          x / lowResScaleX,
-          y / lowResScaleY
-        );
-      }
-    }
-  }
-
-  return { masks, scores, selectedIndex, rawLogits, lowResMasks };
-}
-
-function reprocessMasks(cached: CachedDecodeResult, outputWidth: number, outputHeight: number, threshold: number, smoothing: number) {
-  const masks: ImageData[] = [];
-  const outputPixels = outputWidth * outputHeight;
-  for (let maskIndex = 0; maskIndex < NUM_MASKS; maskIndex += 1) {
-    const imageData = new ImageData(outputWidth, outputHeight);
-    const logitOffset = maskIndex * outputPixels;
-    for (let pixel = 0; pixel < outputPixels; pixel += 1) {
-      const value = cached.rawLogits[logitOffset + pixel]! > threshold ? 255 : 0;
-      const dataIndex = pixel * 4;
-      imageData.data[dataIndex] = value;
-      imageData.data[dataIndex + 1] = value;
-      imageData.data[dataIndex + 2] = value;
-      imageData.data[dataIndex + 3] = value;
-    }
-    applySmoothing(imageData, smoothing);
-    masks.push(imageData);
-  }
-  return {
-    masks,
-    scores: cached.scores,
-    selectedIndex: cached.selectedIndex
-  };
-}
-
-function applySmoothing(imageData: ImageData, smoothing: number) {
-  const passes = Math.max(0, Math.min(4, Math.round(smoothing)));
-  if (passes <= 0) {
-    return;
-  }
-  const outputPixels = imageData.width * imageData.height;
-  let alpha: Uint8ClampedArray = new Uint8ClampedArray(outputPixels);
-  for (let index = 0; index < outputPixels; index += 1) {
-    alpha[index] = imageData.data[index * 4 + 3]!;
-  }
-  alpha = smoothMask(alpha, imageData.width, imageData.height, passes);
-  for (let index = 0; index < outputPixels; index += 1) {
-    const value = alpha[index]!;
-    const dataIndex = index * 4;
-    imageData.data[dataIndex] = value;
-    imageData.data[dataIndex + 1] = value;
-    imageData.data[dataIndex + 2] = value;
-    imageData.data[dataIndex + 3] = value;
-  }
-}
-
-function smoothMask(alpha: Uint8ClampedArray, width: number, height: number, passes: number) {
-  let result = alpha;
-  for (let index = 0; index < passes; index += 1) {
-    result = dilate(erode(result, width, height), width, height);
-    result = erode(dilate(result, width, height), width, height);
-  }
-  return result;
-}
-
-function erode(alpha: Uint8ClampedArray, width: number, height: number) {
-  const result = new Uint8ClampedArray(alpha.length);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x;
-      if (
-        alpha[index]! > 128 &&
-        clampedAlpha(alpha, x - 1, y, width, height) > 128 &&
-        clampedAlpha(alpha, x + 1, y, width, height) > 128 &&
-        clampedAlpha(alpha, x, y - 1, width, height) > 128 &&
-        clampedAlpha(alpha, x, y + 1, width, height) > 128
-      ) {
-        result[index] = 255;
-      }
-    }
-  }
-  return result;
-}
-
-function dilate(alpha: Uint8ClampedArray, width: number, height: number) {
-  const result = new Uint8ClampedArray(alpha.length);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const index = y * width + x;
-      if (
-        alpha[index]! > 128 ||
-        clampedAlpha(alpha, x - 1, y, width, height) > 128 ||
-        clampedAlpha(alpha, x + 1, y, width, height) > 128 ||
-        clampedAlpha(alpha, x, y - 1, width, height) > 128 ||
-        clampedAlpha(alpha, x, y + 1, width, height) > 128
-      ) {
-        result[index] = 255;
-      }
-    }
-  }
-  return result;
-}
-
-function clampedAlpha(alpha: Uint8ClampedArray, x: number, y: number, width: number, height: number) {
-  const clampedX = Math.max(0, Math.min(width - 1, x));
-  const clampedY = Math.max(0, Math.min(height - 1, y));
-  return alpha[clampedY * width + clampedX] ?? 0;
-}
-
-function bilinearSample(data: Float32Array, offset: number, width: number, height: number, x: number, y: number) {
-  const x0 = Math.max(0, Math.min(Math.floor(x), width - 1));
-  const y0 = Math.max(0, Math.min(Math.floor(y), height - 1));
-  const x1 = Math.min(x0 + 1, width - 1);
-  const y1 = Math.min(y0 + 1, height - 1);
-  const fx = x - x0;
-  const fy = y - y0;
-  const v00 = data[offset + y0 * width + x0] ?? 0;
-  const v10 = data[offset + y0 * width + x1] ?? 0;
-  const v01 = data[offset + y1 * width + x0] ?? 0;
-  const v11 = data[offset + y1 * width + x1] ?? 0;
-  return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy;
 }
 
 async function downloadModelFiles(requestId: number, model: WebSamModelDefinition, urls: WebSamModelUrls) {
@@ -653,8 +540,8 @@ function hasWebGpu() {
   return "gpu" in navigator;
 }
 
-function post(message: WebSamWorkerResponse) {
-  self.postMessage(message);
+function post(message: WebSamWorkerResponse, transfer: Transferable[] = []) {
+  self.postMessage(message, { transfer });
 }
 
 function postProgress(requestId: number, progress: WebSamWorkerProgress) {

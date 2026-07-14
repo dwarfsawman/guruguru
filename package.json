@@ -9,6 +9,7 @@
     "build:native": "bun scripts/build-native.mjs",
     "benchmark:import": "bun scripts/benchmark-project-import.mjs",
     "benchmark:export": "bun scripts/benchmark-project-export.mjs",
+    "benchmark:websam": "bun scripts/benchmark-websam-postprocess.mjs",
     "start": "bun ./dist/server/index.js",
     "start:test": "bun run build && bun scripts/start-test.mjs",
     "dev": "bun scripts/dev-hot.mjs",

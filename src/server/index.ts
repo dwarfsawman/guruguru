@@ -45,9 +45,10 @@ import {
   listLayoutTemplates,
   refreshScriptMangaLayoutCandidates
 } from "./layoutTemplates";
-import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport";
+import { createPagePreviewPng, withOpenRasterExport } from "./openRasterExport";
 import { createPageMedia, servePageMedia } from "./pageMedia";
-import { createImageExport } from "./imageExport";
+import { withImageExport } from "./imageExport";
+import { streamFileExport } from "./fileExport";
 import { listFonts } from "./fonts";
 import { computeTextLayout } from "./textLayoutApi";
 import { createSourceAsset } from "./sourceAssets";
@@ -102,7 +103,7 @@ import {
   auditScriptMangaTask,
   cancelScriptMangaRun,
   createScriptMangaRun,
-  createScriptMangaRunExport,
+  withScriptMangaRunExport,
   getScriptMangaPlan,
   getScriptMangaRun,
   resumeScriptMangaRun,
@@ -440,13 +441,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   const openRasterExportMatch = path.match(/^\/api\/projects\/([^/]+)\/openraster-export$/);
   if (method === "POST" && openRasterExportMatch) {
-    const result = await createOpenRasterExport(openRasterExportMatch[1]!, await readJson(req));
-    res.writeHead(200, {
-      "content-type": result.contentType,
-      "content-length": String(result.buffer.byteLength),
-      "content-disposition": `attachment; filename="${result.filename}"`
-    });
-    res.end(result.buffer);
+    await withOpenRasterExport(openRasterExportMatch[1]!, await readJson(req), (result) => streamFileExport(res, result));
     return;
   }
 
@@ -454,13 +449,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   // format="pptx"(Docs/Feature-PptxExport.md)は同じエンドポイントで、常に単一 .pptx を返す。
   const imageExportMatch = path.match(/^\/api\/projects\/([^/]+)\/export-images$/);
   if (method === "POST" && imageExportMatch) {
-    const result = await createImageExport(imageExportMatch[1]!, await readJson(req));
-    res.writeHead(200, {
-      "content-type": result.contentType,
-      "content-length": String(result.buffer.byteLength),
-      "content-disposition": `attachment; filename="${result.filename}"`
-    });
-    res.end(result.buffer);
+    await withImageExport(imageExportMatch[1]!, await readJson(req), (result) => streamFileExport(res, result));
     return;
   }
 
@@ -651,13 +640,9 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
   const scriptMangaRunExportMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)\/export$/);
   if (method === "POST" && scriptMangaRunExportMatch) {
-    const result = await createScriptMangaRunExport(scriptMangaRunExportMatch[1]!, await readJson(req));
-    res.writeHead(200, {
-      "content-type": result.contentType,
-      "content-length": String(result.buffer.byteLength),
-      "content-disposition": `attachment; filename="${result.filename}"`
-    });
-    res.end(result.buffer);
+    await withScriptMangaRunExport(scriptMangaRunExportMatch[1]!, await readJson(req), (result) =>
+      streamFileExport(res, result)
+    );
     return;
   }
   const scriptMangaRunActionMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)\/(approve|start|resume|cancel)$/);
