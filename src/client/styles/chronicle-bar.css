@@ -176,6 +176,15 @@
 .chronicle-beat.is-current-page {
   outline: 2px solid var(--accent-line);
   outline-offset: -1px;
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  opacity: 1;
+}
+
+/* 採用区間があるページでは、そのページに属さない区間を減光して現在位置を読み取りやすくする。 */
+.chronicle-bar-track.has-current-page-lines .chronicle-beat:not(.is-current-page) {
+  opacity: 0.42;
+  filter: saturate(0.55);
 }
 
 /* フェーズII: 範囲選択(§2.3)。 */

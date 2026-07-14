@@ -14,7 +14,7 @@ import type {
   ExistingPlacementPolicy
 } from "../shared/chronicle";
 import type { MangaScript, PageDetail } from "../shared/apiTypes";
-import { computeBeatState } from "../shared/chronicleBeat";
+import { computeBeatState, currentPageBeatIds, hasChroniclePlacementOnPage } from "../shared/chronicleBeat";
 import { api } from "./api";
 import { pushToast, requestRender, setChronicleCollapsed, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
@@ -55,6 +55,7 @@ function resetChronicleState() {
  * 脚本の Chronicle データを取得する。
  */
 export async function openChronicleForPage(projectId: string, pageId: string): Promise<void> {
+  const preferredScriptId = state.chronicle.scriptId;
   resetChronicleState();
   state.chronicle.status = "loading";
   requestRender();
@@ -69,8 +70,29 @@ export async function openChronicleForPage(projectId: string, pageId: string): P
       state.chronicle.status = "idle";
       return;
     }
-    const scriptId = result.scripts[0]!.id;
-    await loadChronicleData(projectId, scriptId, pageId);
+    const orderedScripts = preferredScriptId
+      ? [...result.scripts].sort((a, b) => Number(b.id === preferredScriptId) - Number(a.id === preferredScriptId))
+      : result.scripts;
+    let fallback: ChronicleApiResponse | null = null;
+    let lastError: unknown = null;
+    for (const script of orderedScripts) {
+      try {
+        const chronicle = await fetchChronicleData(projectId, script.id);
+        if (state.pagePanelLightbox?.pageId !== pageId) return;
+        fallback ??= chronicle;
+        if (hasChroniclePlacementOnPage(chronicle.lines, pageId)) {
+          applyChronicleData(chronicle, pageId);
+          return;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (fallback) {
+      applyChronicleData(fallback, pageId);
+      return;
+    }
+    throw lastError ?? new Error("Chronicle の取得に失敗しました。");
   } catch (error) {
     if (state.pagePanelLightbox?.pageId !== pageId) {
       return;
@@ -82,25 +104,33 @@ export async function openChronicleForPage(projectId: string, pageId: string): P
   }
 }
 
+function fetchChronicleData(projectId: string, scriptId: string): Promise<ChronicleApiResponse> {
+  return api<ChronicleApiResponse>(
+    `/api/projects/${projectId}/chronicle?scriptId=${encodeURIComponent(scriptId)}`
+  );
+}
+
+function applyChronicleData(result: ChronicleApiResponse, pageId: string): void {
+  state.chronicle.status = "ready";
+  state.chronicle.scriptId = result.scriptId;
+  state.chronicle.revisionId = result.revisionId;
+  state.chronicle.beats = result.beats;
+  state.chronicle.lines = result.lines;
+  state.chronicle.pages = result.pages;
+  state.chronicle.pageId = pageId;
+  state.chronicle.errorMessage = null;
+}
+
 async function loadChronicleData(projectId: string, scriptId: string, pageId: string): Promise<void> {
   state.chronicle.status = "loading";
   requestRender();
   try {
-    const result = await api<ChronicleApiResponse>(
-      `/api/projects/${projectId}/chronicle?scriptId=${encodeURIComponent(scriptId)}`
-    );
+    const result = await fetchChronicleData(projectId, scriptId);
     // ページ切替/lightbox クローズ後の到着は捨てる(非同期完了後の state 書き込みガード)。
     if (state.pagePanelLightbox?.pageId !== pageId) {
       return;
     }
-    state.chronicle.status = "ready";
-    state.chronicle.scriptId = result.scriptId;
-    state.chronicle.revisionId = result.revisionId;
-    state.chronicle.beats = result.beats;
-    state.chronicle.lines = result.lines;
-    state.chronicle.pages = result.pages;
-    state.chronicle.pageId = pageId;
-    state.chronicle.errorMessage = null;
+    applyChronicleData(result, pageId);
   } catch (error) {
     if (state.pagePanelLightbox?.pageId !== pageId) {
       return;
@@ -650,9 +680,14 @@ export function syncChronicleBarScroll(): void {
   if (!track) {
     return;
   }
+  const lineSummaryById = new Map(state.chronicle.lines.map((line) => [line.lineId, line]));
+  const targetBeatId = currentPageBeatIds(state.chronicle.beats, lineSummaryById, state.pagePanelLightbox.pageId)[0];
+  if (!targetBeatId) return;
+  const target = Array.from(track.querySelectorAll<HTMLElement>(".chronicle-beat"))
+    .find((chip) => chip.dataset.id === targetBeatId);
+  if (!target) return;
   lastAutoScrollKey = key;
-  const target = track.querySelector<HTMLElement>(".chronicle-beat.is-current-page");
-  target?.scrollIntoView({ inline: "center", block: "nearest" });
+  target.scrollIntoView({ inline: "center", block: "nearest" });
 }
 
 /**

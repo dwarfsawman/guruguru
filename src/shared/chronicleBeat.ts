@@ -167,6 +167,22 @@ export function computeBeatState(
   return statusResult(beat, status, locked, lines, currentPageId);
 }
 
+/** 現在ページに1行以上採用されている Beat を脚本順で返す。スクロール位置と強調表示の共通判定。 */
+export function currentPageBeatIds(
+  beats: readonly ChronicleBeat[],
+  lineSummaries: ReadonlyMap<string, ChronicleLineSummary>,
+  currentPageId: string
+): string[] {
+  return beats
+    .filter((beat) => computeBeatState(beat, lineSummaries, currentPageId).currentPageLineCount > 0)
+    .map((beat) => beat.id);
+}
+
+/** 脚本の Chronicle 応答に、対象ページへ採用された行が1件でもあるか。 */
+export function hasChroniclePlacementOnPage(lines: readonly ChronicleLineSummary[], pageId: string): boolean {
+  return lines.some((line) => line.placements.some((placement) => placement.pageId === pageId));
+}
+
 /**
  * Beat クリック時の内容プレビュー(§2.3)。専用 API を新設せず、GET /chronicle の応答
  * (lines/pages)だけから組み立てる(純ロジック)。配置先ページは `pages` の lineIds から逆引きする

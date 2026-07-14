@@ -13,7 +13,7 @@ import type {
   ExistingPlacementPolicy
 } from "../../shared/chronicle";
 import type { MangaScript } from "../../shared/apiTypes";
-import { buildBeatPreview, computeBeatState } from "../../shared/chronicleBeat";
+import { buildBeatPreview, computeBeatState, currentPageBeatIds } from "../../shared/chronicleBeat";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconChevron } from "../icons";
 
@@ -97,6 +97,7 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
   // フェーズIV(§2.6・§6): 現在ページの materialized かつ auto_layout_locked=0 の placement 数(再配置対象)・
   // auto_layout_locked=1 の placement 数(一括解除対象)をバー全体のトグルボタン用に集計する。
   const currentPagePlacements = view.lines.flatMap((line) => line.placements.filter((placement) => placement.pageId === view.currentPageId));
+  const currentBeatIds = new Set(currentPageBeatIds(view.beats, lineSummaryById, view.currentPageId));
   const reflowEligibleCount = currentPagePlacements.filter((placement) => placement.balloonObjectId && !placement.autoLayoutLocked).length;
   const lockedCount = currentPagePlacements.filter((placement) => placement.autoLayoutLocked).length;
   const busy = view.busyAction !== null;
@@ -123,7 +124,7 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
         : view.beats.length === 0
           ? `<div class="chronicle-bar-message">セリフがまだありません。</div>`
           : `<div class="chronicle-bar-toolbar">${nextUnassignedButton}${reflowButton}${unlockAllButton}</div>
-            <div class="chronicle-bar-track">
+            <div class="chronicle-bar-track${currentBeatIds.size > 0 ? " has-current-page-lines" : ""}">
               ${view.beats.map((beat) => renderBeatChip(beat, lineSummaryById, view.currentPageId, view.selectedBeatIds)).join("")}
             </div>
             ${view.selectedBeatIds.length > 0 ? renderSelectionPanel(view, lineSummaryById) : ""}
@@ -166,6 +167,7 @@ function renderBeatChip(
   return `
     <button type="button" class="${classes.join(" ")}" data-action="toggle-chronicle-beat-preview" data-id="${escapeAttr(beat.id)}"
       title="${escapeAttr(`${beat.label}: ${beat.summary}(Shift+クリックで範囲選択)`)}" aria-label="${escapeAttr(STATUS_LABEL[beatState.status] ?? beatState.status)}"
+      ${isCurrentPage ? `aria-current="true"` : ""}
       aria-pressed="${selectedBeatIds.includes(beat.id) ? "true" : "false"}">
       <span class="chronicle-beat-label">${escapeHtml(beat.label)}</span>
       <span class="chronicle-beat-summary">${escapeHtml(beat.summary)}</span>
