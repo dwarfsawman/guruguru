@@ -22,7 +22,7 @@
  *   original id: reused if already present in the target DB, inserted as-is otherwise.
  */
 import { readFile, readdir, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import JSZip from "jszip";
 import { createId, dataRoot, getRow, getRows, jsonColumnNames, runSql } from "./db";
 import { HttpError } from "./http";
@@ -35,6 +35,29 @@ const KIND = "project-export";
 const FORMAT_VERSION = 1;
 const GGURU_PREFIX = "gguru://project/";
 const IMPORTED_WHILE_IN_PROGRESS = JSON.stringify({ message: "imported while in progress" });
+const PROJECT_FILE_IO_CONCURRENCY = 8;
+
+/** files/ 配下で再圧縮する価値がある、可読テキスト形式。その他は既圧縮バイナリを想定して STORE にする。 */
+const DEFLATED_PROJECT_FILE_EXTENSIONS = new Set([
+  ".css",
+  ".csv",
+  ".fountain",
+  ".htm",
+  ".html",
+  ".ini",
+  ".js",
+  ".json",
+  ".log",
+  ".md",
+  ".mjs",
+  ".svg",
+  ".toml",
+  ".ts",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml"
+]);
 
 /** Project-scoped table registry, in FK-safe insertion order (see file header). */
 interface ScopedTable {
@@ -162,16 +185,21 @@ export async function exportProject(projectId: string): Promise<ProjectExportRes
   };
 
   const zip = new JSZip();
-  zip.file("manifest.json", JSON.stringify(manifest, null, 2));
-  zip.file("data.json", JSON.stringify(data, null, 2));
+  zip.file("manifest.json", JSON.stringify(manifest, null, 2), { compression: "DEFLATE" });
+  zip.file("data.json", JSON.stringify(data, null, 2), { compression: "DEFLATE" });
   for (const entry of fileEntries) {
     const bytes = await readFile(entry.absolutePath);
-    zip.file(`files/${entry.relativePath}`, bytes, { compression: "DEFLATE" });
+    zip.file(`files/${entry.relativePath}`, bytes, { compression: projectFileCompression(entry.relativePath) });
   }
 
-  const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+  // 全体の既定は STORE。圧縮するエントリは上で明示し、PNG/JPEG 等の再DEFLATEを避ける。
+  const buffer = await zip.generateAsync({ type: "nodebuffer", compression: "STORE" });
   const filename = `${safeAsciiName(String(projectRow.name ?? ""), "guruguru-project")}.gguru`;
   return { filename, contentType: "application/zip", buffer };
+}
+
+function projectFileCompression(relativePath: string): "STORE" | "DEFLATE" {
+  return DEFLATED_PROJECT_FILE_EXTENSIONS.has(extname(relativePath).toLowerCase()) ? "DEFLATE" : "STORE";
 }
 
 function collectSharedRows(projectRow: Row, tables: Record<string, Row[]>) {
@@ -377,7 +405,7 @@ export async function importProject(zipBytes: Buffer): Promise<ProjectImportResu
     : [];
 
   try {
-    for (const entry of fileEntries) {
+    await forEachWithConcurrency(fileEntries, PROJECT_FILE_IO_CONCURRENCY, async (entry) => {
       const destPath = resolve(join(newProjectRoot, entry.relativePath));
       if (!isPathInside(destPath, newProjectRoot)) {
         throw new HttpError(400, "files/ 配下に不正なパスを検出しました。");
@@ -385,7 +413,7 @@ export async function importProject(zipBytes: Buffer): Promise<ProjectImportResu
       const bytes = await zip.file(entry.zipPath)!.async("nodebuffer");
       ensureParentDir(destPath);
       await writeFile(destPath, bytes);
-    }
+    });
 
     const idMap = new Map<string, string>();
     const oldProjectId = data.project.id;
@@ -446,6 +474,38 @@ export async function importProject(zipBytes: Buffer): Promise<ProjectImportResu
       throw error;
     }
     throw new HttpError(400, error instanceof Error ? error.message : "Projectのインポートに失敗しました。");
+  }
+}
+
+/**
+ * 同時に保持する展開済みBufferとwriteFileを抑えつつI/Oを重ねる。最初の失敗後も実行中workerを
+ * 待ってからthrowし、呼び出し側のstorage cleanupと書き込みが競合しないようにする。
+ */
+async function forEachWithConcurrency<T>(
+  items: readonly T[],
+  concurrency: number,
+  operation: (item: T) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  let firstError: unknown = null;
+  const workerCount = Math.min(concurrency, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (firstError === null) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) {
+        return;
+      }
+      try {
+        await operation(items[index]!);
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (firstError !== null) {
+    throw firstError;
   }
 }
 
