@@ -88,7 +88,7 @@ export async function openPagePanelLightbox(pageId: string) {
   };
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
-  state.selectedPageObjectId = null;
+  state.selectedPageObjectIds = [];
   state.pageLayerHiddenObjectIds = [];
   state.pageLayerHiddenPanelIds = [];
   state.pageLayerHideNonImage = false;
@@ -173,7 +173,7 @@ export function closePagePanelLightbox() {
   state.pagePanelLightbox = null;
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
-  state.selectedPageObjectId = null;
+  state.selectedPageObjectIds = [];
   state.pageLayerHiddenObjectIds = [];
   state.pageLayerHiddenPanelIds = [];
   state.pageLayerHideNonImage = false;
@@ -245,7 +245,7 @@ function selectPanel(panelId: string) {
     return;
   }
   lightbox.selectedPanelId = panelId;
-  state.selectedPageObjectId = null;
+  state.selectedPageObjectIds = [];
   state.dialogueDrawerOpen = false;
   requestRender();
 }

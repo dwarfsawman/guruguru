@@ -422,8 +422,13 @@ export interface AppState {
    * これを直接書き換え、`pageObjectsController.ts` が 1s debounce で PATCH する。lightbox 非開時は空配列。
    */
   pageObjectsDraft: PageObject[];
-  /** ページオブジェクト編集: 選択中オブジェクト id。null=未選択。 */
-  selectedPageObjectId: string | null;
+  /**
+   * ページオブジェクト編集: 選択中オブジェクト id の集合(Docs/Feature-PageEditSidebarUx.md 課題C-2)。
+   * 先頭=primary(SETTINGS パネルの単一選択表示・画像差し替え対象等はこれを使う)。空配列=未選択。
+   * 通常クリック=単独選択(グループ所属ならグループ全員)/ Shift+クリック=対象をトグル追加・除去/
+   * Alt+クリック=グループを無視して1個だけ選択。解決ロジックは `pageObjectSelection.ts` の純関数。
+   */
+  selectedPageObjectIds: string[];
   /** レイヤ UI: 編集キャンバス上だけで一時非表示にしている PageObject id。書き出しには影響しない。 */
   pageLayerHiddenObjectIds: string[];
   /** レイヤ UI: 編集キャンバス上だけで一時非表示にしているコマ画像の panel id。 */
@@ -658,7 +663,7 @@ export const state: AppState = {
   pagePanelLightbox: null,
   pagePanelAssignments: [],
   pageObjectsDraft: [],
-  selectedPageObjectId: null,
+  selectedPageObjectIds: [],
   pageLayerHiddenObjectIds: [],
   pageLayerHiddenPanelIds: [],
   pageLayerHideNonImage: false,

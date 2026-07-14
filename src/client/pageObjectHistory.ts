@@ -1,16 +1,18 @@
 /**
  * ページオブジェクト編集(Docs/Feature-CGCollectionSuite.md P1)の undo/redo 履歴。
- * `paintHistory.ts` と同型のスナップショット方式(`{ objects, selectedId }`)。paintHistory は
+ * `paintHistory.ts` と同型のスナップショット方式(`{ objects, selectedIds }`)。paintHistory は
  * layer(canvas)エントリと混在する統合スタックで redo を持たないが、ページオブジェクトには
  * canvas レイヤが無く Ctrl+Z / Ctrl+Shift+Z(redo)双方が要件のため、ここでは undo/redo 2本のスタックを持つ。
  * 純ロジックのみ(DOM・state 非依存)。
+ * 複数選択(Docs/Feature-PageEditSidebarUx.md 課題C-2)対応: `selectedId: string | null` から
+ * `selectedIds: string[]`(先頭=primary)へ拡張した。
  */
 import type { PageObject } from "../shared/pageObjects";
 import { clonePageObjects } from "../shared/pageObjects";
 
 export interface PageObjectHistorySnapshot {
   objects: PageObject[];
-  selectedId: string | null;
+  selectedIds: string[];
 }
 
 export interface PageObjectHistoryState {
@@ -25,9 +27,9 @@ export function createPageObjectHistory(): PageObjectHistoryState {
   return { undoStack: [], redoStack: [] };
 }
 
-/** 現在の objects/selectedId から deep copy スナップショットを作る。 */
-export function snapshotPageObjects(objects: readonly PageObject[], selectedId: string | null): PageObjectHistorySnapshot {
-  return { objects: clonePageObjects(objects), selectedId };
+/** 現在の objects/selectedIds から deep copy スナップショットを作る。 */
+export function snapshotPageObjects(objects: readonly PageObject[], selectedIds: readonly string[]): PageObjectHistorySnapshot {
+  return { objects: clonePageObjects(objects), selectedIds: [...selectedIds] };
 }
 
 /**

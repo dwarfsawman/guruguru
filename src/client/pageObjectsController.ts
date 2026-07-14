@@ -26,6 +26,16 @@
  * トグルは撤去した。本文編集は SETTINGS 見出しフィールド(pagePanelLightboxView.ts の renderObjectsToolbar)に
  * 一本化し、`updatePageObjectTextFromInput` が content 無し box/balloon への入力時に content を新規作成する
  * (空文字にしても content を null へは戻さない -- 「OFF→ON で入力済みテキストが消える」旧バグの解消)。
+ *
+ * 追記(課題C、2026-07-14): Shift+クリック複数選択とグループ化。`state.selectedPageObjectId: string | null`
+ * を `state.selectedPageObjectIds: string[]`(先頭=primary)へ拡張した。選択集合の解決(通常/Shift/Alt
+ * クリック)とグループ操作・複数移動の delta 適用は `pageObjectSelection.ts` の純関数に切り出してある。
+ * move ジェスチャのみ複数対応(`beginObjectDrag` が選択中の全 editable オブジェクトの開始位置を
+ * `moveGroupStart` へ保持し、`handlePageObjectsPointerMove` が同じ delta を全員へ適用する)。
+ * scale/rotate/tail/tone-center は従来どおり primary 単体のみ(ギズモのハンドル自体、複数選択時は
+ * `pagePanelLightboxView.ts` 側でそもそも描画しない)。レイヤ一覧のクリック修飾キーは `registerActions`
+ * では拾えないため、`chronicleController.ts` の Beat チップと同じ capture リスナーパターンを使う
+ * (`bindPageLayerEvents` 内)。
  */
 import {
   BALLOON_TAIL_TIP_CLAMP,
@@ -68,7 +78,7 @@ import {
 } from "../shared/pageObjects";
 import { panelBounds, type LayoutPanel } from "../shared/pageLayout";
 import { balloonContentMaxWidth } from "../shared/balloonShape";
-import { getStageTransform, gizmoRotateHandlePoint, moveGizmoBox, rotateGizmoBox, scaleGizmoBoxAboutCenter } from "./svgGizmo";
+import { getStageTransform, gizmoRotateHandlePoint, rotateGizmoBox, scaleGizmoBoxAboutCenter } from "./svgGizmo";
 import { gizmoBoxForPageObject } from "./pageObjectGizmoBox";
 import { pageObjectGizmoViewBounds } from "./views/pagePanelLightboxView";
 import {
@@ -89,6 +99,14 @@ import { clampNumber } from "./clientUtils";
 import { isTextEntryTarget } from "./clientUtils";
 import { pageLayerBand, reorderPageObjectLayer, stepPageObjectLayer, type PageLayerDropPosition } from "./pageLayers";
 import { ensureTextLayout } from "./textLayoutClient";
+import {
+  applyGroupId,
+  applyGroupMoveDelta,
+  clearGroupId,
+  resolvePageObjectSelectionClick,
+  sameSelection,
+  type PageObjectSelectionModifiers
+} from "./pageObjectSelection";
 
 /** ギズモで動かせるオブジェクトの型(box/text/balloon/image/tone)。 */
 type EditableObject = BoxObject | TextObject | BalloonObject | ImageObject | ToneObject;
@@ -215,7 +233,7 @@ async function persistPageObjects(): Promise<void> {
 let objectHistory: PageObjectHistoryState = createPageObjectHistory();
 
 function currentSnapshot() {
-  return snapshotPageObjects(state.pageObjectsDraft, state.selectedPageObjectId);
+  return snapshotPageObjects(state.pageObjectsDraft, state.selectedPageObjectIds);
 }
 
 /**
@@ -241,7 +259,7 @@ function undoPageObjectsAction(): void {
     return;
   }
   state.pageObjectsDraft = restored.objects;
-  state.selectedPageObjectId = restored.selectedId;
+  state.selectedPageObjectIds = restored.selectedIds;
   requestRender();
   scheduleSave();
 }
@@ -256,7 +274,7 @@ function redoPageObjectsAction(): void {
     return;
   }
   state.pageObjectsDraft = restored.objects;
-  state.selectedPageObjectId = restored.selectedId;
+  state.selectedPageObjectIds = restored.selectedIds;
   requestRender();
   scheduleSave();
 }
@@ -277,7 +295,7 @@ export function handlePageObjectsKeydown(event: KeyboardEvent): boolean {
     }
     return true;
   }
-  if ((event.key === "Delete" || event.key === "Backspace") && state.selectedPageObjectId && !isTextEntryTarget(event.target)) {
+  if ((event.key === "Delete" || event.key === "Backspace") && state.selectedPageObjectIds.length > 0 && !isTextEntryTarget(event.target)) {
     event.preventDefault();
     deleteSelectedPageObject();
     return true;
@@ -287,17 +305,18 @@ export function handlePageObjectsKeydown(event: KeyboardEvent): boolean {
 
 // --- 追加/削除/z順 ---
 
+/** 選択中の primary(先頭)オブジェクト。プロパティパネル等、単一選択が前提の経路はこれを使う。 */
 function findSelectedObject(): PageObject | null {
-  const id = state.selectedPageObjectId;
+  const id = state.selectedPageObjectIds[0];
   if (!id) {
     return null;
   }
   return state.pageObjectsDraft.find((item) => item.id === id) ?? null;
 }
 
-/** 新規に追加したオブジェクトを選択し、必要なら初回のレイアウトを(debounce 無しで)即座に取りに行く。 */
+/** 新規に追加したオブジェクトを単独選択し、必要なら初回のレイアウトを(debounce 無しで)即座に取りに行く。 */
 function selectNewObject(object: PageObject): void {
-  state.selectedPageObjectId = object.id;
+  state.selectedPageObjectIds = [object.id];
   requestRender();
   scheduleSave();
   if (object.kind === "text") {
@@ -419,7 +438,9 @@ function togglePageObjectImagePicker(action: string): void {
     return;
   }
   const mode: "add" | "replace" = action === "replace" ? "replace" : "add";
-  if (mode === "replace" && (!state.selectedPageObjectId || findSelectedObject()?.kind !== "image")) {
+  // 「メディア差し替え」は単一選択(の image オブジェクト)前提の操作。複数選択時は
+  // SETTINGS パネル自体がこのボタンを出さないが、念のため primary の kind もここで確認する。
+  if (mode === "replace" && (state.selectedPageObjectIds.length !== 1 || findSelectedObject()?.kind !== "image")) {
     return;
   }
   state.pageObjectImagePicker = state.pageObjectImagePicker?.mode === mode ? null : { mode };
@@ -440,7 +461,7 @@ async function pickPageObjectImage(assetId: string): Promise<void> {
   }
   const pageId = lightbox.pageId;
   const mode = picker.mode;
-  const replaceTargetId = mode === "replace" ? state.selectedPageObjectId : null;
+  const replaceTargetId = mode === "replace" ? state.selectedPageObjectIds[0] ?? null : null;
   state.pageObjectImagePicker = null;
   requestRender();
   try {
@@ -478,25 +499,28 @@ async function pickPageObjectImage(assetId: string): Promise<void> {
   }
 }
 
+/** 選択中オブジェクト全員を削除する(C-3: 複数選択時も undo 1エントリでまとめて消す)。 */
 function deleteSelectedPageObject(): void {
-  const id = state.selectedPageObjectId;
-  if (!id) {
+  const ids = state.selectedPageObjectIds;
+  if (ids.length === 0) {
     return;
   }
   flushTextHistoryCommit();
   const previous = currentSnapshot();
   pushPageObjectHistory(objectHistory, previous);
-  state.pageObjectsDraft = state.pageObjectsDraft.filter((item) => item.id !== id);
-  state.selectedPageObjectId = null;
+  const idSet = new Set(ids);
+  state.pageObjectsDraft = state.pageObjectsDraft.filter((item) => !idSet.has(item.id));
+  state.selectedPageObjectIds = [];
   requestRender();
   scheduleSave();
 }
 
+/** z順の前面/背面移動(C-3: 複数選択時は無効。UI 側もボタンを disabled にするが、ここでも防御する)。 */
 function reorderSelected(mutate: (objects: PageObject[], index: number) => void): void {
-  const id = state.selectedPageObjectId;
-  if (!id) {
+  if (state.selectedPageObjectIds.length !== 1) {
     return;
   }
+  const id = state.selectedPageObjectIds[0]!;
   const index = state.pageObjectsDraft.findIndex((item) => item.id === id);
   if (index < 0) {
     return;
@@ -554,7 +578,12 @@ function stepPageLayer(objectId: string, direction: "up" | "down"): void {
   commitPageObjectLayerOrder(stepPageObjectLayer(state.pageObjectsDraft, objectId, direction));
 }
 
-function selectPageLayer(id: string): void {
+/**
+ * レイヤ一覧行のクリック選択(C-2)。オブジェクト行は紙面クリックと同じ選択解決規則
+ * (通常/Shift/Alt、`resolvePageObjectSelectionClick`)に従う。コマ(panel)行は仕様どおり
+ * 修飾キーを無視し常に単一選択(複数選択の対象はページオブジェクトのみ)。
+ */
+function selectPageLayer(id: string, modifiers: PageObjectSelectionModifiers): void {
   const lightbox = state.pagePanelLightbox;
   if (!lightbox || lightbox.cropPanelId) {
     return;
@@ -565,12 +594,17 @@ function selectPageLayer(id: string): void {
   if (!layerId) {
     return;
   }
-  flushTextHistoryCommit();
   if (kind === "object" && state.pageObjectsDraft.some((object) => object.id === layerId)) {
-    state.selectedPageObjectId = layerId;
+    const nextSelection = resolvePageObjectSelectionClick(state.pageObjectsDraft, state.selectedPageObjectIds, layerId, modifiers);
+    if (sameSelection(nextSelection, state.selectedPageObjectIds) && !lightbox.selectedPanelId) {
+      return;
+    }
+    flushTextHistoryCommit();
+    state.selectedPageObjectIds = nextSelection;
     lightbox.selectedPanelId = null;
   } else if (kind === "panel") {
-    state.selectedPageObjectId = null;
+    flushTextHistoryCommit();
+    state.selectedPageObjectIds = [];
     lightbox.selectedPanelId = layerId;
   } else {
     return;
@@ -620,7 +654,23 @@ function clearPageLayerDropState(app: HTMLElement): void {
   });
 }
 
+/**
+ * `bindPageLayerEvents` の capture リスナーが記録する、直近の「レイヤ選択」クリックの Shift/Alt 押下有無
+ * (C-2)。`registerActions` のハンドラは (id, target) しか受け取らない(main.ts の click 委譲が生イベントを
+ * 渡さない)ため、`chronicleController.ts` の Beat チップと同じパターンで capture フェーズで先取りする。
+ */
+let modifiersForLastLayerSelectClick: PageObjectSelectionModifiers = { shiftKey: false, altKey: false };
+
 function bindPageLayerEvents(app: HTMLElement): void {
+  app.addEventListener(
+    "click",
+    (event) => {
+      const trigger = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-action="select-page-layer"]');
+      modifiersForLastLayerSelectClick = trigger ? { shiftKey: event.shiftKey, altKey: event.altKey } : { shiftKey: false, altKey: false };
+    },
+    { capture: true }
+  );
+
   app.addEventListener("dragstart", (event) => {
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest("button, input, select, textarea")) {
@@ -1127,6 +1177,12 @@ interface ObjectDragState {
   /** ジェスチャ開始直前のスナップショット(実際に変化があった時だけ history へ push する)。 */
   startSnapshot: ReturnType<typeof currentSnapshot>;
   startObject: EditableObject;
+  /**
+   * 複数選択の移動(C-3)用: kind === "move" の時、選択中の全 editable オブジェクトの開始時点コピー
+   * (`objectId` 自身を含む)。scale/rotate/tail/tone-center は単一選択時にしか起きないため、
+   * その場合は `[cloneEditableObjectForDrag(object)]` の1件だけを持たせて経路を統一している。
+   */
+  moveGroupStart: EditableObject[];
   pxPerUnit: number;
   startClientX: number;
   startClientY: number;
@@ -1176,10 +1232,10 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
 
   const { objectId, handleKind } = objectIdFromEventTarget(target);
   if (!objectId) {
-    // 背景(ステージの空き領域)クリック = 選択解除。
-    if (state.selectedPageObjectId || lightbox.selectedPanelId) {
+    // 背景(ステージの空き領域)クリック = 選択解除(C-2: 修飾キーによらず常に全解除)。
+    if (state.selectedPageObjectIds.length > 0 || lightbox.selectedPanelId) {
       flushTextHistoryCommit();
-      state.selectedPageObjectId = null;
+      state.selectedPageObjectIds = [];
       lightbox.selectedPanelId = null;
       requestRender();
     }
@@ -1192,21 +1248,51 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
   }
 
   event.preventDefault();
-  if (state.selectedPageObjectId !== objectId) {
-    flushTextHistoryCommit();
-    state.selectedPageObjectId = objectId;
-    lightbox.selectedPanelId = null;
-    state.dialogueDrawerOpen = false;
-    requestRender();
-  }
 
-  if (handleKind === "rotate" && event.detail >= 2) {
-    // 回転ハンドルのダブルクリック = 0° リセット(paste/crop の前例踏襲)。
-    commitObjectMutation(objectId, { ...object, rotation: 0 });
+  // ギズモハンドル(拡縮/回転/しっぽ/トーン中心)は単一選択時にしか描画されない(C-3)。
+  // ハンドルへの pointerdown は選択集合を変更せず、既存の単一選択オブジェクトを対象に操作する。
+  if (handleKind) {
+    if (handleKind === "rotate" && event.detail >= 2) {
+      // 回転ハンドルのダブルクリック = 0° リセット(paste/crop の前例踏襲)。
+      commitObjectMutation(objectId, { ...object, rotation: 0 });
+      return true;
+    }
+    beginObjectDrag(event, object, handleKind);
     return true;
   }
 
-  beginObjectDrag(event, object, handleKind ?? "move");
+  const modifiers: PageObjectSelectionModifiers = { shiftKey: event.shiftKey, altKey: event.altKey };
+
+  if (modifiers.shiftKey) {
+    // Shift+クリックはトグル選択のみでドラッグは開始しない。トグルで対象(グループ)を選択から
+    // 外した直後にその対象を掴んだままドラッグを始めてしまうと、選択解除したはずのオブジェクトまで
+    // 一緒に動いてしまう(collectMoveGroupStart の「クリック対象は常に含める」防御と衝突する)ため、
+    // Shift は選択操作に専念させる(C-2)。
+    flushTextHistoryCommit();
+    state.selectedPageObjectIds = resolvePageObjectSelectionClick(state.pageObjectsDraft, state.selectedPageObjectIds, objectId, modifiers);
+    lightbox.selectedPanelId = null;
+    state.dialogueDrawerOpen = false;
+    requestRender();
+    return true;
+  }
+
+  // オブジェクト本体クリック: 選択集合の解決(C-2)。既に複数選択に含まれるオブジェクトを
+  // 修飾キー無しでクリックした場合は選択を維持したままドラッグを始める(「選択中オブジェクトの
+  // どれかをドラッグ→全員に同じ delta」= 掴んだだけで選択が1個に潰れてはいけない、C-3)。
+  const keepExistingSelection =
+    !modifiers.altKey && state.selectedPageObjectIds.length > 1 && state.selectedPageObjectIds.includes(objectId);
+  if (!keepExistingSelection) {
+    const nextSelection = resolvePageObjectSelectionClick(state.pageObjectsDraft, state.selectedPageObjectIds, objectId, modifiers);
+    if (!sameSelection(nextSelection, state.selectedPageObjectIds) || lightbox.selectedPanelId) {
+      flushTextHistoryCommit();
+      state.selectedPageObjectIds = nextSelection;
+      lightbox.selectedPanelId = null;
+      state.dialogueDrawerOpen = false;
+      requestRender();
+    }
+  }
+
+  beginObjectDrag(event, object, "move");
   return true;
 }
 
@@ -1234,6 +1320,25 @@ function cloneEditableObjectForDrag(object: EditableObject): EditableObject {
   return { ...object, position: { ...object.position }, content: { ...object.content, style: { ...object.content.style } } };
 }
 
+/**
+ * kind === "move" の時、選択中の全 editable オブジェクト(`object` 自身を含む)の開始時点コピーを集める。
+ * それ以外のジェスチャは単一選択時にしか起きないため `object` 自身だけの1件配列にする(C-3)。
+ */
+function collectMoveGroupStart(object: EditableObject, kind: ObjectGestureKind): EditableObject[] {
+  if (kind !== "move") {
+    return [cloneEditableObjectForDrag(object)];
+  }
+  const selectedIds = new Set(state.selectedPageObjectIds);
+  const members = state.pageObjectsDraft.filter(
+    (item): item is EditableObject => isEditableObject(item) && selectedIds.has(item.id)
+  );
+  // 選択集合が(何らかの理由で)クリックしたオブジェクト自身を含んでいない場合の防御 -- 常にドラッグ対象を含める。
+  if (!members.some((item) => item.id === object.id)) {
+    members.push(object);
+  }
+  return members.map(cloneEditableObjectForDrag);
+}
+
 function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: ObjectGestureKind): void {
   const root = stageRootElement();
   const stage = root ? getStageTransform(root) : null;
@@ -1247,6 +1352,7 @@ function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: Obje
     kind,
     startSnapshot: currentSnapshot(),
     startObject: cloneEditableObjectForDrag(object),
+    moveGroupStart: collectMoveGroupStart(object, kind),
     pxPerUnit: stage.pxPerUnit,
     startClientX: event.clientX,
     startClientY: event.clientY,
@@ -1313,20 +1419,30 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   if (!objectDrag || event.pointerId !== objectDrag.pointerId) {
     return false;
   }
-  const index = state.pageObjectsDraft.findIndex((item) => item.id === objectDrag!.objectId);
+  const drag = objectDrag;
+
+  if (drag.kind === "move") {
+    // 複数選択の移動(C-3): moveGroupStart(単一選択時は1件だけ)へ同じ delta を適用する。
+    // 開始位置からの絶対 delta を毎回適用するので、pointermove を何度呼んでも誤差が蓄積しない。
+    if (!state.pageObjectsDraft.some((item) => item.id === drag.objectId)) {
+      objectDrag = null;
+      return false;
+    }
+    const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+    const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+    state.pageObjectsDraft = applyGroupMoveDelta(state.pageObjectsDraft, drag.moveGroupStart, dx, dy);
+    requestRender();
+    return true;
+  }
+
+  const index = state.pageObjectsDraft.findIndex((item) => item.id === drag.objectId);
   if (index < 0) {
     objectDrag = null;
     return false;
   }
-  const drag = objectDrag;
   const startBox = gizmoBoxForPageObject(drag.startObject);
   let updated: EditableObject;
-  if (drag.kind === "move") {
-    const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
-    const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
-    const box = moveGizmoBox(startBox, dx, dy);
-    updated = { ...drag.startObject, position: box.center };
-  } else if (drag.kind === "scale") {
+  if (drag.kind === "scale") {
     const dist = Math.hypot(event.clientX - drag.centerScreenX, event.clientY - drag.centerScreenY);
     const factor = dist / Math.max(1, drag.startDist);
     if (drag.startObject.kind === "box" || drag.startObject.kind === "image" || drag.startObject.kind === "tone") {
@@ -1462,8 +1578,11 @@ export function handlePageObjectsPointerUp(event: PointerEvent): boolean {
   const drag = objectDrag;
   objectDrag = null;
   const current = state.pageObjectsDraft.find((item) => item.id === drag.objectId);
+  // 複数選択の移動でも、全員が同じ delta で動くため primary(drag.objectId)の変化だけ見れば
+  // 「何か動いたか」を判定できる(dx=dy=0 なら moveGroupStart の全員も unchanged)。
   if (current && isEditableObject(current) && !editableObjectUnchanged(current, drag.startObject)) {
     // 実際に動いた/拡縮/回転した時だけ history へ push + 保存する(単クリックのみは選択だけで完結)。
+    // 選択オブジェクトが何個でも undo は1エントリ(pushPageObjectHistory は1回だけ呼ぶ)。
     pushPageObjectHistory(objectHistory, drag.startSnapshot);
     scheduleSave();
     if (current.kind === "text") {
@@ -1474,7 +1593,14 @@ export function handlePageObjectsPointerUp(event: PointerEvent): boolean {
     }
     // Chronicle Page Flow(§2.6): move/scale/rotate/tail のいずれのドラッグも「手動編集」として
     // 対応する自動生成 placement をロックする(drag.kind で絞らず、実変化があった時だけ呼ぶ)。
-    notifyChroniclePageObjectManualEdit(current.id);
+    // 複数選択の move は動いた各オブジェクトに対して呼ぶ(C-3)。
+    if (drag.kind === "move") {
+      for (const start of drag.moveGroupStart) {
+        notifyChroniclePageObjectManualEdit(start.id);
+      }
+    } else {
+      notifyChroniclePageObjectManualEdit(current.id);
+    }
   }
   return true;
 }
@@ -1487,7 +1613,7 @@ export function handlePageObjectsPointerCancel(event: PointerEvent): boolean {
   const drag = objectDrag;
   objectDrag = null;
   state.pageObjectsDraft = drag.startSnapshot.objects;
-  state.selectedPageObjectId = drag.startSnapshot.selectedId;
+  state.selectedPageObjectIds = drag.startSnapshot.selectedIds;
   requestRender();
   return true;
 }
@@ -1576,6 +1702,41 @@ export function ensureFontsLoaded(): void {
   })();
 }
 
+// --- グループ化(Docs/Feature-PageEditSidebarUx.md 課題C-4) ---
+
+/** 「グループ化」: 選択中(2個以上)へ新規ユニーク groupId を割り当てる(既存グループ混在は新IDへ結合)。 */
+function groupSelectedPageObjects(): void {
+  const ids = state.selectedPageObjectIds;
+  if (ids.length < 2) {
+    return;
+  }
+  flushTextHistoryCommit();
+  const previous = currentSnapshot();
+  pushPageObjectHistory(objectHistory, previous);
+  state.pageObjectsDraft = applyGroupId(state.pageObjectsDraft, ids, crypto.randomUUID());
+  requestRender();
+  scheduleSave();
+}
+
+/** 「グループ解除」: 選択中オブジェクトの groupId を外す(選択中に groupId 持ちが1件も無ければ何もしない)。 */
+function ungroupSelectedPageObjects(): void {
+  const ids = state.selectedPageObjectIds;
+  if (ids.length === 0) {
+    return;
+  }
+  const idSet = new Set(ids);
+  const hasGroupedSelection = state.pageObjectsDraft.some((object) => idSet.has(object.id) && object.groupId !== undefined);
+  if (!hasGroupedSelection) {
+    return;
+  }
+  flushTextHistoryCommit();
+  const previous = currentSnapshot();
+  pushPageObjectHistory(objectHistory, previous);
+  state.pageObjectsDraft = clearGroupId(state.pageObjectsDraft, ids);
+  requestRender();
+  scheduleSave();
+}
+
 registerActions({
   "add-page-object-box": () => addBoxObject(),
   "add-page-object-balloon": () => addBalloonObject(),
@@ -1585,7 +1746,9 @@ registerActions({
   "delete-selected-page-object": () => deleteSelectedPageObject(),
   "page-object-bring-front": () => bringSelectedToFront(),
   "page-object-send-back": () => sendSelectedToBack(),
-  "select-page-layer": (id) => selectPageLayer(id),
+  "group-selected-page-objects": () => groupSelectedPageObjects(),
+  "ungroup-selected-page-objects": () => ungroupSelectedPageObjects(),
+  "select-page-layer": (id) => selectPageLayer(id, modifiersForLastLayerSelectClick),
   "toggle-page-layer-visibility": (id) => togglePageLayerVisibility(id),
   "toggle-page-layer-hide-non-image": () => togglePageLayerHideNonImage(),
   "show-all-page-layers": () => showAllPageLayers(),

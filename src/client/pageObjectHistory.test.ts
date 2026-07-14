@@ -25,8 +25,8 @@ function box(id: string, x: number): BoxObject {
   };
 }
 
-function snapshot(id: string, x: number, selectedId: string | null = null): PageObjectHistorySnapshot {
-  return snapshotPageObjects([box(id, x)], selectedId);
+function snapshot(id: string, x: number, selectedIds: string[] = []): PageObjectHistorySnapshot {
+  return snapshotPageObjects([box(id, x)], selectedIds);
 }
 
 test("pushPageObjectHistory: 上限を超えたら底から切り詰める", () => {
@@ -82,21 +82,23 @@ test("undoPageObjects/redoPageObjects: 往復して元に戻る", () => {
   assert.equal(redoPageObjects(history, afterRedo2!), null);
 });
 
-test("snapshotPageObjects: deep copy(元配列を書き換えても影響しない)", () => {
+test("snapshotPageObjects: deep copy(元配列・selectedIds 配列を書き換えても影響しない)", () => {
   const objects = [box("a", 0.5)];
-  const snap = snapshotPageObjects(objects, "a");
+  const selectedIds = ["a"];
+  const snap = snapshotPageObjects(objects, selectedIds);
   objects[0]!.position.x = 0.9;
+  selectedIds.push("b");
   assert.equal(snap.objects[0]!.position.x, 0.5);
-  assert.equal(snap.selectedId, "a");
+  assert.deepEqual(snap.selectedIds, ["a"]);
 });
 
-test("undoPageObjects/redoPageObjects: selectedId も往復する", () => {
+test("undoPageObjects/redoPageObjects: selectedIds も往復する(複数選択・先頭=primary)", () => {
   const history = createPageObjectHistory();
-  const withSelection = snapshot("a", 0, "a");
-  const withoutSelection = snapshot("a", 1, null);
+  const withSelection = snapshot("a", 0, ["a", "b"]);
+  const withoutSelection = snapshot("a", 1, []);
   pushPageObjectHistory(history, withSelection);
   const undone = undoPageObjects(history, withoutSelection);
-  assert.equal(undone?.selectedId, "a");
+  assert.deepEqual(undone?.selectedIds, ["a", "b"]);
   const redone = redoPageObjects(history, undone!);
-  assert.equal(redone?.selectedId, null);
+  assert.deepEqual(redone?.selectedIds, []);
 });

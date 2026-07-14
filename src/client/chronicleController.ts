@@ -489,7 +489,7 @@ function selectChronicleLineObject(lineId: string): void {
   }
   const objectId = placement.balloonObjectId;
   setPagePanelMode("objects");
-  state.selectedPageObjectId = objectId;
+  state.selectedPageObjectIds = [objectId];
   lastHighlightedObjectId = objectId; // 直後の syncChronicleObjectSelectionHighlight による自己ハイライトを抑止する。
   requestRender();
   requestAnimationFrame(() => {
@@ -692,9 +692,10 @@ export function syncChronicleBarScroll(): void {
 
 /**
  * 相互選択ジャンプの逆方向(§2.6・§6 フェーズIV): ページ上で自動生成吹き出しを選択したら、対応する
- * Beat を Chronicle 上で強調+スクロールする。`state.selectedPageObjectId` の変化を検知して1回だけ
- * 処理する(無限ループ防止 -- `selectChronicleLineObject` は選択直後に `lastHighlightedObjectId` を
- * 先回りで更新するので、Beat→オブジェクト方向のジャンプがこの関数を再度発火させることはない)。
+ * Beat を Chronicle 上で強調+スクロールする。`state.selectedPageObjectIds`(単一選択時のみ、課題C-2)の
+ * 変化を検知して1回だけ処理する(無限ループ防止 -- `selectChronicleLineObject` は選択直後に
+ * `lastHighlightedObjectId` を先回りで更新するので、Beat→オブジェクト方向のジャンプがこの関数を
+ * 再度発火させることはない)。
  */
 let lastHighlightedObjectId: string | null = null;
 
@@ -703,7 +704,10 @@ export function syncChronicleObjectSelectionHighlight(): void {
     lastHighlightedObjectId = null;
     return;
   }
-  const selectedId = state.selectedPageObjectId;
+  // 複数選択中は「対応する1つの Beat」を特定できないため、単一選択時のみジャンプ対象にする
+  // (2個以上選択/未選択はどちらも「対象なし」= null 扱い)。
+  const ids = state.selectedPageObjectIds;
+  const selectedId = ids.length === 1 ? ids[0]! : null;
   if (selectedId === lastHighlightedObjectId) {
     return;
   }
