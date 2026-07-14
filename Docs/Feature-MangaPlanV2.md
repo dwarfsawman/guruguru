@@ -189,6 +189,9 @@ planのPATCHは完全な`MangaPlanV2`を要求する。サーバはplan ID、scr
 ## run-page所有と冪等性
 
 - `script_manga_run_pages`の主キーは`(run_id, page_index)`で、`page_id`もunique。resume時は同じindexのページを再利用する。
+- 同じ脚本・同じ論理page indexのcanceled/failed runが残したページは、生成round・panel assignmentが無く、
+  当該run由来の吹き出しだけを持つplan-only状態に限って次のprepareへ所有権を移して再利用する。手動オブジェクト、
+  採用画像、生成履歴があるページは再利用せず、新しいページを作る。
 - `script_manga_tasks`は`(run_id, page_id, panel_id)`がunique。materializeは既存taskをupsertし、running/completed taskを作り直さない。
 - 吹き出し割当は既存placementをskipし、未生成オブジェクトだけを配置する。同じrunをresumeしてもページ、task、吹き出しを重複させない。
 - GET pollingは候補IDとscoreを同じtaskへ上書きし、採用済み/失敗/取消taskを再処理しない。
@@ -292,6 +295,8 @@ Script画面の「MangaPlan V2 / 一括生成」カードからworkflow template
 
 ## 改訂履歴
 
+- 2026-07-14: canceled/failedのplan-onlyページを次回prepareで安全に再利用する条件を追加。実行中runでは
+  prepareボタンを無効化し、重複prepareによるBook末尾への空ネームページ増加を防止。
 - 2026-07-13: 最小可読サイズ(0.02→0.016)の記述を実装値へ訂正し、[`Docs/Reference-DialogueAutoLayout.md`](Reference-DialogueAutoLayout.md)§12(provided planで複数発話を1コマに置いたときの422落とし穴・予測/自動修復手順)への参照を追加。
 - 2026-07-13: 自由な構図([Reference-MangaCompositions.md](Reference-MangaCompositions.md))を追加。`PanelSpec.role:"figure"`(layout snapshotのfigureスロットからreading-orderで写す)、figure専用のprompt分岐(solo・全身・白背景、prompt compiler v3.2)、候補採用時の背景除去+白フチ切り抜き→`ImageObject`化と吹き出し再配置、`validateMangaPlanV2`の`figure-cast-count` warning、監督プロンプトへのlayout guide(bleed/figure説明+figureSlot)を実装。吹き出し一括配置は顔回避ゾーンとコマ専有率上限(0.45)を常時適用する。`evaluation_json`は集計更新時に`lettering`/`figures`キーを保持するようになった。
 - 2026-07-12: provided planのコマ固有visual facts欠落と重複画角を修正し、prompt compilerをv2.3へ更新。VLM不合格候補の採用を禁止。

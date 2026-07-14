@@ -8,7 +8,9 @@
 
 - `character_reference_sets`: character、variant、model family、version、状態、生成元、日本語外見設定、英語appearance prompt、must-not-change、appearance hash。
 - `character_reference_images`: face / full_body、寸法、crop / mask、checksum、asset / generation round。画像本体はrepository外のユーザーデータ領域に保存する。
-- ページ一覧のグリッド上部へ折りたたみ式「レファレンスコーナー」を追加。候補生成・再生成・アップロード・候補比較・承認を専用controllerで扱い、`main.ts`はcompositionだけを行う。
+- ページ一覧のグリッド上部にはキャラクター数・準備済み数・要設定数だけの「レファレンスコーナー」サマリを置く。
+  「開く」で詳細モーダルへ移り、キャラクタータブで選択中の1人だけを表示する。選択キャラクター内では従来どおり
+  Chroma / Animaの候補生成・再生成・アップロード・比較・承認を行う。専用controllerで扱い、`main.ts`はcompositionだけを行う。
 - 自動生成は候補を作るだけで、自動承認しない。Chroma Readyはface、Anima Readyはface + full_bodyを人が承認した時だけ成立する。
 - ChromaはfaceをPuLIDへ、Animaはface + full_bodyを個別encodeして同一人物の`AnimaRefLatentBatch`へ接続する。各画像はRound専用コピーを一度だけComfyUIへuploadする。
 - interactive生成はadapter/node未導入時に警告付きfallback。自動漫画は必要人物の参照不足をpreflightで止める。
@@ -32,6 +34,9 @@
 - 768の総合勝者を1024へ昇格し、最終ショット別一枚構成12件は平均48.418秒、最大peak VRAM 8,033,840,222 bytes（7.48 GiB）、OOM 0件だった。顔寄り6件はface、全身・遠景6件はfull_bodyを採用する。
 - 1024のwaist-up 3件中2件でcupが二重化し、face一枚へ落としても解消しなかった。このため製品既定は長辺768とし、1024はface close-up / full-body / distantで任意使用する。画像・manifest・採点票はrepository外へ保存した。
 - `GURUGURU_TEST_DB=1`で全848テスト、`bun run check`、test DB上のReference Set API smokeが成功。1680×920 / 1600×900で横overflow 0、折りたたみ、Ready/確認待ち表示、console error 0を確認した。
+- 2026-07-14のUI変更後、1680×920で2キャラクターのタブ切替、モーダル内スクロール、×閉じ、
+  Chroma / Anima編集欄の維持、console error 0を確認した。Escape/backdrop閉じはcontroller回帰テストを含め、
+  全体916テストが成功。
 
 ## 採用条件と残す境界
 
@@ -41,4 +46,5 @@
 
 ## 変更履歴
 
+- 2026-07-14: Bookグリッドを集計サマリへ縮小し、詳細編集をキャラクタータブ式モーダルへ移動。
 - 2026-07-13: Versioned Reference Set、承認UI、family別workflow、Manga Run snapshot/preflight/prompt統合、隔離8288評価ハーネスを実装。
