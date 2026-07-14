@@ -130,3 +130,29 @@ git push --force-with-lease origin main       # origin も戻す(必要時のみ
 ```
 
 さらに遡って完全に元(フォント除去前)に戻す場合は本文の `backup/pre-font-purge` を使ってください。
+
+---
+
+## [3回目] 2026-07-15: ユーザー管理ドキュメント2点の履歴除去(全ref)
+
+ユーザー依頼により `Docs/Handover-2026-07-14-BugfixBatch.md` と `Docs/Template-MangaProductionReport.md` を
+**全履歴から除去**した(`uvx git-filter-repo --invert-paths --path <2点> --force`)。作業ツリーからも削除済み。
+
+| | 書き換え前 | 書き換え後 |
+|---|---|---|
+| local `main` tip | `852cf11` | **`fef8041`** |
+| 書き換わったコミット | | 243(2026-07-13頃以降の全コミット+その子孫) |
+
+### 前2回との違い・影響範囲
+
+- **今回は `--refs main` で絞らず全 ref を対象にした**(対象ファイルが 2026-07-13〜14 の履歴区間に
+  コミットされた時期があり、その区間から分岐した codex/* 各ブランチにも同じ blob が含まれていたため。
+  main だけ書き換えても他ブランチに内容が残る)。結果、`codex/*`・`feature/manga-name-v4`・
+  ローカル参照系も**一貫して**新ハッシュへ書き換わっており、`main..codex/*` の空(マージ済み)関係や
+  worktree の整合は保たれている(検証済み)。
+- **バックアップ tag は今回は作っていない**(内容除去が目的のため。旧オブジェクトは gc --prune=now で
+  完全消滅済み。復旧手段はなし)。
+- `origin` リモートは filter-repo が自動削除したため再登録済み(URL 同じ)。**GitHub 上の履歴とは共通祖先が
+  なくなっているので、次回 push は `git push --force-with-lease origin main` が必要**(過去2回と同様)。
+- `git fetch origin` すると旧履歴の `origin/main` がローカルに再出現するが、**それを merge/rebase すると
+  除去したファイルが復活する**ので絶対にしないこと(本書冒頭の注意と同じ)。
