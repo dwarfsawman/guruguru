@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildBeatPreview, buildChronicleBeats, computeBeatState, BEAT_MAX_CHARS, BEAT_MAX_LINES } from "./chronicleBeat.ts";
+import {
+  buildBeatPreview,
+  buildChronicleBeats,
+  computeBeatState,
+  currentPageBeatIds,
+  hasChroniclePlacementOnPage,
+  BEAT_MAX_CHARS,
+  BEAT_MAX_LINES
+} from "./chronicleBeat.ts";
 import type { DialogueLine } from "./apiTypes.ts";
 import type { ChroniclePageSummary, ChronicleLineSummary } from "./chronicle.ts";
 
@@ -192,4 +200,20 @@ test("computeBeatState: 削除済み(orphaned)行を含む場合は orphaned が
   ]);
   const result = computeBeatState(beat, summaries, "page_1");
   assert.equal(result.status, "orphaned");
+});
+
+test("currentPageBeatIds: 現在ページに一部でも採用された Beat を脚本順で返す", () => {
+  const beats = buildChronicleBeats([
+    makeLine({ id: "l1", orderIndex: 0, sceneIndex: 0 }),
+    makeLine({ id: "l2", orderIndex: 1, sceneIndex: 1 }),
+    makeLine({ id: "l3", orderIndex: 2, sceneIndex: 2 })
+  ], "rev_1");
+  const summaries = new Map([
+    ["l1", summaryFor("l1", { placements: [{ id: "p1", pageId: "page_other", balloonObjectId: null }] })],
+    ["l2", summaryFor("l2", { placements: [{ id: "p2", pageId: "page_current", balloonObjectId: "o2" }] })],
+    ["l3", summaryFor("l3", { placements: [{ id: "p3", pageId: "page_current", balloonObjectId: null }] })]
+  ]);
+  assert.deepEqual(currentPageBeatIds(beats, summaries, "page_current"), [beats[1]!.id, beats[2]!.id]);
+  assert.equal(hasChroniclePlacementOnPage([...summaries.values()], "page_current"), true);
+  assert.equal(hasChroniclePlacementOnPage([...summaries.values()], "missing"), false);
 });
