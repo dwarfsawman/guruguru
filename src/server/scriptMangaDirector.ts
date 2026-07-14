@@ -14,7 +14,13 @@ import {
 } from "../shared/scriptMangaPlan";
 import { generateStructuredJson } from "./llmStructured";
 import { getLlmSettings } from "./llm";
-import { applyPageNaming, PAGE_NAMING_SCHEMA } from "./scriptMangaPageNaming";
+import {
+  applyBeatPageNaming,
+  applyPageNaming,
+  BEAT_PAGE_NAMING_SCHEMA,
+  PAGE_NAMING_SCHEMA
+} from "./scriptMangaPageNaming";
+import { annotateScriptBeats, type BeatAnnotationResult } from "./scriptBeatAnnotator";
 
 interface DirectedPanel {
   id: string;
@@ -181,18 +187,112 @@ function speakerNames(doc: FountainDoc): string[] {
   return [...names];
 }
 
+/** N1 の多様化オプション(ネームv4 D3: 候補生成が温度・プロファイルを振る)。 */
+export interface ScriptMangaN1Options {
+  temperature?: number;
+  /** システムプロンプトへ1行追加する演出プロファイル指示(readability / cinematic / tempo)。 */
+  profileInstruction?: string;
+}
+
+export interface ScriptMangaN1Result {
+  plan: ScriptMangaPlan;
+  /** ビート注釈(ビート化N1が成立した場合のみ非null。V2 の beats 引き継ぎに使う)。 */
+  beatAnnotation: BeatAnnotationResult | null;
+  pageNaming: {
+    mode: "beats" | "panels" | "deterministic";
+    rawOutput: string;
+    messages: Array<{ role: string; content: string }>;
+    fallback: boolean;
+    beatAnnotatorFallback?: boolean;
+  };
+}
+
+const N1_COMMON_PROMPT_LINES = [
+  "Mark at most one or two panels per page as importance=hero (the page's visual peak); use importance=splash only for a full-page single-panel moment.",
+  // ネームv4 D1: めくりパリティ(未決#1)はソフト指示に留める。右綴じ・表紙別で奇数indexがめくり直前になる想定。
+  "Set turnHook=reveal or cliffhanger only on pages that end right before a physical page turn (assume odd page indexes in this right-bound book), and put the disclosure at the top of the next page."
+];
+
+function beatCompact(annotation: BeatAnnotationResult): Array<Record<string, unknown>> {
+  const unitById = new Map(annotation.units.map((unit) => [unit.id, unit]));
+  return annotation.beats.map((beat) => {
+    const units = beat.unitIds.flatMap((unitId) => { const unit = unitById.get(unitId); return unit ? [unit] : []; });
+    return {
+      id: beat.id,
+      kind: beat.kind,
+      importance: beat.importance,
+      pageTurnAffinity: beat.pageTurnAffinity,
+      keepAlone: beat.keepAlone,
+      desiredScale: beat.desiredScale,
+      scene: units[0]?.sceneIndex ?? 0,
+      units: units.map((unit) => ({
+        type: unit.type,
+        ...(unit.speaker ? { speaker: unit.speaker } : {}),
+        text: unit.text.length > 120 ? `${unit.text.slice(0, 120)}…` : unit.text,
+        ...(unit.dialogueCharacters > 0 ? { dialogueChars: unit.dialogueCharacters } : {})
+      }))
+    };
+  });
+}
+
 /**
- * 決定的プランを安全網にしつつ、LLMを「ネーム監督」として画角・主役・感情・レイアウトを具体化する。
- * 台詞対応とページ/コマ数は変更させないため、全発話保持の既存保証は維持される。
+ * N1 ページネーム(ネームv4 D2)。ビート注釈(キャッシュ付き)→ ビート化 N1 →
+ * 失敗時は従来のコマ束ね N1 → それも失敗なら決定的プラン、の三段フォールバック。
+ * どの経路でも「全台詞一度ずつ」契約と ScriptMangaPlan の形は不変。
  */
-export async function planScriptMangaWithDirector(doc: FountainDoc, options: ScriptMangaPlanOptions = {}): Promise<ScriptMangaPlan> {
+export async function generateScriptMangaN1Plan(
+  doc: FountainDoc,
+  options: ScriptMangaPlanOptions = {},
+  n1Options: ScriptMangaN1Options = {}
+): Promise<ScriptMangaN1Result> {
   const deterministicBase = planScriptManga(doc, options);
   const settings = getLlmSettings();
-  const fixedIdentity = options.characterBible?.trim() ?? "";
-  const sceneBibles = deriveSceneBibles(doc, "director-input").map((bible, sceneIndex) => ({ sceneIndex, set: bible.set, lighting: bible.lighting, palette: bible.palette }));
   const targetPageCount = Math.max(1, Math.trunc(options.targetPageCount ?? Math.max(deterministicBase.pages.length, deterministicBase.dialogueCount / 5)));
-  let base = deterministicBase;
-  let pageNamingProvenance: { rawOutput: string; messages: Array<{ role: string; content: string }>; fallback: boolean } | undefined;
+  const temperature = n1Options.temperature ?? 0.3;
+  const profileLines = n1Options.profileInstruction?.trim() ? [n1Options.profileInstruction.trim()] : [];
+
+  // 1) ビート化 N1: 物語ビートを入力に、コマ=ビート束としてページを設計する。
+  const annotation = await annotateScriptBeats(doc, options.scriptRevisionId);
+  if (annotation.beats.length > 0) {
+    try {
+      const named = await generateStructuredJson<ScriptMangaPlan>({
+        settings,
+        systemPrompt: [
+          "You are the N1 manga page-naming editor. Build pages and panels from the annotated story beats.",
+          "Cover every beat id exactly once and in order via panels[].sourceBeatIds. A panel usually bundles 1-3 consecutive beats; never mix scenes in one panel.",
+          "Use 1-6 panels per page; splash means exactly one panel on its page.",
+          "Respect the annotations: give keepAlone beats their own panel; map desiredScale hero/splash to panel importance; put beats with high pageTurnAffinity at a page's final panel (tease) or a page's first panel (payoff).",
+          `Keep each panel's total dialogue below ${Math.max(40, Math.trunc(options.maxSourceCharactersPerPanel ?? 260))} characters.`,
+          ...N1_COMMON_PROMPT_LINES,
+          ...profileLines
+        ].join("\n"),
+        userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Story beats (in order): ${JSON.stringify(beatCompact(annotation))}`,
+        schema: BEAT_PAGE_NAMING_SCHEMA,
+        validate: (raw) => applyBeatPageNaming(raw, {
+          title: deterministicBase.title,
+          units: annotation.units,
+          beats: annotation.beats,
+          targetPageCount,
+          stylePrompt: options.stylePrompt,
+          maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel
+        }),
+        temperature,
+        timeoutMs: 180000
+      });
+      return {
+        plan: named.value,
+        beatAnnotation: annotation,
+        pageNaming: {
+          mode: "beats", rawOutput: named.rawOutput, messages: named.messages,
+          fallback: false, beatAnnotatorFallback: annotation.fallback
+        }
+      };
+    } catch {
+      // ビート化 N1 が通らない場合は従来のコマ束ね N1 へ(生成は止めない)。
+    }
+  }
+
+  // 2) 従来 N1: 決定的束ねのコマを統合のみ許可する再ページ割り。
   try {
     const sourcePanels = deterministicBase.pages.flatMap((page) => page.panels).map((panel) => ({
       id: panel.id, sceneIndex: panel.sceneIndex, sourceElementIds: panel.sourceElementIds,
@@ -202,21 +302,53 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
       settings,
       systemPrompt: [
         "You are the N1 manga page-naming editor. Preserve every sourcePanelId exactly once and in order. Never combine scenes. Use 1-6 panels per page; splash means one panel on its page. Design page turns and hero beats.",
-        "Mark at most one or two panels per page as importance=hero (the page's visual peak); use importance=splash only for a full-page single-panel moment.",
-        // ネームv4 D1: めくりパリティ(未決#1)はソフト指示に留める。右綴じ・表紙別で奇数indexがめくり直前になる想定。
-        "Set turnHook=reveal or cliffhanger only on pages that end right before a physical page turn (assume odd page indexes in this right-bound book), and put the disclosure at the top of the next page."
+        ...N1_COMMON_PROMPT_LINES,
+        ...profileLines
       ].join("\n"),
       userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Source panels: ${JSON.stringify(sourcePanels)}`,
       schema: PAGE_NAMING_SCHEMA,
       validate: (raw) => applyPageNaming(raw, deterministicBase, targetPageCount),
-      temperature: 0.3,
+      temperature,
       timeoutMs: 180000
     });
-    base = named.value;
-    pageNamingProvenance = { rawOutput: named.rawOutput, messages: named.messages, fallback: false };
+    return {
+      plan: named.value,
+      beatAnnotation: null,
+      pageNaming: { mode: "panels", rawOutput: named.rawOutput, messages: named.messages, fallback: false }
+    };
   } catch (error) {
-    pageNamingProvenance = { rawOutput: error instanceof Error ? error.message : String(error), messages: [], fallback: true };
+    return {
+      plan: deterministicBase,
+      beatAnnotation: null,
+      pageNaming: {
+        mode: "deterministic",
+        rawOutput: error instanceof Error ? error.message : String(error),
+        messages: [],
+        fallback: true
+      }
+    };
   }
+}
+
+/**
+ * 決定的プランを安全網にしつつ、LLMを「ネーム監督」として画角・主役・感情・レイアウトを具体化する。
+ * 台詞対応とページ/コマ数は変更させないため、全発話保持の既存保証は維持される。
+ */
+export async function planScriptMangaWithDirector(doc: FountainDoc, options: ScriptMangaPlanOptions = {}): Promise<ScriptMangaPlan> {
+  return (await planScriptMangaWithDirectorDetailed(doc, options)).plan;
+}
+
+/** planScriptMangaWithDirector の詳細版: ビート注釈も返す(V2 の beats 引き継ぎ用)。 */
+export async function planScriptMangaWithDirectorDetailed(
+  doc: FountainDoc,
+  options: ScriptMangaPlanOptions = {}
+): Promise<{ plan: ScriptMangaPlan; beatAnnotation: BeatAnnotationResult | null }> {
+  const settings = getLlmSettings();
+  const fixedIdentity = options.characterBible?.trim() ?? "";
+  const sceneBibles = deriveSceneBibles(doc, "director-input").map((bible, sceneIndex) => ({ sceneIndex, set: bible.set, lighting: bible.lighting, palette: bible.palette }));
+  const n1 = await generateScriptMangaN1Plan(doc, options);
+  const base = n1.plan;
+  const pageNamingProvenance = n1.pageNaming;
   const batches: ScriptMangaPagePlan[][] = [];
   const provenanceBatches: Array<{ rawOutput: string; messages: Array<{ role: string; content: string }> }> = [];
   for (let offset = 0; offset < base.pages.length; offset += 4) batches.push(base.pages.slice(offset, offset + 4));
@@ -265,13 +397,16 @@ export async function planScriptMangaWithDirector(doc: FountainDoc, options: Scr
     directedPages.push(...result.value);
   }
   return {
-    ...base,
-    pages: directedPages,
-    plannerProvenance: {
-      kind: "llm-director",
-      model: settings.model,
-      batches: provenanceBatches,
-      pageNaming: pageNamingProvenance
-    }
+    plan: {
+      ...base,
+      pages: directedPages,
+      plannerProvenance: {
+        kind: "llm-director",
+        model: settings.model,
+        batches: provenanceBatches,
+        pageNaming: pageNamingProvenance
+      }
+    },
+    beatAnnotation: n1.beatAnnotation
   };
 }

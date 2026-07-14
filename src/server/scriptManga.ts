@@ -9,7 +9,7 @@ import {
   validateMangaPlanV2
 } from "../shared/mangaPlanV2";
 import { normalizeEditedPageLayout, panelBounds, panelBoundsSize, type PageLayout } from "../shared/pageLayout";
-import { planScriptManga, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
+import { planScriptManga, type ScriptMangaPlan, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import type { ScriptMangaPlanView, ScriptMangaRunView, ScriptMangaTaskView } from "../shared/scriptMangaApi";
@@ -46,7 +46,8 @@ import { resolvePanelReferences } from "./referenceResolver";
 import { createGenerationRound, ensureRoundMonitor, interruptRound } from "./rounds";
 import { createImageExport, type ImageExportResult } from "./imageExport";
 import { createOpenRasterExport, type OpenRasterExportResult } from "./openRasterExport";
-import { planScriptMangaWithDirector } from "./scriptMangaDirector";
+import { planScriptMangaWithDirectorDetailed } from "./scriptMangaDirector";
+import type { BeatAnnotationResult } from "./scriptBeatAnnotator";
 import { buildMangaPlanV2 } from "./scriptMangaPlanV2";
 import { acquireVlmModel, getVlmAuditSettings, releaseVlmModel } from "./vlmAudit";
 import type { StoryGraphCharacterInput, StoryGraphDialogueInput } from "./storyGraphBuilder";
@@ -1494,11 +1495,21 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     if (input.maxDialoguesPerPanel === undefined) planOptions.maxDialoguesPerPanel = 1;
   }
   const revision = latestRevision(scriptId);
-  const fullPlan = planningMode === "llm"
-    ? await planScriptMangaWithDirector(revision.doc, { ...planOptions, characterBible: stringOr(input.characterBible, "") || undefined })
-    : planningMode === "provided"
-      ? validateProvidedScriptMangaPlan(revision.doc, input.directorPlan, layoutPanelCount)
-      : planScriptManga(revision.doc, planOptions);
+  let beatAnnotation: BeatAnnotationResult | null = null;
+  let fullPlan: ScriptMangaPlan | null;
+  if (planningMode === "llm") {
+    const detailed = await planScriptMangaWithDirectorDetailed(revision.doc, {
+      ...planOptions,
+      scriptRevisionId: revision.id,
+      characterBible: stringOr(input.characterBible, "") || undefined
+    });
+    fullPlan = detailed.plan;
+    beatAnnotation = detailed.beatAnnotation;
+  } else if (planningMode === "provided") {
+    fullPlan = validateProvidedScriptMangaPlan(revision.doc, input.directorPlan, layoutPanelCount);
+  } else {
+    fullPlan = planScriptManga(revision.doc, planOptions);
+  }
   if (!fullPlan) throw new HttpError(400, "directorPlan is invalid or does not preserve every dialogue exactly once");
   const pageLimit =
     typeof input.pageLimit === "number"
@@ -1534,7 +1545,8 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     providerId,
     globalLoras: loras,
     dialoguePolicy,
-    resolveLayoutTemplate
+    resolveLayoutTemplate,
+    beatAnnotation: beatAnnotation ? { units: beatAnnotation.units, beats: beatAnnotation.beats } : null
   });
   const validation = validatePlan(plan);
   if (!validation.ok) throw new HttpError(422, "Generated MangaPlanV2 failed deterministic validation");

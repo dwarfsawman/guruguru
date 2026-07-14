@@ -30,6 +30,8 @@ export interface ScriptMangaPanelPlan {
   direction?: ScriptMangaPanelDirection;
   /** N1ページネームのコマ重み(ネームv4 D1)。決定的プランナーでは未設定。 */
   importance?: MangaPanelImportance;
+  /** ビート化N1(ネームv4 D2)がこのコマへ割り当てた注釈ビート id。従来経路では未設定。 */
+  sourceBeatIds?: string[];
 }
 
 export interface ScriptMangaPagePlan {
@@ -55,7 +57,15 @@ export interface ScriptMangaPlan {
       rawOutput: string;
       messages: Array<{ role: string; content: string }>;
     }>;
-    pageNaming?: { rawOutput: string; messages: Array<{ role: string; content: string }>; fallback: boolean };
+    pageNaming?: {
+      rawOutput: string;
+      messages: Array<{ role: string; content: string }>;
+      fallback: boolean;
+      /** ネームv4 D2: どの N1 経路が成立したか(beats=ビート化N1 / panels=従来N1 / deterministic=決定的)。 */
+      mode?: "beats" | "panels" | "deterministic";
+      /** ビート注釈が決定的フォールバック(1要素=1ビート)だったか。 */
+      beatAnnotatorFallback?: boolean;
+    };
   };
 }
 
@@ -69,10 +79,23 @@ export interface ScriptMangaPlanOptions {
   characterBible?: string;
   /** N1ページネームの目標ページ数。省略時は発話量と決定的packerから算出。 */
   targetPageCount?: number;
+  /** ビート注釈キャッシュ(script_beat_annotations)のキー。未指定はキャッシュ不使用。 */
+  scriptRevisionId?: string;
 }
 
-const DEFAULT_STYLE =
+export const DEFAULT_SCRIPT_MANGA_STYLE =
   "Japanese monochrome science fiction manga, cinematic composition, expressive characters, detailed ink line art, screentone, no text, no speech bubbles";
+const DEFAULT_STYLE = DEFAULT_SCRIPT_MANGA_STYLE;
+
+/** 要素の「読める」テキスト(sourceText 用)。ビート層(preLayoutBeat)と共有する。 */
+export function elementVisibleText(element: FountainElement): string {
+  return visibleText(element);
+}
+
+/** 要素の視覚化テキスト(画像プロンプト用)。ビート層(preLayoutBeat)と共有する。 */
+export function elementVisualText(element: FountainElement): string {
+  return visualText(element);
+}
 
 function visibleText(element: FountainElement): string {
   switch (element.type) {

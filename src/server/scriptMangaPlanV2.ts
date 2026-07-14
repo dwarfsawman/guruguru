@@ -14,6 +14,7 @@ import {
   type WorldState
 } from "../shared/mangaPlanV2";
 import type { ScriptMangaPanelPlan, ScriptMangaPlan } from "../shared/scriptMangaPlan";
+import type { AnnotatedBeat, PreLayoutUnit } from "../shared/preLayoutBeat";
 import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
 import type { PageLayout } from "../shared/pageLayout";
 import type { StyleLoraSelection } from "../shared/types";
@@ -170,6 +171,8 @@ export function buildMangaPlanV2(input: {
   globalLoras: StyleLoraSelection[];
   dialoguePolicy: DialoguePolicy;
   resolveLayoutTemplate: (layoutTemplateId: string) => PageLayout | null;
+  /** ネームv4 D2: ビート注釈(ビート化N1が成立した場合)。beats を後付け生成から引き継ぎへ切り替える。 */
+  beatAnnotation?: { units: PreLayoutUnit[]; beats: AnnotatedBeat[] } | null;
 }): MangaPlanV2 {
   const story = buildStoryGraph({
     doc: input.doc,
@@ -189,6 +192,41 @@ export function buildMangaPlanV2(input: {
   let previousSummary = "";
   let flatPanelIndex = 0;
   const captionedScenes = new Set<number>();
+
+  // ネームv4 D2: ビート注釈がある場合、beats は後付け生成ではなく注釈からの引き継ぎにする。
+  // 注釈が全 panel の sourceBeatIds を賄えるときのみ有効(部分的な不整合は従来経路へ)。
+  const annotationBeatIds = new Set((input.beatAnnotation?.beats ?? []).map((beat) => beat.id));
+  const annotationUsable = annotationBeatIds.size > 0 && input.legacyPlan.pages.every((page) =>
+    page.panels.every((panel) =>
+      (panel.sourceBeatIds ?? []).length > 0 && panel.sourceBeatIds!.every((beatId) => annotationBeatIds.has(beatId))
+    )
+  );
+  const planBeatId = (annotatedId: string) => `beat:${input.id}:${annotatedId}`;
+  if (annotationUsable) {
+    const unitById = new Map(input.beatAnnotation!.units.map((unit) => [unit.id, unit]));
+    let previousAction = "";
+    for (const annotated of input.beatAnnotation!.beats) {
+      const beatUnits = annotated.unitIds.flatMap((unitId) => { const unit = unitById.get(unitId); return unit ? [unit] : []; });
+      const sourceElementIds = [...new Set(beatUnits.map((unit) =>
+        fountainSourceElementId(input.scriptRevisionId, unit.sceneIndex, unit.elementIndex)
+      ))];
+      const text = beatUnits.map((unit) => unit.text).join(" ").replace(/\s+/g, " ").trim();
+      const action = text.length > 200 ? `${text.slice(0, 200)}…` : text || annotated.kind;
+      beats.push({
+        id: planBeatId(annotated.id),
+        sourceElementIds,
+        cause: previousAction || "scene setup",
+        action,
+        result: "",
+        emotionChange: "",
+        mustShow: [],
+        dialogueOnly: [],
+        kind: annotated.kind,
+        importance: annotated.importance
+      });
+      previousAction = action;
+    }
+  }
 
   const pages = input.legacyPlan.pages.map((page) => {
     const resolvedLayout = input.resolveLayoutTemplate(page.layoutTemplateId);
@@ -253,19 +291,25 @@ export function buildMangaPlanV2(input: {
         (unit.id === `fill:scene:${legacyPanel.sceneIndex}` && !captionedScenes.has(legacyPanel.sceneIndex))
       ).map((unit) => unit.id);
       if (fillUnitIds.includes(`fill:scene:${legacyPanel.sceneIndex}`)) captionedScenes.add(legacyPanel.sceneIndex);
-      const beatId = `beat:${input.id}:${flatPanelIndex}`;
       const action = direction.action?.trim() || legacyPanel.sourceText.split("\n").find((line) => !line.includes(":")) || "visual story beat";
-      const beat: MangaBeat = {
-        id: beatId,
-        sourceElementIds,
-        cause: previousSummary || "scene setup",
-        action,
-        result: direction.composition?.trim() || "state shown in the next panel",
-        emotionChange: direction.emotion?.trim() || "",
-        mustShow: [...cast.map((member) => `character ${member.characterId}`), action],
-        dialogueOnly: dialogueLines.map((line) => line.semanticKind)
-      };
-      beats.push(beat);
+      let panelBeatIds: string[];
+      if (annotationUsable && legacyPanel.sourceBeatIds) {
+        // 注釈済みビートからの引き継ぎ(ネームv4 D2)。ビートは既に beats へ登録済み。
+        panelBeatIds = legacyPanel.sourceBeatIds.map(planBeatId);
+      } else {
+        const beatId = `beat:${input.id}:${flatPanelIndex}`;
+        beats.push({
+          id: beatId,
+          sourceElementIds,
+          cause: previousSummary || "scene setup",
+          action,
+          result: direction.composition?.trim() || "state shown in the next panel",
+          emotionChange: direction.emotion?.trim() || "",
+          mustShow: [...cast.map((member) => `character ${member.characterId}`), action],
+          dialogueOnly: dialogueLines.map((line) => line.semanticKind)
+        });
+        panelBeatIds = [beatId];
+      }
 
       for (const member of cast) {
         activeCharacterStates[member.characterId] ??= defaultCharacterState(member.characterId);
@@ -307,7 +351,7 @@ export function buildMangaPlanV2(input: {
         ...(layoutRole === "figure" ? { role: "figure" as const } : {}),
         ...(legacyPanel.importance !== undefined ? { importance: legacyPanel.importance } : {}),
         sourceElementIds,
-        beatIds: [beatId],
+        beatIds: panelBeatIds,
         preStateId,
         postStateDelta,
         settingId,

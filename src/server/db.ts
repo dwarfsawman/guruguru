@@ -464,6 +464,19 @@ export function initializeDb() {
       FOREIGN KEY (page_id) REFERENCES pages(id) ON DELETE SET NULL
     );
 
+    -- コマ割り前ビート注釈(ネームv4 D2)。script revision 単位のキャッシュ。候補を何回
+    -- 再生成しても LLM 注釈は1回で済ませる。フォールバック注釈は保存しない(LLM 復帰時に再注釈)。
+    CREATE TABLE IF NOT EXISTS script_beat_annotations (
+      id TEXT PRIMARY KEY,
+      script_revision_id TEXT NOT NULL,
+      annotator_version TEXT NOT NULL,
+      beats_json TEXT NOT NULL,
+      provenance_json TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (script_revision_id, annotator_version),
+      FOREIGN KEY (script_revision_id) REFERENCES script_revisions(id) ON DELETE CASCADE
+    );
+
     -- Fountain revision から構築した、編集・検証可能な MangaPlanV2。画像生成より先に必ず保存する。
     CREATE TABLE IF NOT EXISTS script_manga_plans (
       id TEXT PRIMARY KEY,

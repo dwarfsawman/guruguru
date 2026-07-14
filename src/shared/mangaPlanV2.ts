@@ -101,6 +101,10 @@ export interface MangaBeat {
   emotionChange: string;
   mustShow: string[];
   dialogueOnly: string[];
+  /** ビート注釈由来(ネームv4 D2)。後付け生成のビートには無い。additive。 */
+  kind?: string;
+  /** ビート注釈由来の重要度 0..1(ネームv4 D2)。additive。 */
+  importance?: number;
 }
 
 export interface MangaConstraint {
