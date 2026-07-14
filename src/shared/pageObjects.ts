@@ -53,6 +53,12 @@ interface PageObjectBase {
    * **normalizeBase で保持する**(正規化往復で消えるとリンクが壊れる -- 既知の罠1)。
    */
   sourceDialogueLineId?: string;
+  /**
+   * 複数選択のグループ化(Docs/Feature-PageEditSidebarUx.md 課題C)。同じ groupId を持つオブジェクト群は
+   * 通常クリックでまとめて選択される。**normalizeBase で保持する**(sourceDialogueLineId と同じ「正規化
+   * 往復で消えると壊れる」罠 -- 空文字/非文字列は捨てる)。後方互換のため optional(旧データは未設定)。
+   */
+  groupId?: string;
 }
 
 export interface TextObject extends PageObjectBase {
@@ -290,6 +296,7 @@ interface NormalizedBase {
   position: PageVec;
   rotation: number;
   sourceDialogueLineId?: string;
+  groupId?: string;
 }
 
 function normalizeBase(raw: Record<string, unknown>, fallbackId: string): NormalizedBase | null {
@@ -302,18 +309,26 @@ function normalizeBase(raw: Record<string, unknown>, fallbackId: string): Normal
   if (typeof raw.sourceDialogueLineId === "string" && raw.sourceDialogueLineId.trim()) {
     base.sourceDialogueLineId = raw.sourceDialogueLineId.trim();
   }
+  if (typeof raw.groupId === "string" && raw.groupId.trim()) {
+    base.groupId = raw.groupId.trim();
+  }
   return base;
 }
 
-/** base の共通フィールド(id/position/rotation/sourceDialogueLineId)を出力オブジェクトへ広げる。 */
-function spreadBase(base: NormalizedBase): Pick<PageObjectBase, "id" | "position" | "rotation" | "sourceDialogueLineId"> {
-  const out: Pick<PageObjectBase, "id" | "position" | "rotation" | "sourceDialogueLineId"> = {
+/** base の共通フィールド(id/position/rotation/sourceDialogueLineId/groupId)を出力オブジェクトへ広げる。 */
+function spreadBase(
+  base: NormalizedBase
+): Pick<PageObjectBase, "id" | "position" | "rotation" | "sourceDialogueLineId" | "groupId"> {
+  const out: Pick<PageObjectBase, "id" | "position" | "rotation" | "sourceDialogueLineId" | "groupId"> = {
     id: base.id,
     position: base.position,
     rotation: base.rotation
   };
   if (base.sourceDialogueLineId !== undefined) {
     out.sourceDialogueLineId = base.sourceDialogueLineId;
+  }
+  if (base.groupId !== undefined) {
+    out.groupId = base.groupId;
   }
   return out;
 }

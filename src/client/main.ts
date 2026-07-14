@@ -1099,7 +1099,7 @@ function renderPagePanelLightboxView(): string {
     lightbox,
     state.pagePanelAssignments,
     state.pageObjectsDraft,
-    state.selectedPageObjectId,
+    state.selectedPageObjectIds,
     state.pageObjectFonts.fonts,
     {
       layout: state.pageLayoutDraft,

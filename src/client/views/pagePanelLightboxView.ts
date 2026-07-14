@@ -122,7 +122,7 @@ export function renderPagePanelLightbox(
   lightbox: PagePanelLightboxState,
   assignments: PagePanelAssignment[],
   objects: PageObject[],
-  selectedObjectId: string | null,
+  selectedObjectIds: string[],
   fonts: FontSummary[],
   shapeEdit: PanelShapeEditViewState,
   mosaicEdit: MosaicEditViewState,
@@ -150,7 +150,7 @@ export function renderPagePanelLightbox(
           ? renderMosaicStageContent(mosaicEdit, pageHeight)
           : renderObjectsStageContent(
               objects,
-              selectedObjectId,
+              selectedObjectIds,
               pageHeight,
               layout,
               assignments,
@@ -164,7 +164,7 @@ export function renderPagePanelLightbox(
         ? renderShapesToolbar(shapeEdit)
         : mode === "mosaic"
           ? renderMosaicToolbar(mosaicEdit)
-          : renderObjectsToolbar(objects, selectedObjectId, fonts, layout, assignments, lightbox, imageObjects, dialogueDrawer, layerView, chronicleBar);
+          : renderObjectsToolbar(objects, selectedObjectIds, fonts, layout, assignments, lightbox, imageObjects, dialogueDrawer, layerView, chronicleBar);
 
   return `
     <div class="workflow-modal page-panel-lightbox" role="dialog" aria-modal="true" aria-label="${escapeAttr(label)} のページ編集">
@@ -722,7 +722,7 @@ function renderObjectsPanelBackgroundOutline(panel: LayoutPanel, selected: boole
  */
 function renderObjectsStageContent(
   objects: PageObject[],
-  selectedObjectId: string | null,
+  selectedObjectIds: string[],
   pageHeight: number,
   layout: PageLayout | null,
   assignments: PagePanelAssignment[],
@@ -732,8 +732,10 @@ function renderObjectsStageContent(
   chroniclePreviewObjects: PageObject[] = []
 ): string {
   const visibleObjects = visiblePageObjects(objects, layerView.hiddenObjectIds, layerView.hideNonImage);
-  const selected = visibleObjects.find((object) => object.id === selectedObjectId);
-  const selectedEditable = selected && isEditablePageObject(selected) ? selected : null;
+  const selectedSet = new Set(selectedObjectIds);
+  const selectedEditableObjects = visibleObjects.filter(
+    (object): object is EditablePageObject => selectedSet.has(object.id) && isEditablePageObject(object)
+  );
   const backObjects = visibleObjects.filter(isBackBandObject);
   const frontObjects = visibleObjects.filter((object) => !isBackBandObject(object));
   const assignmentByPanel = new Map(assignments.map((assignment) => [assignment.panelId, assignment]));
@@ -745,15 +747,22 @@ function renderObjectsStageContent(
   const panelFrame = layout
     ? `<g class="page-object-panel-frame">${panels.map((panel) => renderObjectsPanelBackgroundOutline(panel, panel.id === selectedPanelId)).join("")}</g>`
     : "";
+  // 選択枠+ギズモ(C-3): 単一選択時のみ拡縮/回転ハンドル付きの通常ギズモ、複数選択時はハンドル無しの
+  // 選択枠だけを各オブジェクトへ重ねる(結合外接枠ではなく個別選択枠を選んだ -- gizmoBoxForPageObject を
+  // そのまま使い回せて実装が単純、かつ「どれが選択中か」が見た目でも明確になるため)。
+  const selectionOverlay =
+    selectedEditableObjects.length === 1
+      ? renderPageObjectGizmo(selectedEditableObjects[0]!, pageHeight)
+      : renderPageObjectMultiSelectionOutlines(selectedEditableObjects);
   return `
     <defs>${panels.map(renderPanelClipPath).join("")}</defs>
     <g id="pageObjectStageRoot" transform="scale(${VIEWBOX_SCALE})">
       <rect x="0" y="0" width="1" height="${num(pageHeight)}" class="page-panel-paper" data-page-object-background="1" />
       ${panelBackground}
-      ${backObjects.map((object) => renderPageObjectShape(object, object.id === selectedObjectId, missingMediaIds)).join("")}
+      ${backObjects.map((object) => renderPageObjectShape(object, selectedSet.has(object.id), missingMediaIds)).join("")}
       ${panelFrame}
-      ${frontObjects.map((object) => renderPageObjectShape(object, object.id === selectedObjectId, missingMediaIds)).join("")}
-      ${selectedEditable ? renderPageObjectGizmo(selectedEditable, pageHeight) : ""}
+      ${frontObjects.map((object) => renderPageObjectShape(object, selectedSet.has(object.id), missingMediaIds)).join("")}
+      ${selectionOverlay}
       ${layerView.hideNonImage ? "" : renderChroniclePreviewGhosts(chroniclePreviewObjects)}
     </g>
   `;
@@ -1025,9 +1034,31 @@ function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): 
   </g>`;
 }
 
+/**
+ * 複数選択時の選択枠(C-3): ハンドル無し。各オブジェクトの外接矩形(`gizmoBoxForPageObject`)を
+ * 通常ギズモと同じ破線スタイル(`.page-object-gizmo-outline`)で個別に描くだけにする(結合外接枠は
+ * 採らなかった -- 個別の枠のほうが「どれが選択中か」を見た目でも明確にできるため)。
+ * pointer-events は持たせない(クリック/ドラッグは既存の hit-area 側に素通しする)。
+ */
+function renderPageObjectMultiSelectionOutlines(objects: EditablePageObject[]): string {
+  if (objects.length < 2) {
+    return "";
+  }
+  const outlines = objects
+    .map((object) => {
+      const box = gizmoBoxForPageObject(object);
+      const points = gizmoBoxCorners(box)
+        .map((corner) => `${num(corner.x)},${num(corner.y)}`)
+        .join(" ");
+      return `<polygon class="page-object-gizmo-outline page-object-multi-select-outline" points="${points}" />`;
+    })
+    .join("");
+  return `<g class="page-object-multi-selection" pointer-events="none">${outlines}</g>`;
+}
+
 function renderObjectsToolbar(
   objects: PageObject[],
-  selectedObjectId: string | null,
+  selectedObjectIds: string[],
   fonts: FontSummary[],
   layout: PageLayout | null,
   assignments: PagePanelAssignment[],
@@ -1037,14 +1068,16 @@ function renderObjectsToolbar(
   layerView: PageLayerViewState,
   chronicleBar: ChronicleBarViewState
 ): string {
-  const selected = objects.find((object) => object.id === selectedObjectId);
+  const selectedCount = selectedObjectIds.length;
+  // 個別プロパティパネルは単一選択時のみ narrowing する(複数選択時は C-3 の専用パネルを出す)。
+  const selected = selectedCount === 1 ? objects.find((object) => object.id === selectedObjectIds[0]) : undefined;
   const selectedBox = selected && selected.kind === "box" ? selected : null;
   const selectedText = selected && selected.kind === "text" ? selected : null;
   const selectedBalloon = selected && selected.kind === "balloon" ? selected : null;
   const selectedImage = selected && selected.kind === "image" ? selected : null;
   const selectedTone = selected && selected.kind === "tone" ? selected : null;
-  const hasSelection = Boolean(selectedBox || selectedText || selectedBalloon || selectedImage || selectedTone);
-  // "replace" ピッカーは対象(選択中の image オブジェクト)が無くなったら表示しない
+  const hasSelection = selectedCount > 0;
+  // "replace" ピッカーは対象(選択中の image オブジェクト、単一選択時のみ)が無くなったら表示しない
   // (選択解除後もピッカーが浮いたままにならないようにする。state 自体はここではリセットしない)。
   const rawPickerMode = imageObjects.picker?.mode ?? null;
   const pickerMode = rawPickerMode === "replace" && !selectedImage ? null : rawPickerMode;
@@ -1076,23 +1109,25 @@ function renderObjectsToolbar(
               </button>
               <button class="button-secondary compact" type="button" data-action="show-all-page-layers">すべて表示</button>
             </div>
-            ${renderPageLayerList(objects, selectedObjectId, layout, assignments, lightbox.selectedPanelId, layerView)}
+            ${renderPageLayerList(objects, selectedObjectIds, layout, assignments, lightbox.selectedPanelId, layerView)}
             <section class="page-layer-settings" aria-label="選択レイヤの設定">
               <div class="page-layer-settings-header">
                 <div>
                   <p class="section-kicker">Settings</p>
                   ${
-                    selectedPanel
-                      ? `<h3>コマ ${selectedPanel.order}</h3>`
-                      : selectedBox
-                        ? renderSettingsHeadingField("box", selectedBox.content?.text ?? "")
-                        : selectedBalloon
-                          ? renderSettingsHeadingField("balloon", selectedBalloon.content?.text ?? "")
-                          : selectedText
-                            ? renderSettingsHeadingField("text", selectedText.content.text)
-                            : selected
-                              ? `<h3>${escapeHtml(pageObjectLayerName(selected).title)}</h3>`
-                              : `<h3>レイヤを選択</h3>`
+                    selectedCount > 1
+                      ? `<h3>${selectedCount}個選択中</h3>`
+                      : selectedPanel
+                        ? `<h3>コマ ${selectedPanel.order}</h3>`
+                        : selectedBox
+                          ? renderSettingsHeadingField("box", selectedBox.content?.text ?? "")
+                          : selectedBalloon
+                            ? renderSettingsHeadingField("balloon", selectedBalloon.content?.text ?? "")
+                            : selectedText
+                              ? renderSettingsHeadingField("text", selectedText.content.text)
+                              : selected
+                                ? `<h3>${escapeHtml(pageObjectLayerName(selected).title)}</h3>`
+                                : `<h3>レイヤを選択</h3>`
                   }
                 </div>
                 ${
@@ -1102,24 +1137,42 @@ function renderObjectsToolbar(
                 }
               </div>
               ${
-                selectedPanel
-                  ? renderPanelLayerPropertyPanel(selectedPanel, selectedPanelAssignment, lightbox.cropPanelId === selectedPanel.id)
-                  : selectedBox
-                    ? renderBoxPropertyPanel(selectedBox, fonts)
-                    : selectedBalloon
-                      ? renderBalloonPropertyPanel(selectedBalloon, fonts)
-                      : selectedText
-                        ? renderTextObjectPanel(selectedText, fonts)
-                        : selectedImage
-                          ? renderImageObjectPropertyPanel(selectedImage, layout, imageObjects.missingMediaIds.includes(selectedImage.mediaId))
-                          : selectedTone
-                            ? renderTonePropertyPanel(selectedTone, layout)
-                            : `<p class="page-panel-hint-text">紙面またはレイヤ一覧から対象を選択してください。ドラッグで移動、コーナーで拡縮、上のハンドルで回転できます。</p>`
+                selectedCount > 1
+                  ? renderMultiSelectionPanel(selectedCount)
+                  : selectedPanel
+                    ? renderPanelLayerPropertyPanel(selectedPanel, selectedPanelAssignment, lightbox.cropPanelId === selectedPanel.id)
+                    : selectedBox
+                      ? renderBoxPropertyPanel(selectedBox, fonts)
+                      : selectedBalloon
+                        ? renderBalloonPropertyPanel(selectedBalloon, fonts)
+                        : selectedText
+                          ? renderTextObjectPanel(selectedText, fonts)
+                          : selectedImage
+                            ? renderImageObjectPropertyPanel(selectedImage, layout, imageObjects.missingMediaIds.includes(selectedImage.mediaId))
+                            : selectedTone
+                              ? renderTonePropertyPanel(selectedTone, layout)
+                              : `<p class="page-panel-hint-text">紙面またはレイヤ一覧から対象を選択してください。ドラッグで移動、コーナーで拡縮、上のハンドルで回転できます。</p>`
               }
             </section>
           `
       }
     </section>
+  `;
+}
+
+/**
+ * SETTINGS パネルの複数選択時表示(C-3): 個別プロパティ・見出し編集フィールドは出さず、
+ * 「グループ化」「グループ解除」「削除」の3ボタンのみ(削除はヘッダーの trash アイコンボタンと機能重複
+ * するが、複数選択時の操作を1箇所で見渡せるようここにも明示する)。
+ */
+function renderMultiSelectionPanel(count: number): string {
+  return `
+    <p class="page-panel-hint-text">${count}個選択中です。紙面でドラッグするとまとめて移動します。</p>
+    <div class="page-object-add-grid" aria-label="複数選択の操作">
+      <button class="button-secondary compact" type="button" data-action="group-selected-page-objects">グループ化</button>
+      <button class="button-secondary compact" type="button" data-action="ungroup-selected-page-objects">グループ解除</button>
+      <button class="button-secondary compact" type="button" data-action="delete-selected-page-object">${iconTrash()}削除</button>
+    </div>
   `;
 }
 
@@ -1158,21 +1211,35 @@ function pageObjectLayerName(object: PageObject): { title: string; type: string 
   return { title: compactText || "ボックス", type: "ボックス" };
 }
 
+/** グループ所属バッジ(C-4)。控えめな小アイコンをツールチップ付きで出す(専用のグループ行 UI は v1 スコープ外)。 */
+function renderPageLayerGroupBadge(object: PageObject): string {
+  if (!object.groupId) {
+    return "";
+  }
+  // groupId(ランダム文字列)の先頭8桁をそのままツールチップに出す -- 同じ文字列 = 同じグループと
+  // 視認できれば十分(専用のグループ一覧 UI は v1 スコープ外)。
+  return `<span class="page-layer-group-badge" title="グループ: ${escapeAttr(object.groupId.slice(0, 8))}" aria-hidden="true">🔗</span>`;
+}
+
 function renderPageObjectLayerRow(
   object: PageObject,
   index: number,
   count: number,
-  selectedObjectId: string | null,
-  layerView: PageLayerViewState
+  selectedObjectIds: string[],
+  layerView: PageLayerViewState,
+  multiSelectActive: boolean
 ): string {
   const band = pageLayerBand(object);
   const individuallyHidden = layerView.hiddenObjectIds.includes(object.id);
   const globallyHidden = layerView.hideNonImage && object.kind !== "image";
   const hidden = individuallyHidden || globallyHidden;
   const name = pageObjectLayerName(object);
+  // z順(↑↓)は複数選択時は無効にする(C-3: どの基準で動かすか曖昧になるため)。
+  const orderDisabled = multiSelectActive;
   return `
-    <div class="page-layer-row${selectedObjectId === object.id ? " is-selected" : ""}${hidden ? " is-hidden" : ""}"
+    <div class="page-layer-row${selectedObjectIds.includes(object.id) ? " is-selected" : ""}${hidden ? " is-hidden" : ""}"
       draggable="true" data-page-layer-object-id="${escapeAttr(object.id)}" data-page-layer-band="${band}">
+      ${renderPageLayerGroupBadge(object)}
       <span class="page-layer-grip" title="ドラッグして並べ替え">${iconGrip()}</span>
       <button class="page-layer-visibility" type="button" data-action="toggle-page-layer-visibility" data-id="object:${escapeAttr(object.id)}"
         aria-label="${escapeAttr(name.type)}を${individuallyHidden ? "表示" : "非表示"}" title="${globallyHidden ? "画像以外を一括非表示中" : hidden ? "表示" : "非表示"}"${globallyHidden ? " disabled" : ""}>
@@ -1183,8 +1250,8 @@ function renderPageObjectLayerRow(
         <span class="page-layer-type">${escapeHtml(name.type)}</span>
       </button>
       <div class="page-layer-order-actions" aria-label="重なり順">
-        <button type="button" data-action="move-page-layer-up" data-id="${escapeAttr(object.id)}" title="1つ前面へ" aria-label="1つ前面へ"${index === 0 ? " disabled" : ""}>↑</button>
-        <button type="button" data-action="move-page-layer-down" data-id="${escapeAttr(object.id)}" title="1つ背面へ" aria-label="1つ背面へ"${index === count - 1 ? " disabled" : ""}>↓</button>
+        <button type="button" data-action="move-page-layer-up" data-id="${escapeAttr(object.id)}" title="1つ前面へ" aria-label="1つ前面へ"${index === 0 || orderDisabled ? " disabled" : ""}>↑</button>
+        <button type="button" data-action="move-page-layer-down" data-id="${escapeAttr(object.id)}" title="1つ背面へ" aria-label="1つ背面へ"${index === count - 1 || orderDisabled ? " disabled" : ""}>↓</button>
       </div>
     </div>
   `;
@@ -1214,7 +1281,7 @@ function renderPanelLayerRow(
 
 function renderPageLayerList(
   objects: PageObject[],
-  selectedObjectId: string | null,
+  selectedObjectIds: string[],
   layout: PageLayout | null,
   assignments: PagePanelAssignment[],
   selectedPanelId: string | null,
@@ -1224,13 +1291,14 @@ function renderPageLayerList(
   const front = objects.filter((object) => pageLayerBand(object) === "front").reverse();
   const back = objects.filter((object) => pageLayerBand(object) === "back").reverse();
   const panels = layout ? [...layout.panels].sort((a, b) => b.order - a.order) : [];
+  const multiSelectActive = selectedObjectIds.length > 1;
   const group = (label: string, content: string, count: number) =>
     count > 0
       ? `<div class="page-layer-group"><div class="page-layer-group-label"><span>${escapeHtml(label)}</span><span>${count}</span></div>${content}</div>`
       : "";
   return `
     <div class="page-layer-list" aria-label="レイヤ一覧">
-      ${group("前景", front.map((object, index) => renderPageObjectLayerRow(object, index, front.length, selectedObjectId, layerView)).join(""), front.length)}
+      ${group("前景", front.map((object, index) => renderPageObjectLayerRow(object, index, front.length, selectedObjectIds, layerView, multiSelectActive)).join(""), front.length)}
       ${group(
         "コマ画像",
         panels
@@ -1238,7 +1306,7 @@ function renderPageLayerList(
           .join(""),
         panels.length
       )}
-      ${group("背景", back.map((object, index) => renderPageObjectLayerRow(object, index, back.length, selectedObjectId, layerView)).join(""), back.length)}
+      ${group("背景", back.map((object, index) => renderPageObjectLayerRow(object, index, back.length, selectedObjectIds, layerView, multiSelectActive)).join(""), back.length)}
       ${objects.length === 0 && panels.length === 0 ? `<p class="page-panel-hint-text">レイヤはまだありません。</p>` : ""}
     </div>
   `;
