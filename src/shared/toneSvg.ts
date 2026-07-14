@@ -15,6 +15,9 @@
  * - gradient: 2026-07-14 追補で v1(ドット径固定+マスク減衰の近似)から、角度方向に沿ってドット半径を
  *   start→end へ実際に補間する行生成(`<circle>` 群、PRNG 不要の決定的格子)へ強化した。領域面積/pitch²
  *   が要素数バジェット(約2万)を超える場合は実効 pitch を自動で粗くする(`effectiveGradientPitch`)。
+ *   2026-07-15 追補: 遷移軸を optional な params.gradStart/gradEnd(ローカル座標の2点、ステージ上の
+ *   ハンドルで編集)で指定できる。未指定は従来どおり angle 方向に領域全体で遷移(`effectiveGradientPoints`
+ *   が2点へ正規化して吸収する)。2点の外側は最寄り端の濃度で平坦(t を 0..1 に clamp)。
  * - noise: seed 付き PRNG で生成した粒(`<circle>`)をタイル化した `<pattern>` に敷き詰め、パターンの
  *   自然なタイル繰り返しで領域全体を覆う(領域全面に個別要素を撒くと要素数が爆発するため)。startRatio/
  *   endRatio が指定時のみ角度方向の濃度 `<mask>` を追加する(lines と同じ仕組みを共有)。
@@ -29,8 +32,9 @@
  *     (jitter は外側へ広げる方向にのみ効かせる)、中心付近に線が届かないことを保証する。外周側の
  *     基部(base)は既定で領域の外接円(outerRadiusFor)だが、params.outerRadius 指定時(2026-07-14
  *     追補、focus のみ)はその半径を使う。
- *   - flash: 領域を color で塗り、中心に innerRadius 基準のジャギー多角形を白(#ffffff、非透過)で
- *     重ねて抜く。lineWidth は focus と同じ「外周側の基部太さ」の意味を転用し、棘の突出量に使う。
+ *   - flash: 領域を color で塗り、中心に「山(棘の先端)と谷(白核の縁)が交互に並ぶ星形」の白
+ *     (#ffffff、非透過)を重ねて抜く(2026-07-15 刷新。v1 は頂点ごとに半径を独立乱択していたため
+ *     輪郭が低周波にうねる「落書き」状だった)。lineWidth は flash では「棘の長さ」(基準突出量)。
  * - 全種別共通: 領域(size)への `<clipPath>` で必ずクリップする(パターン/線が領域外へはみ出さないため)。
  *
  * **id 衝突禁止**: pattern/mask/gradient/filter/clipPath の id は `object.id` を含めて一意化する
@@ -203,29 +207,63 @@ function effectiveGradientPitch(pitch: number, hx: number, hy: number): number {
 }
 
 /**
+ * gradient の濃度遷移の始点/終点(ローカル座標)。params.gradStart/gradEnd が両方有効かつ十分離れて
+ * いればそれを使い(2026-07-15 追補、ステージ上のハンドルで編集)、そうでなければ従来どおり
+ * 「angle 方向に領域全体で遷移」に相当する2点(領域を angle 方向へ投影した両端)を返す。
+ * クライアントのギズモ(ハンドル位置の描画・ドラッグ開始時の実効値 materialize)と描画
+ * (`renderGradientBody`)の両方がこれを使うことで、ハンドル位置と見た目を常に一致させる。
+ */
+export function effectiveGradientPoints(params: ToneParams, hx: number, hy: number): { start: PageVec; end: PageVec } {
+  const start = params.gradStart;
+  const end = params.gradEnd;
+  if (
+    start &&
+    end &&
+    Number.isFinite(start.x) &&
+    Number.isFinite(start.y) &&
+    Number.isFinite(end.x) &&
+    Number.isFinite(end.y) &&
+    Math.hypot(end.x - start.x, end.y - start.y) > 1e-6
+  ) {
+    return { start: { ...start }, end: { ...end } };
+  }
+  const angleDeg = num(params.angle, 45);
+  const rad = (angleDeg * Math.PI) / 180;
+  const dir: PageVec = { x: Math.cos(rad), y: Math.sin(rad) };
+  const alongHalf = Math.abs(dir.x) * hx + Math.abs(dir.y) * hy;
+  return {
+    start: { x: -dir.x * alongHalf, y: -dir.y * alongHalf },
+    end: { x: dir.x * alongHalf, y: dir.y * alongHalf }
+  };
+}
+
+/**
  * 2026-07-14 追補: v1(ドット径固定+マスク減衰の近似)をやめ、角度方向へ実際にドット半径を start→end
  * 補間する行生成にする。PRNG は使わない決定的な格子生成(仕様書「seed 不要」)。dotRatio は halftone との
  * 構造互換のため params には残すが、gradient の描画自体は startRatio/endRatio だけを半径比として使う。
  * 要素数は effectiveGradientPitch で約2万ドット以内に収める(仕様書指定の暴走防止)。
+ * 2026-07-15 追補: 遷移軸は effectiveGradientPoints の2点(未指定は angle 由来)で決める。ドット格子の
+ * 向きも遷移軸に合わせる(半径が変わる方向=格子の行方向、従来の angle 挙動と同じ関係)。
  */
 function renderGradientBody(params: ToneParams, color: string, uid: string, hx: number, hy: number): string {
   const pitch = effectiveGradientPitch(resolvedPitch(params), hx, hy);
   const startRatio = clamp(num(params.startRatio, 0.7), 0, 1);
   const endRatio = clamp(num(params.endRatio, 0.05), 0, 1);
-  const angleDeg = num(params.angle, 45);
-  const rad = (angleDeg * Math.PI) / 180;
-  const dir: PageVec = { x: Math.cos(rad), y: Math.sin(rad) };
+  const { start, end } = effectiveGradientPoints(params, hx, hy);
+  const axisLen = Math.max(1e-6, Math.hypot(end.x - start.x, end.y - start.y));
+  const dir: PageVec = { x: (end.x - start.x) / axisLen, y: (end.y - start.y) / axisLen };
   const perp: PageVec = { x: -dir.y, y: dir.x };
   // 領域を dir/perp 軸へ投影した半幅(角度によらず格子で領域全体を覆えるだけの範囲。speed/focus と同じ手法)。
   const alongHalf = Math.abs(dir.x) * hx + Math.abs(dir.y) * hy;
   const perpHalf = Math.abs(perp.x) * hx + Math.abs(perp.y) * hy;
   const iMax = Math.max(0, Math.ceil(alongHalf / pitch) + 1);
   const jMax = Math.max(0, Math.ceil(perpHalf / pitch) + 1);
-  const alongSpan = alongHalf * 2 || 1;
+  // 始点の dir 軸上の位置。t は「始点=0 → 終点=1」で、2点の外側は最寄り端の濃度で平坦(clamp)。
+  const startAlong = start.x * dir.x + start.y * dir.y;
   const circles: string[] = [];
   for (let i = -iMax; i <= iMax; i += 1) {
     const along = i * pitch;
-    const t = clamp((along + alongHalf) / alongSpan, 0, 1);
+    const t = clamp((along - startAlong) / axisLen, 0, 1);
     const ratio = startRatio + (endRatio - startRatio) * t;
     const radius = Math.max(0, (ratio * pitch) / 2);
     if (radius <= 0) {
@@ -334,24 +372,41 @@ function renderFocusBody(params: ToneParams, color: string, seed: number, hx: nu
 }
 
 /**
- * 領域を color で塗り、中心にジャギー多角形の白(#ffffff、非透過)抜きを重ねる。lineWidth は
- * focus と params 形状を揃えるため保持しているフィールドだが、flash では「外周側の基部太さ」ではなく
- * 棘の突出量(ジャギーの鋭さ)に転用する -- 死んだフィールドにしない設計判断(仕様書は「focus と同じ」
- * としか書いておらず、視覚的な使い道は実装側の裁量)。
+ * ベタフラッシュ(2026-07-15 刷新): 領域を color で塗り、中心に「山(棘の先端)と谷(白核の縁)が
+ * 交互に並ぶ星形」の白(#ffffff、非透過)を重ねて抜く。v1 は頂点ごとに半径を独立乱択していたため
+ * 輪郭が低周波にうねる「落書き」状になっていた -- v2 は谷を innerRadius 近傍に揃えて白核の輪郭を
+ * 円に近く保ち、山だけを外へ尖らせることで、ベタフラらしい鋭い放射状のギザギザにする。
+ * lineWidth は focus と params 形状を揃えるため保持しているフィールドで、flash では「棘の長さ」
+ * (山の基準突出量、page-width 単位)として使う -- 死んだフィールドにしない設計判断は v1 から継続。
+ * jitter は棘の長さ(±85%)・山の角度(±1/4ステップ、隣の谷を跨がない=多角形が自己交差しない範囲)・
+ * 谷のわずかな凹み(最大 -18%)に効く。
  */
 function renderFlashBody(params: ToneParams, color: string, seed: number, hx: number, hy: number): string {
   const center = resolvedCenter(params);
   const innerRadius = Math.max(0, num(params.innerRadius, 0.18));
   const count = Math.round(clamp(num(params.count, 72), 3, TONE_COUNT_MAX));
-  const lineWidth = Math.max(0, num(params.lineWidth, 0.012));
+  const spikeLength = Math.max(0, num(params.lineWidth, 0.08));
   const jitter = clamp(num(params.jitter, 0.5), 0, 1);
   const random = mulberry32(seed);
+  const step = (Math.PI * 2) / count;
   const points: string[] = [];
   for (let i = 0; i < count; i += 1) {
-    const theta = (i / count) * Math.PI * 2;
-    const spike = lineWidth * random() * 2;
-    const r = Math.max(0, innerRadius * (1 + (random() * 2 - 1) * jitter * 0.6) + spike);
-    points.push(`${fmt(center.x + Math.cos(theta) * r)},${fmt(center.y + Math.sin(theta) * r)}`);
+    // 山(棘の先端)。角度ゆらぎは ±step/4 まで -- 谷(±step/2 の位置)を跨がないので頂点列の角度が
+    // 単調増加のまま保たれ、星形が自己交差しない。
+    const peakTheta = i * step + (random() * 2 - 1) * jitter * step * 0.25;
+    // 棘の長さ: jitter で ±85% 変動させ、さらに低確率(jitter 比例)で 1.7 倍の長い棘を混ぜて単調さを崩す。
+    let lengthFactor = Math.max(0.15, 1 + (random() * 2 - 1) * jitter * 0.85);
+    if (random() < jitter * 0.2) {
+      lengthFactor *= 1.7;
+    }
+    const peakR = innerRadius + spikeLength * lengthFactor;
+    // 谷(白核の縁): innerRadius からわずかに内側へ(低振幅) -- 白核の輪郭は円に近く保つ。
+    const valleyTheta = (i + 0.5) * step;
+    const valleyR = innerRadius * (1 - random() * jitter * 0.18);
+    points.push(
+      `${fmt(center.x + Math.cos(peakTheta) * peakR)},${fmt(center.y + Math.sin(peakTheta) * peakR)}`,
+      `${fmt(center.x + Math.cos(valleyTheta) * valleyR)},${fmt(center.y + Math.sin(valleyTheta) * valleyR)}`
+    );
   }
   const fillRect = `<rect x="${fmt(-hx)}" y="${fmt(-hy)}" width="${fmt(hx * 2)}" height="${fmt(hy * 2)}" fill="${escapeAttr(color)}" />`;
   // 「白抜き」は透過ではなく不透明白 #ffffff で塗る(仕様書指定 -- 下のレイヤーを透かして見せない)。

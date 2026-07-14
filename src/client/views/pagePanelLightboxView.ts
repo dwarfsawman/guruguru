@@ -44,7 +44,7 @@ import {
 } from "../../shared/pageObjects";
 import { balloonContentMaxWidth, renderBalloonSvg } from "../../shared/balloonShape";
 import { renderTextSvg } from "../../shared/textSvg";
-import { renderToneSvg } from "../../shared/toneSvg";
+import { effectiveGradientPoints, renderToneSvg } from "../../shared/toneSvg";
 import {
   MOSAIC_GRANULARITY_MAX,
   MOSAIC_GRANULARITY_MIN,
@@ -995,6 +995,20 @@ function toneCenterHandlePoint(object: ToneObject): { x: number; y: number } {
 }
 
 /**
+ * グラデトーンの始点/終点ハンドルの世界(ページ)座標(2026-07-15)。ローカル座標は
+ * `effectiveGradientPoints`(gradStart/gradEnd 未指定時は angle から導出した領域両端)を使うので、
+ * ハンドル位置と実際の濃度遷移が常に一致する。世界座標への変換は toneCenterHandlePoint と同じ。
+ */
+function toneGradHandlePoints(object: ToneObject): { start: { x: number; y: number }; end: { x: number; y: number } } {
+  const local = effectiveGradientPoints(object.params, Math.max(1e-6, object.size.x / 2), Math.max(1e-6, object.size.y / 2));
+  const toWorld = (point: PageVec) => {
+    const rotated = rotatePointAround(point, { x: 0, y: 0 }, object.rotation);
+    return { x: object.position.x + rotated.x, y: object.position.y + rotated.y };
+  };
+  return { start: toWorld(local.start), end: toWorld(local.end) };
+}
+
+/**
  * paste/crop 風ギズモ(コーナー=拡縮 / 上のハンドル=回転)。選択中の box/text/balloon オブジェクトの
  * 外接矩形まわりに描く。矩形自体は `gizmoBoxForPageObject`(box/balloon は size そのまま、text は
  * レイアウト bbox)。balloon にしっぽがあれば、専用の tip ドラッグハンドル(別色)も追加する。
@@ -1029,6 +1043,18 @@ function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): 
           return `<circle id="pageObjectGizmoToneCenter" class="page-object-gizmo-handle page-object-gizmo-tone-center-handle" style="cursor:move;" data-page-object-handle="tone-center" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(point.x)}" cy="${num(point.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />`;
         })()
       : "";
+  // グラデトーンの始点/終点ハンドル(2026-07-15)。緑=始点(tone-center と同色)/青=終点。gradStart/
+  // gradEnd 未指定でも実効位置(angle 由来)に常に出し、最初のドラッグで controller 側が materialize する。
+  // 2点間には遷移方向を可視化する破線の軸線を敷く(pointer-events はハンドルのみ)。
+  const toneGradHandles =
+    object.kind === "tone" && object.toneType === "gradient"
+      ? (() => {
+          const { start, end } = toneGradHandlePoints(object);
+          return `<line id="pageObjectGizmoGradAxis" class="page-object-gizmo-grad-axis" x1="${num(start.x)}" y1="${num(start.y)}" x2="${num(end.x)}" y2="${num(end.y)}" />
+    <circle id="pageObjectGizmoGradStart" class="page-object-gizmo-handle page-object-gizmo-tone-center-handle" style="cursor:move;" data-page-object-handle="tone-grad-start" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(start.x)}" cy="${num(start.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />
+    <circle id="pageObjectGizmoGradEnd" class="page-object-gizmo-handle page-object-gizmo-tone-grad-end-handle" style="cursor:move;" data-page-object-handle="tone-grad-end" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(end.x)}" cy="${num(end.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />`;
+        })()
+      : "";
   // sync が柄長/半径を画面基準へ直すために基準点と反転判定用のページ高(data-ph)を data 属性で持たせる。
   return `<g id="pageObjectGizmo" class="page-object-gizmo" data-tmx="${num(topMid.x)}" data-tmy="${num(topMid.y)}" data-upx="${num(up.x)}" data-upy="${num(up.y)}" data-ph="${num(pageHeight)}">
     <polygon id="pageObjectGizmoOutline" class="page-object-gizmo-outline" points="${outlinePoints}" />
@@ -1036,6 +1062,7 @@ function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): 
     ${cornerHandles}
     ${tailHandle}
     ${toneCenterHandle}
+    ${toneGradHandles}
     <circle id="pageObjectGizmoRotate" class="page-object-gizmo-handle page-object-gizmo-rotate" style="cursor:grab;" data-page-object-handle="rotate" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(rotateHandle.x)}" cy="${num(rotateHandle.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />
   </g>`;
 }
@@ -1601,8 +1628,8 @@ function renderCenterBasedToneFields(object: ToneObject): string {
       <label class="page-object-property-field">本数
         <input type="number" step="1" min="1" max="${TONE_COUNT_MAX}" data-page-object-tone-param="count" value="${num(params.count ?? 0)}" />
       </label>
-      <label class="page-object-property-field">線幅
-        <input type="number" step="0.001" min="0" max="1" data-page-object-tone-param="lineWidth" value="${num(params.lineWidth ?? 0)}" />
+      <label class="page-object-property-field">${object.toneType === "flash" ? "棘の長さ" : "線幅"}
+        <input type="number" step="${object.toneType === "flash" ? "0.005" : "0.001"}" min="0" max="1" data-page-object-tone-param="lineWidth" value="${num(params.lineWidth ?? 0)}" />
       </label>
       <label class="page-object-property-field">ゆらぎ
         <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="jitter" value="${num(params.jitter ?? 0)}" />
@@ -1698,6 +1725,7 @@ function renderToneParamsFields(object: ToneObject): string {
                   <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="endRatio" value="${num(params.endRatio ?? 0)}" />
                 </label>
               </div>
+              <p class="page-panel-hint-text">緑=始点 / 青=終点のハンドルをドラッグでグラデの向きと範囲を指定できます(角度を入力するとハンドル指定はリセット)</p>
             `
             : ""
         }

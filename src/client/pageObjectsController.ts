@@ -32,7 +32,7 @@
  * クリック)とグループ操作・複数移動の delta 適用は `pageObjectSelection.ts` の純関数に切り出してある。
  * move ジェスチャのみ複数対応(`beginObjectDrag` が選択中の全 editable オブジェクトの開始位置を
  * `moveGroupStart` へ保持し、`handlePageObjectsPointerMove` が同じ delta を全員へ適用する)。
- * scale/rotate/tail/tone-center は従来どおり primary 単体のみ(ギズモのハンドル自体、複数選択時は
+ * scale/rotate/tail/tone-center/tone-grad-* は従来どおり primary 単体のみ(ギズモのハンドル自体、複数選択時は
  * `pagePanelLightboxView.ts` 側でそもそも描画しない)。レイヤ一覧のクリック修飾キーは `registerActions`
  * では拾えないため、`chronicleController.ts` の Beat チップと同じ capture リスナーパターンを使う
  * (`bindPageLayerEvents` 内)。
@@ -82,6 +82,7 @@ import {
   type ToneObject,
   type ToneParams
 } from "../shared/pageObjects";
+import { effectiveGradientPoints } from "../shared/toneSvg";
 import { panelBounds, type LayoutPanel } from "../shared/pageLayout";
 import { balloonContentMaxWidth } from "../shared/balloonShape";
 import { getStageTransform, gizmoRotateHandlePoint, rotateGizmoBox, scaleGizmoBoxAboutCenter } from "./svgGizmo";
@@ -1012,7 +1013,8 @@ function updateToneOwnField(tone: ToneObject, field: string, target: HTMLInputEl
 /**
  * トーンの `params` 個別フィールド更新(SETTINGS パネルの種別別 number 入力)。ギズモ拡縮では params の
  * 長さ系はスケールしない(v1 は size のみ、Docs/Feature-ScreenTones.md 組み込みチェックリスト)ので、
- * この経路だけが params を書き換える(center はドラッグハンドル、`handlePageObjectsPointerMove` 側)。
+ * この経路だけが params を書き換える(center/gradStart/gradEnd はドラッグハンドル、
+ * `handlePageObjectsPointerMove` 側)。
  */
 function updateToneParamField(tone: ToneObject, field: string, target: HTMLInputElement): ToneObject | null {
   const parsed = Number(target.value);
@@ -1029,6 +1031,12 @@ function updateToneParamField(tone: ToneObject, field: string, target: HTMLInput
       break;
     case "angle":
       params.angle = parsed;
+      if (tone.toneType === "gradient") {
+        // 始点/終点ハンドル指定中に角度を入力したら、ハンドル指定を解除して角度指定へ戻す(最後の編集が
+        // 勝つ。残したままだと gradStart/gradEnd が優先されて角度入力が見た目に効かず混乱するため)。
+        delete params.gradStart;
+        delete params.gradEnd;
+      }
       break;
     case "startRatio":
       params.startRatio = clampNumber(parsed, 0, 1, params.startRatio ?? 0.7);
@@ -1229,7 +1237,7 @@ export function updatePageObjectTextFromInput(target: HTMLTextAreaElement): void
 
 // --- ギズモ(移動/拡縮/回転)ジェスチャ ---
 
-type ObjectGestureKind = "move" | "scale" | "rotate" | "tail" | "tone-center";
+type ObjectGestureKind = "move" | "scale" | "rotate" | "tail" | "tone-center" | "tone-grad-start" | "tone-grad-end";
 const ROTATE_SNAP_RAD = Math.PI / 12;
 /** ハンドルの画面基準サイズ(px)。paste/crop の前例に合わせる。 */
 const GIZMO_HANDLE_SCREEN_RADIUS_PX = 7;
@@ -1244,7 +1252,7 @@ interface ObjectDragState {
   startObject: EditableObject;
   /**
    * 複数選択の移動(C-3)用: kind === "move" の時、選択中の全 editable オブジェクトの開始時点コピー
-   * (`objectId` 自身を含む)。scale/rotate/tail/tone-center は単一選択時にしか起きないため、
+   * (`objectId` 自身を含む)。scale/rotate/tail/tone-center/tone-grad-* は単一選択時にしか起きないため、
    * その場合は `[cloneEditableObjectForDrag(object)]` の1件だけを持たせて経路を統一している。
    */
   moveGroupStart: EditableObject[];
@@ -1267,14 +1275,25 @@ function stageRootElement(): SVGGraphicsElement | null {
 
 function objectIdFromEventTarget(
   target: EventTarget | null
-): { objectId: string | null; handleKind: "scale" | "rotate" | "tail" | "tone-center" | null } {
+): { objectId: string | null; handleKind: Exclude<ObjectGestureKind, "move"> | null } {
   if (!(target instanceof Element)) {
     return { objectId: null, handleKind: null };
   }
   const handle = target.closest<SVGElement>("[data-page-object-handle]");
   if (handle) {
     const raw = handle.getAttribute("data-page-object-handle");
-    const kind = raw === "rotate" ? "rotate" : raw === "tail" ? "tail" : raw === "tone-center" ? "tone-center" : "scale";
+    const kind: Exclude<ObjectGestureKind, "move"> =
+      raw === "rotate"
+        ? "rotate"
+        : raw === "tail"
+          ? "tail"
+          : raw === "tone-center"
+            ? "tone-center"
+            : raw === "tone-grad-start"
+              ? "tone-grad-start"
+              : raw === "tone-grad-end"
+                ? "tone-grad-end"
+                : "scale";
     return { objectId: handle.getAttribute("data-page-object-owner"), handleKind: kind };
   }
   const shape = target.closest<SVGElement>("[data-page-object]");
@@ -1314,7 +1333,7 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
 
   event.preventDefault();
 
-  // ギズモハンドル(拡縮/回転/しっぽ/トーン中心)は単一選択時にしか描画されない(C-3)。
+  // ギズモハンドル(拡縮/回転/しっぽ/トーン中心/グラデ始点終点)は単一選択時にしか描画されない(C-3)。
   // ハンドルへの pointerdown は選択集合を変更せず、既存の単一選択オブジェクトを対象に操作する。
   if (handleKind) {
     if (handleKind === "rotate" && event.detail >= 2) {
@@ -1379,7 +1398,12 @@ function cloneEditableObjectForDrag(object: EditableObject): EditableObject {
       ...object,
       position: { ...object.position },
       size: { ...object.size },
-      params: { ...object.params, center: object.params.center ? { ...object.params.center } : object.params.center }
+      params: {
+        ...object.params,
+        center: object.params.center ? { ...object.params.center } : object.params.center,
+        gradStart: object.params.gradStart ? { ...object.params.gradStart } : object.params.gradStart,
+        gradEnd: object.params.gradEnd ? { ...object.params.gradEnd } : object.params.gradEnd
+      }
     };
   }
   return { ...object, position: { ...object.position }, content: { ...object.content, style: { ...object.content.style } } };
@@ -1538,9 +1562,9 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
     const startTip = drag.startObject.tail?.tip ?? { x: 0, y: 0 };
     const nextTip = clampTailTip({ x: startTip.x + localDx, y: startTip.y + localDy });
     updated = { ...drag.startObject, tail: { tip: nextTip, width: drag.startObject.tail?.width ?? DEFAULT_BALLOON_TAIL_WIDTH } };
-  } else if (drag.kind === "tone-center") {
+  } else if (drag.kind === "tone-center" || drag.kind === "tone-grad-start" || drag.kind === "tone-grad-end") {
     if (drag.startObject.kind !== "tone") {
-      // tone-center ハンドルは tone(focus/flash)にしか出さないので通常到達しない防御分岐。
+      // tone-center/tone-grad-* ハンドルは tone にしか出さないので通常到達しない防御分岐。
       objectDrag = null;
       return false;
     }
@@ -1552,9 +1576,29 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
     const sin = Math.sin(rotation);
     const localDx = dxScreen * cos + dyScreen * sin;
     const localDy = -dxScreen * sin + dyScreen * cos;
-    const startCenter = drag.startObject.params.center ?? { x: 0, y: 0 };
-    const nextCenter = clampToneCenter({ x: startCenter.x + localDx, y: startCenter.y + localDy });
-    updated = { ...drag.startObject, params: { ...drag.startObject.params, center: nextCenter } };
+    if (drag.kind === "tone-center") {
+      const startCenter = drag.startObject.params.center ?? { x: 0, y: 0 };
+      const nextCenter = clampToneCenter({ x: startCenter.x + localDx, y: startCenter.y + localDy });
+      updated = { ...drag.startObject, params: { ...drag.startObject.params, center: nextCenter } };
+    } else {
+      // グラデ始点/終点(2026-07-15)。gradStart/gradEnd 未指定(angle 由来の実効位置)のままドラッグを
+      // 始めたら、その実効2点を基準に**両方**を materialize する -- 片方だけ保存すると、もう片方が
+      // 「angle 由来」のまま領域サイズ変更などで動いてしまい、掴んだ時の見た目とずれるため。
+      const eff = effectiveGradientPoints(
+        drag.startObject.params,
+        Math.max(1e-6, drag.startObject.size.x / 2),
+        Math.max(1e-6, drag.startObject.size.y / 2)
+      );
+      const base = drag.kind === "tone-grad-start" ? eff.start : eff.end;
+      const moved = clampToneCenter({ x: base.x + localDx, y: base.y + localDy });
+      const params: ToneParams = { ...drag.startObject.params, gradStart: eff.start, gradEnd: eff.end };
+      if (drag.kind === "tone-grad-start") {
+        params.gradStart = moved;
+      } else {
+        params.gradEnd = moved;
+      }
+      updated = { ...drag.startObject, params };
+    }
   } else {
     const angle = Math.atan2(event.clientY - drag.centerScreenY, event.clientX - drag.centerScreenX);
     const box = rotateGizmoBox(startBox, drag.startAngle, angle, event.shiftKey, ROTATE_SNAP_RAD);
@@ -1574,6 +1618,14 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   return true;
 }
 
+/** optional なローカル座標点(tone の center/gradStart/gradEnd)の「有無と値」が一致するか。 */
+function sameOptionalVec(a: PageVec | undefined, b: PageVec | undefined): boolean {
+  if (Boolean(a) !== Boolean(b)) {
+    return false;
+  }
+  return !a || !b || (a.x === b.x && a.y === b.y);
+}
+
 function editableObjectUnchanged(a: EditableObject, b: EditableObject): boolean {
   if (a.position.x !== b.position.x || a.position.y !== b.position.y || a.rotation !== b.rotation) {
     return false;
@@ -1588,15 +1640,13 @@ function editableObjectUnchanged(a: EditableObject, b: EditableObject): boolean 
     if (a.size.x !== b.size.x || a.size.y !== b.size.y) {
       return false;
     }
-    const ac = a.params.center;
-    const bc = b.params.center;
-    if (Boolean(ac) !== Boolean(bc)) {
-      return false;
-    }
-    if (ac && bc && (ac.x !== bc.x || ac.y !== bc.y)) {
-      return false;
-    }
-    return true;
+    // ギズモドラッグで変わりうる params はローカル座標の点(center/gradStart/gradEnd)だけ
+    // (数値フィールドは commitFieldChange 経路で、この比較を通らない)。
+    return (
+      sameOptionalVec(a.params.center, b.params.center) &&
+      sameOptionalVec(a.params.gradStart, b.params.gradStart) &&
+      sameOptionalVec(a.params.gradEnd, b.params.gradEnd)
+    );
   }
   if (a.kind === "text" && b.kind === "text") {
     return a.content.style.size === b.content.style.size && a.maxWidth === b.maxWidth;
@@ -1706,6 +1756,8 @@ export function syncPageObjectsGizmo(): void {
   rotateHandle?.setAttribute("r", String(radius));
   gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoTail")?.setAttribute("r", String(radius));
   gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoToneCenter")?.setAttribute("r", String(radius));
+  gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoGradStart")?.setAttribute("r", String(radius));
+  gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoGradEnd")?.setAttribute("r", String(radius));
   const topMidX = Number(gizmo.dataset.tmx);
   const topMidY = Number(gizmo.dataset.tmy);
   const upX = Number(gizmo.dataset.upx);
