@@ -146,6 +146,15 @@
   width: 100%;
 }
 
+/* B-2(Docs/Feature-PageEditSidebarUx.md 課題B): 件数バッジ+開閉シェブロンをまとめる右側グループ。
+   justify-content:space-between の相手側をこのグループ1つにして、バッジが中央へ流れないようにする。 */
+.chronicle-beat-heading-end {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 .chronicle-beat-count {
   flex: 0 0 auto;
   padding: 1px 5px;
@@ -155,6 +164,30 @@
   font-size: 9px;
   font-weight: 600;
   line-height: 1.4;
+}
+
+/* 開閉シェブロン(B-2)。既定は閉(右向き)、is-expanded で下向きへ回転する
+   (`.chronicle-bar-collapse-icon` と同じ回転方向の約束事)。色/サイズは button svg の既定
+   (tokens-base.css)に任せる。 */
+.chronicle-beat-chevron {
+  display: inline-flex;
+}
+
+.chronicle-beat-chevron svg {
+  transition: transform 0.15s ease;
+  transform: rotate(-90deg);
+}
+
+.chronicle-beat.is-expanded .chronicle-beat-chevron svg {
+  transform: rotate(0deg);
+}
+
+/* B-2: 開いたチップの強調 -- 下端の角を落として、直下のアコーディオン(.chronicle-beat-accordion)と
+   1枚のパネルのようにつなげる。 */
+.chronicle-beat.is-expanded {
+  border-color: var(--accent-line);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .chronicle-beat-summary {
@@ -305,29 +338,20 @@
   flex-wrap: wrap;
 }
 
-.chronicle-beat-preview {
-  border-top: 1px solid var(--line);
-  padding-top: 6px;
-  max-height: 240px;
+/*
+ * B-2(Docs/Feature-PageEditSidebarUx.md 課題B): チップ直下のアコーディオン展開部。旧
+ * `.chronicle-beat-preview`(チップ列の下に別枠で出る独立パネル)を置き換える -- 上辺の枠を消し
+ * `.chronicle-beat.is-expanded` の角丸潰しと合わせて、開いたチップと1枚のパネルに見えるようにする。
+ */
+.chronicle-beat-accordion {
+  margin: -1px 0 4px;
+  padding: 8px 10px 6px;
+  border: 1px solid var(--accent-line);
+  border-top: none;
+  border-radius: 0 0 8px 8px;
+  background: var(--panel-soft);
+  max-height: 260px;
   overflow-y: auto;
-}
-
-.chronicle-beat-preview-header {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 6px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.chronicle-beat-preview-header strong {
-  color: var(--ink);
-  font-size: 12px;
-}
-
-.chronicle-beat-preview-note {
-  margin-left: auto;
 }
 
 .chronicle-beat-preview-lines {
@@ -469,7 +493,9 @@
 }
 
 /* ページ編集を2カラム化した後は Chronicle も右サイドバー内へ置く。横長バーの既定値を
-   サイド幅向けの縦リストへ切り替え、中央キャンバスの高さへ影響させない。 */
+   サイド幅向けの縦リストへ切り替え、中央キャンバスの高さへ影響させない。
+   B-1(Docs/Feature-PageEditSidebarUx.md 課題B): セリフタブ(.dialogue-drawer)配下へ移動した後も
+   このセレクタは祖先が .page-panel-sidebar であれば入れ子段数に関係なくマッチするので変更不要。 */
 .page-panel-sidebar .chronicle-bar {
   max-height: none;
   margin-top: 14px;
@@ -495,13 +521,7 @@
 }
 
 .page-panel-sidebar .chronicle-bar-header,
-.page-panel-sidebar .chronicle-beat-preview-header,
 .page-panel-sidebar .chronicle-selection-stats,
 .page-panel-sidebar .chronicle-layout-preview-stats {
   flex-wrap: wrap;
-}
-
-.page-panel-sidebar .chronicle-beat-preview-note {
-  width: 100%;
-  margin-left: 0;
 }
