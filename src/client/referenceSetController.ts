@@ -22,6 +22,9 @@ export async function loadReferenceCorner(projectId: string): Promise<void> {
     if (state.currentProjectId !== projectId) return;
     state.characters = characters.characters;
     state.referenceSets = sets.referenceSets;
+    if (state.referenceCornerOpen && !state.characters.some((character) => character.id === state.referenceCornerCharacterId)) {
+      state.referenceCornerCharacterId = state.characters[0]?.id ?? null;
+    }
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
   } finally {
@@ -31,7 +34,15 @@ export async function loadReferenceCorner(projectId: string): Promise<void> {
 
 export function clearReferenceCorner(): void {
   state.referenceSets = [];
+  state.referenceCornerOpen = false;
+  state.referenceCornerCharacterId = null;
   state.referenceSetBusyId = null;
+}
+
+function closeReferenceCorner(): void {
+  if (!state.referenceCornerOpen) return;
+  state.referenceCornerOpen = false;
+  requestRender();
 }
 
 function familyCard(target: HTMLElement): HTMLElement {
@@ -87,8 +98,20 @@ async function withBusy(id: string, operation: () => Promise<void>): Promise<voi
 }
 
 registerActions({
-  "toggle-reference-corner": () => {
-    state.referenceCornerExpanded = !state.referenceCornerExpanded;
+  "open-reference-corner": (_id, target) => {
+    const requestedId = target.dataset.characterId;
+    state.referenceCornerCharacterId = state.characters.some((character) => character.id === requestedId)
+      ? requestedId!
+      : state.characters.some((character) => character.id === state.referenceCornerCharacterId)
+        ? state.referenceCornerCharacterId
+        : state.characters[0]?.id ?? null;
+    state.referenceCornerOpen = true;
+    requestRender();
+  },
+  "close-reference-corner": () => closeReferenceCorner(),
+  "select-reference-character": (id) => {
+    if (!state.characters.some((character) => character.id === id)) return;
+    state.referenceCornerCharacterId = id;
     requestRender();
   },
   "refresh-reference-corner": () => {
@@ -129,6 +152,13 @@ registerActions({
 });
 
 registerEventBinder((app) => {
+  app.addEventListener("click", (event) => {
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (target?.classList.contains("reference-corner-modal")) closeReferenceCorner();
+  });
+  app.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.referenceCornerOpen) closeReferenceCorner();
+  });
   app.addEventListener("change", (event) => {
     const input = event.target instanceof HTMLInputElement ? event.target : null;
     if (!input?.matches("[data-reference-upload]") || !input.files?.[0]) return;

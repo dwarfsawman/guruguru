@@ -29,9 +29,10 @@ export function renderBookView(
   referenceCorner: {
     characters: Character[];
     referenceSets: CharacterReferenceSetView[];
-    expanded: boolean;
+    open: boolean;
+    selectedCharacterId: string | null;
     busyId: string | null;
-  } = { characters: [], referenceSets: [], expanded: true, busyId: null }
+  } = { characters: [], referenceSets: [], open: false, selectedCharacterId: null, busyId: null }
 ): string {
   const { project, pages } = book;
   const selectedSet = new Set(selectedPageIds);
@@ -68,6 +69,7 @@ export function renderBookView(
           ${selectionMode ? "" : renderAddPageCard()}
         </div>
       </section>
+      ${renderReferenceCornerModal(referenceCorner)}
     </main>
   `;
 }
@@ -75,9 +77,43 @@ export function renderBookView(
 function renderReferenceCorner(input: {
   characters: Character[];
   referenceSets: CharacterReferenceSetView[];
-  expanded: boolean;
+  open: boolean;
+  selectedCharacterId: string | null;
   busyId: string | null;
 }): string {
+  const readyCharacters = input.characters.filter((character) => referenceCharacterReady(character.id, input.referenceSets)).length;
+  const needsSetup = input.characters.length - readyCharacters;
+  const summary = input.characters.length === 0
+    ? "キャラクター未登録"
+    : `${input.characters.length} characters · 準備済み ${readyCharacters}${needsSetup > 0 ? ` · 要設定 ${needsSetup}` : ""}`;
+  return `
+    <section class="reference-corner" aria-label="レファレンスコーナー">
+      <div class="reference-corner-heading">
+        <span class="reference-corner-copy"><b>レファレンスコーナー</b><small>${escapeHtml(summary)}</small></span>
+        <div class="reference-corner-actions">
+          <button class="button-secondary compact" type="button" data-action="refresh-reference-corner">更新</button>
+          <button class="button-primary compact" type="button" data-action="open-reference-corner">開く</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function referenceCharacterReady(characterId: string, sets: readonly CharacterReferenceSetView[]): boolean {
+  const approvedFamilies = new Set(
+    sets.filter((set) => set.characterId === characterId && set.status === "approved").map((set) => set.modelFamily)
+  );
+  return approvedFamilies.has("chroma") && approvedFamilies.has("anima");
+}
+
+function renderReferenceCornerModal(input: {
+  characters: Character[];
+  referenceSets: CharacterReferenceSetView[];
+  open: boolean;
+  selectedCharacterId: string | null;
+  busyId: string | null;
+}): string {
+  if (!input.open) return "";
   const latest = new Map<string, CharacterReferenceSetView>();
   const adoptedVersions = new Map<string, number>();
   for (const set of input.referenceSets) {
@@ -85,23 +121,35 @@ function renderReferenceCorner(input: {
     if (!latest.has(key)) latest.set(key, set);
     if (set.approvedAt && !adoptedVersions.has(key)) adoptedVersions.set(key, set.version);
   }
+  const activeCharacter = input.characters.find((character) => character.id === input.selectedCharacterId) ?? input.characters[0] ?? null;
+  const tabs = input.characters.map((character) => {
+    const active = character.id === activeCharacter?.id;
+    const ready = referenceCharacterReady(character.id, input.referenceSets);
+    return `<button class="reference-character-tab${active ? " is-active" : ""}" type="button" role="tab"
+      data-action="select-reference-character" data-id="${escapeAttr(character.id)}" aria-selected="${active}">
+      <span>${escapeHtml(character.name)}</span><small>${ready ? "Ready" : "要設定"}</small>
+    </button>`;
+  }).join("");
+  const content = activeCharacter
+    ? (() => {
+        const variants = new Set(input.referenceSets.filter((set) => set.characterId === activeCharacter.id).map((set) => set.variantId));
+        if (variants.size === 0) variants.add(`${activeCharacter.id}:default`);
+        return [...variants].map((variantId) =>
+          renderReferenceCharacter(activeCharacter, variantId, latest, adoptedVersions, input.busyId)
+        ).join("");
+      })()
+    : `<p class="reference-empty">脚本画面でキャラクターを追加すると、ここでReference Setを作成できます。</p>`;
   return `
-    <section class="reference-corner${input.expanded ? " is-expanded" : ""}" aria-label="レファレンスコーナー">
-      <div class="reference-corner-heading">
-        <button class="reference-corner-toggle" type="button" data-action="toggle-reference-corner" aria-expanded="${input.expanded}">
-          <span><b>レファレンスコーナー</b><small>承認済みの顔・全身をモデル別に固定</small></span>
-          <span aria-hidden="true">${input.expanded ? "−" : "+"}</span>
-        </button>
-        <button class="button-secondary compact" type="button" data-action="refresh-reference-corner">更新</button>
-      </div>
-      ${input.expanded ? `<div class="reference-character-list">${input.characters.length === 0
-        ? `<p class="reference-empty">脚本画面でキャラクターを追加すると、ここでReference Setを作成できます。</p>`
-        : input.characters.map((character) => {
-            const variants = new Set(input.referenceSets.filter((set) => set.characterId === character.id).map((set) => set.variantId));
-            if (variants.size === 0) variants.add(`${character.id}:default`);
-            return [...variants].map((variantId) => renderReferenceCharacter(character, variantId, latest, adoptedVersions, input.busyId)).join("");
-          }).join("")}</div>` : ""}
-    </section>
+    <div class="workflow-modal reference-corner-modal" role="presentation">
+      <section class="workflow-dialog reference-corner-dialog" role="dialog" aria-modal="true" aria-label="レファレンスコーナー詳細">
+        <header class="workflow-dialog-header">
+          <div><p class="section-kicker">Book · Reference Sets</p><h2>レファレンスコーナー</h2></div>
+          <button class="icon-button" type="button" data-action="close-reference-corner" aria-label="閉じる" title="閉じる">${iconClose()}</button>
+        </header>
+        <div class="reference-character-tabs" role="tablist" aria-label="キャラクターを選択">${tabs}</div>
+        <div class="reference-corner-modal-body" role="tabpanel">${content}</div>
+      </section>
+    </div>
   `;
 }
 
