@@ -18,7 +18,8 @@ const DEFAULT_SETTINGS: ScriptMangaUiSettings = {
   planningMode: "heuristic",
   panelsPerPage: 4,
   dialoguePolicy: "preserve",
-  auditMode: "vlm"
+  auditMode: "vlm",
+  poseControl: "off"
 };
 
 let operationSerial = 0;
@@ -65,6 +66,9 @@ export function nextScriptMangaSettings(
   }
   if (field === "auditMode" && (rawValue === "manual" || rawValue === "vlm")) {
     return { ...current, auditMode: rawValue };
+  }
+  if (field === "poseControl" && (rawValue === "off" || rawValue === "full" || rawValue === "upper" || rawValue === "face")) {
+    return { ...current, poseControl: rawValue };
   }
   return current;
 }

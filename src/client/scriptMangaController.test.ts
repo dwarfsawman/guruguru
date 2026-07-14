@@ -17,7 +17,8 @@ const settings: ScriptMangaUiSettings = {
   planningMode: "heuristic",
   panelsPerPage: 4,
   dialoguePolicy: "preserve",
-  auditMode: "vlm"
+  auditMode: "vlm",
+  poseControl: "off"
 };
 
 test("nextScriptMangaSettings applies supported template, planner and panel controls", () => {
@@ -99,7 +100,8 @@ test("script manga UI lifecycle clears revision-pinned runs without leaking proj
     planningMode: "heuristic",
     panelsPerPage: 4,
     dialoguePolicy: "preserve",
-    auditMode: "vlm"
+    auditMode: "vlm",
+  poseControl: "off"
   });
   assert.equal(state.scriptMangaVlmStatus, null);
   state.templates = [];

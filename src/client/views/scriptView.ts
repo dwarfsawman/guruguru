@@ -582,6 +582,15 @@ export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps)
             <option value="manual" ${settings.auditMode === "manual" ? "selected" : ""}>人間レビューのみ（VLMなし）</option>
           </select>
         </label>
+        <label class="script-field">
+          <span>ポーズ骨格CN（実験的）</span>
+          <select data-script-manga-setting="poseControl" ${props.scriptMangaBusy ? "disabled" : ""}>
+            <option value="off" ${settings.poseControl === "off" ? "selected" : ""}>OFF（既定）</option>
+            <option value="full" ${settings.poseControl === "full" ? "selected" : ""}>全身</option>
+            <option value="upper" ${settings.poseControl === "upper" ? "selected" : ""}>腰から上</option>
+            <option value="face" ${settings.poseControl === "face" ? "selected" : ""}>顔のみ</option>
+          </select>
+        </label>
       </div>
       <div class="script-manga-audit-setting-detail">
         <p class="script-manga-audit-note">

@@ -4,6 +4,8 @@ import type { ScriptMangaPlan } from "./scriptMangaPlan";
 
 export type ScriptMangaPlanningMode = "heuristic" | "llm";
 export type ScriptMangaAuditMode = "manual" | "vlm";
+/** 棒人間ControlNet(ネームv4 D4)。off=無効(既定)、それ以外は部分モード。 */
+export type ScriptMangaPoseControlMode = "off" | "full" | "upper" | "face";
 export type ScriptMangaVlmAuditState = "queued" | "deferred" | "completed" | "unavailable";
 
 export interface ScriptMangaVlmAuditReport {
@@ -27,6 +29,8 @@ export interface ScriptMangaUiSettings {
   panelsPerPage: number;
   dialoguePolicy: DialoguePolicy;
   auditMode: ScriptMangaAuditMode;
+  /** 棒人間骨格のControlNet条件付け(実験的、既定 off)。 */
+  poseControl: ScriptMangaPoseControlMode;
 }
 
 export interface PrepareScriptMangaRunRequest extends ScriptMangaUiSettings {

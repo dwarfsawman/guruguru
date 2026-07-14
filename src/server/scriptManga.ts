@@ -46,6 +46,9 @@ import { resolvePanelReferences } from "./referenceResolver";
 import { createGenerationRound, ensureRoundMonitor, interruptRound } from "./rounds";
 import { createImageExport, type ImageExportResult } from "./imageExport";
 import { createOpenRasterExport, type OpenRasterExportResult } from "./openRasterExport";
+import sharp from "sharp";
+import { renderPoseSkeletonSvg } from "../shared/poseSkeletonSvg";
+import { reconstructPanelPoses, type PoseControlMode } from "./panelPoseReconstructor";
 import { directAdoptedCandidatePlan, planScriptMangaWithDirectorDetailed } from "./scriptMangaDirector";
 import { readCachedBeatAnnotation, type BeatAnnotationResult } from "./scriptBeatAnnotator";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
@@ -121,6 +124,14 @@ interface PlanRow {
   approved_at: string | null;
 }
 
+/** 棒人間ControlNet(ネームv4 D4)。既定OFF・弱め/早期終了(骨格で漫画的デフォルメを殺さない)。 */
+interface PoseControlConfig {
+  enabled: boolean;
+  mode: PoseControlMode;
+  strength: number;
+  endPercent: number;
+}
+
 interface ScriptMangaRunConfig {
   templateId: string;
   providerId: string;
@@ -139,6 +150,56 @@ interface ScriptMangaRunConfig {
   planOptions: ScriptMangaPlanOptions;
   requireReferenceSets: boolean;
   allowReferenceFallback: boolean;
+  poseControl?: PoseControlConfig;
+}
+
+/**
+ * poseControl 入力の正規化。UI は文字列("off"|"full"|"upper"|"face")、API 直叩きは
+ * `{ enabled, mode, strength?, endPercent? }` オブジェクトも受け付ける。不正は undefined(OFF)。
+ */
+export function parsePoseControlInput(value: unknown): PoseControlConfig | undefined {
+  const defaults = { strength: 0.5, endPercent: 0.6 } as const;
+  if (typeof value === "string") {
+    if (value === "off") return undefined;
+    if (value === "full" || value === "upper" || value === "face") {
+      return { enabled: true, mode: value, ...defaults };
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.enabled !== true) return undefined;
+  const mode = raw.mode === "upper" || raw.mode === "face" ? raw.mode : "full";
+  const strength = typeof raw.strength === "number" && Number.isFinite(raw.strength)
+    ? Math.max(0, Math.min(2, raw.strength))
+    : defaults.strength;
+  const endPercent = typeof raw.endPercent === "number" && Number.isFinite(raw.endPercent)
+    ? Math.max(0.05, Math.min(1, raw.endPercent))
+    : defaults.endPercent;
+  return { enabled: true, mode, strength, endPercent };
+}
+
+/**
+ * panel から ControlNet 添付(骨格 data URL)を組み立てる。骨格を復元できないコマ
+ * (insert/無人/5人以上)や不正サイズは null(添付なしで通常生成)。
+ */
+export async function buildPoseControlAttachment(
+  panel: PanelSpec,
+  width: number,
+  height: number,
+  poseControl: PoseControlConfig
+): Promise<{ poseImageDataUrl: string; strength: number; startPercent: number; endPercent: number; presetIds: string[] } | null> {
+  const reconstructed = reconstructPanelPoses(panel, width, height, poseControl.mode);
+  if (!reconstructed) return null;
+  const svg = renderPoseSkeletonSvg(reconstructed.poses, width, height);
+  const png = await sharp(Buffer.from(svg)).png().toBuffer();
+  return {
+    poseImageDataUrl: `data:image/png;base64,${png.toString("base64")}`,
+    strength: poseControl.strength,
+    startPercent: 0,
+    endPercent: poseControl.endPercent,
+    presetIds: reconstructed.presetIds
+  };
 }
 
 const SCRIPT_MANGA_FONT_SCALE = 0.88;
@@ -1049,6 +1110,23 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
         : null,
       providerId: config.providerId
     };
+    // ネームv4 D4: 棒人間骨格の ControlNet 条件付け(既定OFF)。テンプレに
+    // ControlNetApplyAdvanced が無い場合は黙ってスキップ(prune済み経路と整合)。
+    if (config.poseControl?.enabled && promptProfile.workflowJson.includes("ControlNetApplyAdvanced")) {
+      try {
+        const attachment = await buildPoseControlAttachment(panel, size.width, size.height, config.poseControl);
+        if (attachment) {
+          request.controlnet = {
+            poseImageDataUrl: attachment.poseImageDataUrl,
+            strength: attachment.strength,
+            startPercent: attachment.startPercent,
+            endPercent: attachment.endPercent
+          };
+        }
+      } catch {
+        // 骨格添付は補助条件。失敗してもコマ生成自体は止めない。
+      }
+    }
     const claimed = runSql(
       `UPDATE script_manga_tasks SET status = 'submitting', panel_spec_json = ?, reference_manifest_json = ?,
          attempt_count = attempt_count + 1, last_error_json = NULL, updated_at = CURRENT_TIMESTAMP
@@ -1572,6 +1650,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
   persistPlan(projectId, plan, validation);
 
   const generateImages = input.generateImages !== false;
+  const poseControl = parsePoseControlInput(input.poseControl);
   const config: ScriptMangaRunConfig = {
     templateId,
     providerId,
@@ -1590,7 +1669,8 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     scheduler: stringOr(input.scheduler, "beta"),
     planOptions,
     requireReferenceSets: providerId === "comfy" && (input.requireReferenceSets === true || generateImages),
-    allowReferenceFallback: input.allowReferenceFallback === true
+    allowReferenceFallback: input.allowReferenceFallback === true,
+    ...(poseControl ? { poseControl } : {})
   };
   const generationBudget = {
     maxAttemptsPerPanel: 3,

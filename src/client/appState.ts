@@ -699,7 +699,8 @@ export const state: AppState = {
     planningMode: "heuristic",
     panelsPerPage: 4,
     dialoguePolicy: "preserve",
-    auditMode: "vlm"
+    auditMode: "vlm",
+    poseControl: "off"
   },
   scriptMangaRun: null,
   scriptMangaBusy: false,
