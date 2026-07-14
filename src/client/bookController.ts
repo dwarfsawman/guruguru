@@ -24,6 +24,7 @@ import { refreshRecentReferenceImages } from "./referenceController";
 import { confirmDialog } from "./confirmDialogController";
 import { openImageExport } from "./imageExportController";
 import { clearReferenceCorner, loadReferenceCorner } from "./referenceSetController";
+import { clearScriptProjectSession } from "./scriptController";
 
 /** Book を開く（グリッド表示）。単一プロジェクトの openProject に相当するプロジェクトセッション初期化 + ページ一覧取得。 */
 export async function openBook(projectId: string) {
@@ -146,6 +147,7 @@ export function clearBookSession() {
   state.pagePanelLightbox = null;
   state.pagePanelAssignments = [];
   state.activePanelTarget = null;
+  clearScriptProjectSession();
   clearReferenceCorner();
 }
 

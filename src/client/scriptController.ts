@@ -39,6 +39,10 @@ export async function openScriptScreen() {
   state.sidebarOpen = false;
   state.maskEditMode = false;
   state.paintEditMode = false;
+  // initializeScriptMangaUiState() は候補一覧の先行取得を始めるため、別Projectの
+  // scriptId が残っていると「新projectId + 旧scriptId」で404になる。一覧取得後に
+  // selectScript() するまでは必ず未選択に戻す。
+  clearScriptSelectionState();
   initializeScriptMangaUiState();
   requestRender();
 
@@ -70,9 +74,7 @@ export async function openScriptScreen() {
   void refreshLoraChoices();
 }
 
-/** 脚本画面からページ一覧へ戻る。 */
-function closeScriptScreen() {
-  state.scriptScreenOpen = false;
+function clearScriptSelectionState() {
   state.activeScriptId = null;
   state.activeScriptRevision = null;
   state.scriptDialogueLines = [];
@@ -80,6 +82,24 @@ function closeScriptScreen() {
   state.selectedCharacterId = null;
   state.selectedCharacterBinding = null;
   state.characterFacePickerOpen = false;
+}
+
+/** Projectを離れる時に、次のProjectへ持ち越してはいけない脚本状態を破棄する。 */
+export function clearScriptProjectSession() {
+  state.scriptScreenOpen = false;
+  state.scripts = [];
+  state.scriptImportBusy = false;
+  state.characters = [];
+  state.characterLoraNameDraft = "";
+  state.characterLoraStrengthDraft = 1;
+  clearScriptSelectionState();
+  clearScriptMangaUiState();
+}
+
+/** 脚本画面からページ一覧へ戻る。 */
+function closeScriptScreen() {
+  state.scriptScreenOpen = false;
+  clearScriptSelectionState();
   clearScriptMangaUiState();
   requestRender();
 }
