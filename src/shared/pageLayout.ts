@@ -49,7 +49,7 @@ export interface LayoutBalloon {
   order?: number;
   shape?: PanelShape;
   kind?: string;
-  scope?: string;
+  scope?: string | { type: string; id?: string };
   [key: string]: unknown;
 }
 
@@ -495,12 +495,21 @@ function normalizeSingleGuruguruPage(
     panels
   };
 
-  const balloons = normalizeBalloons(parsed.balloons, pageId);
+  const pageElementContext: PageElementContext = {
+    pageId,
+    isMultiPage,
+    panelIds: new Set(panels.map((panel) => panel.id)),
+    bounds: boundsRaw,
+    offsetX,
+    offsetY
+  };
+  const balloons = normalizeBalloons(parsed.balloons, pageElementContext);
   if (balloons.length > 0) {
     layout.balloons = balloons;
   }
-  if (Array.isArray(parsed.texts) && parsed.texts.length > 0) {
-    layout.texts = parsed.texts;
+  const texts = normalizeTexts(parsed.texts, pageElementContext, balloons);
+  if (texts.length > 0) {
+    layout.texts = texts;
   }
 
   layout.source = {
@@ -655,7 +664,148 @@ export function normalizeEditedPageLayout(raw: unknown): PageLayout | null {
   return layout;
 }
 
-function normalizeBalloons(raw: unknown, pageId: string | null): LayoutBalloon[] {
+interface PageElementContext {
+  pageId: string | null;
+  isMultiPage: boolean;
+  panelIds: ReadonlySet<string>;
+  bounds: [number, number, number, number] | null;
+  offsetX: number;
+  offsetY: number;
+}
+
+function elementBounds(entry: Record<string, unknown>): [number, number, number, number] | null {
+  const shape = normalizePanelShape(entry.shape);
+  if (shape) return panelBounds(shape);
+  return asBounds(entry.box);
+}
+
+function elementFitsPage(entry: Record<string, unknown>, bounds: [number, number, number, number] | null): boolean {
+  if (!bounds) return false;
+  const element = elementBounds(entry);
+  if (!element) return false;
+  const pageX1 = Math.min(bounds[0], bounds[2]);
+  const pageY1 = Math.min(bounds[1], bounds[3]);
+  const pageX2 = Math.max(bounds[0], bounds[2]);
+  const pageY2 = Math.max(bounds[1], bounds[3]);
+  const elementX1 = Math.min(element[0], element[2]);
+  const elementY1 = Math.min(element[1], element[3]);
+  const elementX2 = Math.max(element[0], element[2]);
+  const elementY2 = Math.max(element[1], element[3]);
+  return elementX1 >= pageX1 - EPSILON && elementY1 >= pageY1 - EPSILON
+    && elementX2 <= pageX2 + EPSILON && elementY2 <= pageY2 + EPSILON;
+}
+
+function balloonBelongsToPage(entry: Record<string, unknown>, context: PageElementContext): boolean {
+  if (!context.isMultiPage) return true;
+  if (typeof entry.pageId === "string") return entry.pageId === context.pageId;
+  const scope = isJsonObject(entry.scope) ? entry.scope : null;
+  if (scope?.type === "panel") return typeof scope.id === "string" && context.panelIds.has(scope.id);
+  if (scope?.type === "page") return typeof scope.id === "string" && scope.id === context.pageId;
+  if (scope?.type === "spread") return false;
+  return elementFitsPage(entry, context.bounds);
+}
+
+function translatedCoordinate(value: number, delta: number): number {
+  const translated = Number((value + delta).toPrecision(15));
+  return Math.abs(translated) < EPSILON ? 0 : translated;
+}
+
+const SVG_PATH_PARAMETER_COUNTS: Readonly<Record<string, number>> = {
+  M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0
+};
+
+function translateSvgPathData(path: string, dx: number, dy: number): string {
+  const tokenPattern = /[A-Za-z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/gu;
+  const tokens = path.match(tokenPattern);
+  const residue = path.replace(tokenPattern, "").replace(/[\s,]+/gu, "");
+  if (!tokens || residue.length > 0) return path;
+  const output: string[] = [];
+  let index = 0;
+  let command = "";
+  let hasDrawnGroup = false;
+  while (index < tokens.length) {
+    if (/^[A-Za-z]$/u.test(tokens[index]!)) {
+      command = tokens[index]!;
+      output.push(command);
+      index += 1;
+      const count = SVG_PATH_PARAMETER_COUNTS[command.toUpperCase()];
+      if (count === undefined) return path;
+      if (count === 0) {
+        command = "";
+        hasDrawnGroup = true;
+        continue;
+      }
+    }
+    if (!command) return path;
+    const count = SVG_PATH_PARAMETER_COUNTS[command.toUpperCase()]!;
+    const group = tokens.slice(index, index + count);
+    if (group.length !== count || group.some((token) => /^[A-Za-z]$/u.test(token))) return path;
+    const values = group.map(Number);
+    if (values.some((value) => !Number.isFinite(value))) return path;
+    const upper = command.toUpperCase();
+    const relative = command !== upper;
+    if (!relative) {
+      if (upper === "H") values[0] = translatedCoordinate(values[0]!, dx);
+      else if (upper === "V") values[0] = translatedCoordinate(values[0]!, dy);
+      else if (upper === "A") {
+        values[5] = translatedCoordinate(values[5]!, dx);
+        values[6] = translatedCoordinate(values[6]!, dy);
+      } else {
+        for (let coordinate = 0; coordinate < values.length; coordinate += 2) {
+          values[coordinate] = translatedCoordinate(values[coordinate]!, dx);
+          values[coordinate + 1] = translatedCoordinate(values[coordinate + 1]!, dy);
+        }
+      }
+    } else if (!hasDrawnGroup && upper === "M") {
+      values[0] = translatedCoordinate(values[0]!, dx);
+      values[1] = translatedCoordinate(values[1]!, dy);
+    }
+    output.push(...values.map((value) => String(Number(value.toFixed(12)))));
+    index += count;
+    hasDrawnGroup = true;
+  }
+  return output.join(" ");
+}
+
+function translateGeometry(raw: unknown, dx: number, dy: number): unknown {
+  if (!isJsonObject(raw)) return raw;
+  const shape = normalizePanelShape(raw);
+  if (!shape) return raw;
+  if (shape.type === "path") return { ...raw, d: translateSvgPathData(shape.d, dx, dy) };
+  return { ...raw, ...translatePanelShape(shape, dx, dy) };
+}
+
+function translateBalloon(entry: Record<string, unknown>, id: string, dx: number, dy: number): LayoutBalloon {
+  if (Math.abs(dx) < EPSILON && Math.abs(dy) < EPSILON) return { ...entry, id } as LayoutBalloon;
+  const translated: Record<string, unknown> = { ...entry, id };
+  translated.shape = translateGeometry(entry.shape, dx, dy);
+  if (isJsonObject(entry.tail)) {
+    const tail: Record<string, unknown> = { ...entry.tail };
+    if (typeof tail.d === "string") tail.d = translateSvgPathData(tail.d, dx, dy);
+    if (Array.isArray(tail.beads)) {
+      tail.beads = tail.beads.map((bead) => {
+        if (!isJsonObject(bead)) return bead;
+        const center = asNumberPair(bead.center);
+        return center
+          ? { ...bead, center: [translatedCoordinate(center[0], dx), translatedCoordinate(center[1], dy)] }
+          : bead;
+      });
+    }
+    if (isJsonObject(tail.target)) {
+      const position = asNumberPair(tail.target.position);
+      if (position) {
+        tail.target = {
+          ...tail.target,
+          position: [translatedCoordinate(position[0], dx), translatedCoordinate(position[1], dy)]
+        };
+      }
+    }
+    translated.tail = tail;
+  }
+  return translated as LayoutBalloon;
+}
+
+function normalizeBalloons(raw: unknown, context: PageElementContext): LayoutBalloon[] {
   if (!Array.isArray(raw)) {
     return [];
   }
@@ -664,11 +814,46 @@ function normalizeBalloons(raw: unknown, pageId: string | null): LayoutBalloon[]
     if (!isJsonObject(entry)) {
       return;
     }
-    if (pageId && typeof entry.pageId === "string" && entry.pageId !== pageId) {
-      return;
-    }
+    if (!balloonBelongsToPage(entry, context)) return;
     const id = typeof entry.id === "string" && entry.id ? entry.id : `balloon_${index + 1}`;
-    balloons.push({ ...entry, id });
+    balloons.push(translateBalloon(entry, id, -context.offsetX, -context.offsetY));
   });
   return balloons;
+}
+
+function balloonTextIds(balloons: readonly LayoutBalloon[]): Set<string> {
+  const ids = new Set<string>();
+  for (const balloon of balloons) {
+    if (typeof balloon.textId === "string") ids.add(balloon.textId);
+    if (!Array.isArray(balloon.parts)) continue;
+    for (const part of balloon.parts) {
+      if (isJsonObject(part) && typeof part.textId === "string") ids.add(part.textId);
+    }
+  }
+  return ids;
+}
+
+function normalizeTexts(raw: unknown, context: PageElementContext, balloons: readonly LayoutBalloon[]): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const referencedTextIds = balloonTextIds(balloons);
+  return raw.flatMap((entry) => {
+    if (!isJsonObject(entry)) return [];
+    const belongs = !context.isMultiPage
+      || (typeof entry.pageId === "string"
+        ? entry.pageId === context.pageId
+        : (typeof entry.id === "string" && referencedTextIds.has(entry.id)) || elementFitsPage(entry, context.bounds));
+    if (!belongs) return [];
+    const box = asBounds(entry.box);
+    return [{
+      ...entry,
+      ...(box ? {
+        box: [
+          translatedCoordinate(box[0], -context.offsetX),
+          translatedCoordinate(box[1], -context.offsetY),
+          translatedCoordinate(box[2], -context.offsetX),
+          translatedCoordinate(box[3], -context.offsetY)
+        ]
+      } : {})
+    }];
+  });
 }

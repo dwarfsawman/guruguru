@@ -5,6 +5,7 @@
  * data-action は `registerActions`、ファイル入力の change は main.ts の委譲から呼ばれる。
  */
 import type { LayoutTemplateSummary, LayoutTemplatesResponse } from "../shared/apiTypes";
+import { setExternalScriptMangaLayouts, type ScriptMangaExternalLayout } from "../shared/layoutPresets";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
@@ -17,6 +18,18 @@ export async function refreshLayoutTemplates() {
   try {
     const data = await api<LayoutTemplatesResponse>("/api/layout-templates");
     state.layoutTemplates = data.templates;
+    const scriptMangaLayouts: ScriptMangaExternalLayout[] = data.templates.flatMap((template) => {
+      const autoManga = template.layout.source?.autoManga;
+      if (template.source !== "imported" || !autoManga?.candidate) return [];
+      return [{
+        id: template.id,
+        name: template.name,
+        layout: template.layout,
+        ...(autoManga.description ? { description: autoManga.description } : {}),
+        ...(autoManga.emphasisPanelIds?.length ? { emphasisPanelIds: autoManga.emphasisPanelIds } : {})
+      }];
+    });
+    setExternalScriptMangaLayouts(scriptMangaLayouts);
   } finally {
     // 失敗しても loading を必ず下げる(下げないと「読み込み中…」が残り続ける)。
     state.layoutTemplatesLoading = false;

@@ -23,7 +23,7 @@ import type {
   VlmAuditServiceStatus
 } from "../../shared/scriptMangaApi";
 import type { ScriptMangaPagePlan } from "../../shared/scriptMangaPlan";
-import { findLayoutPreset } from "../../shared/layoutPresets";
+import { resolveScriptMangaLayout } from "../../shared/layoutPresets";
 import { renderPageWireframeSvg, type WireframePanelInfo } from "../../shared/pageLayoutSvg";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconPlus, iconScript, iconTrash } from "../icons";
@@ -395,7 +395,7 @@ function candidatePageThumb(
   props: PlanCandidatesViewProps,
   highlight: boolean
 ): string {
-  const layout = findLayoutPreset(page.layoutTemplateId)?.layout;
+  const layout = resolveScriptMangaLayout(page.layoutTemplateId);
   if (!layout) {
     return `<div class="plan-candidate-page is-unknown" title="${escapeAttr(page.layoutTemplateId)}">?</div>`;
   }
