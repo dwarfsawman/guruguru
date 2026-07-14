@@ -369,10 +369,49 @@ const SCRIPT_MANGA_LAYOUTS_BY_PANEL_COUNT: Readonly<Record<number, readonly stri
   6: ["builtin:six-panel", "builtin:six-hero-right"]
 };
 
-/** 自動漫画で選択可能な内蔵レイアウトを、正確なコマ数ごとに返す。 */
+/**
+ * 取り込みテンプレの候補プール参加(ネームv4 D6 / SPEC v0.3 §23.1)。`autoManga.candidate:true` の
+ * 取り込みテンプレをサーバが登録し、内蔵候補の**末尾**へ加わる(既定=先頭の互換維持)。
+ * 参加要件: コマ数1〜6 / 全コマ rect または polygon / bleedOvershoot 検証(取り込み時に済)。
+ */
+export interface ScriptMangaExternalLayout {
+  id: string;
+  name: string;
+  layout: PageLayout;
+  /** LLM向け英語説明。省略時は面積プロファイルから自動生成する。 */
+  description?: string;
+  /** hero スロット上書き(SPEC autoManga.emphasisPanelIds)。省略時は面積最大。 */
+  emphasisPanelIds?: string[];
+}
+
+let externalScriptMangaLayouts: ScriptMangaExternalLayout[] = [];
+
+/** 参加要件(§23.1)を満たすか。 */
+export function isEligibleScriptMangaExternalLayout(layout: PageLayout): boolean {
+  if (layout.panels.length < 1 || layout.panels.length > 6) return false;
+  return layout.panels.every((panel) => panel.shape.type === "rect" || panel.shape.type === "polygon");
+}
+
+/** サーバが取り込みテンプレ一覧の更新時に呼ぶ。要件を満たさないものは黙って除外する。 */
+export function setExternalScriptMangaLayouts(entries: readonly ScriptMangaExternalLayout[]): void {
+  externalScriptMangaLayouts = entries.filter((entry) => isEligibleScriptMangaExternalLayout(entry.layout));
+}
+
+export function listExternalScriptMangaLayouts(): readonly ScriptMangaExternalLayout[] {
+  return externalScriptMangaLayouts;
+}
+
+function findExternalScriptMangaLayout(id: string): ScriptMangaExternalLayout | null {
+  return externalScriptMangaLayouts.find((entry) => entry.id === id) ?? null;
+}
+
+/** 自動漫画で選択可能なレイアウト(内蔵+候補参加の取り込みテンプレ)を、正確なコマ数ごとに返す。 */
 export function scriptMangaLayoutCandidates(panelCount: number): string[] {
   if (!Number.isInteger(panelCount) || panelCount < 1 || panelCount > 6) return [];
-  return [...(SCRIPT_MANGA_LAYOUTS_BY_PANEL_COUNT[panelCount] ?? [])];
+  return [
+    ...(SCRIPT_MANGA_LAYOUTS_BY_PANEL_COUNT[panelCount] ?? []),
+    ...externalScriptMangaLayouts.filter((entry) => entry.layout.panels.length === panelCount).map((entry) => entry.id)
+  ];
 }
 
 /** id で内蔵テンプレを引く(見つからなければ null)。 */
@@ -449,10 +488,10 @@ export function pageLayoutAreaProfile(layout: PageLayout): number[] {
   return areas.map((area) => area / total);
 }
 
-/** 内蔵レイアウト id の面積プロファイル(未知の id は null)。 */
+/** レイアウト id の面積プロファイル(内蔵+候補参加の取り込みテンプレ。未知の id は null)。 */
 export function layoutAreaProfile(id: string): number[] | null {
-  const template = findLayoutPreset(id);
-  return template ? pageLayoutAreaProfile(template.layout) : null;
+  const layout = findLayoutPreset(id)?.layout ?? findExternalScriptMangaLayout(id)?.layout ?? null;
+  return layout ? pageLayoutAreaProfile(layout) : null;
 }
 
 /** 「強調スロットあり」とみなす、最大面積スロットの対2位面積比の下限。均等グリッドを除外する。 */
@@ -474,10 +513,25 @@ export function emphasizedSlotIndex(areas: readonly number[]): number | null {
 
 export type ScriptMangaLayoutResolver = (id: string) => PageLayout | null;
 
-const builtinLayoutResolver: ScriptMangaLayoutResolver = (id) => findLayoutPreset(id)?.layout ?? null;
+const builtinLayoutResolver: ScriptMangaLayoutResolver = (id) =>
+  findLayoutPreset(id)?.layout ?? findExternalScriptMangaLayout(id)?.layout ?? null;
 
 function heroSlotIndexes(importances: readonly MangaPanelImportance[]): number[] {
   return importances.flatMap((value, index) => (value === "hero" || value === "splash" ? [index] : []));
+}
+
+/**
+ * レイアウトの強調スロット(reading-order index)。取り込みテンプレの
+ * `autoManga.emphasisPanelIds` があれば面積最大より優先する(SPEC v0.3 §23.1)。
+ */
+function emphasizedSlotForLayout(id: string, layout: PageLayout): number | null {
+  const external = findExternalScriptMangaLayout(id);
+  if (external?.emphasisPanelIds?.length) {
+    const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
+    const index = ordered.findIndex((panel) => external.emphasisPanelIds!.includes(panel.id));
+    if (index >= 0) return index;
+  }
+  return emphasizedSlotIndex(pageLayoutAreaProfile(layout));
 }
 
 /**
@@ -493,7 +547,7 @@ export function scriptMangaLayoutAlignsImportance(
   if (heroes.length === 0 || importances.length < 2) return true;
   const layout = resolveLayout(layoutTemplateId);
   if (!layout || layout.panels.length !== importances.length) return true;
-  const slot = emphasizedSlotIndex(pageLayoutAreaProfile(layout));
+  const slot = emphasizedSlotForLayout(layoutTemplateId, layout);
   return slot !== null && heroes.includes(slot);
 }
 
@@ -526,7 +580,7 @@ export function selectScriptMangaLayoutId(
     const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
     if (ordered.some((panel) => panel.role === "figure")) continue;
     const areas = pageLayoutAreaProfile(layout);
-    const slot = emphasizedSlotIndex(areas);
+    const slot = emphasizedSlotForLayout(id, layout);
     const aligns = slot !== null && heroes.includes(slot);
     const fit = -importances.reduce(
       (sum, _, position) => sum + Math.abs(targetWeights[position]! / targetTotal - (areas[position] ?? 0)),
@@ -549,20 +603,44 @@ export interface ScriptMangaLayoutDescriptor {
 }
 
 /**
+ * 面積プロファイルからの英語説明の自動生成(ネームv4 D6: `autoManga.description` 省略時)。
+ * LLM監督が候補として扱える最低限の情報(コマ数・強調スロット位置・裁ち切り)を持たせる。
+ */
+export function describeLayoutFromAreaProfile(layout: PageLayout): string {
+  const areas = pageLayoutAreaProfile(layout);
+  const slot = emphasizedSlotIndex(areas);
+  const height = layout.page.height;
+  const bleeds = layout.panels.some((panel) => {
+    const [x1, y1, x2, y2] = panelBounds(panel.shape);
+    return x1 < 0 || y1 < 0 || x2 > 1 || y2 > height;
+  });
+  const base = `imported ${areas.length}-panel layout`;
+  const emphasis = slot !== null
+    ? `, large hero slot at reading position ${slot + 1} (${Math.round((areas[slot] ?? 0) * 100)}% of the page)`
+    : ", evenly sized panels";
+  return `${base}${emphasis}${bleeds ? ", with art bleeding off the page edge" : ""}`;
+}
+
+/**
  * レイアウト id 群を LLM 監督/provided plan 作者向けの記述子へ変換する。`figureSlot` は
  * 実行時と同じ `orderPanelsByReadingDirection` で計算するため、plan の panels[index] ↔
- * layout スロットの対応(reading-order zip)と常に一致する。
+ * layout スロットの対応(reading-order zip)と常に一致する。取り込み候補(autoManga)は
+ * `description` があればそれを、無ければ面積プロファイルから自動生成した説明を使う。
  */
 export function describeScriptMangaLayouts(ids: readonly string[]): ScriptMangaLayoutDescriptor[] {
   return ids.flatMap((id) => {
     const template = findLayoutPreset(id);
-    if (!template) return [];
-    const ordered = orderPanelsByReadingDirection(template.layout.panels, template.layout.readingDirection);
+    const external = template ? null : findExternalScriptMangaLayout(id);
+    const layout = template?.layout ?? external?.layout;
+    if (!layout) return [];
+    const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
     const figureIndex = ordered.findIndex((panel) => panel.role === "figure");
     const descriptor: ScriptMangaLayoutDescriptor = {
       id,
-      panelCount: template.layout.panels.length,
-      description: SCRIPT_MANGA_LAYOUT_DESCRIPTIONS[id] ?? template.name
+      panelCount: layout.panels.length,
+      description: template
+        ? SCRIPT_MANGA_LAYOUT_DESCRIPTIONS[id] ?? template.name
+        : external!.description ?? describeLayoutFromAreaProfile(layout)
     };
     if (figureIndex >= 0) descriptor.figureSlot = figureIndex + 1;
     return [descriptor];

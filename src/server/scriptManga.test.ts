@@ -581,7 +581,7 @@ test("a prepared run executes from its layout snapshot after an imported templat
       pages: [{
         index: 0,
         title: "Page 1",
-        layoutTemplateId: importedLayout.id,
+        layoutTemplateId: importedLayout.template.id,
         panels: [{
           id: "snapshot-panel",
           sceneIndex: 0,
@@ -594,7 +594,7 @@ test("a prepared run executes from its layout snapshot after an imported templat
     }
   });
   assert.equal(prepared.plan?.pages[0]?.layoutSnapshot.panels[0]?.id, "only");
-  deleteLayoutTemplate(importedLayout.id);
+  deleteLayoutTemplate(importedLayout.template.id);
   approveScriptMangaRun(prepared.id);
   const started = await startScriptMangaRun(prepared.id);
   assert.equal(started.status, "running");
