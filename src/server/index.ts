@@ -502,7 +502,9 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     res.writeHead(200, {
       "content-type": "image/png",
       "content-length": String(buffer.byteLength),
-      "cache-control": "private, max-age=60"
+      "cache-control": url.searchParams.has("v")
+        ? "private, max-age=31536000, immutable"
+        : "private, max-age=60"
     });
     res.end(buffer);
     return;

@@ -1,8 +1,19 @@
 import { createReadStream, mkdirSync } from "node:fs";
-import { copyFile, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
+import sharp from "sharp";
 import { dataRoot } from "./db";
 import { isPathInside } from "./paths";
+
+export type AssetThumbnailSize = "small" | "medium";
+
+const THUMBNAIL_MAX_DIMENSION: Record<AssetThumbnailSize, number> = {
+  small: 320,
+  medium: 768
+};
+
+/** 同じ旧サムネイルへ同時に複数リクエストが来ても、再生成は1回だけにまとめる。 */
+const thumbnailRepairTasks = new Map<string, Promise<string>>();
 
 export interface StoredImage {
   imagePath: string;
@@ -64,8 +75,14 @@ export async function storeImage(projectId: string, roundId: string, batchIndex:
   const thumbnailMediumPath = join(storage.thumbnails, `medium_${baseName}`);
 
   await writeFile(imagePath, bytes);
-  await copyFile(imagePath, thumbnailSmallPath);
-  await copyFile(imagePath, thumbnailMediumPath);
+  const [smallThumbnailBytes, mediumThumbnailBytes] = await Promise.all([
+    createThumbnailBytes(bytes, thumbnailSmallPath, "small").catch(() => bytes),
+    createThumbnailBytes(bytes, thumbnailMediumPath, "medium").catch(() => bytes)
+  ]);
+  await Promise.all([
+    writeFile(thumbnailSmallPath, smallThumbnailBytes),
+    writeFile(thumbnailMediumPath, mediumThumbnailBytes)
+  ]);
 
   const size = readImageSize(bytes);
   return {
@@ -75,6 +92,86 @@ export async function storeImage(projectId: string, roundId: string, batchIndex:
     width: size?.width ?? null,
     height: size?.height ?? null
   };
+}
+
+/**
+ * 旧版で原寸コピーとして保存されたサムネイルを、配信直前に本来の大きさへ修復する。
+ * import 済み guruzip も再インポート不要で段階的に軽量化される。
+ */
+export function ensureAssetThumbnail(
+  imagePath: string,
+  thumbnailPath: string,
+  size: AssetThumbnailSize
+): Promise<string> {
+  const resolvedImagePath = resolve(imagePath);
+  const resolvedThumbnailPath = resolve(thumbnailPath);
+  if (!isPathInside(resolvedImagePath, dataRoot) || !isPathInside(resolvedThumbnailPath, dataRoot)) {
+    return Promise.reject(new Error("Asset thumbnail path is outside the data directory"));
+  }
+
+  const key = thumbnailTaskKey(resolvedThumbnailPath, size);
+  const existing = thumbnailRepairTasks.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  const task = repairAssetThumbnail(resolvedImagePath, resolvedThumbnailPath, size).catch((error) => {
+    thumbnailRepairTasks.delete(key);
+    throw error;
+  });
+  thumbnailRepairTasks.set(key, task);
+  return task;
+}
+
+async function repairAssetThumbnail(imagePath: string, thumbnailPath: string, size: AssetThumbnailSize): Promise<string> {
+  const maxDimension = THUMBNAIL_MAX_DIMENSION[size];
+  try {
+    const metadata = await sharp(thumbnailPath, { failOn: "none" }).rotate().metadata();
+    if (
+      (metadata.width ?? 0) > 0 &&
+      (metadata.height ?? 0) > 0 &&
+      (metadata.width ?? 0) <= maxDimension &&
+      (metadata.height ?? 0) <= maxDimension
+    ) {
+      return thumbnailPath;
+    }
+  } catch {
+    // 欠損・破損・旧形式は下で原本から再生成する。
+  }
+
+  const bytes = await createThumbnailBytes(imagePath, thumbnailPath, size);
+  await writeFile(thumbnailPath, bytes);
+  return thumbnailPath;
+}
+
+async function createThumbnailBytes(
+  source: Buffer | string,
+  targetPath: string,
+  size: AssetThumbnailSize
+): Promise<Buffer> {
+  let pipeline = sharp(source, { failOn: "none" })
+    .rotate()
+    .resize({
+      width: THUMBNAIL_MAX_DIMENSION[size],
+      height: THUMBNAIL_MAX_DIMENSION[size],
+      fit: "inside",
+      withoutEnlargement: true
+    });
+  const ext = extname(targetPath).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") {
+    pipeline = pipeline.jpeg({ quality: 84, mozjpeg: true });
+  } else if (ext === ".webp") {
+    pipeline = pipeline.webp({ quality: 82 });
+  } else if (ext === ".gif") {
+    pipeline = pipeline.gif();
+  } else {
+    pipeline = pipeline.png({ compressionLevel: 8 });
+  }
+  return pipeline.toBuffer();
+}
+
+function thumbnailTaskKey(path: string, size: AssetThumbnailSize): string {
+  return `${resolve(path)}:${size}`;
 }
 
 export async function storeMaskImage(projectId: string, roundId: string, bytes: Buffer): Promise<StoredMask> {

@@ -29,6 +29,7 @@ import { balloonContentMaxWidth, renderBalloonSvg } from "../shared/balloonShape
 import { renderTextSvg } from "../shared/textSvg";
 import { getRow, getRows, toApiRow } from "./db";
 import { HttpError } from "./http";
+import { ensureAssetThumbnail } from "./storage";
 import { computeTextLayoutForContent } from "./textLayoutApi";
 import { objectBody } from "./validate";
 
@@ -71,8 +72,18 @@ export function computeExportCanvas(pixelWidth: number, pageHeightRatio: number)
 interface ExportAssetRow {
   id: string;
   image_path: string;
+  thumbnail_small_path: string;
+  thumbnail_medium_path: string;
   width: number | null;
   height: number | null;
+}
+
+type RasterAssetSource = "original" | "thumbnail-small" | "thumbnail-medium";
+
+interface CreatePageLayersOptions {
+  assetSource?: RasterAssetSource;
+  /** preview 時だけ ImageObject の page_media もこの最大辺まで縮小してから SVG へ埋め込む。 */
+  mediaMaxDimension?: number;
 }
 
 interface PanelAssignmentAssetRow extends ExportAssetRow {
@@ -209,14 +220,19 @@ export async function createPagePreviewPng(
   if (!page) {
     throw new HttpError(404, "Page was not found");
   }
-  const canvas = projectCanvas(project);
-  const layers = await createPageLayers(page, canvas);
-  const merged = await renderMergedImage(layers, canvas);
+  const sourceCanvas = projectCanvas(project);
   const size = safeDimension(options.size, 512);
-  return sharp(merged)
-    .resize({ width: size, height: size, fit: "inside", withoutEnlargement: true })
-    .png()
-    .toBuffer();
+  const scale = Math.min(1, size / Math.max(sourceCanvas.width, sourceCanvas.height));
+  const canvas = {
+    width: Math.max(1, Math.round(sourceCanvas.width * scale)),
+    height: Math.max(1, Math.round(sourceCanvas.height * scale))
+  };
+  const layers = await createPageLayers(page, canvas, {
+    assetSource: size <= 320 ? "thumbnail-small" : size <= 768 ? "thumbnail-medium" : "original",
+    mediaMaxDimension: size
+  });
+  const merged = await renderMergedImage(layers, canvas);
+  return merged;
 }
 
 /**
@@ -225,7 +241,12 @@ export async function createPagePreviewPng(
  * (project の canvas_width/height である必要はない)、mapPoint 等はすべて canvas.width/height 基準で
  * スケールするため、そのまま高解像度書き出しに転用できる。
  */
-export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Promise<RasterLayer[]> {
+export async function createPageLayers(
+  page: PageRow,
+  canvas: ExportCanvas,
+  options: CreatePageLayersOptions = {}
+): Promise<RasterLayer[]> {
+  const assetSource = options.assetSource ?? "original";
   const paperLayer: RasterLayer = { name: "Paper", src: "", png: await paperPng(canvas) };
   const layout = page.layout ?? null;
   if (!layout) {
@@ -235,13 +256,13 @@ export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Pro
       {
         name: "Page image",
         src: "",
-        png: representative ? await renderFullImageLayer(representative, canvas) : await transparentPng(canvas)
+        png: representative ? await renderFullImageLayer(representative, canvas, assetSource) : await transparentPng(canvas)
       }
     ];
     // 描画順(Docs/Feature-ScriptToManga.md S2、全経路共通): Paper → コマ画像 → [image back帯] →
     // コマ枠(レイアウト無しページには無い)→ [front帯] → Mosaic。
-    await appendObjectsLayer(layers, page, null, canvas, "back");
-    await appendObjectsLayer(layers, page, null, canvas, "front");
+    await appendObjectsLayer(layers, page, null, canvas, "back", options.mediaMaxDimension);
+    await appendObjectsLayer(layers, page, null, canvas, "front", options.mediaMaxDimension);
     await appendMosaicLayer(layers, page, null, canvas);
     return layers;
   }
@@ -257,20 +278,20 @@ export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Pro
     layers.push({
       name: `Panel ${panel.order || layers.length + 1}`,
       src: "",
-      png: await renderPanelImageLayer(assignment, panel, layout, canvas)
+      png: await renderPanelImageLayer(assignment, panel, layout, canvas, assetSource)
     });
   }
 
   if (layers.length === 0) {
     const representative = representativeAsset(page.id);
     if (representative) {
-      layers.push({ name: "Page image", src: "", png: await renderFullImageLayer(representative, canvas) });
+      layers.push({ name: "Page image", src: "", png: await renderFullImageLayer(representative, canvas, assetSource) });
     }
   }
 
   // image オブジェクトの back 帯(Docs/Feature-ScriptToManga.md S2): コマ画像の後・コマ枠の前
   // (ぶち抜き立ち絵がコマ枠に隠れず、コマ画像より手前に見える)。
-  await appendObjectsLayer(layers, page, layout, canvas, "back");
+  await appendObjectsLayer(layers, page, layout, canvas, "back", options.mediaMaxDimension);
 
   const frameLayer = await renderPanelFrameLayer(layout, canvas);
   if (frameLayer) {
@@ -280,7 +301,7 @@ export async function createPageLayers(page: PageRow, canvas: ExportCanvas): Pro
     layers.push({ name: "Blank page", src: "", png: await transparentPng(canvas) });
   }
   // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1)。コマ枠より前面、配列順(先頭=背面)。
-  await appendObjectsLayer(layers, page, layout, canvas, "front");
+  await appendObjectsLayer(layers, page, layout, canvas, "front", options.mediaMaxDimension);
   // モザイク(Docs/Feature-CGCollectionSuite.md P6)。最前面・必須で最後。
   await appendMosaicLayer(layers, page, layout, canvas);
   return layers;
@@ -301,11 +322,12 @@ async function appendObjectsLayer(
   page: PageRow,
   layout: PageLayout | null,
   canvas: ExportCanvas,
-  band: "back" | "front"
+  band: "back" | "front",
+  mediaMaxDimension?: number
 ): Promise<void> {
   const pageHeight = resolvePageHeight(page, layout);
   const list = (page.objects ?? []).filter((object) => (band === "back" ? isBackBandObject(object) : !isBackBandObject(object)));
-  const png = await renderObjectsLayer(list, pageHeight, canvas, layout);
+  const png = await renderObjectsLayer(list, pageHeight, canvas, layout, mediaMaxDimension);
   if (png) {
     layers.push({ name: band === "back" ? "Objects (back)" : "Objects", src: "", png });
   }
@@ -487,13 +509,14 @@ async function renderObjectsLayer(
   objects: PageObject[] | null | undefined,
   pageHeight: number,
   canvas: ExportCanvas,
-  layout: PageLayout | null
+  layout: PageLayout | null,
+  mediaMaxDimension?: number
 ): Promise<Buffer | null> {
   const list = objects ?? [];
   if (list.length === 0) {
     return null;
   }
-  const mediaDataUris = await resolveImageMediaDataUris(list);
+  const mediaDataUris = await resolveImageMediaDataUris(list, mediaMaxDimension);
   const elements = list
     .map((object) => renderPageObjectElement(object, pageHeight, canvas, layout, mediaDataUris))
     .filter(Boolean)
@@ -529,7 +552,10 @@ function renderPageObjectElement(
  * page_media 行が無い/ファイルが読めない場合は null を入れ、警告ログを出してスキップする
  * (`renderImageObjectElement` が null なら要素を描かない)。黙って落とさない。
  */
-async function resolveImageMediaDataUris(objects: PageObject[]): Promise<Map<string, string | null>> {
+async function resolveImageMediaDataUris(
+  objects: PageObject[],
+  maxDimension?: number
+): Promise<Map<string, string | null>> {
   const mediaIds = new Set<string>();
   for (const object of objects) {
     if (object.kind === "image") {
@@ -545,8 +571,17 @@ async function resolveImageMediaDataUris(objects: PageObject[]): Promise<Map<str
       continue;
     }
     try {
-      const bytes = await readFile(row.file_path);
-      map.set(mediaId, `data:${mimeTypeFor(row.file_path)};base64,${bytes.toString("base64")}`);
+      if (maxDimension) {
+        const bytes = await sharp(row.file_path, { failOn: "none" })
+          .rotate()
+          .resize({ width: maxDimension, height: maxDimension, fit: "inside", withoutEnlargement: true })
+          .png()
+          .toBuffer();
+        map.set(mediaId, `data:image/png;base64,${bytes.toString("base64")}`);
+      } else {
+        const bytes = await readFile(row.file_path);
+        map.set(mediaId, `data:${mimeTypeFor(row.file_path)};base64,${bytes.toString("base64")}`);
+      }
     } catch {
       console.warn(`[openRasterExport] page_media file missing for mediaId=${mediaId} (${row.file_path}); skipping ImageObject`);
       map.set(mediaId, null);
@@ -693,7 +728,7 @@ function renderBoxObjectElement(object: BoxObject, pageHeight: number, canvas: E
 
 function representativeAsset(pageId: string): ExportAssetRow | null {
   const selected = getRow<ExportAssetRow>(
-    `SELECT a.id, a.image_path, a.width, a.height
+    `SELECT a.id, a.image_path, a.thumbnail_small_path, a.thumbnail_medium_path, a.width, a.height
      FROM assets a JOIN generation_rounds r ON r.id = a.round_id
      WHERE r.page_id = ? AND a.status IN ('selected', 'favorite')
      ORDER BY a.created_at DESC LIMIT 1`,
@@ -703,7 +738,7 @@ function representativeAsset(pageId: string): ExportAssetRow | null {
     return selected;
   }
   return getRow<ExportAssetRow>(
-    `SELECT a.id, a.image_path, a.width, a.height
+    `SELECT a.id, a.image_path, a.thumbnail_small_path, a.thumbnail_medium_path, a.width, a.height
      FROM assets a JOIN generation_rounds r ON r.id = a.round_id
      WHERE r.page_id = ?
      ORDER BY a.created_at DESC LIMIT 1`,
@@ -713,7 +748,7 @@ function representativeAsset(pageId: string): ExportAssetRow | null {
 
 function panelAssignmentAssets(pageId: string): PanelAssignmentAssetRow[] {
   return getRows<PanelAssignmentAssetRow>(
-    `SELECT ppa.panel_id, ppa.crop_json, a.id, a.image_path, a.width, a.height
+    `SELECT ppa.panel_id, ppa.crop_json, a.id, a.image_path, a.thumbnail_small_path, a.thumbnail_medium_path, a.width, a.height
      FROM page_panel_assignments ppa
      JOIN assets a ON a.id = ppa.asset_id
      WHERE ppa.page_id = ?
@@ -722,8 +757,13 @@ function panelAssignmentAssets(pageId: string): PanelAssignmentAssetRow[] {
   );
 }
 
-async function renderFullImageLayer(asset: ExportAssetRow, canvas: ExportCanvas): Promise<Buffer> {
-  return sharp(asset.image_path, { failOn: "none" })
+async function renderFullImageLayer(
+  asset: ExportAssetRow,
+  canvas: ExportCanvas,
+  source: RasterAssetSource
+): Promise<Buffer> {
+  const imagePath = await assetImagePath(asset, source);
+  return sharp(imagePath, { failOn: "none" })
     .rotate()
     .resize(canvas.width, canvas.height, {
       fit: "contain",
@@ -738,19 +778,21 @@ async function renderPanelImageLayer(
   assignment: PanelAssignmentAssetRow,
   panel: LayoutPanel,
   layout: PageLayout,
-  canvas: ExportCanvas
+  canvas: ExportCanvas,
+  source: RasterAssetSource
 ): Promise<Buffer> {
+  const imagePath = await assetImagePath(assignment, source);
   const crop = parseCrop(assignment.crop_json);
   // 回転ありは、コマ内生成プレビュー(pagePanelLightboxView)と同じ SVG transform で描き、見た目を一致させる。
   if (crop.rotation && Math.abs(crop.rotation) > 1e-6) {
-    return renderRotatedPanelImageLayer(assignment, panel, layout, canvas, crop);
+    return renderRotatedPanelImageLayer(imagePath, panel, layout, canvas, crop);
   }
-  const metadata = await sharp(assignment.image_path, { failOn: "none" }).rotate().metadata();
-  const sourceWidth = assignment.width ?? metadata.width ?? 1;
-  const sourceHeight = assignment.height ?? metadata.height ?? 1;
+  const metadata = await sharp(imagePath, { failOn: "none" }).rotate().metadata();
+  const sourceWidth = source === "original" ? assignment.width ?? metadata.width ?? 1 : metadata.width ?? 1;
+  const sourceHeight = source === "original" ? assignment.height ?? metadata.height ?? 1 : metadata.height ?? 1;
   const extract = cropToExtract(crop, sourceWidth, sourceHeight);
   const box = panelPixelBounds(panel, layout, canvas);
-  const panelImage = await sharp(assignment.image_path, { failOn: "none" })
+  const panelImage = await sharp(imagePath, { failOn: "none" })
     .rotate()
     .extract(extract)
     .resize(box.width, box.height, { fit: "fill" })
@@ -781,13 +823,13 @@ function imageRectForCropNorm(bounds: [number, number, number, number], crop: Pa
  * の SVG を canvas 解像度でラスタライズする。ソース画像は auto-orient 済み PNG を data URI で埋め込む。
  */
 async function renderRotatedPanelImageLayer(
-  assignment: PanelAssignmentAssetRow,
+  imagePath: string,
   panel: LayoutPanel,
   layout: PageLayout,
   canvas: ExportCanvas,
   crop: PanelCrop
 ): Promise<Buffer> {
-  const oriented = await sharp(assignment.image_path, { failOn: "none" }).rotate().png().toBuffer();
+  const oriented = await sharp(imagePath, { failOn: "none" }).rotate().png().toBuffer();
   const dataUri = `data:image/png;base64,${oriented.toString("base64")}`;
   const bounds = panelBounds(panel.shape);
   const rect = imageRectForCropNorm(bounds, crop);
@@ -810,6 +852,20 @@ async function renderRotatedPanelImageLayer(
     `fill="#fff"`
   )}</clipPath></defs><g clip-path="url(#${clipId})">${image}</g></svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
+}
+
+async function assetImagePath(asset: ExportAssetRow, source: RasterAssetSource): Promise<string> {
+  if (source === "original") {
+    return asset.image_path;
+  }
+  const size = source === "thumbnail-small" ? "small" : "medium";
+  const thumbnailPath = size === "small" ? asset.thumbnail_small_path : asset.thumbnail_medium_path;
+  try {
+    return await ensureAssetThumbnail(asset.image_path, thumbnailPath, size);
+  } catch (error) {
+    console.warn(`[openRasterExport] thumbnail repair failed for asset=${asset.id}; using original`, error);
+    return asset.image_path;
+  }
 }
 
 function parseCrop(raw: string): PanelCrop {

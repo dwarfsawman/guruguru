@@ -87,6 +87,7 @@ import {
 import { setFormValue } from "./formUtils";
 import "./edgePopoutController";
 import "./imageLightboxController";
+import "./lazyImageController";
 import "./modelCheckController";
 import "./confirmDialogController";
 import "./scriptMangaController";

@@ -55,3 +55,19 @@ test("Reference corner modal switches detailed editors with character tabs", () 
   assert.match(html, /data-reference-family-card data-character-id="character-2" data-model-family="chroma"/);
   assert.doesNotMatch(html, /data-reference-family-card data-character-id="character-1"/);
 });
+
+test("Book page thumbnails defer network loading until they approach the viewport", () => {
+  const html = renderBookView({
+    ...book,
+    pages: [{
+      id: "page-1", projectId: "project-1", pageIndex: 0, title: "Page 1", layout: null,
+      representativeThumbnailUrl: "/api/assets/asset-1/thumbnail?size=small",
+      representativeImageUrl: "/api/assets/asset-1/image", assetCount: 1,
+      createdAt: "2026-07-14T00:00:00Z", updatedAt: "2026-07-14T00:00:00Z"
+    }]
+  }, false, [], { characters: [], referenceSets: [], open: false, selectedCharacterId: null, busyId: null });
+
+  assert.match(html, /data-lazy-src="\/api\/assets\/asset-1\/thumbnail\?size=small"/);
+  assert.match(html, /decoding="async" fetchpriority="low"/);
+  assert.doesNotMatch(html, /<img[^>]+\ssrc=/);
+});

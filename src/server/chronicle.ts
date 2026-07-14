@@ -5,6 +5,7 @@
 import type { ChronicleApiResponse, ChroniclePageSummary, ChroniclePlacementSummary } from "../shared/chronicle";
 import type { DialogueLine } from "../shared/apiTypes";
 import { buildChronicleBeats } from "../shared/chronicleBeat";
+import { normalizePageObjects } from "../shared/pageObjects";
 import { getRow, getRows, toApiRows } from "./db";
 import { HttpError } from "./http";
 
@@ -58,8 +59,16 @@ interface PlacementRow {
   line_id: string;
   page_id: string;
   balloon_object_id: string | null;
+  text_override: string | null;
+  speaker_label_override: string | null;
   auto_layout_locked: number;
   auto_layout_seed: number | null;
+}
+
+interface ChroniclePageRow {
+  id: string;
+  page_index: number;
+  objects_json: string | null;
 }
 
 /**
@@ -77,12 +86,28 @@ export function getChronicle(projectId: string, scriptId: string | undefined): C
 
   const beats = buildChronicleBeats(lines, revision.id);
 
+  const pageRows = getRows<ChroniclePageRow>(
+    "SELECT id, page_index, objects_json FROM pages WHERE project_id = ? ORDER BY page_index ASC",
+    [projectId]
+  );
+  const renderedTextByObject = new Map<string, string>();
+  for (const page of pageRows) {
+    const objects = normalizePageObjects(page.objects_json ? JSON.parse(page.objects_json) : []);
+    for (const object of objects) {
+      if ((object.kind === "balloon" || object.kind === "box" || object.kind === "text") && object.content?.text) {
+        renderedTextByObject.set(`${page.id}:${object.id}`, object.content.text);
+      }
+    }
+  }
+
   const lineIds = lines.map((line) => line.id);
   const placementsByLine = new Map<string, ChroniclePlacementSummary[]>();
   if (lineIds.length > 0) {
     const placeholders = lineIds.map(() => "?").join(",");
     const placementRows = getRows<PlacementRow>(
-      `SELECT id, line_id, page_id, balloon_object_id, auto_layout_locked, auto_layout_seed FROM dialogue_placements WHERE line_id IN (${placeholders})`,
+      `SELECT id, line_id, page_id, balloon_object_id, text_override, speaker_label_override,
+              auto_layout_locked, auto_layout_seed
+       FROM dialogue_placements WHERE line_id IN (${placeholders})`,
       lineIds
     );
     for (const row of placementRows) {
@@ -91,6 +116,11 @@ export function getChronicle(projectId: string, scriptId: string | undefined): C
         id: row.id,
         pageId: row.page_id,
         balloonObjectId: row.balloon_object_id,
+        textOverride: row.text_override,
+        renderedText: row.balloon_object_id
+          ? renderedTextByObject.get(`${row.page_id}:${row.balloon_object_id}`) ?? null
+          : null,
+        speakerLabelOverride: row.speaker_label_override,
         autoLayoutLocked: Boolean(row.auto_layout_locked),
         autoLayoutSeed: row.auto_layout_seed
       });
@@ -109,10 +139,6 @@ export function getChronicle(projectId: string, scriptId: string | undefined): C
     placements: placementsByLine.get(line.id) ?? []
   }));
 
-  const pageRows = getRows<{ id: string; page_index: number }>(
-    "SELECT id, page_index FROM pages WHERE project_id = ? ORDER BY page_index ASC",
-    [projectId]
-  );
   const pages: ChroniclePageSummary[] = pageRows.map((page) => {
     const pageLineIds = new Set<string>();
     for (const [lineId, placements] of placementsByLine.entries()) {

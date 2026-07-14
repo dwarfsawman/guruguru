@@ -5,6 +5,7 @@ import { createId, getRow, runSql, toApiRow } from "./db";
 import { streamFile } from "./files";
 import { HttpError, sendJson } from "./http";
 import { autoAssignPanelForSelectedAsset } from "./panelAssignments";
+import { ensureAssetThumbnail } from "./storage";
 import { objectBody, requiredString, stringOrNull } from "./validate";
 
 export function updateAssetStatus(assetId: string, body: unknown) {
@@ -50,12 +51,23 @@ export async function serveAssetFile(res: ServerResponse, assetId: string, kind:
   }
 
   const size = url.searchParams.get("size") === "medium" ? "medium" : "small";
-  const path = kind === "image"
-    ? String(asset.image_path)
+  const imagePath = String(asset.image_path);
+  let path = kind === "image"
+    ? imagePath
     : size === "medium"
       ? String(asset.thumbnail_medium_path)
       : String(asset.thumbnail_small_path);
 
+  if (kind !== "image") {
+    try {
+      path = await ensureAssetThumbnail(imagePath, path, size);
+    } catch (error) {
+      // 原本が読めない場合も、既存サムネイルが残っていれば従来どおり配信を試みる。
+      console.warn(`[assets] thumbnail repair failed for asset=${assetId}:`, error);
+    }
+  }
+
+  res.setHeader("cache-control", "private, max-age=31536000, immutable");
   streamFile(res, path);
 }
 

@@ -144,6 +144,16 @@ function syncAttributes(from: Element, to: Element) {
   }
   for (const attr of Array.from(from.attributes)) {
     if (!to.hasAttribute(attr.name)) {
+      // lazyImageController が読み込み済み img に付けた src は、同じ data-lazy-src を
+      // 宣言する再描画で消さない。画像ノードと decode 済み状態を保つ dom morph の目的に合わせる。
+      if (
+        attr.name === "src" &&
+        from instanceof HTMLImageElement &&
+        to instanceof HTMLImageElement &&
+        attr.value === to.getAttribute("data-lazy-src")
+      ) {
+        continue;
+      }
       if (focused && attr.name === "value") {
         continue;
       }

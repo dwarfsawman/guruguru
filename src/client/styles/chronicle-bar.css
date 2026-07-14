@@ -138,6 +138,25 @@
   color: var(--muted);
 }
 
+.chronicle-beat-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.chronicle-beat-count {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
 .chronicle-beat-summary {
   font-size: 12px;
   overflow: hidden;
@@ -289,8 +308,26 @@
 .chronicle-beat-preview {
   border-top: 1px solid var(--line);
   padding-top: 6px;
-  max-height: 96px;
+  max-height: 240px;
   overflow-y: auto;
+}
+
+.chronicle-beat-preview-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chronicle-beat-preview-header strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.chronicle-beat-preview-note {
+  margin-left: auto;
 }
 
 .chronicle-beat-preview-lines {
@@ -307,6 +344,13 @@
   align-items: baseline;
   gap: 8px;
   font-size: 12px;
+}
+
+.chronicle-beat-preview-line.is-current-page {
+  margin-inline: -4px;
+  padding: 3px 4px;
+  border-radius: 5px;
+  background: var(--accent-soft);
 }
 
 .chronicle-beat-preview-speaker {

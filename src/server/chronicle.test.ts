@@ -5,7 +5,7 @@ import { createScript } from "./scripts.ts";
 import { createDialoguePlacement } from "./dialogueLines.ts";
 import { createPage } from "./pages.ts";
 import { createProject } from "./projects.ts";
-import { initializeDb } from "./db.ts";
+import { initializeDb, runSql } from "./db.ts";
 import { HttpError } from "./http.ts";
 
 function createTestProject() {
@@ -54,13 +54,27 @@ test("getChronicle: placement 状態が lines/pages に反映される", () => {
   const script = createScript(projectId, { title: "第一話", fountainSource: SOURCE });
   const page = createPage(projectId);
   const taroLine = script.lines.find((line) => line.speakerLabel === "太郎")!;
-  createDialoguePlacement(taroLine.id, { pageId: page.id });
+  const created = createDialoguePlacement(taroLine.id, { pageId: page.id });
+  const actualBalloonText = "手編集後の吹き出し本文";
+  const editedObjects = created.objects.map((object) =>
+    object.id === created.placement.balloonObjectId && (object.kind === "balloon" || object.kind === "box" || object.kind === "text")
+      ? { ...object, content: { ...object.content, text: actualBalloonText } }
+      : object
+  );
+  runSql("UPDATE pages SET objects_json = ? WHERE id = ?", [JSON.stringify(editedObjects), page.id]);
+  runSql(
+    "UPDATE dialogue_placements SET text_override = ?, speaker_label_override = ? WHERE line_id = ?",
+    ["配置時の本文", "配置時の話者", taroLine.id]
+  );
 
   const result = getChronicle(projectId, script.script.id);
   const taroSummary = result.lines.find((line) => line.lineId === taroLine.id)!;
   assert.equal(taroSummary.placements.length, 1);
   assert.equal(taroSummary.placements[0]!.pageId, page.id);
   assert.ok(taroSummary.placements[0]!.balloonObjectId);
+  assert.equal(taroSummary.placements[0]!.textOverride, "配置時の本文");
+  assert.equal(taroSummary.placements[0]!.renderedText, actualBalloonText);
+  assert.equal(taroSummary.placements[0]!.speakerLabelOverride, "配置時の話者");
 
   const hanakoLine = script.lines.find((line) => line.speakerLabel === "花子")!;
   const hanakoSummary = result.lines.find((line) => line.lineId === hanakoLine.id)!;

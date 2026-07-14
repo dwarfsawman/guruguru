@@ -46,3 +46,27 @@ test("Chronicle bar keeps the legacy brightness when the page has no placements"
   assert.match(html, /class="chronicle-bar-track"/);
   assert.doesNotMatch(html, /has-current-page-lines/);
 });
+
+test("Chronicle chip identifies its representative line and opens the full vertical line list first", () => {
+  const state = view();
+  state.beats[0]!.lineIds = ["line-1", "line-3"];
+  state.beats[0]!.endOrder = 2;
+  state.lines.push({
+    lineId: "line-3", status: "active", orderIndex: 2, sceneIndex: 0, speakerLabel: "Mira", text: "script text",
+    semanticKind: "dialogue", placements: [{
+      id: "placement-3", pageId: "page-current", balloonObjectId: "balloon-3",
+      speakerLabelOverride: "ミラ", textOverride: "配置時のセリフ", renderedText: "吹き出しのセリフ"
+    }]
+  });
+  state.pages = [{ pageId: "page-current", pageIndex: 4, lineIds: ["line-3"] }];
+  state.previewBeatId = "beat-1";
+  state.selectedBeatIds = ["beat-1"];
+
+  const html = renderChronicleBar(state);
+  assert.match(html, /<span class="chronicle-beat-count">2セリフ<\/span>/);
+  assert.match(html, /title="代表セリフ: Alice「first」[\s\S]*2セリフ/);
+  assert.match(html, /chronicle-beat-preview-speaker">ミラ<\/span>/);
+  assert.match(html, /chronicle-beat-preview-text">吹き出しのセリフ<\/span>/);
+  assert.match(html, /chronicle-beat-preview-page">このページ<\/span>/);
+  assert.ok(html.indexOf("chronicle-beat-preview") < html.indexOf("chronicle-selection-panel"));
+});

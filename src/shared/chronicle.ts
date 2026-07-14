@@ -45,6 +45,12 @@ export interface ChroniclePlacementSummary {
   id: string;
   pageId: string;
   balloonObjectId: string | null;
+  /** 配置時に固定された表示本文。null の場合は DialogueLine.text を使う。 */
+  textOverride?: string | null;
+  /** 現在保存されている対応 PageObject の本文。手編集後の実表示との照合に使う。 */
+  renderedText?: string | null;
+  /** 配置時に固定された話者表示。null の場合は DialogueLine.speakerLabel を使う。 */
+  speakerLabelOverride?: string | null;
   /** フェーズIII で追加される `auto_layout_locked` 列の値。フェーズI では常に undefined(未配線)。 */
   autoLayoutLocked?: boolean;
   /**

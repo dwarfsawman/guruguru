@@ -640,6 +640,7 @@ export function initializeDb() {
   ensureColumn("generation_rounds", "branch_reason", "TEXT");
   ensureColumn("generation_rounds", "branch_key", "TEXT");
   ensureColumn("generation_rounds", "page_id", "TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_rounds_project_page ON generation_rounds(project_id, page_id)");
   ensureColumn("asset_paste_attachments", "enabled", "INTEGER NOT NULL DEFAULT 1");
   // Book モード: 'single'（既定・従来の1枚生成）/ 'book'（複数ページ）。
   ensureColumn("projects", "mode", "TEXT NOT NULL DEFAULT 'single'");

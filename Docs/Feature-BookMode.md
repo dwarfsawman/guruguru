@@ -44,6 +44,10 @@
   ネイティブ HTML5 DnD で並び替え（専用 MIME `application/x-guruguru-page-id`、`data-key` で morph が既存 DOM を移動、
   ドラッグ中ハイライトは classList を直接操作し render を通さない、確定時のみ reorder API → 再描画）。
 - **`bookView.ts`（新規）**: `.image-grid` にページタイル（サムネ/番号/タイトル、ホバーでリネーム・削除）。
+- **一覧画像の負荷制御**: ページタイルは `data-lazy-src` と `IntersectionObserver` で表示範囲の前後だけを先読みする。
+  コマ割りページの `preview.png` は最終サイズのキャンバスへ直接描画し、原寸画像ではなく最大辺320/768pxの
+  アセットサムネイルを使う。旧版で原寸コピーだったサムネイルは初回配信時に自動修復する。
+  `v` 付き preview URL とアセット画像は immutable cache とし、再描画後も取得済み `img.src` を維持する。
 - **`homeView.ts`**: `#project-form` に Single/Book の `.segment-group` トグル（アクティブ側 `button-primary`）。プロジェクトカードは
   book に `BOOK` タグ＋ページ数を表示。`open-project` は mode で分岐。
 - **ページ別の参照/LoRA**: `state.referenceDraftsByPage` / `loraDraftsByPage`（page id キー）。`draftStore` の per-project blob に
@@ -69,3 +73,9 @@
 
 ページ status/favorite、All/Draft/Done フィルタ、選択中ページの詳細サイドパネル、list/compact 表示切替、ページ複製、
 mask/pose/reference 等の添付ファイルの削除掃除（既存の round 削除と同じ挙動を踏襲）。
+
+## 変更履歴
+
+- 2026-07-14: 大規模Bookのページ一覧を表示範囲ベースの遅延読込へ変更。実寸サムネイル生成、旧サムネイルの
+  オンデマンド修復、縮小キャンバスへの直接preview描画、長期キャッシュ、ページ一覧SQL用複合indexを追加。
+- 初版: Bookモード、ページCRUD、並び替え、ページ別生成コンテキストを追加。

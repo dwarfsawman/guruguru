@@ -320,7 +320,7 @@ function renderPageCard(page: PageSummary, index: number, selectionMode: boolean
  */
 function renderPageThumb(page: PageSummary, label: string): string {
   if (page.representativeThumbnailUrl) {
-    return `<img class="page-thumb-img" src="${escapeAttr(page.representativeThumbnailUrl)}" alt="${escapeAttr(label)}" loading="lazy" draggable="false" />`;
+    return `<img class="page-thumb-img" data-lazy-src="${escapeAttr(page.representativeThumbnailUrl)}" alt="${escapeAttr(label)}" loading="lazy" decoding="async" fetchpriority="low" draggable="false" />`;
   }
   if (page.layout) {
     return `<span class="page-thumb-layout">${renderPageLayoutSvg(page.layout, { ariaLabel: "コマ割りプレビュー" })}</span>`;

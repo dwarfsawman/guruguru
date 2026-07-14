@@ -127,8 +127,8 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
             <div class="chronicle-bar-track${currentBeatIds.size > 0 ? " has-current-page-lines" : ""}">
               ${view.beats.map((beat) => renderBeatChip(beat, lineSummaryById, view.currentPageId, view.selectedBeatIds)).join("")}
             </div>
-            ${view.selectedBeatIds.length > 0 ? renderSelectionPanel(view, lineSummaryById) : ""}
             ${view.previewBeatId ? renderBeatPreview(view, lineSummaryById) : ""}
+            ${view.selectedBeatIds.length > 0 ? renderSelectionPanel(view, lineSummaryById) : ""}
             ${view.preview ? renderLayoutPreviewPanel(view) : ""}`;
 
   return `
@@ -164,12 +164,19 @@ function renderBeatChip(
   if (selectedBeatIds.includes(beat.id)) {
     classes.push("is-selected");
   }
+  const lines = beat.lineIds.map((id) => lineSummaryById.get(id)).filter((line): line is ChronicleLineSummary => Boolean(line));
+  const charCount = lines.reduce((sum, line) => sum + line.text.length, 0);
+  const countLabel = `${lines.length}セリフ・${charCount}字`;
   return `
     <button type="button" class="${classes.join(" ")}" data-action="toggle-chronicle-beat-preview" data-id="${escapeAttr(beat.id)}"
-      title="${escapeAttr(`${beat.label}: ${beat.summary}(Shift+クリックで範囲選択)`)}" aria-label="${escapeAttr(STATUS_LABEL[beatState.status] ?? beatState.status)}"
+      title="${escapeAttr(`代表セリフ: ${beat.label}「${beat.summary}」\n${countLabel}\nクリックでセリフ一覧 / Shift+クリックで範囲選択`)}"
+      aria-label="${escapeAttr(`${STATUS_LABEL[beatState.status] ?? beatState.status}、${countLabel}`)}"
       ${isCurrentPage ? `aria-current="true"` : ""}
       aria-pressed="${selectedBeatIds.includes(beat.id) ? "true" : "false"}">
-      <span class="chronicle-beat-label">${escapeHtml(beat.label)}</span>
+      <span class="chronicle-beat-heading">
+        <span class="chronicle-beat-label">${escapeHtml(beat.label)}</span>
+        <span class="chronicle-beat-count">${lines.length}セリフ</span>
+      </span>
       <span class="chronicle-beat-summary">${escapeHtml(beat.summary)}</span>
     </button>
   `;
@@ -298,8 +305,14 @@ function renderBeatPreview(view: ChronicleBarViewState, lineSummaryById: Map<str
     return "";
   }
   const preview = buildBeatPreview(beat, lineSummaryById, view.pages);
+  const charCount = preview.lines.reduce((sum, line) => sum + line.text.length, 0);
   return `
     <div class="chronicle-beat-preview">
+      <div class="chronicle-beat-preview-header">
+        <strong>セリフ一覧</strong>
+        <span>${preview.lines.length}セリフ・${charCount}字</span>
+        <span class="chronicle-beat-preview-note">タグは先頭セリフを代表表示</span>
+      </div>
       <ul class="chronicle-beat-preview-lines">
         ${preview.lines
           .map((line) => {
@@ -307,17 +320,19 @@ function renderBeatPreview(view: ChronicleBarViewState, lineSummaryById: Map<str
             const currentPagePlacement = summary?.placements.find((placement) => placement.pageId === view.currentPageId);
             const jumpable = Boolean(currentPagePlacement?.balloonObjectId);
             const locked = Boolean(currentPagePlacement?.autoLayoutLocked);
+            const speakerLabel = currentPagePlacement?.speakerLabelOverride ?? line.speakerLabel;
+            const text = currentPagePlacement?.renderedText ?? currentPagePlacement?.textOverride ?? line.text;
             return `
-              <li class="chronicle-beat-preview-line${locked ? " is-locked" : ""}">
+              <li class="chronicle-beat-preview-line${locked ? " is-locked" : ""}${currentPagePlacement ? " is-current-page" : ""}">
                 ${
                   jumpable
                     ? `<button type="button" class="chronicle-beat-preview-jump" data-action="select-chronicle-line-object"
                         data-id="${escapeAttr(line.lineId)}" title="対応する吹き出しを選択">`
                     : `<span class="chronicle-beat-preview-jump chronicle-beat-preview-jump-disabled">`
                 }
-                  <span class="chronicle-beat-preview-speaker">${escapeHtml(line.speakerLabel || "(話者未設定)")}</span>
-                  <span class="chronicle-beat-preview-text">${escapeHtml(line.text)}</span>
-                  <span class="chronicle-beat-preview-page">${line.pageIndex === null ? "未配置" : `${line.pageIndex + 1}ページ`}</span>
+                  <span class="chronicle-beat-preview-speaker">${escapeHtml(speakerLabel || "(話者未設定)")}</span>
+                  <span class="chronicle-beat-preview-text">${escapeHtml(text)}</span>
+                  <span class="chronicle-beat-preview-page">${currentPagePlacement ? "このページ" : line.pageIndex === null ? "未配置" : `${line.pageIndex + 1}ページ`}</span>
                 ${jumpable ? "</button>" : "</span>"}
                 ${
                   locked && currentPagePlacement

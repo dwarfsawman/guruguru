@@ -6,13 +6,37 @@ import assert from "node:assert/strict";
 import JSZip from "jszip";
 import sharp from "sharp";
 import { createId, initializeDb, runSql } from "./db.ts";
-import { createOpenRasterExport } from "./openRasterExport.ts";
+import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport.ts";
 import type { PageLayout } from "../shared/pageLayout.ts";
 import { createImageObject } from "../shared/pageObjects.ts";
 import { DEFAULT_TEXT_STYLE, defaultBalloonTail, type BalloonObject, type BoxObject, type TextObject } from "../shared/pageObjects.ts";
 
 // 1x1 の最小 PNG(page_media ファイル用)。src/server/pages.test.ts と同一。
 const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
+
+test("createPagePreviewPng renders directly at the requested maximum dimension", async () => {
+  initializeDb();
+  const suffix = Date.now();
+  const projectId = `project_preview_${suffix}`;
+  const pageId = `page_preview_${suffix}`;
+  const storageDir = await mkdtemp(join(tmpdir(), "guruguru-preview-test-"));
+  runSql(
+    `INSERT INTO projects (id, name, description, mode, storage_dir, canvas_width, canvas_height)
+     VALUES (?, ?, '', 'book', ?, 1000, 2000)`,
+    [projectId, "Preview Test", storageDir]
+  );
+  runSql(
+    "INSERT INTO pages (id, project_id, page_index, title, layout_json) VALUES (?, ?, 0, 'Page', ?)",
+    [pageId, projectId, JSON.stringify({
+      version: 1, page: { aspectRatio: [1, 2], height: 2 }, readingDirection: "rtl", panels: []
+    })]
+  );
+
+  const preview = await createPagePreviewPng(projectId, pageId, { size: 320 });
+  const metadata = await sharp(preview).metadata();
+  assert.equal(metadata.width, 160);
+  assert.equal(metadata.height, 320);
+});
 
 test("createOpenRasterExport: single layout page produces a baseline ORA with panel layer first", async () => {
   initializeDb();
