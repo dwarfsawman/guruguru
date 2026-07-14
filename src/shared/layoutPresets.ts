@@ -513,7 +513,8 @@ export function emphasizedSlotIndex(areas: readonly number[]): number | null {
 
 export type ScriptMangaLayoutResolver = (id: string) => PageLayout | null;
 
-const builtinLayoutResolver: ScriptMangaLayoutResolver = (id) =>
+/** 自動漫画で利用可能な内蔵・取り込みレイアウトを id から解決する。 */
+export const resolveScriptMangaLayout: ScriptMangaLayoutResolver = (id) =>
   findLayoutPreset(id)?.layout ?? findExternalScriptMangaLayout(id)?.layout ?? null;
 
 function heroSlotIndexes(importances: readonly MangaPanelImportance[]): number[] {
@@ -541,7 +542,7 @@ function emphasizedSlotForLayout(id: string, layout: PageLayout): number | null 
 export function scriptMangaLayoutAlignsImportance(
   layoutTemplateId: string,
   importances: readonly MangaPanelImportance[],
-  resolveLayout: ScriptMangaLayoutResolver = builtinLayoutResolver
+  resolveLayout: ScriptMangaLayoutResolver = resolveScriptMangaLayout
 ): boolean {
   const heroes = heroSlotIndexes(importances);
   if (heroes.length === 0 || importances.length < 2) return true;
@@ -561,7 +562,7 @@ export function scriptMangaLayoutAlignsImportance(
  */
 export function selectScriptMangaLayoutId(
   importances: readonly MangaPanelImportance[],
-  resolveLayout: ScriptMangaLayoutResolver = builtinLayoutResolver
+  resolveLayout: ScriptMangaLayoutResolver = resolveScriptMangaLayout
 ): string | null {
   const candidates = scriptMangaLayoutCandidates(importances.length);
   if (candidates.length === 0) return null;

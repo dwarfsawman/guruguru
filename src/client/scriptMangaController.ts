@@ -9,6 +9,7 @@ import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { downloadBlob, filenameFromContentDisposition, responseErrorMessage } from "./downloadUtils";
+import { refreshLayoutTemplates } from "./layoutTemplateController";
 
 type ScriptMangaSettingField = keyof ScriptMangaUiSettings;
 type ScriptMangaExportFormat = "png" | "pptx" | "ora";
@@ -116,9 +117,13 @@ export async function refreshScriptMangaCandidates(): Promise<void> {
   }
   const serial = ++candidateOperationSerial;
   try {
+    const layoutRefresh = state.layoutTemplates === null && !state.layoutTemplatesLoading
+      ? refreshLayoutTemplates().catch(() => undefined)
+      : Promise.resolve();
     const response = await api<ScriptMangaPlanCandidatesResponse>(
       `/api/projects/${projectId}/script-manga-plan-candidates?scriptId=${encodeURIComponent(scriptId)}`
     );
+    await layoutRefresh;
     if (serial !== candidateOperationSerial || !state.scriptScreenOpen || state.activeScriptId !== scriptId) return;
     state.scriptMangaCandidates = [];
     applyCandidatesResponse(response, true);

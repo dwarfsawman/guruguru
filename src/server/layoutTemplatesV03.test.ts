@@ -59,6 +59,22 @@ const SPREAD_EXAMPLE = `{
     { id: 'r1', pageId: 'page_right', order: 1, shape: { type: 'rect', bounds: [0.04, 0.04, 0.96, 1.37] } },
     { id: 'l1', pageId: 'page_left', order: 1, shape: { type: 'rect', bounds: [1.04, 0.04, 1.5, 0.7] } },
     { id: 'l2', pageId: 'page_left', order: 2, shape: { type: 'rect', bounds: [1.52, 0.04, 1.96, 0.7] } }
+  ],
+  balloons: [
+    { id: 'balloon_right', scope: { type: 'panel', id: 'r1' }, shape: { type: 'rect', bounds: [0.2, 0.2, 0.5, 0.4] }, textId: 'text_right' },
+    {
+      id: 'balloon_left', scope: { type: 'page', id: 'page_left' },
+      shape: { type: 'path', d: 'M 1.6 0.2 L 1.8 0.2 L 1.8 0.4 Z' },
+      tail: { type: 'beads', beads: [{ center: [1.55, 0.5], radius: 0.02 }], target: { type: 'point', position: [1.4, 0.6] } },
+      textId: 'text_left'
+    },
+    { id: 'balloon_spread', scope: { type: 'spread' }, shape: { type: 'ellipse', center: [1, 0.8], radius: [0.2, 0.1] }, textId: 'text_spread' }
+  ],
+  texts: [
+    { id: 'text_right', box: [0.25, 0.22, 0.45, 0.38], plainText: 'right' },
+    { id: 'text_left', box: [1.62, 0.22, 1.78, 0.38], plainText: 'left' },
+    { id: 'text_left_free', pageId: 'page_left', box: [1.2, 0.9, 1.4, 1.1], plainText: 'left free' },
+    { id: 'text_spread', box: [0.9, 0.72, 1.1, 0.88], plainText: 'spread' }
   ]
 }`;
 
@@ -90,6 +106,30 @@ test("normalizeGuruguruLayoutPages: autoManga読み取り・bleedOvershoot検証
     assert.ok(Math.abs(l1.shape.bounds[0] - 0.04) < 1e-9, "左ページはx-1でローカル化");
     assert.ok(Math.abs(l1.shape.bounds[2] - 0.5) < 1e-9);
   }
+  assert.deepEqual(pages[0]!.layout.balloons?.map((balloon) => balloon.id), ["balloon_right"]);
+  assert.deepEqual(pages[1]!.layout.balloons?.map((balloon) => balloon.id), ["balloon_left"]);
+  const leftBalloon = pages[1]!.layout.balloons![0]!;
+  assert.equal(leftBalloon.shape?.type, "path");
+  if (leftBalloon.shape?.type === "path") {
+    assert.equal(leftBalloon.shape.d, "M 0.6 0.2 L 0.8 0.2 L 0.8 0.4 Z");
+  }
+  assert.deepEqual(
+    (leftBalloon.tail as { beads: Array<{ center: number[] }>; target: { position: number[] } }).beads[0]!.center,
+    [0.55, 0.5]
+  );
+  assert.deepEqual(
+    (leftBalloon.tail as { beads: Array<{ center: number[] }>; target: { position: number[] } }).target.position,
+    [0.4, 0.6]
+  );
+  assert.deepEqual(
+    pages[0]!.layout.texts?.map((text) => (text as { id: string }).id),
+    ["text_right"]
+  );
+  assert.deepEqual(
+    pages[1]!.layout.texts?.map((text) => (text as { id: string }).id),
+    ["text_left", "text_left_free"]
+  );
+  assert.deepEqual((pages[1]!.layout.texts![0] as { box: number[] }).box, [0.62, 0.22, 0.78, 0.38]);
 });
 
 test("候補プール参加: candidate:true の取り込みテンプレが候補末尾へ加わり、説明とemphasis上書きが効く", () => {

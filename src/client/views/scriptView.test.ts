@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ScriptRevision, WorkflowTemplate } from "../../shared/apiTypes.ts";
-import type { ScriptMangaRunView } from "../../shared/scriptMangaApi.ts";
+import { setExternalScriptMangaLayouts } from "../../shared/layoutPresets.ts";
+import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../shared/scriptMangaApi.ts";
 import {
+  renderPlanCandidatesCard,
   renderScriptMangaControlCard,
   scriptMangaVlmAuditFromScores,
+  type PlanCandidatesViewProps,
   type ScriptMangaControlViewProps
 } from "./scriptView.ts";
 
@@ -271,4 +274,69 @@ test("script manga UI shows auditing panel count and VRAM swap status", () => {
   const html = renderScriptMangaControlCard(props(auditingRun));
   assert.match(html, /VLM監査中 — 2 panel/);
   assert.match(html, /1 panelは監査再開待ち（VRAM入替待機中）/);
+});
+
+test("plan candidate card renders an imported autoManga layout wireframe", () => {
+  const layoutId = "layout-imported-candidate";
+  setExternalScriptMangaLayouts([{
+    id: layoutId,
+    name: "Imported candidate",
+    layout: {
+      version: 1,
+      page: { aspectRatio: [182, 257], height: 257 / 182 },
+      readingDirection: "rtl",
+      panels: [{ id: "panel-1", order: 1, shape: { type: "rect", bounds: [0.04, 0.04, 0.96, 1.37] } }]
+    }
+  }]);
+  const candidate: ScriptMangaPlanCandidateView = {
+    id: "candidate-1",
+    projectId: "project-1",
+    scriptId: "script-1",
+    scriptRevisionId: revision.id,
+    groupId: "group-1",
+    profile: null,
+    temperature: null,
+    status: "active",
+    adoptedRunId: null,
+    plan: {
+      title: "Imported layout plan",
+      panelCount: 1,
+      dialogueCount: 0,
+      pages: [{
+        index: 0,
+        title: "Page 1",
+        layoutTemplateId: layoutId,
+        panels: [{
+          id: "planned-panel-1",
+          sceneIndex: 0,
+          sceneHeading: "INT. ROOM - DAY",
+          sourceElementIds: ["element-1"],
+          prompt: "A quiet room",
+          sourceText: "A quiet room.",
+          dialogueOrderIndexes: []
+        }]
+      }]
+    },
+    pageNaming: { mode: "deterministic", fallback: true },
+    createdAt: "2026-07-14T00:00:00.000Z"
+  };
+  const controlProps = props();
+  const candidateProps: PlanCandidatesViewProps = {
+    activeScriptId: controlProps.activeScriptId,
+    activeScriptRevision: controlProps.activeScriptRevision,
+    scriptMangaSettings: controlProps.scriptMangaSettings,
+    scriptMangaBusy: false,
+    scriptMangaCandidates: [candidate],
+    scriptMangaCandidateBeatKinds: {},
+    scriptMangaCandidateDialogueChars: [],
+    scriptMangaCandidatesBusy: false,
+    scriptMangaCandidateCount: 3
+  };
+  try {
+    const html = renderPlanCandidatesCard(candidateProps);
+    assert.match(html, /plan-candidate-page-svg/);
+    assert.doesNotMatch(html, /plan-candidate-page is-unknown/);
+  } finally {
+    setExternalScriptMangaLayouts([]);
+  }
 });
