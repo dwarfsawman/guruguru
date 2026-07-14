@@ -164,7 +164,7 @@ export function renderPagePanelLightbox(
         ? renderShapesToolbar(shapeEdit)
         : mode === "mosaic"
           ? renderMosaicToolbar(mosaicEdit)
-          : renderObjectsToolbar(objects, selectedObjectId, fonts, layout, assignments, lightbox, imageObjects, dialogueDrawer, layerView);
+          : renderObjectsToolbar(objects, selectedObjectId, fonts, layout, assignments, lightbox, imageObjects, dialogueDrawer, layerView, chronicleBar);
 
   return `
     <div class="workflow-modal page-panel-lightbox" role="dialog" aria-modal="true" aria-label="${escapeAttr(label)} のページ編集">
@@ -186,7 +186,6 @@ export function renderPagePanelLightbox(
           <aside class="page-panel-sidebar" aria-label="ページ編集サイドバー">
             <div class="page-panel-sidebar-scroll">
               ${toolbar}
-              ${renderChronicleBar(chronicleBar)}
             </div>
           </aside>
         </div>
@@ -1035,7 +1034,8 @@ function renderObjectsToolbar(
   lightbox: PagePanelLightboxState,
   imageObjects: ImageObjectViewState,
   dialogueDrawer: DialogueDrawerViewState,
-  layerView: PageLayerViewState
+  layerView: PageLayerViewState,
+  chronicleBar: ChronicleBarViewState
 ): string {
   const selected = objects.find((object) => object.id === selectedObjectId);
   const selectedBox = selected && selected.kind === "box" ? selected : null;
@@ -1060,7 +1060,7 @@ function renderObjectsToolbar(
       </div>
       ${
         dialogueDrawer.open
-          ? renderDialogueDrawer(dialogueDrawer, objects)
+          ? renderDialogueDrawer(dialogueDrawer, objects, chronicleBar)
           : `
             <div class="page-object-add-grid" aria-label="レイヤを追加">
               <button class="button-secondary compact" type="button" data-action="add-page-object-balloon">${iconPlus()}吹き出し</button>
@@ -1274,8 +1274,13 @@ const SEMANTIC_KIND_LABEL: Record<DialogueLine["semanticKind"], string> = {
  * 既に配置済みの行も一覧からは消さず「配置済み ×N」を添えて残す(設計書の逸脱: サーバ側に
  * dialogue_lines.page_id が無く「ページ割当済み・未配置」の中間状態を持たないため、
  * 「このページの PageObject.sourceDialogueLineId」から配置回数を数える方式にしている)。
+ *
+ * B-1(Docs/Feature-PageEditSidebarUx.md 課題B): Chronicle バーはこのドロワー配下(末尾)にのみ描く。
+ * 以前は `renderPagePanelLightbox` がタブと無関係にサイドバー末尾へ常時描画しており、レイヤタブにも
+ * Chronicle チップ列が出て役割が重複していた。レイヤタブ = オブジェクト(手動編集)、
+ * セリフタブ = 脚本由来セリフの管理、と役割を分けるため、ここでのみ描画する。
  */
-function renderDialogueDrawer(dialogueDrawer: DialogueDrawerViewState, objects: PageObject[]): string {
+function renderDialogueDrawer(dialogueDrawer: DialogueDrawerViewState, objects: PageObject[], chronicleBar: ChronicleBarViewState): string {
   const { lines, llmConfigured, proposals, busy } = dialogueDrawer;
   const placedCounts = new Map<string, number>();
   for (const object of objects) {
@@ -1310,6 +1315,7 @@ function renderDialogueDrawer(dialogueDrawer: DialogueDrawerViewState, objects: 
     <div class="dialogue-drawer">
       ${renderDialogueProposalSection(llmConfigured, proposals, busy)}
       ${listContent}
+      ${renderChronicleBar(chronicleBar)}
     </div>
   `;
 }

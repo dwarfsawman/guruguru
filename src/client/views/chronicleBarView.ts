@@ -125,9 +125,20 @@ export function renderChronicleBar(view: ChronicleBarViewState): string {
           ? `<div class="chronicle-bar-message">セリフがまだありません。</div>`
           : `<div class="chronicle-bar-toolbar">${nextUnassignedButton}${reflowButton}${unlockAllButton}</div>
             <div class="chronicle-bar-track${currentBeatIds.size > 0 ? " has-current-page-lines" : ""}">
-              ${view.beats.map((beat) => renderBeatChip(beat, lineSummaryById, view.currentPageId, view.selectedBeatIds)).join("")}
+              ${view.beats
+                .map((beat) => {
+                  const expanded = view.previewBeatId === beat.id;
+                  const chip = renderBeatChip(beat, lineSummaryById, view.currentPageId, view.selectedBeatIds, expanded);
+                  // B-2(Docs/Feature-PageEditSidebarUx.md 課題B): アコーディオン展開部はチップの直後
+                  // (同じ .chronicle-bar-track 内の次の兄弟要素)に差し込む -- <button> の中に
+                  // <button>(ジャンプ/ロック解除)は入れられないため、チップ自身の子にはせず、
+                  // 直下に並べることで「そのチップの下に開く」見た目を作る(track はサイドバー内では
+                  // 縦積みの column flex になる)。
+                  const accordion = expanded ? renderBeatAccordion(beat, view, lineSummaryById) : "";
+                  return `${chip}${accordion}`;
+                })
+                .join("")}
             </div>
-            ${view.previewBeatId ? renderBeatPreview(view, lineSummaryById) : ""}
             ${view.selectedBeatIds.length > 0 ? renderSelectionPanel(view, lineSummaryById) : ""}
             ${view.preview ? renderLayoutPreviewPanel(view) : ""}`;
 
@@ -150,7 +161,8 @@ function renderBeatChip(
   beat: ChronicleBeat,
   lineSummaryById: Map<string, ChronicleLineSummary>,
   currentPageId: string,
-  selectedBeatIds: string[]
+  selectedBeatIds: string[],
+  expanded: boolean
 ): string {
   const beatState = computeBeatState(beat, lineSummaryById, currentPageId);
   const isCurrentPage = beatState.currentPageLineCount > 0;
@@ -164,6 +176,9 @@ function renderBeatChip(
   if (selectedBeatIds.includes(beat.id)) {
     classes.push("is-selected");
   }
+  if (expanded) {
+    classes.push("is-expanded");
+  }
   const lines = beat.lineIds.map((id) => lineSummaryById.get(id)).filter((line): line is ChronicleLineSummary => Boolean(line));
   const charCount = lines.reduce((sum, line) => sum + line.text.length, 0);
   const countLabel = `${lines.length}セリフ・${charCount}字`;
@@ -172,10 +187,14 @@ function renderBeatChip(
       title="${escapeAttr(`代表セリフ: ${beat.label}「${beat.summary}」\n${countLabel}\nクリックでセリフ一覧 / Shift+クリックで範囲選択`)}"
       aria-label="${escapeAttr(`${STATUS_LABEL[beatState.status] ?? beatState.status}、${countLabel}`)}"
       ${isCurrentPage ? `aria-current="true"` : ""}
-      aria-pressed="${selectedBeatIds.includes(beat.id) ? "true" : "false"}">
+      aria-pressed="${selectedBeatIds.includes(beat.id) ? "true" : "false"}"
+      aria-expanded="${expanded ? "true" : "false"}">
       <span class="chronicle-beat-heading">
         <span class="chronicle-beat-label">${escapeHtml(beat.label)}</span>
-        <span class="chronicle-beat-count">${lines.length}セリフ</span>
+        <span class="chronicle-beat-heading-end">
+          <span class="chronicle-beat-count">${lines.length}セリフ</span>
+          <span class="chronicle-beat-chevron" aria-hidden="true">${iconChevron()}</span>
+        </span>
       </span>
       <span class="chronicle-beat-summary">${escapeHtml(beat.summary)}</span>
     </button>
@@ -296,23 +315,20 @@ function renderLayoutPreviewPanel(view: ChronicleBarViewState): string {
 }
 
 /**
- * フェーズIV(§2.6・§6): Beat プレビューの各行に「対応吹き出しへジャンプ」(クリック、現在ページ配置済み
- * かつ吹き出し化済みの行のみ)と「ロック解除」(現在ページでロック済みの行のみ)を出す。
+ * B-2(Docs/Feature-PageEditSidebarUx.md 課題B): クリックした Beat チップの直下に差し込むアコーディオン
+ * 展開部(旧 `renderBeatPreview`)。中身 -- 行ごとの話者/本文/配置状態、「対応吹き出しへジャンプ」
+ * (フェーズIV §2.6・§6、現在ページ配置済み・吹き出し化済みの行のみクリック可)、ロック解除(現在ページで
+ * ロック済みの行のみ) -- は維持しつつ、「セリフ一覧」「タグは先頭セリフを代表表示」の見出し行は削除する
+ * (行数・文字数サマリは既にチップ側 `chronicle-beat-count`/title 属性にあるため重複表示しない、ユーザー明示要望)。
  */
-function renderBeatPreview(view: ChronicleBarViewState, lineSummaryById: Map<string, ChronicleLineSummary>): string {
-  const beat = view.beats.find((item) => item.id === view.previewBeatId);
-  if (!beat) {
-    return "";
-  }
+function renderBeatAccordion(
+  beat: ChronicleBeat,
+  view: ChronicleBarViewState,
+  lineSummaryById: Map<string, ChronicleLineSummary>
+): string {
   const preview = buildBeatPreview(beat, lineSummaryById, view.pages);
-  const charCount = preview.lines.reduce((sum, line) => sum + line.text.length, 0);
   return `
-    <div class="chronicle-beat-preview">
-      <div class="chronicle-beat-preview-header">
-        <strong>セリフ一覧</strong>
-        <span>${preview.lines.length}セリフ・${charCount}字</span>
-        <span class="chronicle-beat-preview-note">タグは先頭セリフを代表表示</span>
-      </div>
+    <div class="chronicle-beat-accordion">
       <ul class="chronicle-beat-preview-lines">
         ${preview.lines
           .map((line) => {
