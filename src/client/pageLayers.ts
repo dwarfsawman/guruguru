@@ -6,7 +6,8 @@ export type PageLayerStepDirection = "up" | "down";
 
 /**
  * ページ編集のレイヤ一覧で使う表示帯。現行スキーマではコマ画像の背面へ移せるのは
- * ImageObject だけなので、それ以外は常に front として扱う。
+ * ImageObject だけなので、それ以外は常に front として扱う。トーン(Docs/Feature-ScreenTones.md)も
+ * band 切替は持たず常に front 固定 -- 分岐追加は不要(image 以外はここで一括して front 判定される)。
  */
 export function pageLayerBand(object: PageObject): PageLayerBand {
   return object.kind === "image" && object.band === "back" ? "back" : "front";

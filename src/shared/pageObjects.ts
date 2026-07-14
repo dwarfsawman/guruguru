@@ -124,7 +124,59 @@ export interface ImageObject extends PageObjectBase {
   clipPanelId?: string | null;
 }
 
-export type PageObject = TextObject | BalloonObject | BoxObject | ImageObject;
+/** スクリーントーン種別(Docs/Feature-ScreenTones.md)。 */
+export type ToneKind = "halftone" | "gradient" | "lines" | "speed" | "focus" | "flash";
+
+/**
+ * トーン種別ごとのパラメータ(Docs/Feature-ScreenTones.md データモデル節の表)。判別 union にせず
+ * 「使うフィールドだけ埋まった単一のオプショナル集合」にしている -- 正規化・種別切替時の既定リセットが
+ * 「その種別が使うキーだけ埋める」だけで済み、判別 union のナローイングをそこら中に書かずに済むため
+ * (「正規化往復で seed/params/clipPanelId が消えると保存1秒後に編集が巻き戻る」既知の罠を踏まえ、
+ * 保持ロジックを極力単純にする狙い)。角度は deg(UI の number 入力と一致させる)。
+ */
+export interface ToneParams {
+  /** halftone/gradient/lines: ドット/線の間隔(page-width 単位、0.004–0.1)。 */
+  pitch?: number;
+  /** halftone/gradient: ドット濃度 0..1。 */
+  dotRatio?: number;
+  /** halftone/gradient/lines/speed: パターン角度(deg)。 */
+  angle?: number;
+  /** gradient: angle 方向の開始/終了濃度比率 0..1。 */
+  startRatio?: number;
+  endRatio?: number;
+  /** lines: 線幅/間隔比 0..1。 */
+  lineRatio?: number;
+  /** speed/focus/flash: 本数(≤400)。 */
+  count?: number;
+  /** speed: 平均長 0..1(領域に対する比)。 */
+  length?: number;
+  /** speed/focus/flash: 線幅/外周側の基部太さ。 */
+  lineWidth?: number;
+  /** speed/focus/flash: ゆらぎ 0..1。 */
+  jitter?: number;
+  /** focus/flash: 中心(オブジェクトローカル座標。balloon の tail.tip と同方式、中心=原点・回転前)。 */
+  center?: PageVec;
+  /** focus/flash: 中心の空白半径。 */
+  innerRadius?: number;
+}
+
+export interface ToneObject extends PageObjectBase {
+  kind: "tone";
+  /** 領域(外接矩形)。position=中心、box と同じ page 単位。 */
+  size: PageVec;
+  toneType: ToneKind;
+  /** 描画色。既定 "#000000"。 */
+  color: string;
+  /** 0..1、既定 1。 */
+  opacity?: number;
+  /** コマ形状でクリップ(ImageObject.clipPanelId と同じ仕組み・同じ clipPath defs を再利用)。 */
+  clipPanelId?: string | null;
+  /** ゆらぎの決定的乱数 seed(整数)。作成時に採番、「シャッフル」で振り直し。 */
+  seed: number;
+  params: ToneParams;
+}
+
+export type PageObject = TextObject | BalloonObject | BoxObject | ImageObject | ToneObject;
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -384,6 +436,128 @@ function normalizeImageObject(raw: Record<string, unknown>, fallbackId: string):
   return object;
 }
 
+export const TONE_KINDS: readonly ToneKind[] = ["halftone", "gradient", "lines", "speed", "focus", "flash"];
+const TONE_KIND_SET = new Set<ToneKind>(TONE_KINDS);
+
+/** pitch(ドット/線間隔)の可動域。下限 0.004 は要素数爆発防止の安全弁(Docs/Feature-ScreenTones.md)。 */
+export const TONE_PITCH_MIN = 0.004;
+export const TONE_PITCH_MAX = 0.1;
+/** speed/focus/flash の本数上限。 */
+export const TONE_COUNT_MAX = 400;
+/** focus/flash の center(ローカル座標)の可動域(± 両方向。BALLOON_TAIL_TIP_CLAMP と同じ考え方)。 */
+export const TONE_CENTER_CLAMP = 2;
+/** 既定色(黒)。 */
+export const DEFAULT_TONE_COLOR = "#000000";
+/** 「+ トーン」未選択時の既定サイズ(page 単位)。 */
+export const DEFAULT_TONE_SIZE: PageVec = { x: 0.35, y: 0.35 };
+
+/** トーン種別ごとの既定パラメータ(Docs/Feature-ScreenTones.md データモデル節の表)。種別切替時のリセットにも使う。 */
+export function defaultToneParams(toneType: ToneKind): ToneParams {
+  switch (toneType) {
+    case "halftone":
+      return { pitch: 0.015, dotRatio: 0.45, angle: 45 };
+    case "gradient":
+      return { pitch: 0.015, dotRatio: 0.45, angle: 45, startRatio: 0.7, endRatio: 0.05 };
+    case "lines":
+      return { pitch: 0.012, lineRatio: 0.35, angle: 0 };
+    case "speed":
+      return { angle: 45, count: 90, length: 0.7, lineWidth: 0.004, jitter: 0.5 };
+    case "focus":
+      return { center: { x: 0, y: 0 }, innerRadius: 0.12, count: 72, lineWidth: 0.012, jitter: 0.5 };
+    case "flash":
+      return { center: { x: 0, y: 0 }, innerRadius: 0.18, count: 72, lineWidth: 0.012, jitter: 0.5 };
+    default:
+      return {};
+  }
+}
+
+function normalizeToneCenter(raw: unknown, fallback: PageVec): PageVec {
+  const vec = asVec(raw);
+  if (!vec) {
+    return { ...fallback };
+  }
+  return {
+    x: clampNumber(vec.x, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, fallback.x),
+    y: clampNumber(vec.y, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, fallback.y)
+  };
+}
+
+/**
+ * トーン種別ごとに使うフィールドだけを検証・clamp する(未知/欠損値は defaultToneParams のフォールバックへ)。
+ * angle は周期量なので範囲 clamp はせず、有限数であることだけ保証する。
+ */
+function normalizeToneParams(toneType: ToneKind, raw: unknown): ToneParams {
+  const source = isJsonObject(raw) ? raw : {};
+  const fallback = defaultToneParams(toneType);
+  const params: ToneParams = {};
+  if (toneType === "halftone" || toneType === "gradient" || toneType === "lines") {
+    params.pitch = clampNumber(source.pitch, TONE_PITCH_MIN, TONE_PITCH_MAX, fallback.pitch!);
+    params.angle = clampNumber(source.angle, -360000, 360000, fallback.angle!);
+  }
+  if (toneType === "halftone" || toneType === "gradient") {
+    params.dotRatio = clampNumber(source.dotRatio, 0, 1, fallback.dotRatio!);
+  }
+  if (toneType === "gradient") {
+    params.startRatio = clampNumber(source.startRatio, 0, 1, fallback.startRatio!);
+    params.endRatio = clampNumber(source.endRatio, 0, 1, fallback.endRatio!);
+  }
+  if (toneType === "lines") {
+    params.lineRatio = clampNumber(source.lineRatio, 0, 1, fallback.lineRatio!);
+  }
+  if (toneType === "speed") {
+    params.angle = clampNumber(source.angle, -360000, 360000, fallback.angle!);
+    params.count = clampNumber(source.count, 1, TONE_COUNT_MAX, fallback.count!);
+    params.length = clampNumber(source.length, 0, 1, fallback.length!);
+    params.lineWidth = clampNumber(source.lineWidth, 0, 1, fallback.lineWidth!);
+    params.jitter = clampNumber(source.jitter, 0, 1, fallback.jitter!);
+  }
+  if (toneType === "focus" || toneType === "flash") {
+    params.center = normalizeToneCenter(source.center, fallback.center!);
+    params.innerRadius = clampNumber(source.innerRadius, 0, PAGE_OBJECT_MAX_SIZE, fallback.innerRadius!);
+    params.count = clampNumber(source.count, 1, TONE_COUNT_MAX, fallback.count!);
+    params.lineWidth = clampNumber(source.lineWidth, 0, 1, fallback.lineWidth!);
+    params.jitter = clampNumber(source.jitter, 0, 1, fallback.jitter!);
+  }
+  return params;
+}
+
+/** 不正/欠損 seed のフォールバック値。決定的にするため Math.random は使わない(正規化は純関数に保つ)。 */
+const DEFAULT_TONE_SEED = 1;
+
+/**
+ * トーンオブジェクトの正規化。**全フィールドを保持する**(image と同じく、正規化往復で
+ * seed/params/clipPanelId が消えると保存1秒後に編集が巻き戻るため -- Docs/Feature-ScreenTones.md 既知の罠)。
+ * toneType が候補外なら balloon.shape と同じ扱いで既定値(halftone)へフォールバックする(オブジェクト
+ * 自体は捨てない -- position/size さえ有効ならユーザーの配置・サイズ調整は保持する)。
+ */
+function normalizeToneObject(raw: Record<string, unknown>, fallbackId: string): ToneObject | null {
+  const base = normalizeBase(raw, fallbackId);
+  const size = normalizeSize(raw.size);
+  if (!base || !size) {
+    return null;
+  }
+  const toneType: ToneKind = typeof raw.toneType === "string" && TONE_KIND_SET.has(raw.toneType as ToneKind) ? (raw.toneType as ToneKind) : "halftone";
+  const seed = Number.isInteger(raw.seed) ? (raw.seed as number) : DEFAULT_TONE_SEED;
+  const object: ToneObject = {
+    ...spreadBase(base),
+    kind: "tone",
+    size,
+    toneType,
+    color: asColor(raw.color, DEFAULT_TONE_COLOR),
+    seed,
+    params: normalizeToneParams(toneType, raw.params)
+  };
+  if (isFiniteNumber(raw.opacity)) {
+    object.opacity = clampNumber(raw.opacity, 0, 1, 1);
+  }
+  if (raw.clipPanelId === null) {
+    object.clipPanelId = null;
+  } else if (typeof raw.clipPanelId === "string" && raw.clipPanelId.trim()) {
+    object.clipPanelId = raw.clipPanelId.trim();
+  }
+  return object;
+}
+
 function normalizeOne(raw: unknown, fallbackId: string): PageObject | null {
   if (!isJsonObject(raw)) {
     return null;
@@ -397,6 +571,8 @@ function normalizeOne(raw: unknown, fallbackId: string): PageObject | null {
       return normalizeBoxObject(raw, fallbackId);
     case "image":
       return normalizeImageObject(raw, fallbackId);
+    case "tone":
+      return normalizeToneObject(raw, fallbackId);
     default:
       // 未知 kind は捨てる(将来フェーズや壊れたデータに対して寛容に無視する)。
       return null;
@@ -501,6 +677,34 @@ export function createImageObject(id: string, center: PageVec, mediaId: string, 
     opacity: 1,
     band: "front",
     clipPanelId: null
+  };
+}
+
+/**
+ * 新規トーンオブジェクトを作る(既定: halftone・黒・不透明度1・クリップなし)。id と同じく、seed も
+ * 「新規生成時の乱数割り当ては呼び出し側の責務」という既存の createXxxObject 群の規約に合わせ、
+ * 呼び出し側(乱数)が決めた値を受け取る(このモジュール自身は Math.random を使わず純粋に保つ)。
+ */
+export function createToneObject(
+  id: string,
+  center: PageVec,
+  seed: number,
+  size: PageVec = DEFAULT_TONE_SIZE,
+  toneType: ToneKind = "halftone",
+  clipPanelId: string | null = null
+): ToneObject {
+  return {
+    id,
+    kind: "tone",
+    position: { ...center },
+    rotation: 0,
+    size: { ...size },
+    toneType,
+    color: DEFAULT_TONE_COLOR,
+    opacity: 1,
+    clipPanelId,
+    seed,
+    params: defaultToneParams(toneType)
   };
 }
 

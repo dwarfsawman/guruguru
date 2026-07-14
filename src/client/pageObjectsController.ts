@@ -28,29 +28,41 @@ import {
   DEFAULT_BOX_SIZE,
   DEFAULT_TEXT_STYLE,
   DEFAULT_TEXT_STRING,
+  DEFAULT_TONE_SIZE,
   PAGE_OBJECT_MAX_SIZE,
   PAGE_OBJECT_MIN_SIZE,
   TEXT_SIZE_MAX,
   TEXT_SIZE_MIN,
+  TONE_CENTER_CLAMP,
+  TONE_COUNT_MAX,
+  TONE_PITCH_MAX,
+  TONE_PITCH_MIN,
   contentMaxWidth,
   createBalloonObject,
   createBoxObject,
   createImageObject,
   createTextObject,
+  createToneObject,
   defaultBalloonTail,
   defaultImageObjectSize,
+  defaultToneParams,
   type BalloonObject,
   type BalloonShape,
   type BoxObject,
   type ImageObject,
   type ImageObjectBand,
   type PageObject,
+  type PageVec,
   type TextAlign,
   type TextContent,
   type TextDirection,
   type TextObject,
-  type TextStyle
+  type TextStyle,
+  type ToneKind,
+  type ToneObject,
+  type ToneParams
 } from "../shared/pageObjects";
+import { panelBounds, type LayoutPanel } from "../shared/pageLayout";
 import { balloonContentMaxWidth } from "../shared/balloonShape";
 import { getStageTransform, gizmoRotateHandlePoint, moveGizmoBox, rotateGizmoBox, scaleGizmoBoxAboutCenter } from "./svgGizmo";
 import { gizmoBoxForPageObject } from "./pageObjectGizmoBox";
@@ -74,11 +86,13 @@ import { isTextEntryTarget } from "./clientUtils";
 import { pageLayerBand, reorderPageObjectLayer, stepPageObjectLayer, type PageLayerDropPosition } from "./pageLayers";
 import { ensureTextLayout } from "./textLayoutClient";
 
-/** ギズモで動かせるオブジェクトの型(box/text/balloon/image)。 */
-type EditableObject = BoxObject | TextObject | BalloonObject | ImageObject;
+/** ギズモで動かせるオブジェクトの型(box/text/balloon/image/tone)。 */
+type EditableObject = BoxObject | TextObject | BalloonObject | ImageObject | ToneObject;
 
 function isEditableObject(object: PageObject): object is EditableObject {
-  return object.kind === "box" || object.kind === "text" || object.kind === "balloon" || object.kind === "image";
+  return (
+    object.kind === "box" || object.kind === "text" || object.kind === "balloon" || object.kind === "image" || object.kind === "tone"
+  );
 }
 
 // --- 保存(debounce PATCH + flush) ---
@@ -330,6 +344,58 @@ function addBalloonObject(): void {
   const previous = currentSnapshot();
   const center = { x: 0.5, y: lightbox.pageHeight / 2 };
   const object = createBalloonObject(crypto.randomUUID(), center);
+  pushPageObjectHistory(objectHistory, previous);
+  state.pageObjectsDraft = [...state.pageObjectsDraft, object];
+  selectNewObject(object);
+}
+
+// --- トーン(Docs/Feature-ScreenTones.md): 「+ トーン」・seed 乱数 ---
+
+/** 新規 seed / シャッフル用の乱数(既存 generationController.ts の randomSeed と同じ範囲)。 */
+function randomToneSeed(): number {
+  return Math.floor(Math.random() * 2147483647);
+}
+
+/**
+ * 選択中パネルの形状。`renderObjectsToolbar`(view)が使う `layout` と同じソース(state.book の
+ * 現在ページの `page.layout`)を参照する -- `state.pageLayoutDraft` はコマ形状編集(P5)専用の別ドラフトで、
+ * 「+ トーン」時点では view 側の実描画と食い違い得るため使わない。
+ */
+function selectedPanelShape(): LayoutPanel | null {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || !lightbox.selectedPanelId) {
+    return null;
+  }
+  const page = state.book?.pages.find((item) => item.id === lightbox.pageId);
+  return page?.layout?.panels.find((panel) => panel.id === lightbox.selectedPanelId) ?? null;
+}
+
+/**
+ * 「+ トーン」(Docs/Feature-ScreenTones.md エディタ UI)。コマ選択中はそのコマの外接矩形を領域にし
+ * clipPanelId 付きで作成する(コマにトーンを貼る主要ユースケースを1クリック化)。未選択はページ中央に
+ * 既定サイズ(0.35×0.35)・既定 toneType(halftone)で作成する。
+ */
+function addToneObject(): void {
+  const lightbox = state.pagePanelLightbox;
+  if (!lightbox || lightbox.mode !== "objects") {
+    return;
+  }
+  flushTextHistoryCommit();
+  const previous = currentSnapshot();
+  const panel = selectedPanelShape();
+  let center: PageVec = { x: 0.5, y: lightbox.pageHeight / 2 };
+  let size: PageVec = { ...DEFAULT_TONE_SIZE };
+  let clipPanelId: string | null = null;
+  if (panel) {
+    const bounds = panelBounds(panel.shape);
+    center = { x: (bounds[0] + bounds[2]) / 2, y: (bounds[1] + bounds[3]) / 2 };
+    size = {
+      x: Math.max(PAGE_OBJECT_MIN_SIZE, bounds[2] - bounds[0]),
+      y: Math.max(PAGE_OBJECT_MIN_SIZE, bounds[3] - bounds[1])
+    };
+    clipPanelId = panel.id;
+  }
+  const object = createToneObject(crypto.randomUUID(), center, randomToneSeed(), size, "halftone", clipPanelId);
   pushPageObjectHistory(objectHistory, previous);
   state.pageObjectsDraft = [...state.pageObjectsDraft, object];
   selectNewObject(object);
@@ -838,6 +904,92 @@ function updateImageOwnField(image: ImageObject, field: string, target: HTMLInpu
   return null;
 }
 
+const TONE_KIND_VALUES = new Set<ToneKind>(["halftone", "gradient", "lines", "speed", "focus", "flash"]);
+
+/** トーン自身のプロパティ(種別/色/不透明度/クリップ先コマ)。params の中身は updateToneParamField。 */
+function updateToneOwnField(tone: ToneObject, field: string, target: HTMLInputElement | HTMLSelectElement): ToneObject | null {
+  if (field === "toneType") {
+    const value = target.value;
+    if (!TONE_KIND_VALUES.has(value as ToneKind) || value === tone.toneType) {
+      return null;
+    }
+    // 種別切替: params はその種別の既定値へリセットする(Docs/Feature-ScreenTones.md エディタ UI 節)。
+    return { ...tone, toneType: value as ToneKind, params: defaultToneParams(value as ToneKind) };
+  }
+  if (field === "color") {
+    return { ...tone, color: target.value };
+  }
+  if (field === "opacity") {
+    const parsed = Number(target.value);
+    return { ...tone, opacity: Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : (tone.opacity ?? 1) };
+  }
+  if (field === "clipPanelId") {
+    const value = target.value.trim();
+    return { ...tone, clipPanelId: value || null };
+  }
+  return null;
+}
+
+/**
+ * トーンの `params` 個別フィールド更新(SETTINGS パネルの種別別 number 入力)。ギズモ拡縮では params の
+ * 長さ系はスケールしない(v1 は size のみ、Docs/Feature-ScreenTones.md 組み込みチェックリスト)ので、
+ * この経路だけが params を書き換える(center はドラッグハンドル、`handlePageObjectsPointerMove` 側)。
+ */
+function updateToneParamField(tone: ToneObject, field: string, target: HTMLInputElement): ToneObject | null {
+  const parsed = Number(target.value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  const params: ToneParams = { ...tone.params };
+  switch (field) {
+    case "pitch":
+      params.pitch = clampNumber(parsed, TONE_PITCH_MIN, TONE_PITCH_MAX, params.pitch ?? 0.015);
+      break;
+    case "dotRatio":
+      params.dotRatio = clampNumber(parsed, 0, 1, params.dotRatio ?? 0.45);
+      break;
+    case "angle":
+      params.angle = parsed;
+      break;
+    case "startRatio":
+      params.startRatio = clampNumber(parsed, 0, 1, params.startRatio ?? 0.7);
+      break;
+    case "endRatio":
+      params.endRatio = clampNumber(parsed, 0, 1, params.endRatio ?? 0.05);
+      break;
+    case "lineRatio":
+      params.lineRatio = clampNumber(parsed, 0, 1, params.lineRatio ?? 0.35);
+      break;
+    case "count":
+      params.count = clampNumber(Math.round(parsed), 1, TONE_COUNT_MAX, params.count ?? 72);
+      break;
+    case "length":
+      params.length = clampNumber(parsed, 0, 1, params.length ?? 0.7);
+      break;
+    case "lineWidth":
+      params.lineWidth = clampNumber(parsed, 0, 1, params.lineWidth ?? 0.004);
+      break;
+    case "jitter":
+      params.jitter = clampNumber(parsed, 0, 1, params.jitter ?? 0.5);
+      break;
+    case "innerRadius":
+      params.innerRadius = clampNumber(parsed, 0, PAGE_OBJECT_MAX_SIZE, params.innerRadius ?? 0.12);
+      break;
+    default:
+      return null;
+  }
+  return { ...tone, params };
+}
+
+/** 「シャッフル」ボタン。speed/focus/flash の seed を振り直す(Docs/Feature-ScreenTones.md エディタ UI)。 */
+function shuffleToneSeed(): void {
+  const object = findSelectedObject();
+  if (!object || object.kind !== "tone") {
+    return;
+  }
+  commitObjectMutation(object.id, { ...object, seed: randomToneSeed() });
+}
+
 /** 確定的なプロパティ変更(色ピッカー/select/number 等の change イベント)を history へ push して保存する。 */
 function commitFieldChange(index: number, updated: PageObject): void {
   flushTextHistoryCommit();
@@ -872,6 +1024,15 @@ export function updatePageObjectFieldFromControl(target: HTMLInputElement | HTML
     return;
   }
 
+  const toneParamField = target.dataset.pageObjectToneParam;
+  if (toneParamField && object.kind === "tone") {
+    const updated = updateToneParamField(object, toneParamField, target as HTMLInputElement);
+    if (updated) {
+      commitFieldChange(index, updated);
+    }
+    return;
+  }
+
   const field = target.dataset.pageObjectField;
   if (!field) {
     return;
@@ -898,6 +1059,13 @@ export function updatePageObjectFieldFromControl(target: HTMLInputElement | HTML
   }
   if (object.kind === "image") {
     const updated = updateImageOwnField(object, field, target);
+    if (updated) {
+      commitFieldChange(index, updated);
+    }
+    return;
+  }
+  if (object.kind === "tone") {
+    const updated = updateToneOwnField(object, field, target);
     if (updated) {
       commitFieldChange(index, updated);
     }
@@ -945,7 +1113,7 @@ export function updatePageObjectTextFromInput(target: HTMLTextAreaElement): void
 
 // --- ギズモ(移動/拡縮/回転)ジェスチャ ---
 
-type ObjectGestureKind = "move" | "scale" | "rotate" | "tail";
+type ObjectGestureKind = "move" | "scale" | "rotate" | "tail" | "tone-center";
 const ROTATE_SNAP_RAD = Math.PI / 12;
 /** ハンドルの画面基準サイズ(px)。paste/crop の前例に合わせる。 */
 const GIZMO_HANDLE_SCREEN_RADIUS_PX = 7;
@@ -975,14 +1143,16 @@ function stageRootElement(): SVGGraphicsElement | null {
   return el instanceof SVGGraphicsElement ? el : null;
 }
 
-function objectIdFromEventTarget(target: EventTarget | null): { objectId: string | null; handleKind: "scale" | "rotate" | "tail" | null } {
+function objectIdFromEventTarget(
+  target: EventTarget | null
+): { objectId: string | null; handleKind: "scale" | "rotate" | "tail" | "tone-center" | null } {
   if (!(target instanceof Element)) {
     return { objectId: null, handleKind: null };
   }
   const handle = target.closest<SVGElement>("[data-page-object-handle]");
   if (handle) {
     const raw = handle.getAttribute("data-page-object-handle");
-    const kind = raw === "rotate" ? "rotate" : raw === "tail" ? "tail" : "scale";
+    const kind = raw === "rotate" ? "rotate" : raw === "tail" ? "tail" : raw === "tone-center" ? "tone-center" : "scale";
     return { objectId: handle.getAttribute("data-page-object-owner"), handleKind: kind };
   }
   const shape = target.closest<SVGElement>("[data-page-object]");
@@ -1039,6 +1209,30 @@ export function handlePageObjectsPointerDown(event: PointerEvent): boolean {
   return true;
 }
 
+/** ドラッグ開始直前のオブジェクトを deep copy する(以後のポインタ移動が draft を直接書き換えるため、参照共有だと巻き添えで壊れる)。 */
+function cloneEditableObjectForDrag(object: EditableObject): EditableObject {
+  if (object.kind === "box" || object.kind === "image") {
+    return { ...object, position: { ...object.position }, size: { ...object.size } };
+  }
+  if (object.kind === "balloon") {
+    return {
+      ...object,
+      position: { ...object.position },
+      size: { ...object.size },
+      tail: object.tail ? { tip: { ...object.tail.tip }, width: object.tail.width } : object.tail
+    };
+  }
+  if (object.kind === "tone") {
+    return {
+      ...object,
+      position: { ...object.position },
+      size: { ...object.size },
+      params: { ...object.params, center: object.params.center ? { ...object.params.center } : object.params.center }
+    };
+  }
+  return { ...object, position: { ...object.position }, content: { ...object.content, style: { ...object.content.style } } };
+}
+
 function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: ObjectGestureKind): void {
   const root = stageRootElement();
   const stage = root ? getStageTransform(root) : null;
@@ -1051,17 +1245,7 @@ function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: Obje
     objectId: object.id,
     kind,
     startSnapshot: currentSnapshot(),
-    startObject:
-      object.kind === "box" || object.kind === "image"
-        ? { ...object, position: { ...object.position }, size: { ...object.size } }
-        : object.kind === "balloon"
-          ? {
-              ...object,
-              position: { ...object.position },
-              size: { ...object.size },
-              tail: object.tail ? { tip: { ...object.tail.tip }, width: object.tail.width } : object.tail
-            }
-          : { ...object, position: { ...object.position }, content: { ...object.content, style: { ...object.content.style } } },
+    startObject: cloneEditableObjectForDrag(object),
     pxPerUnit: stage.pxPerUnit,
     startClientX: event.clientX,
     startClientY: event.clientY,
@@ -1116,6 +1300,14 @@ function clampTailTip(tip: { x: number; y: number }): { x: number; y: number } {
   };
 }
 
+/** トーン(focus/flash)の params.center(ローカル座標)を ± TONE_CENTER_CLAMP へ収める(normalize と同じ範囲)。 */
+function clampToneCenter(center: { x: number; y: number }): { x: number; y: number } {
+  return {
+    x: clampNumber(center.x, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, 0),
+    y: clampNumber(center.y, -TONE_CENTER_CLAMP, TONE_CENTER_CLAMP, 0)
+  };
+}
+
 export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   if (!objectDrag || event.pointerId !== objectDrag.pointerId) {
     return false;
@@ -1136,7 +1328,9 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   } else if (drag.kind === "scale") {
     const dist = Math.hypot(event.clientX - drag.centerScreenX, event.clientY - drag.centerScreenY);
     const factor = dist / Math.max(1, drag.startDist);
-    if (drag.startObject.kind === "box" || drag.startObject.kind === "image") {
+    if (drag.startObject.kind === "box" || drag.startObject.kind === "image" || drag.startObject.kind === "tone") {
+      // トーンは v1 では size のみスケールする(params の長さ系は変えない、Docs/Feature-ScreenTones.md
+      // 組み込みチェックリスト -- box/image と同じ扱い)。
       const box = scaleGizmoBoxAboutCenter(startBox, factor, PAGE_OBJECT_MIN_SIZE, PAGE_OBJECT_MAX_SIZE);
       updated = { ...drag.startObject, size: box.size };
     } else if (drag.startObject.kind === "balloon") {
@@ -1162,6 +1356,23 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
     const startTip = drag.startObject.tail?.tip ?? { x: 0, y: 0 };
     const nextTip = clampTailTip({ x: startTip.x + localDx, y: startTip.y + localDy });
     updated = { ...drag.startObject, tail: { tip: nextTip, width: drag.startObject.tail?.width ?? DEFAULT_BALLOON_TAIL_WIDTH } };
+  } else if (drag.kind === "tone-center") {
+    if (drag.startObject.kind !== "tone") {
+      // tone-center ハンドルは tone(focus/flash)にしか出さないので通常到達しない防御分岐。
+      objectDrag = null;
+      return false;
+    }
+    const dxScreen = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+    const dyScreen = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+    // 画面デルタを -rotation 回してローカル軸のデルタにする(tail ハンドルと同じ考え方)。
+    const rotation = drag.startObject.rotation;
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    const localDx = dxScreen * cos + dyScreen * sin;
+    const localDy = -dxScreen * sin + dyScreen * cos;
+    const startCenter = drag.startObject.params.center ?? { x: 0, y: 0 };
+    const nextCenter = clampToneCenter({ x: startCenter.x + localDx, y: startCenter.y + localDy });
+    updated = { ...drag.startObject, params: { ...drag.startObject.params, center: nextCenter } };
   } else {
     const angle = Math.atan2(event.clientY - drag.centerScreenY, event.clientX - drag.centerScreenX);
     const box = rotateGizmoBox(startBox, drag.startAngle, angle, event.shiftKey, ROTATE_SNAP_RAD);
@@ -1190,6 +1401,20 @@ function editableObjectUnchanged(a: EditableObject, b: EditableObject): boolean 
   }
   if (a.kind === "image" && b.kind === "image") {
     return a.size.x === b.size.x && a.size.y === b.size.y;
+  }
+  if (a.kind === "tone" && b.kind === "tone") {
+    if (a.size.x !== b.size.x || a.size.y !== b.size.y) {
+      return false;
+    }
+    const ac = a.params.center;
+    const bc = b.params.center;
+    if (Boolean(ac) !== Boolean(bc)) {
+      return false;
+    }
+    if (ac && bc && (ac.x !== bc.x || ac.y !== bc.y)) {
+      return false;
+    }
+    return true;
   }
   if (a.kind === "text" && b.kind === "text") {
     return a.content.style.size === b.content.style.size && a.maxWidth === b.maxWidth;
@@ -1288,6 +1513,7 @@ export function syncPageObjectsGizmo(): void {
   const rotateHandle = gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoRotate");
   rotateHandle?.setAttribute("r", String(radius));
   gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoTail")?.setAttribute("r", String(radius));
+  gizmo.querySelector<SVGCircleElement>("#pageObjectGizmoToneCenter")?.setAttribute("r", String(radius));
   const topMidX = Number(gizmo.dataset.tmx);
   const topMidY = Number(gizmo.dataset.tmy);
   const upX = Number(gizmo.dataset.upx);
@@ -1353,6 +1579,8 @@ registerActions({
   "add-page-object-box": () => addBoxObject(),
   "add-page-object-balloon": () => addBalloonObject(),
   "add-page-object-text": () => addTextObject(),
+  "add-page-object-tone": () => addToneObject(),
+  "shuffle-tone-seed": () => shuffleToneSeed(),
   "delete-selected-page-object": () => deleteSelectedPageObject(),
   "page-object-bring-front": () => bringSelectedToFront(),
   "page-object-send-back": () => sendSelectedToBack(),

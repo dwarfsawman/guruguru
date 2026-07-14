@@ -6,15 +6,15 @@
  * `pageObjectsController.ts`(ドラッグ数学)と `pagePanelLightboxView.ts`(選択枠/ヒットエリアの描画)の
  * 両方から参照する共通ヘルパ -- 2つが互いを import し合う循環を避けるためにここへ切り出した。
  */
-import { PAGE_OBJECT_MIN_SIZE, type BalloonObject, type BoxObject, type ImageObject, type TextObject } from "../shared/pageObjects";
+import { PAGE_OBJECT_MIN_SIZE, type BalloonObject, type BoxObject, type ImageObject, type TextObject, type ToneObject } from "../shared/pageObjects";
 import type { GizmoBox } from "./svgGizmo";
 import { getCachedTextLayout } from "./textLayoutClient";
 
 /** text オブジェクトのレイアウト未着時、ギズモ枠に使う仮サイズ(page 単位の正方形)。 */
 export const TEXT_GIZMO_PLACEHOLDER_SIZE = 0.1;
 
-export function gizmoBoxForPageObject(object: BoxObject | BalloonObject | TextObject | ImageObject): GizmoBox {
-  if (object.kind === "box" || object.kind === "balloon" || object.kind === "image") {
+export function gizmoBoxForPageObject(object: BoxObject | BalloonObject | TextObject | ImageObject | ToneObject): GizmoBox {
+  if (object.kind === "box" || object.kind === "balloon" || object.kind === "image" || object.kind === "tone") {
     return { center: { ...object.position }, size: { ...object.size }, rotation: object.rotation };
   }
   const layout = getCachedTextLayout(object.content, object.maxWidth);

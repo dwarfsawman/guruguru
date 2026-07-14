@@ -7,13 +7,17 @@ import {
   DEFAULT_IMAGE_OBJECT_HEIGHT,
   PAGE_OBJECT_MAX_SIZE,
   PAGE_OBJECT_MIN_SIZE,
+  TONE_KINDS,
   clonePageObjects,
   createBoxObject,
   createImageObject,
+  createToneObject,
   defaultImageObjectSize,
+  defaultToneParams,
   normalizePageObjects,
   type BoxObject,
-  type ImageObject
+  type ImageObject,
+  type ToneObject
 } from "./pageObjects.ts";
 
 test("normalizePageObjects: 非配列は空配列", () => {
@@ -233,6 +237,167 @@ test("createImageObject: 既定 front 帯・不透明度1・クリップなし�
   assert.equal(image.band, "front");
   assert.equal(image.clipPanelId, null);
   assert.equal(image.rotation, 0);
+});
+
+// --- トーン(Docs/Feature-ScreenTones.md) ---
+
+test("normalizePageObjects: tone の正規化往復(seed/params/clipPanelId/opacity/color を保持)", () => {
+  const raw = [
+    {
+      id: "tone_1",
+      kind: "tone",
+      position: { x: 0.5, y: 0.4 },
+      rotation: 0.3,
+      size: { x: 0.3, y: 0.25 },
+      toneType: "focus",
+      color: "#112233",
+      opacity: 0.7,
+      clipPanelId: "panel_9",
+      seed: 12345,
+      params: { center: { x: 0.02, y: -0.03 }, innerRadius: 0.1, count: 50, lineWidth: 0.01, jitter: 0.4 }
+    }
+  ];
+  const objects = normalizePageObjects(raw);
+  assert.equal(objects.length, 1);
+  const tone = objects[0] as ToneObject;
+  assert.equal(tone.kind, "tone");
+  assert.equal(tone.toneType, "focus");
+  assert.equal(tone.color, "#112233");
+  assert.equal(tone.opacity, 0.7);
+  assert.equal(tone.clipPanelId, "panel_9");
+  assert.equal(tone.seed, 12345);
+  assert.deepEqual(tone.position, { x: 0.5, y: 0.4 });
+  assert.deepEqual(tone.size, { x: 0.3, y: 0.25 });
+  assert.deepEqual(tone.params.center, { x: 0.02, y: -0.03 });
+  assert.equal(tone.params.innerRadius, 0.1);
+  assert.equal(tone.params.count, 50);
+  assert.equal(tone.params.lineWidth, 0.01);
+  assert.equal(tone.params.jitter, 0.4);
+});
+
+test("normalizePageObjects: tone の pitch/dotRatio は範囲へ clamp する", () => {
+  const objects = normalizePageObjects([
+    {
+      id: "t",
+      kind: "tone",
+      position: { x: 0.1, y: 0.1 },
+      size: { x: 0.2, y: 0.2 },
+      toneType: "halftone",
+      seed: 1,
+      params: { pitch: 999, dotRatio: 5, angle: 10 }
+    }
+  ]);
+  const tone = objects[0] as ToneObject;
+  assert.equal(tone.params.pitch, 0.1);
+  assert.equal(tone.params.dotRatio, 1);
+
+  const clampedLow = normalizePageObjects([
+    { id: "t2", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "halftone", seed: 1, params: { pitch: -5, dotRatio: -5 } }
+  ])[0] as ToneObject;
+  assert.equal(clampedLow.params.pitch, 0.004);
+  assert.equal(clampedLow.params.dotRatio, 0);
+});
+
+test("normalizePageObjects: tone の focus/flash center はローカル座標として ±2 へ clamp する", () => {
+  const objects = normalizePageObjects([
+    {
+      id: "t",
+      kind: "tone",
+      position: { x: 0.1, y: 0.1 },
+      size: { x: 0.2, y: 0.2 },
+      toneType: "focus",
+      seed: 1,
+      params: { center: { x: 999, y: -999 } }
+    }
+  ]);
+  const tone = objects[0] as ToneObject;
+  assert.equal(tone.params.center!.x, 2);
+  assert.equal(tone.params.center!.y, -2);
+});
+
+test("normalizePageObjects: tone の toneType は候補外なら halftone にフォールバック(balloon.shape と同じ扱い、オブジェクト自体は捨てない)", () => {
+  const objects = normalizePageObjects([
+    { id: "t", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "sparkle-beam", seed: 1, params: {} }
+  ]);
+  assert.equal(objects.length, 1);
+  assert.equal((objects[0] as ToneObject).toneType, "halftone");
+});
+
+test("normalizePageObjects: tone は position/size 欠損なら捨てる", () => {
+  assert.deepEqual(normalizePageObjects([{ id: "t", kind: "tone", position: { x: 0.1, y: 0.1 } }]), []);
+  assert.deepEqual(normalizePageObjects([{ id: "t", kind: "tone", size: { x: 0.1, y: 0.1 } }]), []);
+});
+
+test("normalizePageObjects: tone の seed が不正なら決定的な既定値へフォールバックする(Math.random は使わない)", () => {
+  const a = normalizePageObjects([
+    { id: "t", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "speed", seed: "not-a-number", params: {} }
+  ])[0] as ToneObject;
+  const b = normalizePageObjects([
+    { id: "t", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "speed", seed: "not-a-number", params: {} }
+  ])[0] as ToneObject;
+  assert.ok(Number.isInteger(a.seed));
+  assert.equal(a.seed, b.seed, "同じ不正入力からは同じ既定 seed が出る(決定的)");
+});
+
+test("normalizePageObjects: tone の clipPanelId=null は null のまま保持し、省略はキーを持たない", () => {
+  const withNull = normalizePageObjects([
+    { id: "a", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.1, y: 0.1 }, toneType: "lines", seed: 1, params: {}, clipPanelId: null }
+  ])[0] as ToneObject;
+  assert.equal(withNull.clipPanelId, null);
+  assert.ok("clipPanelId" in withNull);
+
+  const omitted = normalizePageObjects([
+    { id: "b", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.1, y: 0.1 }, toneType: "lines", seed: 1, params: {} }
+  ])[0] as ToneObject;
+  assert.ok(!("clipPanelId" in omitted));
+});
+
+test("normalizePageObjects: tone の未知パラメータ種別ごとの使用フィールドだけが残る(gradient→lines へ toneType が変わっても混入しない)", () => {
+  // lines には無いはずの startRatio/endRatio が残っていても、lines の正規化は使わないフィールドを出力しない。
+  const tone = normalizePageObjects([
+    {
+      id: "t",
+      kind: "tone",
+      position: { x: 0.1, y: 0.1 },
+      size: { x: 0.2, y: 0.2 },
+      toneType: "lines",
+      seed: 1,
+      params: { pitch: 0.02, lineRatio: 0.5, angle: 10, startRatio: 0.9, endRatio: 0.1 }
+    }
+  ])[0] as ToneObject;
+  assert.equal(tone.params.lineRatio, 0.5);
+  assert.equal(tone.params.startRatio, undefined);
+  assert.equal(tone.params.endRatio, undefined);
+});
+
+test("defaultToneParams: 全種別で仕様書の既定値を返す", () => {
+  assert.deepEqual(defaultToneParams("halftone"), { pitch: 0.015, dotRatio: 0.45, angle: 45 });
+  assert.deepEqual(defaultToneParams("gradient"), { pitch: 0.015, dotRatio: 0.45, angle: 45, startRatio: 0.7, endRatio: 0.05 });
+  assert.deepEqual(defaultToneParams("lines"), { pitch: 0.012, lineRatio: 0.35, angle: 0 });
+  assert.deepEqual(defaultToneParams("speed"), { angle: 45, count: 90, length: 0.7, lineWidth: 0.004, jitter: 0.5 });
+  assert.deepEqual(defaultToneParams("focus"), { center: { x: 0, y: 0 }, innerRadius: 0.12, count: 72, lineWidth: 0.012, jitter: 0.5 });
+  assert.deepEqual(defaultToneParams("flash"), { center: { x: 0, y: 0 }, innerRadius: 0.18, count: 72, lineWidth: 0.012, jitter: 0.5 });
+  assert.equal(TONE_KINDS.length, 6);
+});
+
+test("createToneObject: 既定色・不透明度1で生成し、渡した seed/toneType/size/clipPanelId をそのまま使う", () => {
+  const tone = createToneObject("tone_new", { x: 0.5, y: 0.4 }, 777, { x: 0.4, y: 0.3 }, "flash", "panel_1");
+  assert.equal(tone.kind, "tone");
+  assert.equal(tone.toneType, "flash");
+  assert.equal(tone.seed, 777);
+  assert.equal(tone.opacity, 1);
+  assert.equal(tone.color, "#000000");
+  assert.equal(tone.clipPanelId, "panel_1");
+  assert.equal(tone.rotation, 0);
+  assert.deepEqual(tone.size, { x: 0.4, y: 0.3 });
+  assert.deepEqual(tone.params, defaultToneParams("flash"));
+});
+
+test("createToneObject: 既定引数(size/toneType/clipPanelId 省略)は仕様書どおり 0.35×0.35・halftone・クリップなし", () => {
+  const tone = createToneObject("tone_default", { x: 0.5, y: 0.7 }, 1);
+  assert.equal(tone.toneType, "halftone");
+  assert.deepEqual(tone.size, { x: 0.35, y: 0.35 });
+  assert.equal(tone.clipPanelId, null);
 });
 
 test("clonePageObjects: deep copy(元配列を書き換えても影響しない)", () => {

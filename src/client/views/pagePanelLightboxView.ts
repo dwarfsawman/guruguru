@@ -16,9 +16,12 @@ import type { Asset, DialogueLine, DialogueProposal, DialogueProposalItem, FontS
 import type { LayoutPanel, PageLayout, PanelCrop } from "../../shared/pageLayout";
 import { panelBounds, panelBoundsSize } from "../../shared/pageLayout";
 import {
+  PAGE_OBJECT_MAX_SIZE,
   PAGE_OBJECT_MIN_SIZE,
   TEXT_SIZE_MAX,
   TEXT_SIZE_MIN,
+  TONE_COUNT_MAX,
+  TONE_KINDS,
   contentMaxWidth,
   type BalloonObject,
   type BalloonShape,
@@ -28,10 +31,14 @@ import {
   type PageVec,
   type TextContent,
   type TextObject,
-  type TextStyle
+  type TextStyle,
+  type ToneKind,
+  type ToneObject,
+  type ToneParams
 } from "../../shared/pageObjects";
 import { balloonContentMaxWidth, renderBalloonSvg } from "../../shared/balloonShape";
 import { renderTextSvg } from "../../shared/textSvg";
+import { renderToneSvg } from "../../shared/toneSvg";
 import {
   MOSAIC_GRANULARITY_MAX,
   MOSAIC_GRANULARITY_MIN,
@@ -43,7 +50,7 @@ import { gizmoBoxForPageObject } from "../pageObjectGizmoBox";
 import { getCachedTextLayout } from "../textLayoutClient";
 import type { PagePanelLightboxState } from "../appState";
 import { escapeAttr, escapeHtml } from "../format";
-import { iconClose, iconEye, iconEyeOff, iconGrip, iconPlus, iconScript, iconSparkle, iconTrash } from "../icons";
+import { iconClose, iconEye, iconEyeOff, iconGrip, iconPlus, iconScript, iconShuffle, iconSparkle, iconTrash } from "../icons";
 import { pageLayerBand, visiblePageObjects } from "../pageLayers";
 import { num, panelShapeElement, shapeCenter } from "./pageLayoutSvg";
 import { renderChronicleBar, type ChronicleBarViewState } from "./chronicleBarView";
@@ -671,11 +678,13 @@ function renderMosaicToolbar(mosaicEdit: MosaicEditViewState): string {
 // --- 「オブジェクト」モード(Docs/Feature-CGCollectionSuite.md P1: box / P2: text / P3: balloon、
 //      Docs/Feature-ScriptToManga.md S2: image + back/front 帯) ---
 
-/** ギズモで動かせるオブジェクトの型(box/text/balloon/image)。 */
-type EditablePageObject = BoxObject | TextObject | BalloonObject | ImageObject;
+/** ギズモで動かせるオブジェクトの型(box/text/balloon/image/tone)。 */
+type EditablePageObject = BoxObject | TextObject | BalloonObject | ImageObject | ToneObject;
 
 function isEditablePageObject(object: PageObject): object is EditablePageObject {
-  return object.kind === "box" || object.kind === "text" || object.kind === "balloon" || object.kind === "image";
+  return (
+    object.kind === "box" || object.kind === "text" || object.kind === "balloon" || object.kind === "image" || object.kind === "tone"
+  );
 }
 
 /** image オブジェクトのうち back 帯に属するか(既定は front)。サーバ側 openRasterExport.ts と同じ判定。 */
@@ -766,7 +775,9 @@ function renderChroniclePreviewGhosts(objects: PageObject[]): string {
 }
 
 function chroniclePreviewGhostBox(object: PageObject): { x: number; y: number; w: number; h: number } {
-  if (object.kind === "box" || object.kind === "balloon" || object.kind === "image") {
+  // Chronicle の一括配置は balloon/box/text(sfx)しか生成しないため tone がここに来ることは実運用上無いが、
+  // size を持つ kind なので box/balloon/image と同じ扱いにしておく(型の網羅性・将来の呼び出し元変化への防御)。
+  if (object.kind === "box" || object.kind === "balloon" || object.kind === "image" || object.kind === "tone") {
     return { x: object.position.x - object.size.x / 2, y: object.position.y - object.size.y / 2, w: object.size.x, h: object.size.y };
   }
   // text(sfx): size を持たないので文字数からの概算(ゴースト表示専用、正確なレイアウトではない)。
@@ -813,6 +824,9 @@ function renderPageObjectShape(object: PageObject, isSelected: boolean, missingM
   if (object.kind === "image") {
     return renderImageObjectShape(object, isSelected, missingMediaIds.includes(object.mediaId));
   }
+  if (object.kind === "tone") {
+    return renderToneObjectShape(object, isSelected);
+  }
   return renderBalloonObjectShape(object, isSelected);
 }
 
@@ -844,6 +858,25 @@ function renderImageObjectShape(object: ImageObject, isSelected: boolean, isMiss
   const image = `<image href="${escapeAttr(href)}" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}" preserveAspectRatio="none" class="page-object-image-el" opacity="${num(opacity)}" pointer-events="none"${transform} />`;
   const clipped = object.clipPanelId ? `<g clip-path="url(#${panelClipId(object.clipPanelId)})">${image}</g>` : image;
   return `<g class="page-object-image">${hitArea}${clipped}</g>`;
+}
+
+/**
+ * トーンオブジェクト1件(Docs/Feature-ScreenTones.md)。描画本体は `renderToneSvg`(クライアント/サーバ
+ * 共用の純ロジック)にそのまま任せる -- balloon と同じく本体は pointer-events なしにし、透明な外接矩形を
+ * 選択/ドラッグの当たり判定にする(`fill="transparent"`、`"none"` はヒットテスト対象外になるため使わない)。
+ * clipPanelId があればコマ形状の clipPath(コマモードと共有の defs、`panelClipId`)で外側から重ねてクリップ
+ * する(ImageObject と同じ二重クリップ構成 -- renderToneSvg 自身の領域クリップは常に別途掛かる)。
+ */
+function renderToneObjectShape(object: ToneObject, isSelected: boolean): string {
+  const x = object.position.x - object.size.x / 2;
+  const y = object.position.y - object.size.y / 2;
+  const deg = (object.rotation * 180) / Math.PI;
+  const transform = deg ? ` transform="rotate(${num(deg)} ${num(object.position.x)} ${num(object.position.y)})"` : "";
+  const stateClass = isSelected ? " is-selected" : "";
+  const hitArea = `<rect data-page-object="${escapeAttr(object.id)}" class="page-object-hit-area${stateClass}" x="${num(x)}" y="${num(y)}" width="${num(object.size.x)}" height="${num(object.size.y)}" fill="transparent" stroke="none"${transform} />`;
+  const shape = renderToneSvg(object, object.position, object.rotation);
+  const clipped = object.clipPanelId ? `<g clip-path="url(#${panelClipId(object.clipPanelId)})">${shape}</g>` : shape;
+  return `<g class="page-object-tone">${hitArea}${clipped}</g>`;
 }
 
 /**
@@ -937,6 +970,17 @@ function balloonTailHandlePoint(object: BalloonObject): { x: number; y: number }
 }
 
 /**
+ * トーン(focus/flash)の中心ハンドルの世界(ページ)座標。params.center はローカル座標(オブジェクト
+ * 中心=原点、回転前)なので、balloon の tail tip ハンドルと全く同じ変換(回転を掛けてから position を
+ * 足す)を使う。
+ */
+function toneCenterHandlePoint(object: ToneObject): { x: number; y: number } {
+  const center = object.params.center ?? { x: 0, y: 0 };
+  const rotated = rotatePointAround(center, { x: 0, y: 0 }, object.rotation);
+  return { x: object.position.x + rotated.x, y: object.position.y + rotated.y };
+}
+
+/**
  * paste/crop 風ギズモ(コーナー=拡縮 / 上のハンドル=回転)。選択中の box/text/balloon オブジェクトの
  * 外接矩形まわりに描く。矩形自体は `gizmoBoxForPageObject`(box/balloon は size そのまま、text は
  * レイアウト bbox)。balloon にしっぽがあれば、専用の tip ドラッグハンドル(別色)も追加する。
@@ -962,12 +1006,22 @@ function renderPageObjectGizmo(object: EditablePageObject, pageHeight: number): 
           return `<circle id="pageObjectGizmoTail" class="page-object-gizmo-handle page-object-gizmo-tail-handle" style="cursor:move;" data-page-object-handle="tail" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(point.x)}" cy="${num(point.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />`;
         })()
       : "";
+  // トーン(focus/flash)の中心ハンドル(Docs/Feature-ScreenTones.md)。tail ハンドルと同じパターンで
+  // "tone-center" ジェスチャを追加する(色は tail のオレンジと区別する)。
+  const toneCenterHandle =
+    object.kind === "tone" && (object.toneType === "focus" || object.toneType === "flash")
+      ? (() => {
+          const point = toneCenterHandlePoint(object);
+          return `<circle id="pageObjectGizmoToneCenter" class="page-object-gizmo-handle page-object-gizmo-tone-center-handle" style="cursor:move;" data-page-object-handle="tone-center" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(point.x)}" cy="${num(point.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />`;
+        })()
+      : "";
   // sync が柄長/半径を画面基準へ直すために基準点と反転判定用のページ高(data-ph)を data 属性で持たせる。
   return `<g id="pageObjectGizmo" class="page-object-gizmo" data-tmx="${num(topMid.x)}" data-tmy="${num(topMid.y)}" data-upx="${num(up.x)}" data-upy="${num(up.y)}" data-ph="${num(pageHeight)}">
     <polygon id="pageObjectGizmoOutline" class="page-object-gizmo-outline" points="${outlinePoints}" />
     <line id="pageObjectGizmoStick" class="page-object-gizmo-stick" x1="${num(topMid.x)}" y1="${num(topMid.y)}" x2="${num(rotateHandle.x)}" y2="${num(rotateHandle.y)}" />
     ${cornerHandles}
     ${tailHandle}
+    ${toneCenterHandle}
     <circle id="pageObjectGizmoRotate" class="page-object-gizmo-handle page-object-gizmo-rotate" style="cursor:grab;" data-page-object-handle="rotate" data-page-object-owner="${escapeAttr(object.id)}" cx="${num(rotateHandle.x)}" cy="${num(rotateHandle.y)}" r="${num(GIZMO_HANDLE_RADIUS)}" />
   </g>`;
 }
@@ -988,7 +1042,8 @@ function renderObjectsToolbar(
   const selectedText = selected && selected.kind === "text" ? selected : null;
   const selectedBalloon = selected && selected.kind === "balloon" ? selected : null;
   const selectedImage = selected && selected.kind === "image" ? selected : null;
-  const hasSelection = Boolean(selectedBox || selectedText || selectedBalloon || selectedImage);
+  const selectedTone = selected && selected.kind === "tone" ? selected : null;
+  const hasSelection = Boolean(selectedBox || selectedText || selectedBalloon || selectedImage || selectedTone);
   // "replace" ピッカーは対象(選択中の image オブジェクト)が無くなったら表示しない
   // (選択解除後もピッカーが浮いたままにならないようにする。state 自体はここではリセットしない)。
   const rawPickerMode = imageObjects.picker?.mode ?? null;
@@ -1012,6 +1067,7 @@ function renderObjectsToolbar(
               <button class="button-secondary compact" type="button" data-action="add-page-object-text">${iconPlus()}テキスト</button>
               <button class="button-secondary compact" type="button" data-action="add-page-object-box">${iconPlus()}ボックス</button>
               <button class="button-secondary compact${pickerMode === "add" ? " is-active" : ""}" type="button" data-action="toggle-page-object-image-picker" data-id="add">${iconPlus()}画像</button>
+              <button class="button-secondary compact" type="button" data-action="add-page-object-tone">${iconPlus()}トーン</button>
             </div>
             ${pickerMode ? renderImageObjectPicker(imageObjects.pickerAssets) : ""}
             <div class="page-layer-visibility-actions">
@@ -1050,7 +1106,9 @@ function renderObjectsToolbar(
                         ? renderTextObjectPanel(selectedText, fonts)
                         : selectedImage
                           ? renderImageObjectPropertyPanel(selectedImage, layout, imageObjects.missingMediaIds.includes(selectedImage.mediaId))
-                          : `<p class="page-panel-hint-text">紙面またはレイヤ一覧から対象を選択してください。ドラッグで移動、コーナーで拡縮、上のハンドルで回転できます。</p>`
+                          : selectedTone
+                            ? renderTonePropertyPanel(selectedTone, layout)
+                            : `<p class="page-panel-hint-text">紙面またはレイヤ一覧から対象を選択してください。ドラッグで移動、コーナーで拡縮、上のハンドルで回転できます。</p>`
               }
             </section>
           `
@@ -1069,6 +1127,9 @@ function pageObjectLayerName(object: PageObject): { title: string; type: string 
   const compactText = text.replace(/\s+/g, " ").trim();
   if (object.kind === "image") {
     return { title: "画像", type: object.band === "back" ? "背景画像" : "前景画像" };
+  }
+  if (object.kind === "tone") {
+    return { title: "トーン", type: TONE_TYPE_LABEL[object.toneType] };
   }
   if (object.kind === "balloon") {
     return { title: compactText || "吹き出し", type: "吹き出し" };
@@ -1367,6 +1428,152 @@ function renderImageObjectPropertyPanel(object: ImageObject, layout: PageLayout 
       <button class="button-secondary compact" type="button" data-action="toggle-page-object-image-picker" data-id="replace">メディア差し替え</button>
     </div>
   `;
+}
+
+const TONE_TYPE_LABEL: Record<ToneKind, string> = {
+  halftone: "網点",
+  gradient: "グラデ",
+  lines: "線",
+  speed: "スピード線",
+  focus: "集中線",
+  flash: "フラッシュ"
+};
+
+/**
+ * トーンオブジェクトのプロパティパネル(Docs/Feature-ScreenTones.md)。種別 select・色・不透明度・
+ * 種別ごとのパラメータ欄・クリップ先コマ select(image と同じ)・「シャッフル」ボタン(speed/focus/flash
+ * の seed 振り直し)。種別切替は `updateToneOwnField`(controller)側で params を既定値へリセットする。
+ */
+function renderTonePropertyPanel(object: ToneObject, layout: PageLayout | null): string {
+  const typeOptions = TONE_KINDS.map(
+    (kind) => `<option value="${kind}"${object.toneType === kind ? " selected" : ""}>${escapeHtml(TONE_TYPE_LABEL[kind])}</option>`
+  ).join("");
+  const panelOptions = (layout?.panels ?? [])
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .map((panel) => `<option value="${escapeAttr(panel.id)}"${object.clipPanelId === panel.id ? " selected" : ""}>コマ ${panel.order}</option>`)
+    .join("");
+  const needsShuffle = object.toneType === "speed" || object.toneType === "focus" || object.toneType === "flash";
+  return `
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-property-field-wide">種別
+        <select data-page-object-field="toneType">${typeOptions}</select>
+      </label>
+      <label class="page-object-property-field">色
+        <input type="color" data-page-object-field="color" value="${escapeAttr(object.color)}" />
+      </label>
+      <label class="page-object-property-field">不透明度
+        <input type="range" min="0" max="1" step="0.01" data-page-object-field="opacity" value="${num(object.opacity ?? 1)}" />
+      </label>
+    </div>
+    ${renderToneParamsFields(object)}
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-property-field-wide">クリップ先のコマ
+        <select data-page-object-field="clipPanelId"${panelOptions ? "" : " disabled"}>
+          <option value=""${object.clipPanelId ? "" : " selected"}>クリップしない</option>
+          ${panelOptions}
+        </select>
+      </label>
+      ${needsShuffle ? `<button class="button-secondary compact" type="button" data-action="shuffle-tone-seed">${iconShuffle()}シャッフル</button>` : ""}
+    </div>
+  `;
+}
+
+/** 中心ドラッグハンドルを使う focus/flash の共通パラメータ欄(center 自体はハンドルのみ、数値入力は設けない)。 */
+function renderCenterBasedToneFields(params: ToneParams): string {
+  return `
+    <div class="page-object-property-row">
+      <label class="page-object-property-field">中心の空白半径
+        <input type="number" step="0.005" min="0" max="${PAGE_OBJECT_MAX_SIZE}" data-page-object-tone-param="innerRadius" value="${num(params.innerRadius ?? 0)}" />
+      </label>
+      <label class="page-object-property-field">本数
+        <input type="number" step="1" min="1" max="${TONE_COUNT_MAX}" data-page-object-tone-param="count" value="${num(params.count ?? 0)}" />
+      </label>
+      <label class="page-object-property-field">線幅
+        <input type="number" step="0.001" min="0" max="1" data-page-object-tone-param="lineWidth" value="${num(params.lineWidth ?? 0)}" />
+      </label>
+      <label class="page-object-property-field">ゆらぎ
+        <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="jitter" value="${num(params.jitter ?? 0)}" />
+      </label>
+    </div>
+    <p class="page-panel-hint-text">オレンジではなく緑のハンドルをドラッグで中心を動かせます</p>
+  `;
+}
+
+function renderToneParamsFields(object: ToneObject): string {
+  const params = object.params;
+  switch (object.toneType) {
+    case "halftone":
+    case "gradient":
+      return `
+        <div class="page-object-property-row">
+          <label class="page-object-property-field">間隔
+            <input type="number" step="0.001" min="0.004" max="0.1" data-page-object-tone-param="pitch" value="${num(params.pitch ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">濃度
+            <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="dotRatio" value="${num(params.dotRatio ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">角度
+            <input type="number" step="1" data-page-object-tone-param="angle" value="${num(params.angle ?? 0)}" />
+          </label>
+        </div>
+        ${
+          object.toneType === "gradient"
+            ? `
+              <div class="page-object-property-row">
+                <label class="page-object-property-field">開始濃度
+                  <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="startRatio" value="${num(params.startRatio ?? 0)}" />
+                </label>
+                <label class="page-object-property-field">終了濃度
+                  <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="endRatio" value="${num(params.endRatio ?? 0)}" />
+                </label>
+              </div>
+            `
+            : ""
+        }
+      `;
+    case "lines":
+      return `
+        <div class="page-object-property-row">
+          <label class="page-object-property-field">間隔
+            <input type="number" step="0.001" min="0.004" max="0.1" data-page-object-tone-param="pitch" value="${num(params.pitch ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">線幅比
+            <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="lineRatio" value="${num(params.lineRatio ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">角度
+            <input type="number" step="1" data-page-object-tone-param="angle" value="${num(params.angle ?? 0)}" />
+          </label>
+        </div>
+      `;
+    case "speed":
+      return `
+        <div class="page-object-property-row">
+          <label class="page-object-property-field">角度
+            <input type="number" step="1" data-page-object-tone-param="angle" value="${num(params.angle ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">本数
+            <input type="number" step="1" min="1" max="${TONE_COUNT_MAX}" data-page-object-tone-param="count" value="${num(params.count ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">平均長
+            <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="length" value="${num(params.length ?? 0)}" />
+          </label>
+        </div>
+        <div class="page-object-property-row">
+          <label class="page-object-property-field">線幅
+            <input type="number" step="0.001" min="0" max="1" data-page-object-tone-param="lineWidth" value="${num(params.lineWidth ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">ゆらぎ
+            <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="jitter" value="${num(params.jitter ?? 0)}" />
+          </label>
+        </div>
+      `;
+    case "focus":
+    case "flash":
+      return renderCenterBasedToneFields(params);
+    default:
+      return "";
+  }
 }
 
 /** box/balloon 共通の「テキストを載せる」トグル+本文 textarea+スタイル欄。 */
