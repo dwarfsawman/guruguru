@@ -1025,13 +1025,19 @@ function renderObjectsToolbar(
               <div class="page-layer-settings-header">
                 <div>
                   <p class="section-kicker">Settings</p>
-                  <h3>${
+                  ${
                     selectedPanel
-                      ? `コマ ${selectedPanel.order}`
-                      : selected
-                        ? escapeHtml(pageObjectLayerName(selected).title)
-                        : "レイヤを選択"
-                  }</h3>
+                      ? `<h3>コマ ${selectedPanel.order}</h3>`
+                      : selectedBox
+                        ? renderSettingsHeadingField("box", selectedBox.content?.text ?? "")
+                        : selectedBalloon
+                          ? renderSettingsHeadingField("balloon", selectedBalloon.content?.text ?? "")
+                          : selectedText
+                            ? renderSettingsHeadingField("text", selectedText.content.text)
+                            : selected
+                              ? `<h3>${escapeHtml(pageObjectLayerName(selected).title)}</h3>`
+                              : `<h3>レイヤを選択</h3>`
+                  }
                 </div>
                 ${
                   hasSelection
@@ -1057,6 +1063,18 @@ function renderObjectsToolbar(
       }
     </section>
   `;
+}
+
+/**
+ * SETTINGS 見出し(A-1: Docs/Feature-PageEditSidebarUx.md 課題A)。balloon/box/text 選択時は、静的な
+ * `<h3>` の代わりに本文編集を兼ねる見出し風 textarea を返す -- 本文編集をここへ一本化し(A-2 で下部
+ * textarea は撤去)、既存の input 委譲(`data-page-object-text="1"` → `updatePageObjectTextFromInput`、
+ * main.ts に配線済み)をそのまま再利用する。domMorph がフォーカス中要素の value を保護するので、
+ * タイピング中の再描画で編集(カーソル位置含む)が壊れない。
+ */
+function renderSettingsHeadingField(kind: "box" | "balloon" | "text", text: string): string {
+  const placeholder = kind === "balloon" ? "セリフを入力" : "テキストを入力";
+  return `<textarea class="page-layer-settings-heading" data-page-object-text="1" rows="1" placeholder="${escapeAttr(placeholder)}">${escapeHtml(text)}</textarea>`;
 }
 
 function pageObjectLayerName(object: PageObject): { title: string; type: string } {
@@ -1369,23 +1387,14 @@ function renderImageObjectPropertyPanel(object: ImageObject, layout: PageLayout 
   `;
 }
 
-/** box/balloon 共通の「テキストを載せる」トグル+本文 textarea+スタイル欄。 */
+/**
+ * box/balloon 共通のスタイル欄。A-2(Docs/Feature-PageEditSidebarUx.md 課題A)で「テキストを載せる」
+ * (hasContent)トグルと本文 textarea を撤去した -- 本文編集は SETTINGS 見出しフィールド
+ * (`renderSettingsHeadingField`)に一本化済み。表示条件は変更前と同じ「content がある時」のまま
+ * (balloon は生成時から content を持つ。box は見出しフィールドへの入力で content が新規作成された時)。
+ */
 function renderContentSection(content: TextContent | null | undefined, fonts: FontSummary[]): string {
-  return `
-    <div class="page-object-property-row">
-      <label class="page-object-property-field page-object-checkbox-field">
-        <input type="checkbox" data-page-object-field="hasContent" ${content ? "checked" : ""} /> テキストを載せる
-      </label>
-    </div>
-    ${
-      content
-        ? `
-          <textarea class="page-object-textarea" data-page-object-text="1" rows="2" placeholder="テキストを入力">${escapeHtml(content.text)}</textarea>
-          ${renderTextStyleFields(content.style, fonts, "data-page-object-content-field")}
-        `
-        : ""
-    }
-  `;
+  return content ? renderTextStyleFields(content.style, fonts, "data-page-object-content-field") : "";
 }
 
 function renderBoxPropertyPanel(object: BoxObject, fonts: FontSummary[]): string {
@@ -1460,11 +1469,13 @@ function renderBalloonPropertyPanel(object: BalloonObject, fonts: FontSummary[])
   `;
 }
 
-/** text オブジェクト本体のプロパティパネル(本文 textarea + スタイル欄 + 折り返し幅)。 */
+/**
+ * text オブジェクト本体のプロパティパネル(スタイル欄 + 折り返し幅)。A-2 で先頭の本文 textarea は
+ * 撤去し、SETTINGS 見出しフィールド(`renderSettingsHeadingField`)へ一本化した。
+ */
 function renderTextObjectPanel(object: TextObject, fonts: FontSummary[]): string {
   const hasMaxWidth = object.maxWidth !== undefined;
   return `
-    <textarea class="page-object-textarea" data-page-object-text="1" rows="3" placeholder="テキストを入力">${escapeHtml(object.content.text)}</textarea>
     ${renderTextStyleFields(object.content.style, fonts, "data-page-object-field")}
     <div class="page-object-property-row">
       <label class="page-object-property-field page-object-checkbox-field">
