@@ -53,6 +53,18 @@ export interface LayoutBalloon {
   [key: string]: unknown;
 }
 
+/**
+ * 自動コマ割り候補メタデータ(SPEC v0.3 §23.1 `extensions['com.guruguru'].autoManga`)。
+ * candidate:true のテンプレは自動漫画のレイアウト候補プールへ参加できる(参加要件は取り込み側が検証)。
+ */
+export interface PageLayoutAutoManga {
+  candidate: boolean;
+  /** LLMネーム監督へ渡す英語一文説明。省略時は面積プロファイルから自動生成される。 */
+  description?: string;
+  /** 見せ場(hero)相当スロットの panel id。省略時は面積最大のコマを hero とみなす。 */
+  emphasisPanelIds?: string[];
+}
+
 /** ページのコマ割りレイアウト(1ページ分)。 */
 export interface PageLayout {
   version: 1;
@@ -69,7 +81,15 @@ export interface PageLayout {
   /** 予約(将来: テキスト/翻訳)。 */
   texts?: unknown[];
   /** 取り込み元の素性(再エクスポートや表示用)。 */
-  source?: { format: "guruguru-layout"; schemaVersion?: string; title?: string };
+  source?: {
+    format: "guruguru-layout";
+    schemaVersion?: string;
+    title?: string;
+    /** SPEC v0.3: 自動コマ割り候補メタデータ(extensions['com.guruguru'].autoManga)。 */
+    autoManga?: PageLayoutAutoManga;
+    /** 見開き(mode:'spread')分割取り込み時の元ページ id。単ページ取り込みは省略。 */
+    pageId?: string;
+  };
 }
 
 /** 既定のコマ枠(元フォーマットの defaults に近い値)。取り込み/プリセットで frame 未指定時に使う。 */
@@ -335,25 +355,96 @@ export function normalizePanelCrop(raw: unknown): PanelCrop | null {
   });
 }
 
+/** extensions['com.guruguru'].autoManga を正規化する(不正・candidate欠落は undefined)。 */
+function readAutoManga(parsed: Record<string, unknown>): PageLayoutAutoManga | undefined {
+  const extensions = isJsonObject(parsed.extensions) ? parsed.extensions : null;
+  const guruguru = extensions && isJsonObject(extensions["com.guruguru"]) ? extensions["com.guruguru"] : null;
+  const raw = guruguru && isJsonObject(guruguru.autoManga) ? guruguru.autoManga : null;
+  if (!raw || typeof raw.candidate !== "boolean") return undefined;
+  const autoManga: PageLayoutAutoManga = { candidate: raw.candidate };
+  if (typeof raw.description === "string" && raw.description.trim()) autoManga.description = raw.description.trim();
+  if (Array.isArray(raw.emphasisPanelIds)) {
+    const ids = raw.emphasisPanelIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+    if (ids.length > 0) autoManga.emphasisPanelIds = ids;
+  }
+  return autoManga;
+}
+
 /**
- * `.guruguru-layout.json5` をパースしたオブジェクト(JSON5.parse 済み)を PageLayout へ正規化する。
- * 複数ページ(見開き)の場合は先頭ページ(と、その pageId のパネル)を採用する。
+ * 座標はみ出し検証(SPEC v0.3 §11.2)。`allowOutOfBounds: true` なら無制限、そうでなければ
+ * ページ境界から `bleedOvershoot`(既定 0.02)以内のはみ出しだけを許す。超過は取り込みエラー。
+ */
+function assertBleedOvershoot(
+  parsed: Record<string, unknown>,
+  panels: readonly LayoutPanel[],
+  pageWidth: number,
+  pageHeight: number
+): void {
+  const validation = isJsonObject(parsed.validation) ? parsed.validation : null;
+  if (validation?.allowOutOfBounds === true) return;
+  const overshoot = validation && isFiniteNumber(validation.bleedOvershoot) && validation.bleedOvershoot >= 0
+    ? validation.bleedOvershoot
+    : PANEL_BLEED_OVERSHOOT;
+  for (const panel of panels) {
+    const [x1, y1, x2, y2] = panelBounds(panel.shape);
+    if (x1 < -overshoot - EPSILON || y1 < -overshoot - EPSILON || x2 > pageWidth + overshoot + EPSILON || y2 > pageHeight + overshoot + EPSILON) {
+      throw new Error(
+        `コマ「${panel.id}」がページ境界から bleedOvershoot(${overshoot})を超えてはみ出しています。座標を確認してください。`
+      );
+    }
+  }
+}
+
+interface NormalizedGuruguruPage {
+  /** 元ファイルのページ id(pages が無いファイルは null)。 */
+  pageId: string | null;
+  layout: PageLayout;
+}
+
+/**
+ * `.guruguru-layout.json5` をパースしたオブジェクト(JSON5.parse 済み)をページ毎の PageLayout へ
+ * 正規化する(SPEC v0.3 §27.2: 見開き mode:'spread' はページ毎に分割して取り込んでよい)。
+ * 見開き左ページ(bounds x1>0)のパネル座標はページローカル(0..1)へ平行移動する。
  * width は 1 に正規化されている前提。height は pages[].height → aspectRatio → パネルの y 最大値 の順で解決。
  */
-export function normalizeGuruguruLayout(parsed: unknown): PageLayout {
+export function normalizeGuruguruLayoutPages(parsed: unknown): NormalizedGuruguruPage[] {
   if (!isJsonObject(parsed)) {
     throw new Error("レイアウトデータがオブジェクトではありません。");
   }
+  const rawPages = Array.isArray(parsed.pages) ? parsed.pages.filter(isJsonObject) : [];
+  const pageEntries: Array<Record<string, unknown> | null> = rawPages.length > 0 ? rawPages : [null];
+  const autoManga = readAutoManga(parsed);
+  const results: NormalizedGuruguruPage[] = [];
+  for (const page of pageEntries) {
+    const pageId = page && typeof page.id === "string" && page.id ? page.id : null;
+    const layout = normalizeSingleGuruguruPage(parsed, page, pageId, rawPages.length > 1);
+    if (autoManga) layout.source = { ...layout.source!, autoManga };
+    if (pageId && rawPages.length > 1) layout.source = { ...layout.source!, pageId };
+    results.push({ pageId, layout });
+  }
+  if (results.length === 0) {
+    throw new Error("ページが1つも見つかりませんでした。");
+  }
+  return results;
+}
 
-  const pages = Array.isArray(parsed.pages) ? parsed.pages : [];
-  const firstPage = pages.find(isJsonObject) ?? null;
-
+function normalizeSingleGuruguruPage(
+  parsed: Record<string, unknown>,
+  page: Record<string, unknown> | null,
+  pageId: string | null,
+  isMultiPage: boolean
+): PageLayout {
   const rawPanels = Array.isArray(parsed.panels) ? parsed.panels : [];
-  // 見開き等で複数ページある場合は先頭ページのパネルだけに絞る(pageId 一致、無ければ全件)。
-  const pageId = firstPage && typeof firstPage.id === "string" ? firstPage.id : null;
+  // pageId 指定があればそのページのパネルへ絞る。複数ページファイルで pageId 省略の
+  // パネルは全ページ共通ではなく「所属不明」なので、単ページ相当(先頭)だけに含める。
   const scopedPanels = pageId
-    ? rawPanels.filter((panel) => isJsonObject(panel) && (panel.pageId === pageId || panel.pageId === undefined))
+    ? rawPanels.filter((panel) => isJsonObject(panel) && (panel.pageId === pageId || (!isMultiPage && panel.pageId === undefined)))
     : rawPanels;
+
+  // 見開き左ページ等: pages[].bounds の x1/y1 をページローカル原点として平行移動する。
+  const boundsRaw = page ? asBounds(page.bounds) : null;
+  const offsetX = boundsRaw ? Math.min(boundsRaw[0], boundsRaw[2]) : 0;
+  const offsetY = boundsRaw ? Math.min(boundsRaw[1], boundsRaw[3]) : 0;
 
   const defaultsFrame = normalizeFrame(
     isJsonObject(parsed.defaults) && isJsonObject(parsed.defaults.panel) ? parsed.defaults.panel.frame : undefined,
@@ -371,7 +462,12 @@ export function normalizeGuruguruLayout(parsed: unknown): PageLayout {
     }
     const id = typeof raw.id === "string" && raw.id ? raw.id : `panel_${index + 1}`;
     const order = isFiniteNumber(raw.order) ? raw.order : index + 1;
-    const panel: LayoutPanel = { id, order, shape, frame: normalizeFrame(raw.frame, defaultsFrame) };
+    const panel: LayoutPanel = {
+      id,
+      order,
+      shape: offsetX !== 0 || offsetY !== 0 ? translatePanelShape(shape, -offsetX, -offsetY) : shape,
+      frame: normalizeFrame(raw.frame, defaultsFrame)
+    };
     if (raw.role === "figure") {
       panel.role = "figure";
     }
@@ -379,13 +475,18 @@ export function normalizeGuruguruLayout(parsed: unknown): PageLayout {
   });
 
   if (panels.length === 0) {
-    throw new Error("パネル(コマ)が1つも見つかりませんでした。panels 配列を確認してください。");
+    throw new Error(
+      pageId
+        ? `ページ「${pageId}」にパネル(コマ)が1つも見つかりませんでした。panels 配列を確認してください。`
+        : "パネル(コマ)が1つも見つかりませんでした。panels 配列を確認してください。"
+    );
   }
 
   panels.sort((a, b) => a.order - b.order);
 
-  const aspectRatio = resolveAspectRatio(firstPage);
-  const height = resolveHeight(firstPage, aspectRatio, panels);
+  const aspectRatio = resolveAspectRatio(page);
+  const height = resolveHeight(page, aspectRatio, panels);
+  assertBleedOvershoot(parsed, panels, 1, height);
 
   const layout: PageLayout = {
     version: 1,
@@ -409,6 +510,31 @@ export function normalizeGuruguruLayout(parsed: unknown): PageLayout {
   };
 
   return layout;
+}
+
+/** shape を平行移動する(見開き左ページのローカル座標化)。 */
+function translatePanelShape(shape: PanelShape, dx: number, dy: number): PanelShape {
+  if (shape.type === "polygon") {
+    return { type: "polygon", points: shape.points.map(([x, y]) => [x + dx, y + dy]) };
+  }
+  if (shape.type === "rect") {
+    const [x1, y1, x2, y2] = shape.bounds;
+    const moved: PanelShape = { type: "rect", bounds: [x1 + dx, y1 + dy, x2 + dx, y2 + dy] };
+    if (shape.cornerRadius !== undefined) moved.cornerRadius = shape.cornerRadius;
+    return moved;
+  }
+  if (shape.type === "ellipse") {
+    return { type: "ellipse", center: [shape.center[0] + dx, shape.center[1] + dy], radius: shape.radius };
+  }
+  return shape;
+}
+
+/**
+ * `.guruguru-layout.json5` をパースしたオブジェクトを PageLayout へ正規化する(先頭ページ)。
+ * 従来互換のラッパー。見開き分割取り込みは `normalizeGuruguruLayoutPages` を使う。
+ */
+export function normalizeGuruguruLayout(parsed: unknown): PageLayout {
+  return normalizeGuruguruLayoutPages(parsed)[0]!.layout;
 }
 
 function resolveAspectRatio(firstPage: Record<string, unknown> | null): [number, number] {

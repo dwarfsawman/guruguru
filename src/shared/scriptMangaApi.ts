@@ -1,8 +1,11 @@
 import type { DialoguePolicy, MangaPlanV2, MangaPlanValidationReport } from "./mangaPlanV2";
 import type { ScriptMangaReferenceSnapshot } from "./referenceSets";
+import type { ScriptMangaPlan } from "./scriptMangaPlan";
 
 export type ScriptMangaPlanningMode = "heuristic" | "llm";
 export type ScriptMangaAuditMode = "manual" | "vlm";
+/** 棒人間ControlNet(ネームv4 D4)。off=無効(既定)、それ以外は部分モード。 */
+export type ScriptMangaPoseControlMode = "off" | "full" | "upper" | "face";
 export type ScriptMangaVlmAuditState = "queued" | "deferred" | "completed" | "unavailable";
 
 export interface ScriptMangaVlmAuditReport {
@@ -26,6 +29,8 @@ export interface ScriptMangaUiSettings {
   panelsPerPage: number;
   dialoguePolicy: DialoguePolicy;
   auditMode: ScriptMangaAuditMode;
+  /** 棒人間骨格のControlNet条件付け(実験的、既定 off)。 */
+  poseControl: ScriptMangaPoseControlMode;
 }
 
 export interface PrepareScriptMangaRunRequest extends ScriptMangaUiSettings {
@@ -34,6 +39,52 @@ export interface PrepareScriptMangaRunRequest extends ScriptMangaUiSettings {
   candidateSelectionPolicy: "review";
   requireReferenceSets: true;
   allowReferenceFallback: false;
+  /** ネームv4 D3: 採用するプラン候補。指定時は planningMode を無視して候補プランで run を作る。 */
+  planCandidateId?: string;
+}
+
+// --- プラン候補(ネームv4 D3) ---
+
+export type ScriptMangaPlanCandidateStatus = "active" | "adopted" | "archived";
+
+/** 候補一覧・生成応答で返す軽量ビュー(rawOutput 等の重い provenance は含めない)。 */
+export interface ScriptMangaPlanCandidateView {
+  id: string;
+  projectId: string;
+  scriptId: string;
+  scriptRevisionId: string;
+  groupId: string;
+  profile: string | null;
+  temperature: number | null;
+  status: ScriptMangaPlanCandidateStatus;
+  adoptedRunId: string | null;
+  plan: ScriptMangaPlan;
+  pageNaming: {
+    mode: "beats" | "panels" | "deterministic";
+    fallback: boolean;
+    beatAnnotatorFallback?: boolean;
+  } | null;
+  createdAt: string;
+}
+
+export interface ScriptMangaPlanCandidatesResponse {
+  candidates: ScriptMangaPlanCandidateView[];
+  /** 注釈ビート id → kind(キャッシュ済み注釈がある場合のみ)。ワイヤーフレームのアイコン用。 */
+  beatKinds: Record<string, string>;
+  /** dialogueOrderIndex → 台詞本文の文字数。コマの台詞量バー用(全候補共通)。 */
+  dialogueCharsByOrderIndex: number[];
+}
+
+export interface CreateScriptMangaPlanCandidatesRequest {
+  scriptId: string;
+  /** 生成する候補数(1..6、既定3)。 */
+  count?: number;
+  /** 既存グループへの追加生成。省略時は新しいグループを作る。 */
+  groupId?: string;
+  /** 候補毎の演出プロファイル(readability / cinematic / tempo)。省略時は順繰り。 */
+  profiles?: string[];
+  targetPageCount?: number;
+  panelsPerPage?: number;
 }
 
 export interface ScriptMangaTaskView {

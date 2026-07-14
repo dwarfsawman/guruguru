@@ -52,12 +52,18 @@ export async function importLayoutFile(input: HTMLInputElement) {
   }
   const text = await file.text();
   const suggestedName = file.name.replace(/\.(guruguru-layout\.)?json5?$/i, "");
-  const created = await api<{ template: LayoutTemplateSummary }>("/api/layout-templates", {
+  const created = await api<{ template: LayoutTemplateSummary; templates?: LayoutTemplateSummary[] }>("/api/layout-templates", {
     method: "POST",
     body: JSON.stringify({ json5: text, name: suggestedName })
   });
   await refreshLayoutTemplates();
-  pushToast(`テンプレート「${created.template.name}」を登録しました。`, "info");
+  const count = created.templates?.length ?? 1;
+  pushToast(
+    count > 1
+      ? `見開きを${count}ページに分割して「${created.template.name}」ほかを登録しました。`
+      : `テンプレート「${created.template.name}」を登録しました。`,
+    "info"
+  );
 }
 
 /** 取り込みテンプレを削除する。 */

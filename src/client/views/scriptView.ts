@@ -15,12 +15,16 @@ import type {
 import type { MangaScript } from "../../shared/apiTypes";
 import type {
   ScriptMangaAuditMode,
+  ScriptMangaPlanCandidateView,
   ScriptMangaRunView,
   ScriptMangaTaskView,
   ScriptMangaUiSettings,
   ScriptMangaVlmAuditView,
   VlmAuditServiceStatus
 } from "../../shared/scriptMangaApi";
+import type { ScriptMangaPagePlan } from "../../shared/scriptMangaPlan";
+import { findLayoutPreset } from "../../shared/layoutPresets";
+import { renderPageWireframeSvg, type WireframePanelInfo } from "../../shared/pageLayoutSvg";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconPlus, iconScript, iconTrash } from "../icons";
 
@@ -52,6 +56,11 @@ export interface ScriptViewProps {
   scriptMangaRun: ScriptMangaRunView | null;
   scriptMangaBusy: boolean;
   scriptMangaVlmStatus: VlmAuditServiceStatus | null;
+  scriptMangaCandidates: ScriptMangaPlanCandidateView[];
+  scriptMangaCandidateBeatKinds: Record<string, string>;
+  scriptMangaCandidateDialogueChars: number[];
+  scriptMangaCandidatesBusy: boolean;
+  scriptMangaCandidateCount: number;
 }
 
 export type ScriptMangaControlViewProps = Pick<
@@ -83,6 +92,7 @@ export function renderScriptView(props: ScriptViewProps): string {
         <div class="script-body">
           ${renderScriptTabs(props.scripts, props.activeScriptId)}
           ${renderImportCard(props)}
+          ${renderPlanCandidatesCard(props)}
           ${renderScriptMangaControlCard(props)}
           <div class="script-columns">
             ${renderDialogueLinesPanel(props)}
@@ -337,6 +347,183 @@ function renderRunSummary(run: ScriptMangaRunView, busy: boolean): string {
   `;
 }
 
+// --- プラン候補比較(ネームv4 D3) ---
+
+export type PlanCandidatesViewProps = Pick<
+  ScriptViewProps,
+  | "activeScriptId"
+  | "activeScriptRevision"
+  | "scriptMangaSettings"
+  | "scriptMangaBusy"
+  | "scriptMangaCandidates"
+  | "scriptMangaCandidateBeatKinds"
+  | "scriptMangaCandidateDialogueChars"
+  | "scriptMangaCandidatesBusy"
+  | "scriptMangaCandidateCount"
+>;
+
+/**
+ * ページのビート署名(候補間diffの対応付け)。同一 beatId 列を持つページ同士を対応させ、
+ * どの候補にも同じ署名がある = 共通、どこかに無い = ページ割りが異なる箇所として強調する。
+ * ビート化N1でない候補(従来N1/決定的)は source element 列で代用する。
+ */
+export function candidatePageSignature(page: ScriptMangaPagePlan): string {
+  const beatIds = page.panels.flatMap((panel) => panel.sourceBeatIds ?? []);
+  if (beatIds.length > 0) return `b:${beatIds.join(",")}`;
+  return `e:${page.panels.map((panel) => panel.sourceElementIds.join("+")).join(",")}`;
+}
+
+/** 候補間で「全候補に存在するページ署名」を除いた差分ページ署名集合を返す。候補1件なら空。 */
+export function candidateDiffSignatures(candidates: readonly ScriptMangaPlanCandidateView[]): Set<string> {
+  if (candidates.length < 2) return new Set();
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) {
+    const unique = new Set(candidate.plan.pages.map(candidatePageSignature));
+    for (const signature of unique) counts.set(signature, (counts.get(signature) ?? 0) + 1);
+  }
+  const diff = new Set<string>();
+  for (const [signature, count] of counts) {
+    if (count < candidates.length) diff.add(signature);
+  }
+  return diff;
+}
+
+const MAX_CANDIDATE_PAGE_THUMBS = 12;
+
+function candidatePageThumb(
+  page: ScriptMangaPagePlan,
+  props: PlanCandidatesViewProps,
+  highlight: boolean
+): string {
+  const layout = findLayoutPreset(page.layoutTemplateId)?.layout;
+  if (!layout) {
+    return `<div class="plan-candidate-page is-unknown" title="${escapeAttr(page.layoutTemplateId)}">?</div>`;
+  }
+  const panels: WireframePanelInfo[] = page.panels.map((panel) => ({
+    importance: panel.importance,
+    dialogueCharacters: panel.dialogueOrderIndexes.reduce(
+      (sum, orderIndex) => sum + (props.scriptMangaCandidateDialogueChars[orderIndex] ?? 0),
+      0
+    ),
+    beatKinds: (panel.sourceBeatIds ?? [])
+      .map((beatId) => props.scriptMangaCandidateBeatKinds[beatId])
+      .filter((kind): kind is string => Boolean(kind))
+  }));
+  const svg = renderPageWireframeSvg(layout, {
+    className: "plan-candidate-page-svg",
+    panels,
+    turnHook: page.turnHook,
+    highlight,
+    ariaLabel: `ページ${page.index + 1}: ${page.layoutTemplateId}`
+  });
+  return `<div class="plan-candidate-page" title="p${page.index + 1} ${escapeAttr(page.layoutTemplateId)}">${svg}</div>`;
+}
+
+function candidateSummaryLine(candidate: ScriptMangaPlanCandidateView): string {
+  const pages = candidate.plan.pages;
+  const panelCount = candidate.plan.panelCount;
+  const heroes = pages.reduce((sum, page) => sum + page.panels.filter((panel) => panel.importance === "hero").length, 0);
+  const splashes = pages.reduce((sum, page) => sum + page.panels.filter((panel) => panel.importance === "splash").length, 0);
+  const hooks = pages.filter((page) => page.turnHook === "reveal" || page.turnHook === "cliffhanger").length;
+  const avg = pages.length > 0 ? (panelCount / pages.length).toFixed(1) : "0";
+  return `${pages.length}p / 平均${avg}コマ / hero ${heroes} / splash ${splashes} / hook ${hooks}`;
+}
+
+function candidateModeBadge(candidate: ScriptMangaPlanCandidateView): string {
+  const mode = candidate.pageNaming?.mode ?? null;
+  if (mode === "beats") {
+    const annotatorNote = candidate.pageNaming?.beatAnnotatorFallback ? " (注釈fallback)" : "";
+    return `<span class="plan-candidate-badge is-beats">ビート化N1${annotatorNote}</span>`;
+  }
+  if (mode === "panels") return `<span class="plan-candidate-badge is-panels">従来N1</span>`;
+  if (mode === "deterministic") return `<span class="plan-candidate-badge is-deterministic">決定的</span>`;
+  return "";
+}
+
+function renderPlanCandidateCard(
+  candidate: ScriptMangaPlanCandidateView,
+  props: PlanCandidatesViewProps,
+  diffSignatures: Set<string>
+): string {
+  const busy = props.scriptMangaCandidatesBusy || props.scriptMangaBusy;
+  const adoptDisabled = busy || !props.scriptMangaSettings.templateId;
+  const pages = candidate.plan.pages;
+  const shown = pages.slice(0, MAX_CANDIDATE_PAGE_THUMBS);
+  const adopted = candidate.status === "adopted";
+  return `
+    <article class="plan-candidate ${adopted ? "is-adopted" : ""}" data-candidate-id="${escapeAttr(candidate.id)}">
+      <div class="plan-candidate-heading">
+        <div class="plan-candidate-badges">
+          ${candidateModeBadge(candidate)}
+          ${candidate.profile ? `<span class="plan-candidate-badge is-profile">${escapeHtml(candidate.profile)}</span>` : ""}
+          ${typeof candidate.temperature === "number" ? `<span class="plan-candidate-badge is-temp">T=${candidate.temperature}</span>` : ""}
+          ${adopted ? `<span class="plan-candidate-badge is-adopted-badge">採用済み</span>` : ""}
+        </div>
+        <span class="plan-candidate-summary">${escapeHtml(candidateSummaryLine(candidate))}</span>
+      </div>
+      <div class="plan-candidate-pages">
+        ${shown.map((page) => candidatePageThumb(page, props, diffSignatures.has(candidatePageSignature(page)))).join("")}
+        ${pages.length > shown.length ? `<div class="plan-candidate-page is-more">+${pages.length - shown.length}</div>` : ""}
+      </div>
+      <div class="plan-candidate-actions">
+        <button class="button-primary compact" type="button" data-action="adopt-script-manga-plan-candidate"
+          data-id="${escapeAttr(candidate.id)}" ${adoptDisabled ? "disabled" : ""}>この案で生成</button>
+        <button class="button-danger compact" type="button" data-action="archive-script-manga-plan-candidate"
+          data-id="${escapeAttr(candidate.id)}" ${busy ? "disabled" : ""}>破棄</button>
+      </div>
+    </article>
+  `;
+}
+
+/** プラン候補の生成・比較・採用セクション(ネームv4 D3)を描画する純関数。 */
+export function renderPlanCandidatesCard(props: PlanCandidatesViewProps): string {
+  if (!props.activeScriptId || !props.activeScriptRevision) return "";
+  const busy = props.scriptMangaCandidatesBusy;
+  const diffSignatures = candidateDiffSignatures(props.scriptMangaCandidates);
+  const groups = new Map<string, ScriptMangaPlanCandidateView[]>();
+  for (const candidate of props.scriptMangaCandidates) {
+    const bucket = groups.get(candidate.groupId) ?? [];
+    bucket.push(candidate);
+    groups.set(candidate.groupId, bucket);
+  }
+  const groupSections = [...groups.entries()].map(([groupId, candidates], index) => `
+    <div class="plan-candidate-group">
+      <div class="plan-candidate-group-heading">
+        <h3>グループ ${index + 1} <span>${candidates.length}候補</span></h3>
+        <button class="button-secondary compact" type="button" data-action="extend-script-manga-plan-candidates"
+          data-group-id="${escapeAttr(groupId)}" ${busy ? "disabled" : ""}>追加生成</button>
+      </div>
+      <div class="plan-candidate-row">
+        ${candidates.map((candidate) => renderPlanCandidateCard(candidate, props, diffSignatures)).join("")}
+      </div>
+    </div>
+  `).join("");
+  return `
+    <section class="script-plan-candidates-card" aria-labelledby="plan-candidates-heading">
+      <div class="script-manga-card-heading">
+        <div>
+          <h2 id="plan-candidates-heading">プラン候補(コマ割り比較)</h2>
+          <p>N1ページネームを複数回走らせて候補を貯め、ワイヤーフレームで見比べてから重い監督・画像生成へ進みます。赤枠はページ割りが他候補と異なる箇所です。</p>
+        </div>
+        <div class="plan-candidate-generate">
+          <label class="script-field plan-candidate-count-field">
+            <span>生成数</span>
+            <select data-script-manga-candidate-count="1" ${busy ? "disabled" : ""}>
+              ${[1, 2, 3, 4, 5, 6].map((count) => `<option value="${count}" ${count === props.scriptMangaCandidateCount ? "selected" : ""}>${count}</option>`).join("")}
+            </select>
+          </label>
+          <button class="button-primary compact" type="button" data-action="generate-script-manga-plan-candidates" ${busy ? "disabled" : ""}>
+            ${busy ? "生成中…" : "候補を生成"}
+          </button>
+        </div>
+      </div>
+      ${props.scriptMangaCandidates.length > 0
+        ? groupSections
+        : `<p class="script-empty-hint">候補はまだありません。「候補を生成」でビート注釈(1回)+N1×生成数を実行します。ビート注釈はrevision単位でキャッシュされ、再生成でも再利用されます。</p>`}
+    </section>
+  `;
+}
+
 /** MangaPlanV2準備・run状態遷移・候補レビューを描画する純関数。 */
 export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps): string {
   const settings = props.scriptMangaSettings;
@@ -393,6 +580,15 @@ export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps)
           <select data-script-manga-setting="auditMode" ${props.scriptMangaBusy ? "disabled" : ""}>
             <option value="vlm" ${settings.auditMode === "vlm" ? "selected" : ""}>VLM自動監査 → 人間レビュー</option>
             <option value="manual" ${settings.auditMode === "manual" ? "selected" : ""}>人間レビューのみ（VLMなし）</option>
+          </select>
+        </label>
+        <label class="script-field">
+          <span>ポーズ骨格CN（実験的）</span>
+          <select data-script-manga-setting="poseControl" ${props.scriptMangaBusy ? "disabled" : ""}>
+            <option value="off" ${settings.poseControl === "off" ? "selected" : ""}>OFF（既定）</option>
+            <option value="full" ${settings.poseControl === "full" ? "selected" : ""}>全身</option>
+            <option value="upper" ${settings.poseControl === "upper" ? "selected" : ""}>腰から上</option>
+            <option value="face" ${settings.poseControl === "face" ? "selected" : ""}>顔のみ</option>
           </select>
         </label>
       </div>

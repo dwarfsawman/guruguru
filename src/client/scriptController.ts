@@ -21,7 +21,8 @@ import { refreshRecentReferenceImages } from "./referenceController";
 import {
   clearScriptMangaRunState,
   clearScriptMangaUiState,
-  initializeScriptMangaUiState
+  initializeScriptMangaUiState,
+  refreshScriptMangaCandidates
 } from "./scriptMangaController";
 
 /** 脚本画面を開く(book grid の上に重ねて表示)。脚本一覧+キャラクタ一覧を取得する。 */
@@ -100,6 +101,7 @@ export async function selectScript(scriptId: string) {
   clearScriptMangaRunState();
   state.activeScriptId = scriptId;
   requestRender();
+  void refreshScriptMangaCandidates();
   try {
     await Promise.all([fetchLatestRevisionInto(scriptId), refreshScriptDialogueLines(scriptId)]);
   } catch (error) {
@@ -161,6 +163,8 @@ async function importOrReimportScript() {
     state.activeScriptId = result.script.id;
     state.activeScriptRevision = result.revision;
     state.scriptDialogueLines = result.lines;
+    // 新revisionでは旧revisionの候補は無効(一覧APIがrevisionで絞るため空になる)。
+    void refreshScriptMangaCandidates();
     // 話者の自動作成でキャラクタが増えている可能性があるので取り直す。
     const charactersResult = await api<{ characters: Character[] }>(`/api/projects/${projectId}/characters`);
     if (state.currentProjectId === projectId) {

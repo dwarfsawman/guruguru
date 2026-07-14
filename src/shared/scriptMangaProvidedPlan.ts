@@ -63,6 +63,12 @@ function sourceElementIds(panel: Record<string, unknown>): string[] | null {
   return ids;
 }
 
+/** optional な enum フィールド(ネームv4 D1 の importance/turnHook)。未指定は undefined、不正は null。 */
+function optionalEnum<T extends string>(value: unknown, allowed: readonly T[]): T | null | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : null;
+}
+
 /** 外部LLM/サブエージェントで作ったネームを、全台詞保持とlayout整合を確認して実行可能planへ変換する。 */
 export function validateProvidedScriptMangaPlan(
   doc: FountainDoc,
@@ -89,7 +95,8 @@ export function validateProvidedScriptMangaPlan(
       if (!id || panelIds.has(id) || !prompt || !sourceText || sceneIndex < 0 || sceneIndex >= doc.scenes.length) return [];
       const sourceIds = sourceElementIds(rawPanel);
       const direction = panelDirection(rawPanel);
-      if (sourceIds === null || direction === null) return [];
+      const importance = optionalEnum(rawPanel.importance, ["splash", "hero", "normal"] as const);
+      if (sourceIds === null || direction === null || importance === null) return [];
       if (!Array.isArray(rawPanel.dialogueOrderIndexes)) return [];
       const indexes: number[] = [];
       for (const value of rawPanel.dialogueOrderIndexes) {
@@ -106,9 +113,12 @@ export function validateProvidedScriptMangaPlan(
         prompt: `${identityForPanel(raw, direction?.subject ?? text(rawPanel.subject))}${prompt}`,
         sourceText,
         dialogueOrderIndexes: indexes,
-        ...(direction ? { direction } : {})
+        ...(direction ? { direction } : {}),
+        ...(importance ? { importance } : {})
       });
     }
+    const turnHook = optionalEnum(rawPage.turnHook, ["reveal", "cliffhanger", "none"] as const);
+    if (turnHook === null) return [];
     panelCount += panels.length;
     const pageIntent = text(rawPage.pageIntent);
     return [{
@@ -116,7 +126,8 @@ export function validateProvidedScriptMangaPlan(
       title: text(rawPage.title) || `Page ${pageIndex + 1}`,
       layoutTemplateId,
       panels,
-      ...(pageIntent ? { pageIntent } : {})
+      ...(pageIntent ? { pageIntent } : {}),
+      ...(turnHook ? { turnHook } : {})
     }];
   });
   if (pages.length !== raw.pages.length || panelCount === 0 || panelCount > 800 || dialogueSeen.size !== expectedDialogueCount) return null;

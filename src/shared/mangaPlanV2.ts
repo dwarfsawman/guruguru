@@ -11,6 +11,10 @@ export type DialoguePolicy = "preserve" | "adapt" | "fill" | "generate";
 export type NarrativeEntityKind = "character" | "setting" | "prop" | "vehicle" | "unknown";
 export type MangaShotSize = "extreme-wide" | "wide" | "medium" | "close-up" | "insert";
 export type MangaReferenceRole = "identity" | "outfit" | "pose" | "background" | "prop" | "style";
+/** N1ページネームが付けるコマの物語的な重み(ネームv4 D1)。省略 = normal 相当。 */
+export type MangaPanelImportance = "splash" | "hero" | "normal";
+/** ページめくり演出(reveal=次ページ冒頭で開示 / cliffhanger=緊張の頂点で切る)。省略 = none 相当。 */
+export type MangaPageTurnHook = "reveal" | "cliffhanger" | "none";
 
 /** Panel-local normalized coordinates. All values are in the inclusive 0..1 range. */
 export interface NormalizedBox {
@@ -97,6 +101,10 @@ export interface MangaBeat {
   emotionChange: string;
   mustShow: string[];
   dialogueOnly: string[];
+  /** ビート注釈由来(ネームv4 D2)。後付け生成のビートには無い。additive。 */
+  kind?: string;
+  /** ビート注釈由来の重要度 0..1(ネームv4 D2)。additive。 */
+  importance?: number;
 }
 
 export interface MangaConstraint {
@@ -153,6 +161,8 @@ export interface PanelSpec {
    * 実行時の正はあくまで layout snapshot 側で、materialize がここへ写す。
    */
   role?: "figure";
+  /** N1由来のコマの重み(ネームv4 D1)。レイアウト事前選択・候補比較UIが使う。additive。 */
+  importance?: MangaPanelImportance;
   sourceElementIds: string[];
   beatIds: string[];
   preStateId: string;
@@ -191,6 +201,8 @@ export interface MangaPageSpec {
   /** Immutable geometry captured when the plan is created; execution never re-resolves a mutable template. */
   layoutSnapshot: PageLayout;
   pageIntent: string;
+  /** N1由来のページめくり演出(ネームv4 D1)。additive。 */
+  turnHook?: MangaPageTurnHook;
   panels: PanelSpec[];
 }
 

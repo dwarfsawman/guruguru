@@ -83,7 +83,8 @@ function props(currentRun: ScriptMangaRunView | null = null): ScriptMangaControl
       planningMode: "heuristic",
       panelsPerPage: 6,
       dialoguePolicy: "preserve",
-      auditMode: "vlm"
+      auditMode: "vlm",
+      poseControl: "off"
     },
     scriptMangaRun: currentRun,
     scriptMangaBusy: false,

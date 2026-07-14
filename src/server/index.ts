@@ -35,7 +35,14 @@ import {
   updatePageObjects,
   updatePagePanelAssignment
 } from "./pages";
-import { deleteLayoutTemplate, importLayoutTemplate, listLayoutTemplates } from "./layoutTemplates";
+import {
+  deleteLayoutTemplate,
+  exportLayoutTemplate,
+  exportPageLayout,
+  importLayoutTemplate,
+  listLayoutTemplates,
+  refreshScriptMangaLayoutCandidates
+} from "./layoutTemplates";
 import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport";
 import { createPageMedia, servePageMedia } from "./pageMedia";
 import { createImageExport } from "./imageExport";
@@ -102,6 +109,11 @@ import {
   startScriptMangaRun,
   updateScriptMangaPlan
 } from "./scriptManga";
+import {
+  archiveScriptMangaPlanCandidate,
+  createScriptMangaPlanCandidates,
+  listScriptMangaPlanCandidates
+} from "./scriptMangaPlanCandidates";
 import { applySpeakerAnchors } from "./speakerAnchors";
 import { exportProject, importProject } from "./projectTransfer";
 import { fitPageBalloonText } from "./balloonTextFit";
@@ -127,6 +139,8 @@ const releaseAssetRegistry = new Map<string, string>([
 ]);
 
 initializeDb();
+// 取り込みテンプレの自動漫画候補プール(ネームv4 D6)を起動時に構築する。
+refreshScriptMangaLayoutCandidates();
 
 const server = createServer(async (req, res) => {
   try {
@@ -348,7 +362,20 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     return;
   }
   if (method === "POST" && path === "/api/layout-templates") {
-    sendJson(res, 201, { template: importLayoutTemplate(await readJson(req)) });
+    sendJson(res, 201, importLayoutTemplate(await readJson(req)));
+    return;
+  }
+  // テンプレートの .guruguru-layout.json5 書き出し(SPEC v0.3 §27、内蔵/取り込みの両対応)。
+  const layoutTemplateExportMatch = path.match(/^\/api\/layout-templates\/([^/]+)\/export$/);
+  if (method === "GET" && layoutTemplateExportMatch) {
+    const result = exportLayoutTemplate(decodeURIComponent(layoutTemplateExportMatch[1]!));
+    const body = Buffer.from(result.json5, "utf8");
+    res.writeHead(200, {
+      "content-type": "application/json5; charset=utf-8",
+      "content-length": String(body.byteLength),
+      "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`
+    });
+    res.end(body);
     return;
   }
   const layoutTemplateDeleteMatch = path.match(/^\/api\/layout-templates\/([^/]+)$/);
@@ -526,6 +553,19 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   }
 
   // コマ形状編集(Docs/Feature-CGCollectionSuite.md P5): レイアウト(panels の shape/order 等)を丸ごと置換する。
+  // ページの現在のコマ枠+吹き出し+テキストを .guruguru-layout.json5 へ書き出す(SPEC v0.3 §27)。
+  const pageExportLayoutMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/export-layout$/);
+  if (method === "GET" && pageExportLayoutMatch) {
+    const result = exportPageLayout(pageExportLayoutMatch[1]!, pageExportLayoutMatch[2]!);
+    const body = Buffer.from(result.json5, "utf8");
+    res.writeHead(200, {
+      "content-type": "application/json5; charset=utf-8",
+      "content-length": String(body.byteLength),
+      "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`
+    });
+    res.end(body);
+    return;
+  }
   const pageLayoutMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/layout$/);
   if (method === "PATCH" && pageLayoutMatch) {
     sendJson(res, 200, updatePageLayout(pageLayoutMatch[1]!, pageLayoutMatch[2]!, await readJson(req)));
@@ -569,6 +609,22 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const scriptMangaRunMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)$/);
   if (method === "GET" && scriptMangaRunMatch) {
     sendJson(res, 200, getScriptMangaRun(scriptMangaRunMatch[1]!));
+    return;
+  }
+  // プラン候補(ネームv4 D3): 複数生成して見比べ、planCandidateId 付き run 作成で採用する。
+  const scriptMangaCandidatesMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-plan-candidates$/);
+  if (method === "POST" && scriptMangaCandidatesMatch) {
+    sendJson(res, 201, await createScriptMangaPlanCandidates(scriptMangaCandidatesMatch[1]!, await readJson(req)));
+    return;
+  }
+  if (method === "GET" && scriptMangaCandidatesMatch) {
+    const scriptId = url.searchParams.get("scriptId") ?? "";
+    sendJson(res, 200, listScriptMangaPlanCandidates(scriptMangaCandidatesMatch[1]!, scriptId));
+    return;
+  }
+  const scriptMangaCandidateArchiveMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/archive$/);
+  if (method === "POST" && scriptMangaCandidateArchiveMatch) {
+    sendJson(res, 200, archiveScriptMangaPlanCandidate(scriptMangaCandidateArchiveMatch[1]!));
     return;
   }
   const scriptMangaPlanMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)$/);
