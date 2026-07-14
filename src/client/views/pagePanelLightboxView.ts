@@ -16,12 +16,18 @@ import type { Asset, DialogueLine, DialogueProposal, DialogueProposalItem, FontS
 import type { LayoutPanel, PageLayout, PanelCrop } from "../../shared/pageLayout";
 import { panelBounds, panelBoundsSize } from "../../shared/pageLayout";
 import {
+  DEFAULT_TONE_SNOW_BACK_COLOR,
   PAGE_OBJECT_MAX_SIZE,
   PAGE_OBJECT_MIN_SIZE,
   TEXT_SIZE_MAX,
   TEXT_SIZE_MIN,
   TONE_COUNT_MAX,
   TONE_KINDS,
+  TONE_NOISE_GRAIN_MAX,
+  TONE_NOISE_GRAIN_MIN,
+  TONE_SNOW_BLUR_MAX,
+  TONE_SNOW_SIZE_MAX,
+  TONE_SNOW_SIZE_MIN,
   contentMaxWidth,
   type BalloonObject,
   type BalloonShape,
@@ -1454,7 +1460,9 @@ const TONE_TYPE_LABEL: Record<ToneKind, string> = {
   lines: "線",
   speed: "スピード線",
   focus: "集中線",
-  flash: "フラッシュ"
+  flash: "フラッシュ",
+  noise: "ノイズ",
+  snow: "雪"
 };
 
 /**
@@ -1471,7 +1479,13 @@ function renderTonePropertyPanel(object: ToneObject, layout: PageLayout | null):
     .sort((a, b) => a.order - b.order)
     .map((panel) => `<option value="${escapeAttr(panel.id)}"${object.clipPanelId === panel.id ? " selected" : ""}>コマ ${panel.order}</option>`)
     .join("");
-  const needsShuffle = object.toneType === "speed" || object.toneType === "focus" || object.toneType === "flash";
+  // ノイズ/雪も seed 付き乱数(粒の配置)を使うため、シャッフル対象に含める(2026-07-14 追補)。
+  const needsShuffle =
+    object.toneType === "speed" ||
+    object.toneType === "focus" ||
+    object.toneType === "flash" ||
+    object.toneType === "noise" ||
+    object.toneType === "snow";
   return `
     <div class="page-object-property-row">
       <label class="page-object-property-field page-object-property-field-wide">種別
@@ -1497,8 +1511,14 @@ function renderTonePropertyPanel(object: ToneObject, layout: PageLayout | null):
   `;
 }
 
-/** 中心ドラッグハンドルを使う focus/flash の共通パラメータ欄(center 自体はハンドルのみ、数値入力は設けない)。 */
-function renderCenterBasedToneFields(params: ToneParams): string {
+/**
+ * 中心ドラッグハンドルを使う focus/flash の共通パラメータ欄(center 自体はハンドルのみ、数値入力は設けない)。
+ * outerRadius(2026-07-14 追補)は focus のみの optional パラメータなので、チェックボックスで
+ * 有無を切り替える(`maxWidthEnabled`/`tailEnabled` と同じトグルパターン)。
+ */
+function renderCenterBasedToneFields(object: ToneObject): string {
+  const params = object.params;
+  const hasOuterRadius = object.toneType === "focus" && typeof params.outerRadius === "number";
   return `
     <div class="page-object-property-row">
       <label class="page-object-property-field">中心の空白半径
@@ -1514,7 +1534,65 @@ function renderCenterBasedToneFields(params: ToneParams): string {
         <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="jitter" value="${num(params.jitter ?? 0)}" />
       </label>
     </div>
+    ${
+      object.toneType === "focus"
+        ? `
+          <div class="page-object-property-row">
+            <label class="page-object-property-field page-object-checkbox-field">
+              <input type="checkbox" data-page-object-field="outerRadiusEnabled" ${hasOuterRadius ? "checked" : ""} /> 最大半径を指定
+            </label>
+            ${
+              hasOuterRadius
+                ? `
+                  <label class="page-object-property-field">最大半径
+                    <input type="number" step="0.005" min="0" max="${PAGE_OBJECT_MAX_SIZE}" data-page-object-tone-param="outerRadius" value="${num(params.outerRadius ?? 0)}" />
+                  </label>
+                `
+                : ""
+            }
+          </div>
+        `
+        : ""
+    }
     <p class="page-panel-hint-text">緑のハンドルをドラッグで中心を動かせます</p>
+  `;
+}
+
+/**
+ * lines/noise の任意グラデ(startRatio/endRatio)欄。両方 undefined なら「無効」チェックボックスのみ表示し、
+ * ON にすると数値入力が現れる(`maxWidthEnabled`/`tailEnabled` と同じトグルパターン)。noise は角度も
+ * グラデ有効時のみ意味を持つ optional パラメータなので、withAngle=true の時だけ角度欄も併記する
+ * (lines は縞の angle が常に別欄で必須表示済みのため withAngle=false)。
+ */
+function renderOptionalGradientFields(params: ToneParams, withAngle: boolean = false): string {
+  const hasGradient = typeof params.startRatio === "number" || typeof params.endRatio === "number";
+  return `
+    <div class="page-object-property-row">
+      <label class="page-object-property-field page-object-checkbox-field">
+        <input type="checkbox" data-page-object-field="gradientEnabled" ${hasGradient ? "checked" : ""} /> 濃度グラデを使う
+      </label>
+      ${
+        hasGradient
+          ? `
+            ${
+              withAngle
+                ? `
+                  <label class="page-object-property-field">角度
+                    <input type="number" step="1" data-page-object-tone-param="angle" value="${num(params.angle ?? 0)}" />
+                  </label>
+                `
+                : ""
+            }
+            <label class="page-object-property-field">開始濃度
+              <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="startRatio" value="${num(params.startRatio ?? 0)}" />
+            </label>
+            <label class="page-object-property-field">終了濃度
+              <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="endRatio" value="${num(params.endRatio ?? 0)}" />
+            </label>
+          `
+          : ""
+      }
+    </div>
   `;
 }
 
@@ -1563,6 +1641,52 @@ function renderToneParamsFields(object: ToneObject): string {
             <input type="number" step="1" data-page-object-tone-param="angle" value="${num(params.angle ?? 0)}" />
           </label>
         </div>
+        ${renderOptionalGradientFields(params)}
+      `;
+    case "noise":
+      return `
+        <div class="page-object-property-row">
+          <label class="page-object-property-field">密度
+            <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="density" value="${num(params.density ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">粒サイズ
+            <input type="number" step="0.001" min="${TONE_NOISE_GRAIN_MIN}" max="${TONE_NOISE_GRAIN_MAX}" data-page-object-tone-param="grain" value="${num(params.grain ?? 0)}" />
+          </label>
+        </div>
+        ${renderOptionalGradientFields(params, /* withAngle */ true)}
+      `;
+    case "snow":
+      return `
+        <div class="page-object-property-row">
+          <label class="page-object-property-field">本数(合計)
+            <input type="number" step="1" min="1" max="${TONE_COUNT_MAX}" data-page-object-tone-param="count" value="${num(params.count ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">前面比率
+            <input type="number" step="0.05" min="0" max="1" data-page-object-tone-param="frontRatio" value="${num(params.frontRatio ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">角度
+            <input type="number" step="1" data-page-object-tone-param="angle" value="${num(params.angle ?? 0)}" />
+          </label>
+        </div>
+        <div class="page-object-property-row">
+          <label class="page-object-property-field">前面サイズ
+            <input type="number" step="0.001" min="${TONE_SNOW_SIZE_MIN}" max="${TONE_SNOW_SIZE_MAX}" data-page-object-tone-param="frontSize" value="${num(params.frontSize ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">背面サイズ
+            <input type="number" step="0.001" min="${TONE_SNOW_SIZE_MIN}" max="${TONE_SNOW_SIZE_MAX}" data-page-object-tone-param="backSize" value="${num(params.backSize ?? 0)}" />
+          </label>
+        </div>
+        <div class="page-object-property-row">
+          <label class="page-object-property-field">前面ぼかし
+            <input type="number" step="0.05" min="0" max="${TONE_SNOW_BLUR_MAX}" data-page-object-tone-param="frontBlur" value="${num(params.frontBlur ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">背面ぼかし
+            <input type="number" step="0.05" min="0" max="${TONE_SNOW_BLUR_MAX}" data-page-object-tone-param="backBlur" value="${num(params.backBlur ?? 0)}" />
+          </label>
+          <label class="page-object-property-field">背面色
+            <input type="color" data-page-object-field="backColor" value="${escapeAttr(params.backColor ?? DEFAULT_TONE_SNOW_BACK_COLOR)}" />
+          </label>
+        </div>
       `;
     case "speed":
       return `
@@ -1588,7 +1712,7 @@ function renderToneParamsFields(object: ToneObject): string {
       `;
     case "focus":
     case "flash":
-      return renderCenterBasedToneFields(params);
+      return renderCenterBasedToneFields(object);
     default:
       return "";
   }

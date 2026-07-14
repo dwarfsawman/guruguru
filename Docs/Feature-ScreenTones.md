@@ -103,15 +103,20 @@ export interface ToneObject extends PageObjectBase {
   - コマ選択中に押した場合: そのコマの外接矩形を領域にし `clipPanelId = そのコマ` で作成
     (コマにトーンを貼る主要ユースケースを1クリック化)。
   - 未選択: ページ中央に 0.35×0.35 で作成。既定 toneType は halftone。
-- SETTINGS パネル(tone 選択時): 種別 select(6種)・種別ごとのパラメータ欄・色・不透明度・
-  クリップ先コマ select(image と同じ)・「シャッフル」ボタン(speed/focus/flash の seed 振り直し)。
+- SETTINGS パネル(tone 選択時): 種別 select(8種)・種別ごとのパラメータ欄・色・不透明度・
+  クリップ先コマ select(image と同じ)・「シャッフル」ボタン(speed/focus/flash/noise/snow の seed 振り直し)。
   種別を切り替えたら params はその種別の既定値へリセットする。
 - **focus / flash は中心ハンドル**: しっぽ tip ハンドル(`data-page-object-handle="tail"`)と同じ
   パターンで `"tone-center"` ジェスチャを追加し、ステージ上で中心をドラッグできるようにする
   (ローカル座標への変換・回転の扱いは tail の実装を踏襲)。ハンドル色は tail のオレンジと
   区別できる色に。innerRadius は v1 は number 入力で可(リングハンドルは任意)。
 - ギズモ(移動/拡縮/回転)は box と同等(`gizmoBoxForPageObject` へ tone を追加)。
-- レイヤ一覧: 名前「トーン」、type 欄に種別の日本語(網点/グラデ/線/スピード線/集中線/フラッシュ)。
+- レイヤ一覧: 名前「トーン」、type 欄に種別の日本語(網点/グラデ/線/スピード線/集中線/フラッシュ/ノイズ/雪)。
+- **追補(2026-07-14)の optional パラメータ欄**: lines/noise の濃度グラデ(startRatio/endRatio)、
+  focus の最大半径(outerRadius)は、`maxWidthEnabled`/`tailEnabled` と同じ「チェックボックスで
+  optional フィールドの有無を切り替える」パターンで表示する(値は `updateToneOwnField` 側でトグル、
+  数値自体は `updateToneParamField` 経由)。snow の backColor は `color系` フィールドとして
+  `updateToneOwnField` が扱う(`data-page-object-field="backColor"`。文字列なので Number() に流さない)。
 
 ## 組み込みチェックリスト
 
@@ -139,3 +144,7 @@ export interface ToneObject extends PageObjectBase {
 ## 変更履歴
 
 - 2026-07-14: 初版。
+- 2026-07-14: 追補(参考アプリとの突き合わせ)を実装。noise(砂ノイズ、粒をタイル化 pattern で敷く)・
+  snow(雪・玉ボケ、前面/背面2層+feGaussianBlur)を新種別として追加。lines に任意の濃度グラデ
+  (startRatio/endRatio optional)、gradient をマスク近似から角度方向のドット半径行生成+要素数
+  バジェット(約2万ドット)へ強化、focus に任意の outerRadius(最大半径)を追加。

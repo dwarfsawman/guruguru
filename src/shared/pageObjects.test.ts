@@ -5,9 +5,15 @@ import {
   DEFAULT_BOX_STROKE_COLOR,
   DEFAULT_BOX_STROKE_WIDTH,
   DEFAULT_IMAGE_OBJECT_HEIGHT,
+  DEFAULT_TONE_SNOW_BACK_COLOR,
   PAGE_OBJECT_MAX_SIZE,
   PAGE_OBJECT_MIN_SIZE,
   TONE_KINDS,
+  TONE_NOISE_GRAIN_MAX,
+  TONE_NOISE_GRAIN_MIN,
+  TONE_SNOW_BLUR_MAX,
+  TONE_SNOW_SIZE_MAX,
+  TONE_SNOW_SIZE_MIN,
   clonePageObjects,
   createBoxObject,
   createImageObject,
@@ -353,7 +359,9 @@ test("normalizePageObjects: tone の clipPanelId=null は null のまま保持�
 });
 
 test("normalizePageObjects: tone の未知パラメータ種別ごとの使用フィールドだけが残る(gradient→lines へ toneType が変わっても混入しない)", () => {
-  // lines には無いはずの startRatio/endRatio が残っていても、lines の正規化は使わないフィールドを出力しない。
+  // lines には無いはずの dotRatio が残っていても、lines の正規化は使わないフィールドを出力しない。
+  // startRatio/endRatio は 2026-07-14 追補で lines にも「任意の濃度グラデ」として追加されたため、
+  // 指定されていればそのまま保持されるのが正しい挙動になった(混入ではなく仕様どおり)。
   const tone = normalizePageObjects([
     {
       id: "t",
@@ -362,22 +370,187 @@ test("normalizePageObjects: tone の未知パラメータ種別ごとの使用�
       size: { x: 0.2, y: 0.2 },
       toneType: "lines",
       seed: 1,
-      params: { pitch: 0.02, lineRatio: 0.5, angle: 10, startRatio: 0.9, endRatio: 0.1 }
+      params: { pitch: 0.02, lineRatio: 0.5, angle: 10, dotRatio: 0.9, startRatio: 0.9, endRatio: 0.1 }
     }
   ])[0] as ToneObject;
   assert.equal(tone.params.lineRatio, 0.5);
-  assert.equal(tone.params.startRatio, undefined);
-  assert.equal(tone.params.endRatio, undefined);
+  assert.equal(tone.params.dotRatio, undefined, "dotRatio は lines には無いフィールドなので混入しない");
+  assert.equal(tone.params.startRatio, 0.9, "startRatio は lines の任意グラデとして保持される(2026-07-14 追補)");
+  assert.equal(tone.params.endRatio, 0.1);
 });
 
-test("defaultToneParams: 全種別で仕様書の既定値を返す", () => {
+test("defaultToneParams: 全種別で仕様書の既定値を返す(noise/snow は2026-07-14追補)", () => {
   assert.deepEqual(defaultToneParams("halftone"), { pitch: 0.015, dotRatio: 0.45, angle: 45 });
   assert.deepEqual(defaultToneParams("gradient"), { pitch: 0.015, dotRatio: 0.45, angle: 45, startRatio: 0.7, endRatio: 0.05 });
   assert.deepEqual(defaultToneParams("lines"), { pitch: 0.012, lineRatio: 0.35, angle: 0 });
   assert.deepEqual(defaultToneParams("speed"), { angle: 45, count: 90, length: 0.7, lineWidth: 0.004, jitter: 0.5 });
   assert.deepEqual(defaultToneParams("focus"), { center: { x: 0, y: 0 }, innerRadius: 0.12, count: 72, lineWidth: 0.012, jitter: 0.5 });
   assert.deepEqual(defaultToneParams("flash"), { center: { x: 0, y: 0 }, innerRadius: 0.18, count: 72, lineWidth: 0.012, jitter: 0.5 });
-  assert.equal(TONE_KINDS.length, 6);
+  assert.deepEqual(defaultToneParams("noise"), { density: 0.35, grain: 0.003 });
+  assert.deepEqual(defaultToneParams("snow"), {
+    count: 120,
+    frontRatio: 0.4,
+    frontSize: 0.05,
+    backSize: 0.03,
+    frontBlur: 0.5,
+    backBlur: 0.3,
+    angle: 115,
+    backColor: DEFAULT_TONE_SNOW_BACK_COLOR
+  });
+  assert.equal(TONE_KINDS.length, 8);
+});
+
+// --- noise/snow の追加パラメータ(Docs/Feature-ScreenTones.md 追補、2026-07-14) ---
+
+test("normalizePageObjects: tone(noise)の正規化往復(density/grain/seed を保持)", () => {
+  const raw = [
+    {
+      id: "tone_noise",
+      kind: "tone",
+      position: { x: 0.4, y: 0.4 },
+      size: { x: 0.3, y: 0.3 },
+      toneType: "noise",
+      seed: 55,
+      params: { density: 0.6, grain: 0.01 }
+    }
+  ];
+  const tone = normalizePageObjects(raw)[0] as ToneObject;
+  assert.equal(tone.toneType, "noise");
+  assert.equal(tone.params.density, 0.6);
+  assert.equal(tone.params.grain, 0.01);
+  assert.equal(tone.params.startRatio, undefined, "グラデ未指定なら startRatio は無い");
+  assert.equal(tone.params.endRatio, undefined, "グラデ未指定なら endRatio は無い");
+  assert.ok(!("angle" in tone.params), "angle も未指定なら無い(optional)");
+});
+
+test("normalizePageObjects: tone(noise)の grain/density は範囲へ clamp する", () => {
+  const tooLarge = normalizePageObjects([
+    { id: "a", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "noise", seed: 1, params: { density: 5, grain: 999 } }
+  ])[0] as ToneObject;
+  assert.equal(tooLarge.params.density, 1);
+  assert.equal(tooLarge.params.grain, TONE_NOISE_GRAIN_MAX);
+
+  const tooSmall = normalizePageObjects([
+    { id: "b", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "noise", seed: 1, params: { density: -5, grain: -5 } }
+  ])[0] as ToneObject;
+  assert.equal(tooSmall.params.density, 0);
+  assert.equal(tooSmall.params.grain, TONE_NOISE_GRAIN_MIN);
+});
+
+test("normalizePageObjects: tone(noise/lines)の任意グラデ(startRatio/endRatio)は指定時のみ保持し、範囲clampする", () => {
+  const withGradient = normalizePageObjects([
+    {
+      id: "a",
+      kind: "tone",
+      position: { x: 0.1, y: 0.1 },
+      size: { x: 0.2, y: 0.2 },
+      toneType: "noise",
+      seed: 1,
+      params: { density: 0.5, grain: 0.005, angle: 30, startRatio: 5, endRatio: -5 }
+    }
+  ])[0] as ToneObject;
+  assert.equal(withGradient.params.angle, 30);
+  assert.equal(withGradient.params.startRatio, 1, "startRatio は 0..1 へ clamp");
+  assert.equal(withGradient.params.endRatio, 0, "endRatio は 0..1 へ clamp");
+
+  const linesWithGradient = normalizePageObjects([
+    {
+      id: "b",
+      kind: "tone",
+      position: { x: 0.1, y: 0.1 },
+      size: { x: 0.2, y: 0.2 },
+      toneType: "lines",
+      seed: 1,
+      params: { pitch: 0.02, lineRatio: 0.5, angle: 10, startRatio: 0.6, endRatio: 0.2 }
+    }
+  ])[0] as ToneObject;
+  assert.equal(linesWithGradient.params.startRatio, 0.6);
+  assert.equal(linesWithGradient.params.endRatio, 0.2);
+
+  const linesWithoutGradient = normalizePageObjects([
+    { id: "c", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "lines", seed: 1, params: { pitch: 0.02, lineRatio: 0.5, angle: 10 } }
+  ])[0] as ToneObject;
+  assert.equal(linesWithoutGradient.params.startRatio, undefined);
+  assert.equal(linesWithoutGradient.params.endRatio, undefined);
+});
+
+test("normalizePageObjects: tone(focus)の outerRadius は optional -- 指定時のみ保持しclamp、flash には無い", () => {
+  const focusWithOuter = normalizePageObjects([
+    { id: "a", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "focus", seed: 1, params: { outerRadius: 999 } }
+  ])[0] as ToneObject;
+  assert.equal(focusWithOuter.params.outerRadius, PAGE_OBJECT_MAX_SIZE, "上限へ clamp");
+
+  const focusWithoutOuter = normalizePageObjects([
+    { id: "b", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "focus", seed: 1, params: {} }
+  ])[0] as ToneObject;
+  assert.ok(!("outerRadius" in focusWithoutOuter.params), "未指定ならキー自体が無い");
+
+  // flash は outerRadius を持たない(仕様書: focus のみ)。
+  const flashWithOuter = normalizePageObjects([
+    { id: "c", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "flash", seed: 1, params: { outerRadius: 0.3 } }
+  ])[0] as ToneObject;
+  assert.ok(!("outerRadius" in flashWithOuter.params), "flash には outerRadius が無い(focus専用)");
+});
+
+test("normalizePageObjects: tone(snow)の正規化往復(count/frontRatio/size/blur/angle/backColor を保持)", () => {
+  const raw = [
+    {
+      id: "tone_snow",
+      kind: "tone",
+      position: { x: 0.4, y: 0.4 },
+      size: { x: 0.3, y: 0.3 },
+      toneType: "snow",
+      seed: 99,
+      params: { count: 200, frontRatio: 0.6, frontSize: 0.08, backSize: 0.02, frontBlur: 0.9, backBlur: 0.4, angle: 200, backColor: "#123456" }
+    }
+  ];
+  const tone = normalizePageObjects(raw)[0] as ToneObject;
+  assert.equal(tone.toneType, "snow");
+  assert.equal(tone.params.count, 200);
+  assert.equal(tone.params.frontRatio, 0.6);
+  assert.equal(tone.params.frontSize, 0.08);
+  assert.equal(tone.params.backSize, 0.02);
+  assert.equal(tone.params.frontBlur, 0.9);
+  assert.equal(tone.params.backBlur, 0.4);
+  assert.equal(tone.params.angle, 200);
+  assert.equal(tone.params.backColor, "#123456");
+});
+
+test("normalizePageObjects: tone(snow)の count/frontRatio/size/blur は範囲へ clamp する", () => {
+  const tone = normalizePageObjects([
+    {
+      id: "a",
+      kind: "tone",
+      position: { x: 0.1, y: 0.1 },
+      size: { x: 0.2, y: 0.2 },
+      toneType: "snow",
+      seed: 1,
+      params: { count: 99999, frontRatio: 5, frontSize: 999, backSize: -5, frontBlur: 999, backBlur: -5 }
+    }
+  ])[0] as ToneObject;
+  assert.equal(tone.params.count, 400, "count は仕様書の上限400へ clamp");
+  assert.equal(tone.params.frontRatio, 1);
+  assert.equal(tone.params.frontSize, TONE_SNOW_SIZE_MAX);
+  assert.equal(tone.params.backSize, TONE_SNOW_SIZE_MIN);
+  assert.equal(tone.params.frontBlur, TONE_SNOW_BLUR_MAX);
+  assert.equal(tone.params.backBlur, 0);
+});
+
+test("normalizePageObjects: tone(snow)の backColor は不正な色なら既定色(#aaaaaa)へフォールバックする", () => {
+  const invalid = normalizePageObjects([
+    { id: "a", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "snow", seed: 1, params: { backColor: "not-a-color" } }
+  ])[0] as ToneObject;
+  assert.equal(invalid.params.backColor, DEFAULT_TONE_SNOW_BACK_COLOR);
+
+  const missing = normalizePageObjects([
+    { id: "b", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "snow", seed: 1, params: {} }
+  ])[0] as ToneObject;
+  assert.equal(missing.params.backColor, DEFAULT_TONE_SNOW_BACK_COLOR);
+
+  const valid = normalizePageObjects([
+    { id: "c", kind: "tone", position: { x: 0.1, y: 0.1 }, size: { x: 0.2, y: 0.2 }, toneType: "snow", seed: 1, params: { backColor: "#00ff00" } }
+  ])[0] as ToneObject;
+  assert.equal(valid.params.backColor, "#00ff00");
 });
 
 test("createToneObject: 既定色・不透明度1で生成し、渡した seed/toneType/size/clipPanelId をそのまま使う", () => {

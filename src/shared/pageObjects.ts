@@ -124,8 +124,8 @@ export interface ImageObject extends PageObjectBase {
   clipPanelId?: string | null;
 }
 
-/** スクリーントーン種別(Docs/Feature-ScreenTones.md)。 */
-export type ToneKind = "halftone" | "gradient" | "lines" | "speed" | "focus" | "flash";
+/** スクリーントーン種別(Docs/Feature-ScreenTones.md)。noise/snow は 2026-07-14 追補で追加。 */
+export type ToneKind = "halftone" | "gradient" | "lines" | "speed" | "focus" | "flash" | "noise" | "snow";
 
 /**
  * トーン種別ごとのパラメータ(Docs/Feature-ScreenTones.md データモデル節の表)。判別 union にせず
@@ -139,14 +139,17 @@ export interface ToneParams {
   pitch?: number;
   /** halftone/gradient: ドット濃度 0..1。 */
   dotRatio?: number;
-  /** halftone/gradient/lines/speed: パターン角度(deg)。 */
+  /** halftone/gradient/lines/speed/noise(任意)/snow: パターン角度(deg)。 */
   angle?: number;
-  /** gradient: angle 方向の開始/終了濃度比率 0..1。 */
+  /**
+   * gradient: angle 方向の開始/終了濃度比率 0..1。lines/noise では **optional**(追補) -- 両方 undefined
+   * なら濃度グラデ無し、どちらかが指定されていれば有効(toneSvg.ts 側の判断。「指定時のみ mask を掛ける」)。
+   */
   startRatio?: number;
   endRatio?: number;
   /** lines: 線幅/間隔比 0..1。 */
   lineRatio?: number;
-  /** speed/focus/flash: 本数(≤400)。 */
+  /** speed/focus/flash/snow: 本数(≤400。snow は前面+背面の合計)。 */
   count?: number;
   /** speed: 平均長 0..1(領域に対する比)。 */
   length?: number;
@@ -158,6 +161,28 @@ export interface ToneParams {
   center?: PageVec;
   /** focus/flash: 中心の空白半径。 */
   innerRadius?: number;
+  /**
+   * focus のみ・**optional**(追補)。指定時は線の外側の端を「領域端」ではなく center から
+   * outerRadius の円周までにする(参考アプリの「最大半径」相当)。未指定は従来どおり領域端まで
+   * (toneSvg.ts の outerRadiusFor へフォールバック)。
+   */
+  outerRadius?: number;
+  /** noise: 砂粒の密度 0..1。 */
+  density?: number;
+  /** noise: 砂粒の直径(page-width 単位、0.001–0.02)。 */
+  grain?: number;
+  /** snow: 前面の割合 0..1(残りは背面。count に対する比率)。 */
+  frontRatio?: number;
+  /** snow: 前面楕円の長径(page-width 単位)。 */
+  frontSize?: number;
+  /** snow: 背面楕円の長径(page-width 単位)。 */
+  backSize?: number;
+  /** snow: 前面のぼかし強さ(frontSize に対する比。feGaussianBlur の stdDeviation = frontBlur × frontSize)。 */
+  frontBlur?: number;
+  /** snow: 背面のぼかし強さ(backSize に対する比)。 */
+  backBlur?: number;
+  /** snow: 背面粒の色(#rrggbb)。前面粒は常に object.color を使う(仕様書指定)。 */
+  backColor?: string;
 }
 
 export interface ToneObject extends PageObjectBase {
@@ -436,18 +461,28 @@ function normalizeImageObject(raw: Record<string, unknown>, fallbackId: string):
   return object;
 }
 
-export const TONE_KINDS: readonly ToneKind[] = ["halftone", "gradient", "lines", "speed", "focus", "flash"];
+export const TONE_KINDS: readonly ToneKind[] = ["halftone", "gradient", "lines", "speed", "focus", "flash", "noise", "snow"];
 const TONE_KIND_SET = new Set<ToneKind>(TONE_KINDS);
 
 /** pitch(ドット/線間隔)の可動域。下限 0.004 は要素数爆発防止の安全弁(Docs/Feature-ScreenTones.md)。 */
 export const TONE_PITCH_MIN = 0.004;
 export const TONE_PITCH_MAX = 0.1;
-/** speed/focus/flash の本数上限。 */
+/** speed/focus/flash/snow の本数上限。 */
 export const TONE_COUNT_MAX = 400;
 /** focus/flash の center(ローカル座標)の可動域(± 両方向。BALLOON_TAIL_TIP_CLAMP と同じ考え方)。 */
 export const TONE_CENTER_CLAMP = 2;
+/** noise の粒径(grain)の可動域(page-width 単位、Docs/Feature-ScreenTones.md 追補)。 */
+export const TONE_NOISE_GRAIN_MIN = 0.001;
+export const TONE_NOISE_GRAIN_MAX = 0.02;
+/** snow の前面/背面楕円サイズ(長径)の可動域(page-width 単位)。 */
+export const TONE_SNOW_SIZE_MIN = 0.001;
+export const TONE_SNOW_SIZE_MAX = 1;
+/** snow のぼかし強さ(サイズ比)の上限。0 は無ぼかし。 */
+export const TONE_SNOW_BLUR_MAX = 3;
 /** 既定色(黒)。 */
 export const DEFAULT_TONE_COLOR = "#000000";
+/** snow 背面粒の既定色。 */
+export const DEFAULT_TONE_SNOW_BACK_COLOR = "#aaaaaa";
 /** 「+ トーン」未選択時の既定サイズ(page 単位)。 */
 export const DEFAULT_TONE_SIZE: PageVec = { x: 0.35, y: 0.35 };
 
@@ -463,9 +498,24 @@ export function defaultToneParams(toneType: ToneKind): ToneParams {
     case "speed":
       return { angle: 45, count: 90, length: 0.7, lineWidth: 0.004, jitter: 0.5 };
     case "focus":
+      // outerRadius は optional(追補) -- 既定値は「未指定」(領域端まで、toneSvg.ts の outerRadiusFor)。
       return { center: { x: 0, y: 0 }, innerRadius: 0.12, count: 72, lineWidth: 0.012, jitter: 0.5 };
     case "flash":
       return { center: { x: 0, y: 0 }, innerRadius: 0.18, count: 72, lineWidth: 0.012, jitter: 0.5 };
+    case "noise":
+      // angle/startRatio/endRatio は optional(追補) -- 既定は濃度グラデ無し。
+      return { density: 0.35, grain: 0.003 };
+    case "snow":
+      return {
+        count: 120,
+        frontRatio: 0.4,
+        frontSize: 0.05,
+        backSize: 0.03,
+        frontBlur: 0.5,
+        backBlur: 0.3,
+        angle: 115,
+        backColor: DEFAULT_TONE_SNOW_BACK_COLOR
+      };
     default:
       return {};
   }
@@ -503,6 +553,8 @@ function normalizeToneParams(toneType: ToneKind, raw: unknown): ToneParams {
   }
   if (toneType === "lines") {
     params.lineRatio = clampNumber(source.lineRatio, 0, 1, fallback.lineRatio!);
+    // 濃度グラデは optional(追補) -- 指定されたキーだけ保持する(両方 undefined なら「グラデ無し」)。
+    normalizeOptionalGradientRatios(source, params);
   }
   if (toneType === "speed") {
     params.angle = clampNumber(source.angle, -360000, 360000, fallback.angle!);
@@ -517,8 +569,45 @@ function normalizeToneParams(toneType: ToneKind, raw: unknown): ToneParams {
     params.count = clampNumber(source.count, 1, TONE_COUNT_MAX, fallback.count!);
     params.lineWidth = clampNumber(source.lineWidth, 0, 1, fallback.lineWidth!);
     params.jitter = clampNumber(source.jitter, 0, 1, fallback.jitter!);
+    // outerRadius は focus のみの optional パラメータ(追補、flash には無い)。
+    if (toneType === "focus" && isFiniteNumber(source.outerRadius)) {
+      params.outerRadius = clampNumber(source.outerRadius, 0, PAGE_OBJECT_MAX_SIZE, PAGE_OBJECT_MAX_SIZE);
+    }
+  }
+  if (toneType === "noise") {
+    params.density = clampNumber(source.density, 0, 1, fallback.density!);
+    params.grain = clampNumber(source.grain, TONE_NOISE_GRAIN_MIN, TONE_NOISE_GRAIN_MAX, fallback.grain!);
+    // angle も含め、濃度グラデ一式が optional(追補)。
+    if (isFiniteNumber(source.angle)) {
+      params.angle = clampNumber(source.angle, -360000, 360000, 0);
+    }
+    normalizeOptionalGradientRatios(source, params);
+  }
+  if (toneType === "snow") {
+    params.count = clampNumber(source.count, 1, TONE_COUNT_MAX, fallback.count!);
+    params.frontRatio = clampNumber(source.frontRatio, 0, 1, fallback.frontRatio!);
+    params.frontSize = clampNumber(source.frontSize, TONE_SNOW_SIZE_MIN, TONE_SNOW_SIZE_MAX, fallback.frontSize!);
+    params.backSize = clampNumber(source.backSize, TONE_SNOW_SIZE_MIN, TONE_SNOW_SIZE_MAX, fallback.backSize!);
+    params.frontBlur = clampNumber(source.frontBlur, 0, TONE_SNOW_BLUR_MAX, fallback.frontBlur!);
+    params.backBlur = clampNumber(source.backBlur, 0, TONE_SNOW_BLUR_MAX, fallback.backBlur!);
+    params.angle = clampNumber(source.angle, -360000, 360000, fallback.angle!);
+    params.backColor = asColor(source.backColor, fallback.backColor!);
   }
   return params;
+}
+
+/**
+ * lines/noise の任意グラデ(startRatio/endRatio)を、指定されたキーだけ params へ書き込む共通処理
+ * (Docs/Feature-ScreenTones.md 追補)。両方 undefined のままなら「グラデ無し」(toneSvg.ts が
+ * hasOptionalGradient で判定)。gradient(必須グラデ)は別枝で常に両方セットするため、ここは使わない。
+ */
+function normalizeOptionalGradientRatios(source: Record<string, unknown>, params: ToneParams): void {
+  if (isFiniteNumber(source.startRatio)) {
+    params.startRatio = clampNumber(source.startRatio, 0, 1, 0.7);
+  }
+  if (isFiniteNumber(source.endRatio)) {
+    params.endRatio = clampNumber(source.endRatio, 0, 1, 0.05);
+  }
 }
 
 /** 不正/欠損 seed のフォールバック値。決定的にするため Math.random は使わない(正規化は純関数に保つ)。 */
