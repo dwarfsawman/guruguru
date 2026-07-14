@@ -9,7 +9,7 @@ import { createId, initializeDb, runSql } from "./db.ts";
 import { createOpenRasterExport, createPagePreviewPng } from "./openRasterExport.ts";
 import type { PageLayout } from "../shared/pageLayout.ts";
 import { createImageObject } from "../shared/pageObjects.ts";
-import { DEFAULT_TEXT_STYLE, defaultBalloonTail, type BalloonObject, type BoxObject, type TextObject } from "../shared/pageObjects.ts";
+import { DEFAULT_TEXT_STYLE, defaultBalloonTail, defaultToneParams, type BalloonObject, type BoxObject, type TextObject, type ToneKind, type ToneObject } from "../shared/pageObjects.ts";
 
 // 1x1 の最小 PNG(page_media ファイル用)。src/server/pages.test.ts と同一。
 const TINY_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==";
@@ -278,4 +278,87 @@ test("createOpenRasterExport: balloon(thought含む)/box/text の一括配置オ
     }
   }
   assert.ok(mergedOpaqueCount > 0, "expected merged image to contain non-transparent pixels from the objects layer");
+});
+
+// Docs/Feature-ScreenTones.md: トーン(halftone/gradient/lines/speed/focus/flash 全種)を含むページの
+// 書き出しスモーク。例外なく PNG が出ること、トーン有無でピクセルが変化する程度の緩い検証(仕様書指定)。
+// librsvg(sharp)が pattern/mask/patternTransform/clipPath を実際にラスタライズできることも兼ねて確認する。
+test("createOpenRasterExport: トーン(6種)を含むページが例外なく書き出され、トーンの有無でピクセルが変化する", async () => {
+  initializeDb();
+  const projectId = `project_ora_tone_${Date.now()}`;
+  const pageId = `page_ora_tone_${Date.now()}`;
+  const baselinePageId = `page_ora_tone_base_${Date.now()}`;
+  const storageDir = await mkdtemp(join(tmpdir(), "guruguru-ora-tone-test-"));
+  const layout: PageLayout = {
+    version: 1,
+    page: { aspectRatio: [1, 1], height: 1 },
+    readingDirection: "rtl",
+    panels: [{ id: "panel_1", order: 1, shape: { type: "rect", bounds: [0.1, 0.1, 0.9, 0.9] } }]
+  };
+
+  const positions: Record<ToneKind, { x: number; y: number }> = {
+    halftone: { x: 0.2, y: 0.2 },
+    gradient: { x: 0.5, y: 0.2 },
+    lines: { x: 0.8, y: 0.2 },
+    speed: { x: 0.2, y: 0.5 },
+    focus: { x: 0.5, y: 0.5 },
+    flash: { x: 0.8, y: 0.5 }
+  };
+  const toneObjects: ToneObject[] = (Object.keys(positions) as ToneKind[]).map((toneType, index) => ({
+    id: `tone_${toneType}`,
+    kind: "tone",
+    position: positions[toneType],
+    // focus だけ回転+コマクリップを付け、二重クリップ+回転の合成経路も一緒に確認する。
+    rotation: toneType === "focus" ? 0.3 : 0,
+    size: { x: 0.15, y: 0.15 },
+    toneType,
+    color: toneType === "flash" ? "#ff0000" : "#000000",
+    opacity: toneType === "flash" ? 0.8 : 1,
+    clipPanelId: toneType === "focus" ? "panel_1" : null,
+    seed: index + 1,
+    params: defaultToneParams(toneType)
+  }));
+
+  runSql(
+    `INSERT INTO projects (id, name, description, mode, storage_dir, canvas_width, canvas_height)
+     VALUES (?, ?, '', 'book', ?, 256, 256)`,
+    [projectId, "ORA Tone Test", storageDir]
+  );
+  runSql(
+    "INSERT INTO pages (id, project_id, page_index, title, layout_json, objects_json) VALUES (?, ?, 0, 'Spread', ?, ?)",
+    [pageId, projectId, JSON.stringify(layout), JSON.stringify(toneObjects)]
+  );
+  runSql("INSERT INTO pages (id, project_id, page_index, title, layout_json) VALUES (?, ?, 1, 'Baseline', ?)", [
+    baselinePageId,
+    projectId,
+    JSON.stringify(layout)
+  ]);
+
+  const result = await createOpenRasterExport(projectId, { pageIds: [pageId] });
+  const zip = await JSZip.loadAsync(result.buffer);
+  const stackXml = await zip.file("stack.xml")!.async("string");
+  assert.match(stackXml, /<layer name="Objects" src="data\//);
+
+  const objectsLayerMatch = stackXml.match(/<layer name="Objects" src="(data\/[^"]+)"/);
+  assert.ok(objectsLayerMatch, "Objects layer entry should reference a data file");
+  const objectsLayerFile = zip.file(objectsLayerMatch![1]!);
+  assert.ok(objectsLayerFile, "Objects layer PNG should exist in the zip");
+  const objectsPngBuffer = Buffer.from(await objectsLayerFile!.async("nodebuffer"));
+
+  // 実際に非透明ピクセルが描かれていることを確認する(レイヤーが存在するだけの空描画を弾く)。
+  const { data, info } = await sharp(objectsPngBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let opaquePixelCount = 0;
+  for (let i = 3; i < data.length; i += info.channels) {
+    if (data[i]! > 0) {
+      opaquePixelCount += 1;
+    }
+  }
+  assert.ok(opaquePixelCount > 0, "expected at least one non-transparent pixel from tone objects");
+
+  // トーン無しページ(baseline)と比べて mergedimage.png のピクセルが変化していること(緩い検証)。
+  const baselineResult = await createOpenRasterExport(projectId, { pageIds: [baselinePageId] });
+  const baselineZip = await JSZip.loadAsync(baselineResult.buffer);
+  const withToneMerged = Buffer.from(await zip.file("mergedimage.png")!.async("nodebuffer"));
+  const baselineMerged = Buffer.from(await baselineZip.file("mergedimage.png")!.async("nodebuffer"));
+  assert.notEqual(Buffer.compare(withToneMerged, baselineMerged), 0, "tone should change the rendered pixels vs. a blank page");
 });

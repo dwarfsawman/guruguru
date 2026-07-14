@@ -106,13 +106,22 @@ export async function createPptxExport(
   };
 }
 
-/** 背景 PNG には画像オブジェクトだけを残し、編集可能オブジェクトは slide XML へ分離する。 */
+/**
+ * 背景 PNG には画像オブジェクトだけを残し、編集可能オブジェクトは slide XML へ分離する。
+ * トーン(Docs/Feature-ScreenTones.md)は image と同じく背景側に残す -- `editableObjectsXml` は
+ * balloon/box/text しか PowerPoint 図形化できず(seed 付き PRNG で生成するドット/線パターンを
+ * ネイティブ図形として表現する手段が無い)、ここで除外し忘れると背景にも slide 図形にも現れず
+ * 静かに消える(pptxExport.test.ts の回帰テストで確認)。
+ */
 async function renderSlidePage(page: PageRow, pixelWidth: number): Promise<RenderedSlidePage> {
   const layout = page.layout ?? null;
   const pageHeight = resolvePageHeight(page, layout);
   const canvas = computeExportCanvas(pixelWidth, pageHeight);
-  const editableObjects = (page.objects ?? []).filter((object) => object.kind !== "image");
-  const backgroundPage: PageRow = { ...page, objects: (page.objects ?? []).filter((object) => object.kind === "image") };
+  const editableObjects = (page.objects ?? []).filter((object) => object.kind !== "image" && object.kind !== "tone");
+  const backgroundPage: PageRow = {
+    ...page,
+    objects: (page.objects ?? []).filter((object) => object.kind === "image" || object.kind === "tone")
+  };
   const layers = await createPageLayers(backgroundPage, canvas);
   const png = await renderMergedImage(layers, canvas);
   return { png, canvas, pageHeight, editableObjects };

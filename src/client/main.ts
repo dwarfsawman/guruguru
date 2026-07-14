@@ -383,7 +383,9 @@ function bindEvents() {
       setPaintColor(target.value);
       return;
     }
-    if (target.dataset.pageObjectField || target.dataset.pageObjectContentField) {
+    if (target.dataset.pageObjectField || target.dataset.pageObjectContentField || target.dataset.pageObjectToneParam) {
+      // pageObjectToneParam はトーンの種別別パラメータ欄(Docs/Feature-ScreenTones.md)。ここに含め忘れると
+      // SETTINGS のトーン数値入力が一切反映されない(マージレビューで発見した配線漏れ)。
       updatePageObjectFieldFromControl(target);
       return;
     }

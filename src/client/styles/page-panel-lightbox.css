@@ -432,6 +432,15 @@
   cursor: grabbing;
 }
 
+/* トーン(focus/flash)の中心ハンドル(Docs/Feature-ScreenTones.md)。tail のオレンジと区別できる色にする。 */
+.page-object-gizmo-tone-center-handle {
+  fill: var(--good);
+}
+
+.page-object-gizmo-tone-center-handle:active {
+  cursor: grabbing;
+}
+
 .page-object-toolbar {
   display: flex;
   flex-direction: column;
@@ -482,6 +491,11 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
+}
+
+/* 追加ボタンが奇数個(「+ トーン」追加で5個)の時、最後の1個だけ2列ぶち抜きにして半端な空白を防ぐ。 */
+.page-object-add-grid > button:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 
 .page-layer-visibility-actions,

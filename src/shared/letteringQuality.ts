@@ -38,7 +38,8 @@ export function auditLettering(layout: PageLayout, objects: readonly PageObject[
     const box = { x0: object.position.x - size.x / 2, y0: object.position.y - size.y / 2,
       x1: object.position.x + size.x / 2, y1: object.position.y + size.y / 2 };
     if (box.x0 < 0 || box.y0 < 0 || box.x1 > 1 || box.y1 > layout.page.height) overflowObjectIds.push(object.id);
-    const text = object.kind === "text" ? object.content : object.kind === "image" ? null : object.content;
+    // tone は image と同じく本文テキストを持たないので、コントラスト監査の対象外にする。
+    const text = object.kind === "text" ? object.content : object.kind === "image" || object.kind === "tone" ? null : object.content;
     const background = object.kind === "balloon" || object.kind === "box" ? object.fill : "#ffffff";
     if (text && contrast(text.style.color, background) < 4.5) lowContrastObjectIds.push(object.id);
     if (object.kind === "balloon") {

@@ -22,11 +22,13 @@ import {
   type PageObject,
   type PageVec,
   type TextContent,
-  type TextObject
+  type TextObject,
+  type ToneObject
 } from "../shared/pageObjects";
 import { mosaicBlockSizePx, regionBoundsPage, type MosaicRegion, type MosaicShape } from "../shared/mosaicRegion";
 import { balloonContentMaxWidth, renderBalloonSvg } from "../shared/balloonShape";
 import { renderTextSvg } from "../shared/textSvg";
+import { renderToneSvg } from "../shared/toneSvg";
 import { getRow, getRows, toApiRow } from "./db";
 import { HttpError } from "./http";
 import { ensureAssetThumbnail } from "./storage";
@@ -544,6 +546,9 @@ function renderPageObjectElement(
   if (object.kind === "image") {
     return renderImageObjectElement(object, pageHeight, canvas, layout, mediaDataUris);
   }
+  if (object.kind === "tone") {
+    return renderToneObjectElement(object, pageHeight, canvas, layout);
+  }
   return renderBalloonObjectElement(object, pageHeight, canvas);
 }
 
@@ -636,6 +641,31 @@ function renderImageObjectElement(
   }
   const clipId = `image-object-clip-${object.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
   return `<defs><clipPath id="${clipId}">${renderShapeElement(clipPanel.shape, layout!, canvas, `fill="#fff"`)}</clipPath></defs><g clip-path="url(#${clipId})">${image}</g>`;
+}
+
+/**
+ * トーン1件(Docs/Feature-ScreenTones.md)。本体は `renderToneSvg`(クライアント/サーバ共用の純ロジック)に
+ * ローカル単位(anchor=0,0/rotation=0)で描かせ、外側の `<g>` で pixel 空間へ translate→rotate→scale する
+ * -- `renderBalloonObjectElement` と全く同じパターン。clipPanelId があればコマ形状の clipPath を defs に
+ * 出し、外側 g=clip / 内側 g=トーン本体(renderToneSvg 自身の領域 clipPath を内包)の二層にする
+ * (`renderImageObjectElement` と同じ理由・同じ構成 -- outer の `<g clip-path>` 自身には transform を
+ * 付けないので、clipPath の座標系(canvas pixel 空間)と wrapped 側の外側 transform 適用後の見た目が
+ * 正しく重なる)。
+ */
+function renderToneObjectElement(object: ToneObject, pageHeight: number, canvas: ExportCanvas, layout: PageLayout | null): string {
+  const [anchorX, anchorY] = mapPoint([object.position.x, object.position.y], pageHeight, canvas);
+  const deg = (object.rotation * 180) / Math.PI;
+  const scaleX = canvas.width;
+  const scaleY = canvas.height / pageHeight;
+  const shape = renderToneSvg(object, { x: 0, y: 0 }, 0);
+  const wrapped = `<g transform="translate(${fmt(anchorX)} ${fmt(anchorY)})${deg ? ` rotate(${fmt(deg)})` : ""} scale(${fmt(scaleX)} ${fmt(scaleY)})">${shape}</g>`;
+
+  const clipPanel = object.clipPanelId && layout ? layout.panels.find((panel) => panel.id === object.clipPanelId) : null;
+  if (!clipPanel) {
+    return wrapped;
+  }
+  const clipId = `tone-object-clip-${object.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  return `<defs><clipPath id="${clipId}">${renderShapeElement(clipPanel.shape, layout!, canvas, `fill="#fff"`)}</clipPath></defs><g clip-path="url(#${clipId})">${wrapped}</g>`;
 }
 
 /**
