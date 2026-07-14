@@ -65,28 +65,59 @@ export function listPagesWithProject(projectId: string): BookPages {
   const project = requireProject(projectId);
 
   const rows = getRows<Record<string, unknown>>(
-    `SELECT
-       pg.*,
-       (SELECT COUNT(*) FROM assets a JOIN generation_rounds r ON r.id = a.round_id WHERE r.page_id = pg.id) AS asset_count,
-       COALESCE(
-         (SELECT a.id FROM assets a JOIN generation_rounds r ON r.id = a.round_id
-           WHERE r.page_id = pg.id AND a.status IN ('selected', 'favorite') ORDER BY a.created_at DESC LIMIT 1),
-         (SELECT a.id FROM assets a JOIN generation_rounds r ON r.id = a.round_id
-           WHERE r.page_id = pg.id ORDER BY a.created_at DESC LIMIT 1)
-       ) AS representative_asset_id,
+    `WITH ranked_assets AS (
+       SELECT
+         r.page_id,
+         a.id,
+         COUNT(*) OVER (PARTITION BY r.page_id) AS asset_count,
+         ROW_NUMBER() OVER (
+           PARTITION BY r.page_id
+           ORDER BY
+             CASE WHEN a.status IN ('selected', 'favorite') THEN 0 ELSE 1 END,
+             a.created_at DESC
+         ) AS representative_rank
+       FROM generation_rounds r
+       JOIN assets a ON a.round_id = r.id
+       WHERE r.project_id = ? AND r.page_id IS NOT NULL
+     ),
+     asset_summary AS (
+       SELECT
+         page_id,
+         MAX(asset_count) AS asset_count,
+         MAX(CASE WHEN representative_rank = 1 THEN id END) AS representative_asset_id
+       FROM ranked_assets
+       GROUP BY page_id
+     ),
+     panel_summary AS (
+       SELECT ppa.page_id, MAX(ppa.updated_at) AS panel_updated_at
+       FROM page_panel_assignments ppa
+       JOIN pages panel_page ON panel_page.id = ppa.page_id
+       WHERE panel_page.project_id = ?
+       GROUP BY ppa.page_id
+     )
+     SELECT
+       pg.id,
+       pg.project_id,
+       pg.page_index,
+       pg.title,
+       pg.layout_json,
+       pg.created_at,
+       pg.updated_at,
+       COALESCE(asset_summary.asset_count, 0) AS asset_count,
+       asset_summary.representative_asset_id,
        -- コマクロップ編集(ppa.updated_at)とページオブジェクト編集(pg.updated_at, objects PATCH で更新)の
        -- どちらが新しくてもキャッシュを最新化できるよう両方の MAX を取る(Feature-CGCollectionSuite.md P1)。
-       MAX(
-         COALESCE((SELECT MAX(ppa.updated_at) FROM page_panel_assignments ppa WHERE ppa.page_id = pg.id), pg.updated_at),
-         pg.updated_at
-       ) AS panel_preview_version
+       MAX(COALESCE(panel_summary.panel_updated_at, pg.updated_at), pg.updated_at) AS panel_preview_version
      FROM pages pg
+     LEFT JOIN asset_summary ON asset_summary.page_id = pg.id
+     LEFT JOIN panel_summary ON panel_summary.page_id = pg.id
      WHERE pg.project_id = ?
      ORDER BY pg.page_index ASC`,
-    [projectId]
+    [projectId, projectId, projectId]
   );
 
-  // `pg.*` に含まれる layout_json は toApiRow が `layout`(parse 済み)へ変換する(db.ts の jsonColumnNames)。
+  // 一覧では layout_json だけを返し、編集画面専用の objects_json / mosaic_json は転送しない。
+  // layout_json は toApiRow が `layout`(parse 済み)へ変換する(db.ts の jsonColumnNames)。
   const pages = rows.map((row) => {
     const item = toApiRow(row)!;
     if (item.layout) {

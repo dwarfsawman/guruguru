@@ -167,6 +167,14 @@
   display: grid;
   gap: 9px;
   margin-top: 14px;
+
+  &[aria-busy="true"] {
+    cursor: wait;
+  }
+
+  &[aria-busy="true"] .project-card:not(.is-opening) {
+    opacity: 0.55;
+  }
 }
 
 .project-card {
@@ -182,6 +190,12 @@
   &:hover {
     border-color: var(--line-strong);
     background: var(--panel-soft);
+  }
+
+  &.is-opening {
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 1px var(--accent-line);
   }
 }
 
@@ -253,6 +267,37 @@
   display: grid;
   gap: 6px;
   align-content: center;
+}
+
+.project-card.is-opening .project-actions [data-action="open-project"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--accent-strong);
+  opacity: 1;
+}
+
+.project-opening-spinner {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: project-opening-spin 0.7s linear infinite;
+}
+
+@keyframes project-opening-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-opening-spinner {
+    animation: none;
+  }
 }
 
 .workflow-toolbar {
@@ -455,4 +500,3 @@
     display: none;
   }
 }
-

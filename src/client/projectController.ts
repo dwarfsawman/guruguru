@@ -280,6 +280,68 @@ async function openProjectByMode(projectId: string) {
   await openProject(projectId);
 }
 
+/**
+ * 大きな Book の一覧取得中もクリックが受理されたことを即座に見せる。
+ * Home の再描画を待たず DOM だけを一時更新し、失敗時は元の状態へ戻す。
+ */
+function markProjectOpening(target: HTMLElement): (() => void) | null {
+  const list = target.closest<HTMLElement>(".project-list");
+  const card = target.closest<HTMLElement>(".project-card");
+  if (!list || !card) {
+    return () => {};
+  }
+  if (list.dataset.openingProject) {
+    return null;
+  }
+
+  list.dataset.openingProject = target.dataset.id ?? "true";
+  list.setAttribute("aria-busy", "true");
+  card.classList.add("is-opening");
+
+  const controls = Array.from(list.querySelectorAll<HTMLButtonElement>("button"));
+  const disabledStates = controls.map((control) => control.disabled);
+  for (const control of controls) {
+    control.disabled = true;
+  }
+
+  const openButton = card.querySelector<HTMLButtonElement>('.project-actions [data-action="open-project"]');
+  const originalHtml = openButton?.innerHTML ?? "";
+  const originalAriaLabel = openButton?.getAttribute("aria-label") ?? null;
+  if (openButton) {
+    openButton.innerHTML = '<span class="project-opening-spinner" aria-hidden="true"></span><span>読み込み中…</span>';
+    openButton.setAttribute("aria-label", "Projectを読み込み中");
+  }
+
+  return () => {
+    delete list.dataset.openingProject;
+    list.removeAttribute("aria-busy");
+    card.classList.remove("is-opening");
+    controls.forEach((control, index) => {
+      control.disabled = disabledStates[index];
+    });
+    if (openButton) {
+      openButton.innerHTML = originalHtml;
+      if (originalAriaLabel === null) {
+        openButton.removeAttribute("aria-label");
+      } else {
+        openButton.setAttribute("aria-label", originalAriaLabel);
+      }
+    }
+  };
+}
+
+async function openProjectFromCard(projectId: string, target: HTMLElement) {
+  const restoreOpeningState = markProjectOpening(target);
+  if (!restoreOpeningState) {
+    return;
+  }
+  try {
+    await openProjectByMode(projectId);
+  } finally {
+    restoreOpeningState();
+  }
+}
+
 async function deleteProject(projectId: string) {
   const project = state.projects.find((item) => item.id === projectId) ?? state.detail?.project ?? null;
   const projectName = project?.name ?? "このProject";
@@ -389,7 +451,7 @@ export async function importProjectFile(input: HTMLInputElement) {
 registerActions({
   "home": () => loadHome(),
   "create-project": () => createProject(),
-  "open-project": (id) => openProjectByMode(id),
+  "open-project": (id, target) => openProjectFromCard(id, target),
   "delete-project": (id) => deleteProject(id),
   "export-project": (id) => exportProject(id),
   "set-create-mode": (_id, target) => {

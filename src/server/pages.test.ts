@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPage, deletePage, mergeRecentImages, updatePageLayout } from "./pages.ts";
+import { createPage, deletePage, listPagesWithProject, mergeRecentImages, updatePageLayout } from "./pages.ts";
 import { createProject } from "./projects.ts";
 import { createSourceAsset } from "./sourceAssets.ts";
 import { createId, getRow, initializeDb, runSql } from "./db.ts";
@@ -107,6 +107,56 @@ function attachScriptMangaRunOwnership(projectId: string, pageId: string): strin
 function isConflict(error: unknown): boolean {
   return error instanceof HttpError && error.statusCode === 409;
 }
+
+test("listPagesWithProject: returns a lightweight list and aggregates representative assets", async () => {
+  const templateId = createDummyWorkflowTemplate();
+  const project = createProject({ name: "Lightweight book list", mode: "book" });
+  assert.ok(project);
+  const projectId = project!.id as string;
+  const page = getRow<{ id: string }>("SELECT id FROM pages WHERE project_id = ?", [projectId]);
+  assert.ok(page);
+
+  const layout = { canvas: { width: 1024, height: 1446 }, panels: [{ id: "panel-1", order: 0 }] };
+  runSql(
+    `UPDATE pages
+     SET layout_json = ?, objects_json = ?, mosaic_json = ?, updated_at = '2026-07-14 09:00:00'
+     WHERE id = ?`,
+    [JSON.stringify(layout), JSON.stringify([{ id: "editor-only-object" }]), JSON.stringify([{ id: "editor-only-mosaic" }]), page!.id]
+  );
+
+  const preferred = await createSourceAsset(projectId, {
+    templateId,
+    pageId: page!.id,
+    dataUrl: TINY_PNG_DATA_URL,
+    filename: "preferred.png"
+  });
+  const newerGenerated = await createSourceAsset(projectId, {
+    templateId,
+    pageId: page!.id,
+    dataUrl: TINY_PNG_DATA_URL,
+    filename: "newer-generated.png"
+  });
+  assert.ok(preferred.asset);
+  assert.ok(newerGenerated.asset);
+  runSql("UPDATE assets SET status = 'favorite', created_at = '2026-07-14 10:00:00' WHERE id = ?", [preferred.asset!.id]);
+  runSql("UPDATE assets SET status = 'generated', created_at = '2026-07-14 11:00:00' WHERE id = ?", [newerGenerated.asset!.id]);
+  runSql(
+    `INSERT INTO page_panel_assignments
+       (id, page_id, panel_id, asset_id, crop_json, updated_at)
+     VALUES (?, ?, 'panel-1', ?, '{}', '2026-07-14 12:00:00')`,
+    [createId("assignment"), page!.id, preferred.asset!.id]
+  );
+
+  const result = listPagesWithProject(projectId);
+  assert.equal(result.pages.length, 1);
+  const summary = result.pages[0]!;
+  assert.deepEqual(summary.layout, layout);
+  assert.equal(Object.hasOwn(summary, "objects"), false);
+  assert.equal(Object.hasOwn(summary, "mosaic"), false);
+  assert.equal(summary.assetCount, 2);
+  assert.equal(summary.representativeAssetId, preferred.asset!.id);
+  assert.match(summary.representativeThumbnailUrl ?? "", /preview\.png\?v=2026-07-14%2012%3A00%3A00&size=320$/);
+});
 
 test("updatePageLayout: rejects layout mutation for a script manga run-owned page", () => {
   initializeDb();
