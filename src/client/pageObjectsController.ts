@@ -49,8 +49,14 @@ import {
   TEXT_SIZE_MIN,
   TONE_CENTER_CLAMP,
   TONE_COUNT_MAX,
+  TONE_KINDS,
+  TONE_NOISE_GRAIN_MAX,
+  TONE_NOISE_GRAIN_MIN,
   TONE_PITCH_MAX,
   TONE_PITCH_MIN,
+  TONE_SNOW_BLUR_MAX,
+  TONE_SNOW_SIZE_MAX,
+  TONE_SNOW_SIZE_MIN,
   contentMaxWidth,
   createBalloonObject,
   createBoxObject,
@@ -944,9 +950,13 @@ function updateImageOwnField(image: ImageObject, field: string, target: HTMLInpu
   return null;
 }
 
-const TONE_KIND_VALUES = new Set<ToneKind>(["halftone", "gradient", "lines", "speed", "focus", "flash"]);
+const TONE_KIND_VALUES = new Set<ToneKind>(TONE_KINDS);
 
-/** トーン自身のプロパティ(種別/色/不透明度/クリップ先コマ)。params の中身は updateToneParamField。 */
+/**
+ * トーン自身のプロパティ(種別/色/不透明度/クリップ先コマ)+ params 内の色/トグル系フィールド。
+ * params の中身のうち **数値**は updateToneParamField、**色/チェックボックス**はこちら(2026-07-14 追補:
+ * backColor は文字列なので Number() 変換に流さない -- 既存の color フィールドと同じ扱いにする)。
+ */
 function updateToneOwnField(tone: ToneObject, field: string, target: HTMLInputElement | HTMLSelectElement): ToneObject | null {
   if (field === "toneType") {
     const value = target.value;
@@ -966,6 +976,35 @@ function updateToneOwnField(tone: ToneObject, field: string, target: HTMLInputEl
   if (field === "clipPanelId") {
     const value = target.value.trim();
     return { ...tone, clipPanelId: value || null };
+  }
+  // snow: 背面粒の色(params.backColor)。color 入力は常に妥当な #rrggbb を返すので追加検証は不要
+  // (object.color と同じ扱い -- Number() には流さない)。
+  if (field === "backColor") {
+    return { ...tone, params: { ...tone.params, backColor: target.value } };
+  }
+  // lines/noise: 濃度グラデの有効/無効トグル(startRatio/endRatio の有無で表す。tailEnabled/
+  // maxWidthEnabled と同じ「チェックボックスで optional フィールドの有無を切り替える」パターン)。
+  if (field === "gradientEnabled") {
+    const params = { ...tone.params };
+    if ((target as HTMLInputElement).checked) {
+      params.startRatio = params.startRatio ?? 0.7;
+      params.endRatio = params.endRatio ?? 0.05;
+    } else {
+      delete params.startRatio;
+      delete params.endRatio;
+    }
+    return { ...tone, params };
+  }
+  // focus: 最大半径(outerRadius)の有効/無効トグル。既定値は領域の半対角線程度(未指定時の
+  // 見た目=領域端に近い、体感差の少ない初期値にする)。
+  if (field === "outerRadiusEnabled") {
+    const params = { ...tone.params };
+    if ((target as HTMLInputElement).checked) {
+      params.outerRadius = params.outerRadius ?? Math.max(0.01, Math.hypot(tone.size.x, tone.size.y) / 2);
+    } else {
+      delete params.outerRadius;
+    }
+    return { ...tone, params };
   }
   return null;
 }
@@ -1014,6 +1053,32 @@ function updateToneParamField(tone: ToneObject, field: string, target: HTMLInput
       break;
     case "innerRadius":
       params.innerRadius = clampNumber(parsed, 0, PAGE_OBJECT_MAX_SIZE, params.innerRadius ?? 0.12);
+      break;
+    case "outerRadius":
+      // トグル(outerRadiusEnabled)で存在する時だけこの入力が出るので、既定の fallback は使われない想定だが
+      // 念のため領域端相当の広い値にしておく。
+      params.outerRadius = clampNumber(parsed, 0, PAGE_OBJECT_MAX_SIZE, params.outerRadius ?? PAGE_OBJECT_MAX_SIZE);
+      break;
+    case "density":
+      params.density = clampNumber(parsed, 0, 1, params.density ?? 0.35);
+      break;
+    case "grain":
+      params.grain = clampNumber(parsed, TONE_NOISE_GRAIN_MIN, TONE_NOISE_GRAIN_MAX, params.grain ?? 0.003);
+      break;
+    case "frontRatio":
+      params.frontRatio = clampNumber(parsed, 0, 1, params.frontRatio ?? 0.4);
+      break;
+    case "frontSize":
+      params.frontSize = clampNumber(parsed, TONE_SNOW_SIZE_MIN, TONE_SNOW_SIZE_MAX, params.frontSize ?? 0.05);
+      break;
+    case "backSize":
+      params.backSize = clampNumber(parsed, TONE_SNOW_SIZE_MIN, TONE_SNOW_SIZE_MAX, params.backSize ?? 0.03);
+      break;
+    case "frontBlur":
+      params.frontBlur = clampNumber(parsed, 0, TONE_SNOW_BLUR_MAX, params.frontBlur ?? 0.5);
+      break;
+    case "backBlur":
+      params.backBlur = clampNumber(parsed, 0, TONE_SNOW_BLUR_MAX, params.backBlur ?? 0.3);
       break;
     default:
       return null;

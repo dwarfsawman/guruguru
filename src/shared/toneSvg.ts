@@ -10,23 +10,34 @@
  *
  * 種別ごとの描画方式:
  * - halftone/lines: `<pattern patternUnits="userSpaceOnUse">` + `patternTransform="rotate(...)"` を
- *   領域 rect に敷く(無限タイルなので回転の基準点はどこでもよい)。
- * - gradient: halftone と同じ固定径ドットパターンに、`<linearGradient>` を使った `<mask>` を重ねて
- *   angle 方向の濃度遷移を近似する(v1: ドット径固定+マスク減衰。仕様書に明記の簡略化)。
+ *   領域 rect に敷く(無限タイルなので回転の基準点はどこでもよい)。lines は startRatio/endRatio が
+ *   指定時のみ、縞と直交方向の `<mask>`(線形グラデ)を追加で重ねる(2026-07-14 追補、任意)。
+ * - gradient: 2026-07-14 追補で v1(ドット径固定+マスク減衰の近似)から、角度方向に沿ってドット半径を
+ *   start→end へ実際に補間する行生成(`<circle>` 群、PRNG 不要の決定的格子)へ強化した。領域面積/pitch²
+ *   が要素数バジェット(約2万)を超える場合は実効 pitch を自動で粗くする(`effectiveGradientPitch`)。
+ * - noise: seed 付き PRNG で生成した粒(`<circle>`)をタイル化した `<pattern>` に敷き詰め、パターンの
+ *   自然なタイル繰り返しで領域全体を覆う(領域全面に個別要素を撒くと要素数が爆発するため)。startRatio/
+ *   endRatio が指定時のみ角度方向の濃度 `<mask>` を追加する(lines と同じ仕組みを共有)。
+ * - snow: seed 付き PRNG で angle 方向に伸びる楕円(`<ellipse>` + 個別 `rotate(...)`)を背面→前面の順に
+ *   2層生成し、層ごとに `<filter><feGaussianBlur></filter>` でぼかす(背面=params.backColor、
+ *   前面=object.color)。フィルタ region は `filterUnits="userSpaceOnUse"` で明示し、ぼかしがフィルタ
+ *   region の既定マージンで切れないようにする。
  * - speed/focus/flash: 決定的 PRNG(mulberry32、seed 付き)で線・星形を生成する。stroke ではなく
  *   fill パス(先細りの三角形)にするのは、漫画的なシャープさと librsvg 互換のため(仕様書指定)。
  *   - speed: angle 方向に長い三角形を領域内へランダム配置(位置/長さ/太さに jitter)。
  *   - focus: params.center から外周へ向かう三角形群。tip(先端)は innerRadius 以上離れた位置に固定し
- *     (jitter は外側へ広げる方向にのみ効かせる)、中心付近に線が届かないことを保証する。
+ *     (jitter は外側へ広げる方向にのみ効かせる)、中心付近に線が届かないことを保証する。外周側の
+ *     基部(base)は既定で領域の外接円(outerRadiusFor)だが、params.outerRadius 指定時(2026-07-14
+ *     追補、focus のみ)はその半径を使う。
  *   - flash: 領域を color で塗り、中心に innerRadius 基準のジャギー多角形を白(#ffffff、非透過)で
  *     重ねて抜く。lineWidth は focus と同じ「外周側の基部太さ」の意味を転用し、棘の突出量に使う。
  * - 全種別共通: 領域(size)への `<clipPath>` で必ずクリップする(パターン/線が領域外へはみ出さないため)。
  *
- * **id 衝突禁止**: pattern/mask/gradient/clipPath の id は `object.id` を含めて一意化する(サーバは1つの
- * SVG に複数オブジェクトを並べるため必須。`panelClipId`/`image-object-clip-*` の前例踏襲)。
+ * **id 衝突禁止**: pattern/mask/gradient/filter/clipPath の id は `object.id` を含めて一意化する
+ * (サーバは1つの SVG に複数オブジェクトを並べるため必須。`panelClipId`/`image-object-clip-*` の前例踏襲)。
  */
 import type { PageVec, ToneObject, ToneParams } from "./pageObjects";
-import { TONE_COUNT_MAX, TONE_PITCH_MAX, TONE_PITCH_MIN } from "./pageObjects";
+import { TONE_COUNT_MAX, TONE_NOISE_GRAIN_MAX, TONE_NOISE_GRAIN_MIN, TONE_PITCH_MAX, TONE_PITCH_MIN } from "./pageObjects";
 
 /** 数値の SVG 属性向け文字列化(`balloonShape.ts` と同じ絶対 6 桁丸め)。 */
 function fmt(value: number): string {
@@ -99,6 +110,10 @@ function renderToneBody(object: ToneSvgInput, uid: string, hx: number, hy: numbe
       return renderFocusBody(object.params, object.color, object.seed, hx, hy);
     case "flash":
       return renderFlashBody(object.params, object.color, object.seed, hx, hy);
+    case "noise":
+      return renderNoiseBody(object.params, object.color, object.seed, uid, hx, hy);
+    case "snow":
+      return renderSnowBody(object.params, object.color, object.seed, uid, hx, hy);
     default:
       return "";
   }
@@ -126,34 +141,107 @@ function renderHalftoneBody(params: ToneParams, color: string, uid: string, hx: 
   return `<defs>${pattern}</defs>${rect}`;
 }
 
+/**
+ * startRatio/endRatio のどちらかが指定されていれば「濃度グラデ有効」(2026-07-14 追補: lines/noise は
+ * 任意グラデ。gradient(必須グラデ)はこの判定を使わず常に両方セットする)。
+ */
+function hasOptionalGradient(params: ToneParams): boolean {
+  return typeof params.startRatio === "number" || typeof params.endRatio === "number";
+}
+
+/**
+ * angle 方向の白(不透明度 startRatio→endRatio)線形グラデを領域全面に敷いた `<mask>` 断片。旧
+ * renderGradientBody(v1)のマスク近似を lines/noise の「任意の濃度グラデ」向けに切り出したもの
+ * (`hasOptionalGradient` で有効と判定した時だけ呼ぶこと)。id は種別ごとに prefix で分ける。
+ */
+function opacityMaskFragment(params: ToneParams, uid: string, prefix: string, hx: number, hy: number): { maskId: string; defs: string } {
+  const gradientId = `tone-${prefix}-gradient-${uid}`;
+  const maskId = `tone-${prefix}-mask-${uid}`;
+  const startRatio = clamp(num(params.startRatio, 0.7), 0, 1);
+  const endRatio = clamp(num(params.endRatio, 0.05), 0, 1);
+  const angle = num(params.angle, 0);
+  const gradient = `<linearGradient id="${gradientId}" x1="0" y1="0" x2="1" y2="0" gradientTransform="rotate(${fmt(angle)} 0.5 0.5)"><stop offset="0" stop-color="#fff" stop-opacity="${fmt(startRatio)}" /><stop offset="1" stop-color="#fff" stop-opacity="${fmt(endRatio)}" /></linearGradient>`;
+  const rectAttrs = `x="${fmt(-hx)}" y="${fmt(-hy)}" width="${fmt(hx * 2)}" height="${fmt(hy * 2)}"`;
+  const mask = `<mask id="${maskId}"><rect ${rectAttrs} fill="url(#${gradientId})" /></mask>`;
+  return { maskId, defs: `${gradient}${mask}` };
+}
+
+/**
+ * lines は縞パターンに、startRatio/endRatio が指定時のみ濃度 `<mask>` を追加する(2026-07-14 追補)。
+ * 縞の伸びる向きは angle(patternTransform で回す)、グラデの遷移方向はそれと直交=縞をまたぐ方向
+ * なので、mask 側には angle+90° を渡す。
+ */
 function renderLinesBody(params: ToneParams, color: string, uid: string, hx: number, hy: number): string {
   const pitch = resolvedPitch(params);
   const lineRatio = clamp(num(params.lineRatio, 0.35), 0, 1);
   const angle = num(params.angle, 0);
   const patternId = `tone-lines-${uid}`;
   const pattern = `<pattern id="${patternId}" patternUnits="userSpaceOnUse" width="${fmt(pitch)}" height="${fmt(pitch)}" patternTransform="rotate(${fmt(angle)})"><rect x="0" y="0" width="${fmt(pitch)}" height="${fmt(pitch * lineRatio)}" fill="${escapeAttr(color)}" /></pattern>`;
-  const rect = `<rect x="${fmt(-hx)}" y="${fmt(-hy)}" width="${fmt(hx * 2)}" height="${fmt(hy * 2)}" fill="url(#${patternId})" />`;
-  return `<defs>${pattern}</defs>${rect}`;
+  const rectAttrs = `x="${fmt(-hx)}" y="${fmt(-hy)}" width="${fmt(hx * 2)}" height="${fmt(hy * 2)}"`;
+  const rect = `<rect ${rectAttrs} fill="url(#${patternId})" />`;
+  if (!hasOptionalGradient(params)) {
+    return `<defs>${pattern}</defs>${rect}`;
+  }
+  const { maskId, defs } = opacityMaskFragment({ ...params, angle: angle + 90 }, uid, "lines", hx, hy);
+  return `<defs>${pattern}${defs}</defs><rect ${rectAttrs} fill="url(#${patternId})" mask="url(#${maskId})" />`;
+}
+
+/** gradient(網グラデ)の要素数バジェット。領域面積/pitch² がこれを超えたら実効 pitch を粗くする(仕様書追補)。 */
+const TONE_GRADIENT_DOT_BUDGET = 20000;
+
+/** バジェットを超える場合、面積/pitch² がちょうどバジェットへ収まるよう pitch を大きくする(粗くする)。 */
+function effectiveGradientPitch(pitch: number, hx: number, hy: number): number {
+  if (pitch <= 0) {
+    return TONE_PITCH_MIN;
+  }
+  const area = hx * 2 * hy * 2;
+  const estimated = area / (pitch * pitch);
+  if (estimated <= TONE_GRADIENT_DOT_BUDGET) {
+    return pitch;
+  }
+  return pitch * Math.sqrt(estimated / TONE_GRADIENT_DOT_BUDGET);
 }
 
 /**
- * v1: ドット径固定(dotRatio 由来)の halftone パターンへ、`<linearGradient>` の `<mask>` で
- * angle 方向の濃度遷移を重ねる簡略実装(仕様書に明記の割り切り -- 本来の網点グラデはドット径自体が
- * 遷移するが、v1 はマスク減衰で近似する)。
+ * 2026-07-14 追補: v1(ドット径固定+マスク減衰の近似)をやめ、角度方向へ実際にドット半径を start→end
+ * 補間する行生成にする。PRNG は使わない決定的な格子生成(仕様書「seed 不要」)。dotRatio は halftone との
+ * 構造互換のため params には残すが、gradient の描画自体は startRatio/endRatio だけを半径比として使う。
+ * 要素数は effectiveGradientPitch で約2万ドット以内に収める(仕様書指定の暴走防止)。
  */
 function renderGradientBody(params: ToneParams, color: string, uid: string, hx: number, hy: number): string {
-  const patternId = `tone-pattern-${uid}`;
-  const gradientId = `tone-gradient-${uid}`;
-  const maskId = `tone-mask-${uid}`;
-  const pattern = halftonePatternFragment(params, color, patternId);
+  const pitch = effectiveGradientPitch(resolvedPitch(params), hx, hy);
   const startRatio = clamp(num(params.startRatio, 0.7), 0, 1);
   const endRatio = clamp(num(params.endRatio, 0.05), 0, 1);
-  const angle = num(params.angle, 45);
-  const gradient = `<linearGradient id="${gradientId}" x1="0" y1="0" x2="1" y2="0" gradientTransform="rotate(${fmt(angle)} 0.5 0.5)"><stop offset="0" stop-color="#fff" stop-opacity="${fmt(startRatio)}" /><stop offset="1" stop-color="#fff" stop-opacity="${fmt(endRatio)}" /></linearGradient>`;
-  const rectAttrs = `x="${fmt(-hx)}" y="${fmt(-hy)}" width="${fmt(hx * 2)}" height="${fmt(hy * 2)}"`;
-  const mask = `<mask id="${maskId}"><rect ${rectAttrs} fill="url(#${gradientId})" /></mask>`;
-  const rect = `<rect ${rectAttrs} fill="url(#${patternId})" mask="url(#${maskId})" />`;
-  return `<defs>${pattern}${gradient}${mask}</defs>${rect}`;
+  const angleDeg = num(params.angle, 45);
+  const rad = (angleDeg * Math.PI) / 180;
+  const dir: PageVec = { x: Math.cos(rad), y: Math.sin(rad) };
+  const perp: PageVec = { x: -dir.y, y: dir.x };
+  // 領域を dir/perp 軸へ投影した半幅(角度によらず格子で領域全体を覆えるだけの範囲。speed/focus と同じ手法)。
+  const alongHalf = Math.abs(dir.x) * hx + Math.abs(dir.y) * hy;
+  const perpHalf = Math.abs(perp.x) * hx + Math.abs(perp.y) * hy;
+  const iMax = Math.max(0, Math.ceil(alongHalf / pitch) + 1);
+  const jMax = Math.max(0, Math.ceil(perpHalf / pitch) + 1);
+  const alongSpan = alongHalf * 2 || 1;
+  const circles: string[] = [];
+  for (let i = -iMax; i <= iMax; i += 1) {
+    const along = i * pitch;
+    const t = clamp((along + alongHalf) / alongSpan, 0, 1);
+    const ratio = startRatio + (endRatio - startRatio) * t;
+    const radius = Math.max(0, (ratio * pitch) / 2);
+    if (radius <= 0) {
+      continue;
+    }
+    for (let j = -jMax; j <= jMax; j += 1) {
+      const cx = dir.x * along + perp.x * (j * pitch);
+      const cy = dir.y * along + perp.y * (j * pitch);
+      // 領域(rect)と交差しないドットは生成しない(要素数バジェットの実効性を確保する)。
+      if (cx < -hx - radius || cx > hx + radius || cy < -hy - radius || cy > hy + radius) {
+        continue;
+      }
+      circles.push(`<circle cx="${fmt(cx)}" cy="${fmt(cy)}" r="${fmt(radius)}" fill="${escapeAttr(color)}" />`);
+    }
+  }
+  return `<g>${circles.join("")}</g>`;
 }
 
 // --- speed / focus / flash(seed 付き PRNG で線・星形を生成) ---
@@ -219,7 +307,11 @@ function renderFocusBody(params: ToneParams, color: string, seed: number, hx: nu
   const count = Math.round(clamp(num(params.count, 72), 1, TONE_COUNT_MAX));
   const lineWidth = Math.max(0, num(params.lineWidth, 0.012));
   const jitter = clamp(num(params.jitter, 0.5), 0, 1);
-  const outerRadius = outerRadiusFor(center, hx, hy);
+  // outerRadius 指定時(2026-07-14 追補、focus のみ)は線の外側の端をその半径にする。未指定/0以下は
+  // 従来どおり領域の外接円(outerRadiusFor)まで。
+  const outerRadius = typeof params.outerRadius === "number" && Number.isFinite(params.outerRadius) && params.outerRadius > 0
+    ? params.outerRadius
+    : outerRadiusFor(center, hx, hy);
   const random = mulberry32(seed);
   const angleStep = (Math.PI * 2) / count;
   const paths: string[] = [];
@@ -265,4 +357,118 @@ function renderFlashBody(params: ToneParams, color: string, seed: number, hx: nu
   // 「白抜き」は透過ではなく不透明白 #ffffff で塗る(仕様書指定 -- 下のレイヤーを透かして見せない)。
   const cutout = `<polygon points="${points.join(" ")}" fill="#ffffff" />`;
   return `${fillRect}${cutout}`;
+}
+
+// --- noise(砂ノイズ。seed 付き PRNG の粒をタイル化 pattern で敷く。2026-07-14 追補) ---
+
+/** 1タイル内に敷く粒の目安上限(density=1 の時の個数)。領域サイズに関わらず一定 -- パターンの自然な
+ *  タイル繰り返しで面積をカバーするので、要素数(=SVGサイズ)は領域が大きくなっても増えない
+ *  (v1 の割り切り: 非常に大きい領域では実効密度がやや薄く見えるトレードオフを許容する)。 */
+const NOISE_TILE_GRAIN_COUNT = 300;
+
+/** noise タイルの1辺(page-width 単位)。仕様書「領域の1/2〜1/4程度」を目安に短辺の1/3を基準値とし、
+ *  粒(grain)が判別できる最低限のタイルサイズ(grain の12倍)を下限、領域そのものを上限にする。 */
+function noiseTileSize(grain: number, hx: number, hy: number): number {
+  const shortSide = Math.min(hx, hy) * 2;
+  const longSide = Math.max(hx, hy) * 2;
+  const base = shortSide / 3;
+  return clamp(base, Math.max(grain * 12, 1e-4), Math.max(longSide, grain * 12, 1e-4));
+}
+
+/**
+ * seed 付き乱数の粒(`<circle>`)をタイル化した `<pattern>` に敷き詰める。startRatio/endRatio が
+ * 指定時のみ角度方向の濃度 `<mask>` を追加する(lines と同じ opacityMaskFragment を共有)。
+ */
+function renderNoiseBody(params: ToneParams, color: string, seed: number, uid: string, hx: number, hy: number): string {
+  const density = clamp(num(params.density, 0.35), 0, 1);
+  const grain = clamp(num(params.grain, 0.003), TONE_NOISE_GRAIN_MIN, TONE_NOISE_GRAIN_MAX);
+  const radius = grain / 2;
+  const tile = noiseTileSize(grain, hx, hy);
+  const patternId = `tone-noise-${uid}`;
+  const random = mulberry32(seed);
+  const grainCount = Math.max(1, Math.round(NOISE_TILE_GRAIN_COUNT * density));
+  const circles: string[] = [];
+  for (let i = 0; i < grainCount; i += 1) {
+    const cx = random() * tile;
+    const cy = random() * tile;
+    circles.push(`<circle cx="${fmt(cx)}" cy="${fmt(cy)}" r="${fmt(radius)}" fill="${escapeAttr(color)}" />`);
+  }
+  const pattern = `<pattern id="${patternId}" patternUnits="userSpaceOnUse" width="${fmt(tile)}" height="${fmt(tile)}">${circles.join("")}</pattern>`;
+  const rectAttrs = `x="${fmt(-hx)}" y="${fmt(-hy)}" width="${fmt(hx * 2)}" height="${fmt(hy * 2)}"`;
+  const rect = `<rect ${rectAttrs} fill="url(#${patternId})" />`;
+  if (!hasOptionalGradient(params)) {
+    return `<defs>${pattern}</defs>${rect}`;
+  }
+  const { maskId, defs } = opacityMaskFragment(params, uid, "noise", hx, hy);
+  return `<defs>${pattern}${defs}</defs><rect ${rectAttrs} fill="url(#${patternId})" mask="url(#${maskId})" />`;
+}
+
+// --- snow(雪・玉ボケ。seed 付き PRNG の楕円2層 + feGaussianBlur。2026-07-14 追補) ---
+
+/** 楕円の短径/長径比。「angle 方向に伸びる」とのみ仕様書指定で具体比は実装裁量 -- 玉ボケらしい細長さにする。 */
+const SNOW_ELLIPSE_ASPECT = 0.4;
+
+/**
+ * snow 1層分(前面 or 背面)。count 個の楕円を領域内へ散らし(位置のみ乱数、サイズ/角度は層内で均一)、
+ * blurRatio>0 なら `<filter><feGaussianBlur></filter>` でぼかす。フィルタ region は
+ * filterUnits="userSpaceOnUse" で明示し、既定マージン(objectBoundingBox 10%)によるぼかしの
+ * 打ち切りを避ける。id は layer("front"/"back")+uid で一意化する。
+ */
+function snowLayerFragment(
+  random: () => number,
+  count: number,
+  size: number,
+  blurRatio: number,
+  angleDeg: number,
+  color: string,
+  uid: string,
+  layer: "front" | "back",
+  hx: number,
+  hy: number
+): string {
+  if (count <= 0) {
+    return "";
+  }
+  const rx = Math.max(1e-5, size / 2);
+  const ry = Math.max(1e-5, (size * SNOW_ELLIPSE_ASPECT) / 2);
+  const ellipses: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    const cx = (random() * 2 - 1) * hx;
+    const cy = (random() * 2 - 1) * hy;
+    ellipses.push(
+      `<ellipse cx="${fmt(cx)}" cy="${fmt(cy)}" rx="${fmt(rx)}" ry="${fmt(ry)}" transform="rotate(${fmt(angleDeg)} ${fmt(cx)} ${fmt(cy)})" fill="${escapeAttr(color)}" />`
+    );
+  }
+  const body = ellipses.join("");
+  const stdDeviation = Math.max(0, blurRatio * size);
+  if (stdDeviation <= 0) {
+    return `<g>${body}</g>`;
+  }
+  const filterId = `tone-snow-blur-${layer}-${uid}`;
+  // フィルタ region は領域+ぼかし半径に余裕を持たせた絶対座標(userSpaceOnUse)。既定の
+  // objectBoundingBox マージンだと、散らばった楕円群のバウンディングボックス基準になり縁が切れうるため。
+  const margin = Math.max(hx, hy, size) * 3 + stdDeviation * 4;
+  const filter = `<filter id="${filterId}" filterUnits="userSpaceOnUse" x="${fmt(-margin)}" y="${fmt(-margin)}" width="${fmt(margin * 2)}" height="${fmt(margin * 2)}"><feGaussianBlur stdDeviation="${fmt(stdDeviation)}" /></filter>`;
+  return `<defs>${filter}</defs><g filter="url(#${filterId})">${body}</g>`;
+}
+
+/**
+ * count(合計、≤400)を frontRatio で前面/背面に分け、背面→前面の順で重ねる(奥から手前へ、玉ボケの
+ * 一般的な構図)。前面色=object.color、背面色=params.backColor(仕様書指定)。
+ */
+function renderSnowBody(params: ToneParams, color: string, seed: number, uid: string, hx: number, hy: number): string {
+  const count = Math.round(clamp(num(params.count, 120), 1, TONE_COUNT_MAX));
+  const frontRatio = clamp(num(params.frontRatio, 0.4), 0, 1);
+  const frontCount = Math.round(count * frontRatio);
+  const backCount = Math.max(0, count - frontCount);
+  const frontSize = Math.max(1e-4, num(params.frontSize, 0.05));
+  const backSize = Math.max(1e-4, num(params.backSize, 0.03));
+  const frontBlurRatio = Math.max(0, num(params.frontBlur, 0.5));
+  const backBlurRatio = Math.max(0, num(params.backBlur, 0.3));
+  const angleDeg = num(params.angle, 115);
+  const backColor = typeof params.backColor === "string" && params.backColor ? params.backColor : "#aaaaaa";
+  const random = mulberry32(seed);
+  const backLayer = snowLayerFragment(random, backCount, backSize, backBlurRatio, angleDeg, backColor, uid, "back", hx, hy);
+  const frontLayer = snowLayerFragment(random, frontCount, frontSize, frontBlurRatio, angleDeg, color, uid, "front", hx, hy);
+  return `${backLayer}${frontLayer}`;
 }
