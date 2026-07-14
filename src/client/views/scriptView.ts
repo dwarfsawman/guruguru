@@ -527,7 +527,8 @@ export function renderPlanCandidatesCard(props: PlanCandidatesViewProps): string
 /** MangaPlanV2準備・run状態遷移・候補レビューを描画する純関数。 */
 export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps): string {
   const settings = props.scriptMangaSettings;
-  const prepareDisabled = props.scriptMangaBusy || !props.activeScriptId || !props.activeScriptRevision || !settings.templateId;
+  const hasActiveRun = Boolean(props.scriptMangaRun && !["canceled", "failed", "completed"].includes(props.scriptMangaRun.status));
+  const prepareDisabled = props.scriptMangaBusy || hasActiveRun || !props.activeScriptId || !props.activeScriptRevision || !settings.templateId;
   return `
     <section class="script-manga-card" aria-labelledby="script-manga-heading">
       <div class="script-manga-card-heading">

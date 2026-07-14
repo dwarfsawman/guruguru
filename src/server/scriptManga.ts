@@ -704,6 +704,57 @@ function existingRunPage(runId: string, pageIndex: number): { page_id: string } 
   return getRow<{ page_id: string }>("SELECT page_id FROM script_manga_run_pages WHERE run_id = ? AND page_index = ?", [runId, pageIndex]);
 }
 
+interface ReusableRunPageRow {
+  page_id: string;
+  previous_run_id: string;
+  objects_json: string | null;
+}
+
+function planOnlyRunPage(run: RunRow, candidate: ReusableRunPageRow): boolean {
+  const hasGeneration = getRow(
+    "SELECT id FROM generation_rounds WHERE page_id = ? LIMIT 1",
+    [candidate.page_id]
+  );
+  const hasAssignment = getRow(
+    "SELECT page_id FROM page_panel_assignments WHERE page_id = ? LIMIT 1",
+    [candidate.page_id]
+  );
+  if (hasGeneration || hasAssignment) return false;
+
+  const placements = getRows<{ balloon_object_id: string | null; script_id: string | null }>(
+    `SELECT dp.balloon_object_id, dl.script_id
+     FROM dialogue_placements dp
+     LEFT JOIN dialogue_lines dl ON dl.id = dp.line_id
+     WHERE dp.page_id = ?`,
+    [candidate.page_id]
+  );
+  if (placements.some((placement) => placement.script_id !== run.script_id)) return false;
+  const ownedBalloonIds = new Set(
+    placements.flatMap((placement) => placement.balloon_object_id ? [placement.balloon_object_id] : [])
+  );
+  const rawObjects = parseJson<unknown>(candidate.objects_json, []);
+  if (!Array.isArray(rawObjects)) return false;
+  return rawObjects.every((object) => {
+    if (!object || typeof object !== "object") return false;
+    const record = object as Record<string, unknown>;
+    return record.kind === "balloon" && typeof record.id === "string" && ownedBalloonIds.has(record.id);
+  });
+}
+
+function reusableRunPage(run: RunRow, pageIndex: number): ReusableRunPageRow | null {
+  const candidates = getRows<ReusableRunPageRow>(
+    `SELECT rp.page_id, previous.id AS previous_run_id, page.objects_json
+     FROM script_manga_run_pages rp
+     JOIN script_manga_runs previous ON previous.id = rp.run_id
+     JOIN pages page ON page.id = rp.page_id
+     WHERE previous.project_id = ? AND previous.script_id = ? AND previous.id <> ?
+       AND previous.status IN ('canceled', 'failed') AND rp.page_index = ?
+     ORDER BY previous.updated_at DESC`,
+    [run.project_id, run.script_id, run.id, pageIndex]
+  );
+  return candidates.find((candidate) => planOnlyRunPage(run, candidate)) ?? null;
+}
+
 function pageLayout(pageId: string): PageLayout {
   const row = getRow<{ layout_json: string | null }>("SELECT layout_json FROM pages WHERE id = ?", [pageId]);
   const layout = normalizeEditedPageLayout(row?.layout_json ? JSON.parse(row.layout_json) : null);
@@ -722,9 +773,18 @@ function ensureRunPage(run: RunRow, pageSpec: MangaPlanV2["pages"][number]): { p
   }
   runSql("SAVEPOINT script_manga_page_create");
   try {
-    const page = createPage(run.project_id);
+    const reusable = reusableRunPage(run, pageSpec.index);
+    const page = reusable ? { id: reusable.page_id } : createPage(run.project_id);
     const layout = clonePageLayout(pageSpec.layoutSnapshot);
-    runSql("UPDATE pages SET layout_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [JSON.stringify(layout), page.id]);
+    if (reusable) {
+      runSql("DELETE FROM script_manga_tasks WHERE run_id = ? AND page_id = ?", [reusable.previous_run_id, page.id]);
+      runSql("DELETE FROM dialogue_placements WHERE page_id = ?", [page.id]);
+      runSql("DELETE FROM script_manga_run_pages WHERE run_id = ? AND page_id = ?", [reusable.previous_run_id, page.id]);
+    }
+    runSql("UPDATE pages SET layout_json = ?, objects_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+      JSON.stringify(layout),
+      page.id
+    ]);
     updatePage(run.project_id, page.id, { title: pageSpec.title });
     runSql(
       "INSERT INTO script_manga_run_pages (run_id, page_id, page_index, layout_template_id) VALUES (?, ?, ?, ?)",

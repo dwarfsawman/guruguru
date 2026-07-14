@@ -11,6 +11,7 @@ import { collectRound } from "./rounds.ts";
 import {
   approveScriptMangaRun,
   auditScriptMangaTask,
+  cancelScriptMangaRun,
   createScriptMangaRun,
   createScriptMangaRunExport,
   getScriptMangaRun,
@@ -434,6 +435,74 @@ test("prepared runs persist their frozen plan, pages and tasks and resume withou
     getRows<{ id: string }>("SELECT id FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at ASC", [prepared.id]),
     beforeTasks
   );
+});
+
+test("a replacement run reuses canceled plan-only pages without growing the book", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-page-reuse-${createId("test")}`, mode: "book" })!;
+  const imported = createScript(project.id, {
+    title: "Reusable pages",
+    fountainSource: ["INT. ROOM - DAY", "", "@Alice", "Keep this on one page."].join("\n")
+  });
+  const request = {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 1
+  };
+
+  const first = await createScriptMangaRun(project.id, request);
+  const firstPages = getRows<{ page_id: string }>(
+    "SELECT page_id FROM script_manga_run_pages WHERE run_id = ? ORDER BY page_index",
+    [first.id]
+  );
+  await cancelScriptMangaRun(first.id);
+
+  const replacement = await createScriptMangaRun(project.id, request);
+  const replacementPages = getRows<{ page_id: string }>(
+    "SELECT page_id FROM script_manga_run_pages WHERE run_id = ? ORDER BY page_index",
+    [replacement.id]
+  );
+  assert.deepEqual(replacementPages, firstPages);
+  assert.equal(getRows("SELECT id FROM pages WHERE project_id = ?", [project.id]).length, replacement.pageCount);
+  assert.equal(getRows("SELECT page_id FROM script_manga_run_pages WHERE run_id = ?", [first.id]).length, 0);
+});
+
+test("replacement runs do not take canceled pages containing user objects", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-page-ownership-${createId("test")}`, mode: "book" })!;
+  const imported = createScript(project.id, {
+    title: "Protected page",
+    fountainSource: ["INT. ROOM - DAY", "", "@Alice", "Do not replace my edit."].join("\n")
+  });
+  const request = {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 1
+  };
+
+  const first = await createScriptMangaRun(project.id, request);
+  const firstPageId = getRow<{ page_id: string }>(
+    "SELECT page_id FROM script_manga_run_pages WHERE run_id = ? AND page_index = 0",
+    [first.id]
+  )!.page_id;
+  await cancelScriptMangaRun(first.id);
+  const userObjects = JSON.stringify([{ id: "manual-note", kind: "text" }]);
+  runSql("UPDATE pages SET objects_json = ? WHERE id = ?", [userObjects, firstPageId]);
+
+  const replacement = await createScriptMangaRun(project.id, request);
+  const replacementPageId = getRow<{ page_id: string }>(
+    "SELECT page_id FROM script_manga_run_pages WHERE run_id = ? AND page_index = 0",
+    [replacement.id]
+  )!.page_id;
+  assert.notEqual(replacementPageId, firstPageId);
+  assert.equal(getRow<{ objects_json: string }>("SELECT objects_json FROM pages WHERE id = ?", [firstPageId])!.objects_json, userObjects);
+  assert.equal(getRows("SELECT id FROM pages WHERE project_id = ?", [project.id]).length, first.pageCount + replacement.pageCount);
 });
 
 test("an invalid plan edit rolls back without replacing run-owned pages or tasks", async () => {
