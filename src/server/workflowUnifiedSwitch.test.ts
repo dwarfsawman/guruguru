@@ -522,7 +522,7 @@ test("patchWorkflow dispatch: a unified-switch template is patched by value writ
   assert.deepEqual(Object.keys(patchedPoisoned as object).sort(), Object.keys(referenceWorkflow()).sort());
 });
 
-test("Anima unified preset: txt2img patches official defaults without Chroma-only nodes", () => {
+test("Anima unified preset: txt2img patches INT8 defaults without Chroma-only nodes", () => {
   const request = baseRequest({ steps: 30, sampler: "er_sde", scheduler: "simple" });
   const patched = patchUnifiedSwitchWorkflow(
     animaReferenceWorkflow(),
@@ -530,7 +530,7 @@ test("Anima unified preset: txt2img patches official defaults without Chroma-onl
     "anima-prefix"
   ) as Record<string, any>;
 
-  assert.equal(patched["731"].inputs.unet_name, "anima-base-v1.0.safetensors");
+  assert.equal(patched["731"].inputs.unet_name, "animaInt8Mxfp8_aestheticV11Int8.safetensors");
   assert.equal(patched["733"].inputs.clip_name, "qwen_3_06b_base.safetensors");
   assert.equal(patched["733"].inputs.type, "stable_diffusion");
   assert.equal(patched["710"].inputs.vae_name, "qwen_image_vae.safetensors");

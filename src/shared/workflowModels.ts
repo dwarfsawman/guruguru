@@ -10,7 +10,9 @@ export type ModelFamily = "chroma" | "anima";
 
 export function detectWorkflowModelFamily(workflow: Json): ModelFamily {
   const serialized = JSON.stringify(workflow).toLowerCase();
-  return serialized.includes("anima-") || serialized.includes("qwen_3_06b_base") ? "anima" : "chroma";
+  const hasAnimaDiffusionModel =
+    serialized.includes("anima-") || serialized.includes("animaint8mxfp8_");
+  return hasAnimaDiffusionModel || serialized.includes("qwen_3_06b_base") ? "anima" : "chroma";
 }
 
 export type ModelKind =

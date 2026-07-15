@@ -2,15 +2,28 @@
 
 ## 構成
 
-`ReferenceFlows/Reference-AnimaUnifiedSwitchWorkflow.json` は Anima Base v1.0 用の API 形式ワークフローで、モデル選択の Anima モーダルから WorkflowTemplate として追加する。
+`ReferenceFlows/Reference-AnimaUnifiedSwitchWorkflow.json` は [Anima int8 / mxfp8](https://civitai.com/models/2754368?modelVersionId=3128953) の「Aesthetic v1.1 - int8」（Civitai model version `3128953`）を既定にした API 形式ワークフローで、モデル選択の Anima モーダルから WorkflowTemplate として追加する。このモデルは Anima Aesthetic v1.1 の量子化派生モデルであり、公式 Anima Base v1.0 そのものではない。
 
 | 種別 | ファイル | ComfyUI 配置先 |
 | --- | --- | --- |
-| diffusion model | `anima-base-v1.0.safetensors` | `models/diffusion_models` |
+| diffusion model | `animaInt8Mxfp8_aestheticV11Int8.safetensors` | `models/diffusion_models` 直下 |
 | text encoder | `qwen_3_06b_base.safetensors` | `models/text_encoders` |
 | VAE | `qwen_image_vae.safetensors` | `models/vae` |
 
-公式構成に合わせ、`UNETLoader`、`CLIPLoader(type=stable_diffusion)`、Qwen Image VAE、`er_sde` / `simple` / 30 steps / CFG 4 を既定にする。プロンプト方言は tags、quality prefix は `masterpiece, best quality, score_7, safe`。
+diffusion model は表の正確なファイル名で `ComfyUI/models/diffusion_models` 直下へ手動配置する。`UNETLoader.weight_dtype` は `default` のままとし、safetensors内の量子化情報を使用する。`CLIPLoader(type=stable_diffusion)`、Qwen Image VAE、`er_sde` / `simple` / 30 steps / CFG 4 を既定にする。プロンプト方言は tags、quality prefix は `masterpiece, best quality, score_7, safe`。
+
+### INT8モデルの固定情報と導入境界
+
+- Civitai model version: `3128953`（`Aesthetic v1.1 - int8`）
+- ファイル名: `animaInt8Mxfp8_aestheticV11Int8.safetensors`
+- SHA-256: `0ECAFB8889998FCC4BAD2CF38A6E9427E0699718F50C95C8DDF025ECB3223E16`
+- 形式: SafeTensor / INT8、配布サイズ約2.10 GiB
+
+GURUGURUはこのモデルを同梱・自動取得しない。利用者が配布ページと上流Animaのライセンス、帰属、再配布・商用利用条件を確認したうえで導入する。ファイル名やhashが異なる版を、同じ既定モデルとして扱わない。
+
+既にDBへ追加済みのWorkflowTemplateはスナップショットであり、バンドルworkflowの更新では書き換わらない。INT8既定を使うには更新後のAnimaプリセットを新規追加するか、既存テンプレートのnode `731`（`UNETLoader.unet_name`）を上記ファイル名へ明示的に変更する。
+
+Anima Base v1.0は手動互換fallbackとして残す。必要な場合は `anima-base-v1.0.safetensors` を `ComfyUI/models/diffusion_models` 直下へ配置し、workflowを複製してnode `731`の`unet_name`だけを同ファイル名へ戻す。text encoder、VAE、`weight_dtype=default`は維持する。実行中にINT8モデルが見つからない場合の自動fallbackは行わず、再現性を保つためpreflightで不足として扱う。
 
 ## 対応範囲
 
@@ -19,7 +32,7 @@
 - Chroma 用 ControlNet と PuLID-Flux はアーキテクチャ非互換のため Anima では常に無効。ControlNet モードは生成前に明示エラーにする。参照画像の PuLID トグルは Anima 生成へ注入しない。
 - 承認済み Reference Set の face + full_body を Anima In-Context Character へ渡せる。`anima-incontext-character.safetensors` と対応ノードが揃う場合だけ有効になる。interactive生成は警告付きbase fallback、自動漫画はpreflightで停止する。
 
-モデルファミリはワークフロー内の `anima-*` または `qwen_3_06b_base` から判定し、ComfyUI モデル確認と生成時 feature gate の両方へ渡す。
+モデルファミリはワークフロー内の `anima-*`、`animaInt8Mxfp8_*`、または `qwen_3_06b_base` から判定し、ComfyUI モデル確認と生成時 feature gate の両方へ渡す。
 
 ## Anima In-Context Character / Reference Set
 
@@ -37,7 +50,7 @@ face / full_body はそれぞれ `LoadImage → AnimaRefEncode(VAELoader)` でen
 
 - `ComfyUI/models/loras/anima-incontext-character.safetensors`（PoCではroot直下のchoice文字列を固定使用）
 - `AnimaRefEncode`、`AnimaRefLatentBatch`、`AnimaInContextApply`を登録する外部ノードパック
-- Anima Base v1.0テンプレート
+- Anima互換テンプレート（既定はAesthetic v1.1 INT8、Base v1.0は手動fallback）
 
 モデル選択のAnimaモーダルは、adapterとノード入力schemaを`/object_info`で確認する。生成時も同じ判定を行い、Chromaへ誤注入しない。サブフォルダ内の同名adapterは「導入済み」とみなさない。
 

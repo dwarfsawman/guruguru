@@ -96,6 +96,12 @@ test("extractModelRequirements: returns empty list for a workflow with no model 
 });
 
 test("detectWorkflowModelFamily: distinguishes Anima from the Chroma default", () => {
+  assert.equal(
+    detectWorkflowModelFamily({
+      "1": { inputs: { unet_name: "animaInt8Mxfp8_aestheticV11Int8.safetensors" } }
+    }),
+    "anima"
+  );
   assert.equal(detectWorkflowModelFamily({ "1": { inputs: { unet_name: "anima-base-v1.0.safetensors" } } }), "anima");
   assert.equal(detectWorkflowModelFamily(referenceWorkflow()), "chroma");
 });

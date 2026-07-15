@@ -19,7 +19,7 @@ test("installModelPreset: installs the Anima unified workflow once with tag prom
   assert.equal(first.created, true);
   assert.equal(second.created, false);
   assert.equal(row.prompt_dialect, "tags");
-  assert.equal(workflow["731"].inputs.unet_name, "anima-base-v1.0.safetensors");
+  assert.equal(workflow["731"].inputs.unet_name, "animaInt8Mxfp8_aestheticV11Int8.safetensors");
   assert.equal(workflow["733"].inputs.type, "stable_diffusion");
   assert.equal(workflow["710"].inputs.vae_name, "qwen_image_vae.safetensors");
   assert.equal(
