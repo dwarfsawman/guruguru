@@ -28,6 +28,8 @@ export { ensureWorkflowObject, hashJson, normalizeRoleMap, isUnifiedSwitchWorkfl
 export interface FeatureAvailabilityFlags {
   controlnet: boolean;
   pulid: boolean;
+  animaInpaint?: boolean;
+  animaControlnet?: boolean;
   animaInContext?: boolean;
 }
 

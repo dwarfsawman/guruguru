@@ -29,6 +29,8 @@ const PULID_FILE = "pulid_flux_v0.9.1.safetensors";
  * template: users without the experimental node pack/model can keep using the base preset.
  */
 export const ANIMA_IN_CONTEXT_LORA_FILE = "anima-incontext-character.safetensors";
+export const ANIMA_INPAINT_LLLITE_FILE = "anima-lllite-inpainting-v2.safetensors";
+export const ANIMA_POSE_LLLITE_FILE = "anima-lllite-pose-1.safetensors";
 
 /** Adapter model contract used by modelCheck.ts's family-specific availability gate. */
 export const ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS: WorkflowModelRequirement[] = [
@@ -46,6 +48,22 @@ export const ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS: WorkflowModelRequirement[] = [
 
 export const FEATURE_MODEL_REQUIREMENTS: WorkflowModelRequirement[] = [
   { kind: "pulid", name: PULID_FILE, loaderClass: "PulidFluxModelLoader", inputName: "pulid_file", feature: "pulid" },
+  {
+    kind: "controlnet",
+    name: ANIMA_INPAINT_LLLITE_FILE,
+    loaderClass: "AnimaLLLiteApply",
+    inputName: "lllite_name",
+    feature: "animaInpaint",
+    matchBasename: false
+  },
+  {
+    kind: "controlnet",
+    name: ANIMA_POSE_LLLITE_FILE,
+    loaderClass: "AnimaLLLiteApply",
+    inputName: "lllite_name",
+    feature: "animaControlnet",
+    matchBasename: false
+  },
   ...ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS
 ];
 
@@ -109,6 +127,22 @@ export const FEATURE_NODE_PACKS: Record<FeatureKey, FeatureNodePack[]> = {
       installUrl: "https://comfy.icu/extension/PaoloC68__ComfyUI-PuLID-Flux-Chroma"
     }
   ],
+  animaInpaint: [
+    {
+      label: "Anima ControlNet-LLLite (inpaint)",
+      representativeClass: "AnimaLLLiteApply",
+      requiredInputs: ["model", "image", "mask", "lllite_name", "strength", "start_percent", "end_percent", "preserve_wrapper"],
+      installUrl: "https://github.com/kohya-ss/ComfyUI-Anima-LLLite"
+    }
+  ],
+  animaControlnet: [
+    {
+      label: "Anima ControlNet-LLLite (pose)",
+      representativeClass: "AnimaLLLiteApply",
+      requiredInputs: ["model", "image", "lllite_name", "strength", "start_percent", "end_percent", "preserve_wrapper"],
+      installUrl: "https://github.com/kohya-ss/ComfyUI-Anima-LLLite"
+    }
+  ],
   animaInContext: ANIMA_IN_CONTEXT_NODE_PACKS
 };
 
@@ -116,13 +150,26 @@ export const FEATURE_LABELS: Record<FeatureKey, string> = {
   base: "ベース",
   controlnet: "ポーズ(ControlNet)",
   pulid: "顔スタイル参照(PuLID)",
+  animaInpaint: "Anima inpaint補助(ControlNet-LLLite)",
+  animaControlnet: "Animaポーズ(ControlNet-LLLite)",
   animaInContext: "キャラクター参照(Anima In-Context・実験)"
 };
 
 export interface FeatureFlags {
   pulid: boolean;
+  animaInpaint?: boolean;
+  animaControlnet?: boolean;
   /** Experimental Anima reference-latent conditioning. Optional for caller compatibility. */
   animaInContext?: boolean;
+}
+
+export interface AnimaLlliteOptions {
+  parentImageName?: string | null;
+  maskImageName?: string | null;
+  controlImageName?: string | null;
+  controlStrength?: number;
+  controlStartPercent?: number;
+  controlEndPercent?: number;
 }
 
 function addNode(workflow: JsonObject, node: JsonObject): string {
@@ -154,9 +201,16 @@ export function assembleFeatureFragments(
     startPercent?: number;
     endPercent?: number;
   } = {},
-  fullBodyReferenceImageName: string | null = null
+  fullBodyReferenceImageName: string | null = null,
+  animaLllite: AnimaLlliteOptions = {}
 ): JsonObject {
-  if (loras.length === 0 && !enabled.pulid && !enabled.animaInContext) {
+  if (
+    loras.length === 0 &&
+    !enabled.pulid &&
+    !enabled.animaInpaint &&
+    !enabled.animaControlnet &&
+    !enabled.animaInContext
+  ) {
     return workflow;
   }
 
@@ -176,10 +230,12 @@ export function assembleFeatureFragments(
   }
 
   let animaVaeNodeId: string | null = null;
-  if (enabled.animaInContext) {
+  if (enabled.animaInContext || enabled.animaInpaint || enabled.animaControlnet) {
     if (modelSamplingNodeId) {
-      throw new Error("Anima In-Context is only supported by the Anima direct model chain");
+      throw new Error("Anima model fragments are only supported by the Anima direct model chain");
     }
+  }
+  if (enabled.animaInContext) {
     if (!referenceImageName) {
       throw new Error("consistent-character fragments: Anima In-Context enabled without a reference image name");
     }
@@ -321,6 +377,57 @@ export function assembleFeatureFragments(
         cond_only: true,
         fit_mode: "pad",
         ref_timestep: 0.0
+      }
+    });
+    modelConnection = [applyNodeId, 0];
+  }
+
+  if (enabled.animaInpaint) {
+    if (!animaLllite.parentImageName || !animaLllite.maskImageName) {
+      throw new Error("Anima inpaint LLLite requires both parent and mask image names");
+    }
+    const parentNodeId = addNode(workflow, {
+      class_type: "LoadImage",
+      inputs: { image: animaLllite.parentImageName }
+    });
+    const maskNodeId = addNode(workflow, {
+      class_type: "LoadImageMask",
+      inputs: { image: animaLllite.maskImageName, channel: "red" }
+    });
+    const applyNodeId = addNode(workflow, {
+      class_type: "AnimaLLLiteApply",
+      inputs: {
+        model: modelConnection,
+        image: [parentNodeId, 0],
+        mask: [maskNodeId, 0],
+        lllite_name: ANIMA_INPAINT_LLLITE_FILE,
+        strength: 1.0,
+        start_percent: 0.0,
+        end_percent: 1.0,
+        preserve_wrapper: true
+      }
+    });
+    modelConnection = [applyNodeId, 0];
+  }
+
+  if (enabled.animaControlnet) {
+    if (!animaLllite.controlImageName) {
+      throw new Error("Anima pose LLLite requires a control image name");
+    }
+    const controlNodeId = addNode(workflow, {
+      class_type: "LoadImage",
+      inputs: { image: animaLllite.controlImageName }
+    });
+    const applyNodeId = addNode(workflow, {
+      class_type: "AnimaLLLiteApply",
+      inputs: {
+        model: modelConnection,
+        image: [controlNodeId, 0],
+        lllite_name: ANIMA_POSE_LLLITE_FILE,
+        strength: animaLllite.controlStrength ?? 1.0,
+        start_percent: animaLllite.controlStartPercent ?? 0.0,
+        end_percent: animaLllite.controlEndPercent ?? 1.0,
+        preserve_wrapper: true
       }
     });
     modelConnection = [applyNodeId, 0];

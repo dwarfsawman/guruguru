@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
-import { dataRoot, dbPath, getRow, initializeDb, setSetting } from "./db";
+import { dataRoot, dbPath, getRow, initializeDb, instanceMode, setSetting } from "./db";
 import { discardRoundTrashSnapshot, purgeAllRoundTrash } from "./roundTrash";
 import { getComfyStatus, testComfyConnection } from "./comfy";
 import { checkModels, listAvailableLoras } from "./modelCheck";
@@ -130,6 +130,7 @@ import {
 import type { ComfySettings, GenerationRequest, LlmSettings, VlmAuditSettings } from "../shared/types";
 
 const port = Number(process.env.PORT ?? 5177);
+const host = process.env.HOST?.trim() || undefined;
 let isShuttingDown = false;
 
 const releaseAssetRegistry = new Map<string, string>([
@@ -163,8 +164,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`GURUGURU listening on http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+  console.log(`GURUGURU listening on http://${host ?? "127.0.0.1"}:${port} (${instanceMode})`);
   console.log(`Data directory: ${dataRoot}`);
   console.log(`Database path: ${dbPath}`);
   const purgedTrash = purgeAllRoundTrash();
@@ -187,7 +188,30 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const path = url.pathname;
 
   if (method === "GET" && path === "/api/health") {
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 200, { ok: true, instanceMode });
+    return;
+  }
+
+  if (method === "GET" && path === "/api/agent/capabilities") {
+    sendJson(res, 200, {
+      apiVersion: 1,
+      instanceMode,
+      agentReady: instanceMode === "agent",
+      endpoints: {
+        installAnimaPreset: "POST /api/model-presets/anima",
+        modelCheck: "GET /api/comfy/model-check?family=anima",
+        importSourceAsset: "POST /api/projects/:projectId/source-assets",
+        generate: "POST /api/projects/:projectId/rounds",
+        collect: "POST /api/rounds/:roundId/collect"
+      },
+      anima: {
+        baseModel: "animaInt8Mxfp8_aestheticV11Int8.safetensors",
+        modes: ["txt2img", "img2img", "inpaint", "controlnet", "inpaint+controlnet"],
+        imageTransport: "data-url",
+        inpaintMaskField: "inpaint.maskDataUrl",
+        controlImageField: "controlnet.poseImageDataUrl"
+      }
+    });
     return;
   }
 

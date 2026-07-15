@@ -28,11 +28,22 @@ Anima Base v1.0は手動互換fallbackとして残す。必要な場合は `anim
 ## 対応範囲
 
 - txt2img、img2img、4種の `maskedContent` を含む inpaint は統合 Switch 経路を共有する。
+- `ComfyUI-Anima-LLLite` と `anima-lllite-inpainting-v2.safetensors` が導入済みなら、既存のlatent mask経路に加えて親画像+maskを4ch `AnimaLLLiteApply`へ渡す。未導入でも従来のlatent inpaintは維持する。
+- ポーズControlNetは `anima-lllite-pose-1.safetensors` を `AnimaLLLiteApply` へ動的注入する。APIの `controlnet.poseImageDataUrl` / strength / startPercent / endPercentをそのまま使い、img2img/inpaintと併用できる。複数LLLiteは`preserve_wrapper=true`でcascadeする。
 - Anima 用 `LoraLoaderModelOnly` LoRA は UNET と `CFGGuider` / 2本の `BasicScheduler` の間へ同じチェーンを挿入する。Chroma/SDXL 用 LoRA を流用しない。
-- Chroma 用 ControlNet と PuLID-Flux はアーキテクチャ非互換のため Anima では常に無効。ControlNet モードは生成前に明示エラーにする。参照画像の PuLID トグルは Anima 生成へ注入しない。
+- Chroma 用 `ControlNetApplyAdvanced` と PuLID-Flux はアーキテクチャ非互換のため Animaへ流用しない。Anima pose LLLiteのnode/weight不足時は生成前に明示エラーにする。参照画像のPuLIDトグルはAnima生成へ注入しない。
 - 承認済み Reference Set の face + full_body を Anima In-Context Character へ渡せる。`anima-incontext-character.safetensors` と対応ノードが揃う場合だけ有効になる。interactive生成は警告付きbase fallback、自動漫画はpreflightで停止する。
 
 モデルファミリはワークフロー内の `anima-*`、`animaInt8Mxfp8_*`、または `qwen_3_06b_base` から判定し、ComfyUI モデル確認と生成時 feature gate の両方へ渡す。
+
+Anima LLLiteの必要物は次のとおり。weightは`ComfyUI/models/controlnet`直下へ配置し、choice文字列を固定して再現性を保つ。
+
+- `AnimaLLLiteApply`を登録する [`kohya-ss/ComfyUI-Anima-LLLite`](https://github.com/kohya-ss/ComfyUI-Anima-LLLite)
+- `anima-lllite-inpainting-v2.safetensors`
+- `anima-lllite-pose-1.safetensors`
+
+MODELチェーンは `UNET → ユーザーLoRA → Anima In-Context（任意）→ inpaint LLLite（任意）→ pose LLLite（任意）`。API手順とbody例は`Docs/Reference-AgentInstanceApi.md`を参照する。
+pose-1はPreview3世代のweightで、Anima-Base v1.0派生でも動作するが[配布元model card](https://huggingface.co/kohya-ss/Anima-LLLite)によれば品質はやや落ちる。v1.0世代のpose専用weightが公開されるまではこの制約をpreflightエラーではなく品質上の既知制約として扱う。
 
 ## Anima In-Context Character / Reference Set
 

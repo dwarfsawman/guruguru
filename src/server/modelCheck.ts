@@ -15,7 +15,7 @@ const REQUIRED_CORE_NODES = ["ComfySwitchNode", "PrimitiveBoolean"] as const;
 // excluded, it is not something a user can turn on/off.
 const TOGGLABLE_FEATURES: Record<ModelFamily, FeatureKey[]> = {
   chroma: ["controlnet", "pulid"],
-  anima: ["animaInContext"]
+  anima: ["animaInpaint", "animaControlnet", "animaInContext"]
 };
 
 const referencePaths: Record<ModelFamily, string> = {
@@ -91,7 +91,9 @@ async function runRawCheck(family: ModelFamily): Promise<RawCheck> {
   const requirements = [
     ...extractModelRequirements(workflow),
     ...FEATURE_MODEL_REQUIREMENTS.filter((requirement) =>
-      family === "anima" ? requirement.feature === "animaInContext" : requirement.feature !== "animaInContext"
+      family === "anima"
+        ? requirement.feature === "animaInpaint" || requirement.feature === "animaControlnet" || requirement.feature === "animaInContext"
+        : !requirement.feature.startsWith("anima")
     )
   ];
 
@@ -214,6 +216,8 @@ export async function listAvailableLoras(): Promise<{ ok: boolean; loras: string
 export interface FeatureAvailability {
   controlnet: boolean;
   pulid: boolean;
+  animaInpaint: boolean;
+  animaControlnet: boolean;
   animaInContext: boolean;
 }
 
@@ -237,16 +241,18 @@ export async function resolveFeatureAvailability(family: ModelFamily = "chroma")
   try {
     raw = await runRawCheck(family);
   } catch {
-    return { controlnet: false, pulid: false, animaInContext: false };
+    return { controlnet: false, pulid: false, animaInpaint: false, animaControlnet: false, animaInContext: false };
   }
 
   const value: FeatureAvailability = raw.comfyOk
     ? {
         controlnet: family === "chroma" && isFeatureAvailable(raw, "controlnet"),
         pulid: family === "chroma" && isFeatureAvailable(raw, "pulid"),
+        animaInpaint: family === "anima" && isFeatureAvailable(raw, "animaInpaint"),
+        animaControlnet: family === "anima" && isFeatureAvailable(raw, "animaControlnet"),
         animaInContext: family === "anima" && isFeatureAvailable(raw, "animaInContext")
       }
-    : { controlnet: false, pulid: false, animaInContext: false };
+    : { controlnet: false, pulid: false, animaInpaint: false, animaControlnet: false, animaInContext: false };
 
   cachedAvailability.set(family, { value, expiresAt: now + FEATURE_AVAILABILITY_CACHE_MS });
   return value;

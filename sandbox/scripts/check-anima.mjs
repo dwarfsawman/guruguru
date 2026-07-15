@@ -6,6 +6,8 @@ import { patchUnifiedSwitchWorkflow } from "../../src/server/workflowUnifiedSwit
 
 const ANIMA_INCONTEXT_ADAPTER = "anima-incontext-character.safetensors";
 const ANIMA_INCONTEXT_NODES = ["AnimaRefEncode", "AnimaRefLatentBatch", "AnimaInContextApply"];
+const ANIMA_INPAINT_LLLITE = "anima-lllite-inpainting-v2.safetensors";
+const ANIMA_POSE_LLLITE = "anima-lllite-pose-1.safetensors";
 
 function sandboxBaseUrl(raw) {
   const parsed = new URL(raw);
@@ -59,6 +61,16 @@ function animaInContextAvailability(objectInfo) {
   };
 }
 
+function animaLlliteAvailability(objectInfo) {
+  const node = Boolean(objectInfo?.AnimaLLLiteApply);
+  const choices = nodeInputChoices(objectInfo, "AnimaLLLiteApply", "lllite_name");
+  return {
+    node,
+    inpaintModel: choices.find((name) => name === ANIMA_INPAINT_LLLITE) ?? null,
+    poseModel: choices.find((name) => name === ANIMA_POSE_LLLITE) ?? null
+  };
+}
+
 async function queueAndWait(prompt, label) {
   const queued = await request("/prompt", {
     method: "POST",
@@ -89,12 +101,19 @@ const parentBytes = await sharp({
 const maskBytes = await sharp({
   create: { width: 512, height: 512, channels: 3, background: { r: 0, g: 0, b: 0 } }
 }).composite([{ input: Buffer.from('<svg width="256" height="256"><rect width="256" height="256" fill="white"/></svg>'), left: 128, top: 128 }]).png().toBuffer();
+const poseBytes = await sharp({
+  create: { width: 512, height: 512, channels: 3, background: { r: 0, g: 0, b: 0 } }
+}).composite([{
+  input: Buffer.from('<svg width="512" height="512" xmlns="http://www.w3.org/2000/svg"><g stroke="white" stroke-width="12" stroke-linecap="round" fill="none"><circle cx="256" cy="92" r="38"/><path d="M256 130 L256 292 M256 172 L170 242 M256 172 L342 242 M256 292 L190 414 M256 292 L322 414"/></g></svg>')
+}]).png().toBuffer();
 
 const dummyName = await upload("guruguru-anima-dummy.png", parentBytes);
 const parentName = await upload("guruguru-anima-parent.png", parentBytes);
 const maskName = await upload("guruguru-anima-mask.png", maskBytes);
+const poseName = await upload("guruguru-anima-pose.png", poseBytes);
 const objectInfo = await request("/object_info");
 const inContextAvailability = animaInContextAvailability(objectInfo);
+const llliteAvailability = animaLlliteAvailability(objectInfo);
 const commonRequest = {
   templateId: "anima-check",
   prompt: "masterpiece, best quality, score_7, safe, 1girl, solo, blue hair, white background",
@@ -119,7 +138,13 @@ const inContextTargetRequest = {
   prompt: "masterpiece, best quality, score_7, safe, 1girl, solo, blue hair, single horn, black choker, white blouse, seated in a cozy library, reading a book, three-quarter view",
   seed: 654321
 };
-const featureAvailability = { controlnet: false, pulid: false, animaInContext: false };
+const featureAvailability = {
+  controlnet: false,
+  pulid: false,
+  animaInpaint: llliteAvailability.node && llliteAvailability.inpaintModel !== null,
+  animaControlnet: llliteAvailability.node && llliteAvailability.poseModel !== null,
+  animaInContext: false
+};
 
 const txt2imgPrompt = patchUnifiedSwitchWorkflow(
   structuredClone(workflow),
@@ -161,6 +186,37 @@ const inpaintPrompt = patchUnifiedSwitchWorkflow(
 );
 const inpaint = await queueAndWait(inpaintPrompt, "inpaint");
 
+let controlnet = { generation: null, skippedReason: null };
+if (!featureAvailability.animaControlnet) {
+  controlnet.skippedReason = !llliteAvailability.node
+    ? "missing node: AnimaLLLiteApply"
+    : `missing model: ${ANIMA_POSE_LLLITE}`;
+} else {
+  const controlnetPrompt = patchUnifiedSwitchWorkflow(
+    structuredClone(workflow),
+    {
+      projectId: "anima-check",
+      roundIndex: 3,
+      request: {
+        ...commonRequest,
+        generationMode: "txt2img",
+        controlnet: {
+          poseImageDataUrl: null,
+          poseImagePath: "synthetic-pose",
+          strength: 0.8,
+          startPercent: 0.0,
+          endPercent: 0.85
+        }
+      },
+      uploadedControlImageName: poseName,
+      dummyImageName: dummyName,
+      featureAvailability
+    },
+    "guruguru/anima-check/controlnet"
+  );
+  controlnet.generation = await queueAndWait(controlnetPrompt, "controlnet");
+}
+
 let inContext = {
   ...inContextAvailability,
   referenceImage: referenceImagePath ? basename(referenceImagePath) : null,
@@ -192,7 +248,7 @@ if (!referenceImagePath) {
     structuredClone(workflow),
     {
       projectId: "anima-check",
-      roundIndex: 3,
+      roundIndex: 4,
       request: { ...inContextTargetRequest, generationMode: "txt2img" },
       dummyImageName: dummyName,
       featureAvailability
@@ -204,7 +260,7 @@ if (!referenceImagePath) {
     structuredClone(workflow),
     {
       projectId: "anima-check",
-      roundIndex: 4,
+      roundIndex: 5,
       request: {
         ...inContextTargetRequest,
         generationMode: "txt2img",
@@ -224,4 +280,14 @@ if (!referenceImagePath) {
   inContext.generation = await queueAndWait(inContextPrompt, "in-context-target-reference");
 }
 
-console.log(JSON.stringify({ ok: true, comfyui: baseUrl, seed: commonRequest.seed, txt2img, inpaint, inContext }, null, 2));
+console.log(JSON.stringify({
+  ok: true,
+  comfyui: baseUrl,
+  model: workflow["731"]?.inputs?.unet_name ?? null,
+  seed: commonRequest.seed,
+  txt2img,
+  inpaint,
+  controlnet,
+  animaLllite: llliteAvailability,
+  inContext
+}, null, 2));

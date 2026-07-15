@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  ANIMA_INPAINT_LLLITE_FILE,
   ANIMA_IN_CONTEXT_LORA_FILE,
   ANIMA_IN_CONTEXT_MODEL_REQUIREMENTS,
   ANIMA_IN_CONTEXT_NODE_PACKS,
+  ANIMA_POSE_LLLITE_FILE,
   assembleFeatureFragments,
   pruneControlNetBranch,
   type FeatureFlags
@@ -17,7 +19,7 @@ function baseWorkflow(): Record<string, any> {
 }
 
 function flags(overrides: Partial<FeatureFlags> = {}): FeatureFlags {
-  return { pulid: false, animaInContext: false, ...overrides };
+  return { pulid: false, animaInpaint: false, animaControlnet: false, animaInContext: false, ...overrides };
 }
 
 test("assembleFeatureFragments: no-op when every flag is false", () => {
@@ -242,6 +244,79 @@ test("assembleFeatureFragments: Anima In-Context validates the model family, ref
     /requires a VAELoader/
   );
   assert.deepEqual(Object.keys(missingVae).sort(), ["1", "2"]);
+});
+
+test("assembleFeatureFragments: Anima inpaint LLLite receives the parent image and red-channel mask", () => {
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: {} },
+    "2": { class_type: "CFGGuider", inputs: { model: ["1", 0] } },
+    "3": { class_type: "BasicScheduler", inputs: { model: ["1", 0] } }
+  };
+  const patched = assembleFeatureFragments(
+    workflow,
+    flags({ animaInpaint: true }),
+    null,
+    [],
+    {},
+    null,
+    { parentImageName: "parent.png", maskImageName: "mask.png" }
+  ) as Record<string, any>;
+
+  const apply = patched[patched["2"].inputs.model[0]];
+  assert.equal(apply.class_type, "AnimaLLLiteApply");
+  assert.equal(apply.inputs.lllite_name, ANIMA_INPAINT_LLLITE_FILE);
+  assert.equal(apply.inputs.preserve_wrapper, true);
+  assert.equal(patched[apply.inputs.image[0]].inputs.image, "parent.png");
+  const mask = patched[apply.inputs.mask[0]];
+  assert.equal(mask.class_type, "LoadImageMask");
+  assert.equal(mask.inputs.image, "mask.png");
+  assert.equal(mask.inputs.channel, "red");
+  assert.deepEqual(patched["3"].inputs.model, patched["2"].inputs.model);
+});
+
+test("assembleFeatureFragments: Anima pose LLLite uses API strength/window and stacks after inpaint", () => {
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: {} },
+    "2": { class_type: "CFGGuider", inputs: { model: ["1", 0] } }
+  };
+  const patched = assembleFeatureFragments(
+    workflow,
+    flags({ animaInpaint: true, animaControlnet: true }),
+    null,
+    [],
+    {},
+    null,
+    {
+      parentImageName: "parent.png",
+      maskImageName: "mask.png",
+      controlImageName: "pose.png",
+      controlStrength: 0.75,
+      controlStartPercent: 0.1,
+      controlEndPercent: 0.8
+    }
+  ) as Record<string, any>;
+
+  const pose = patched[patched["2"].inputs.model[0]];
+  assert.equal(pose.class_type, "AnimaLLLiteApply");
+  assert.equal(pose.inputs.lllite_name, ANIMA_POSE_LLLITE_FILE);
+  assert.equal(pose.inputs.strength, 0.75);
+  assert.equal(pose.inputs.start_percent, 0.1);
+  assert.equal(pose.inputs.end_percent, 0.8);
+  assert.equal(patched[pose.inputs.image[0]].inputs.image, "pose.png");
+  const inpaint = patched[pose.inputs.model[0]];
+  assert.equal(inpaint.inputs.lllite_name, ANIMA_INPAINT_LLLITE_FILE);
+});
+
+test("assembleFeatureFragments: Anima LLLite validates required uploaded images before mutation", () => {
+  const workflow = {
+    "1": { class_type: "UNETLoader", inputs: {} },
+    "2": { class_type: "CFGGuider", inputs: { model: ["1", 0] } }
+  };
+  assert.throws(
+    () => assembleFeatureFragments(workflow, flags({ animaControlnet: true }), null),
+    /control image name/
+  );
+  assert.deepEqual(Object.keys(workflow).sort(), ["1", "2"]);
 });
 
 test("Anima In-Context exports the adapter and complete node-pack contracts for model-check integration", () => {

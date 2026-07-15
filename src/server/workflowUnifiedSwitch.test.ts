@@ -565,6 +565,82 @@ test("Anima unified preset: img2img/inpaint roles resolve and Anima LoRA reaches
   assert.deepEqual(patched["768"].inputs.model, [loraNodeId, 0]);
 });
 
+test("Anima unified preset: inpaint adds the INT8-compatible LLLite model fragment when available", () => {
+  const request = baseRequest({
+    generationMode: "img2img",
+    parentAssetId: "asset_1",
+    inpaint: { maskDataUrl: null, maskPath: "/tmp/mask.png", maskedContent: "original", inpaintArea: "only_masked", onlyMaskedPadding: 6 }
+  });
+  const patched = patchUnifiedSwitchWorkflow(
+    animaReferenceWorkflow(),
+    baseContext(request, {
+      uploadedImageName: "parent.png",
+      uploadedMaskName: "mask.png",
+      featureAvailability: { controlnet: false, pulid: false, animaInpaint: true }
+    }),
+    "anima-prefix"
+  ) as Record<string, any>;
+
+  const apply = patched[patched["694"].inputs.model[0]];
+  assert.equal(apply.class_type, "AnimaLLLiteApply");
+  assert.equal(apply.inputs.lllite_name, "anima-lllite-inpainting-v2.safetensors");
+  assert.equal(patched[apply.inputs.image[0]].inputs.image, "parent.png");
+  assert.equal(patched[apply.inputs.mask[0]].inputs.image, "mask.png");
+  assert.deepEqual(patched["734"].inputs.model, patched["694"].inputs.model);
+  assert.deepEqual(patched["768"].inputs.model, patched["694"].inputs.model);
+});
+
+test("Anima unified preset: pose ControlNet uses Anima LLLite and API strength/window", () => {
+  const request = baseRequest({
+    generationMode: "img2img",
+    parentAssetId: "asset_1",
+    controlnet: {
+      poseImageDataUrl: null,
+      poseImagePath: "/tmp/pose.png",
+      strength: 0.7,
+      startPercent: 0.15,
+      endPercent: 0.85
+    }
+  });
+  const patched = patchUnifiedSwitchWorkflow(
+    animaReferenceWorkflow(),
+    baseContext(request, {
+      uploadedImageName: "parent.png",
+      uploadedControlImageName: "pose.png",
+      featureAvailability: { controlnet: false, pulid: false, animaControlnet: true }
+    }),
+    "anima-prefix"
+  ) as Record<string, any>;
+
+  const apply = patched[patched["694"].inputs.model[0]];
+  assert.equal(apply.class_type, "AnimaLLLiteApply");
+  assert.equal(apply.inputs.lllite_name, "anima-lllite-pose-1.safetensors");
+  assert.equal(apply.inputs.strength, 0.7);
+  assert.equal(apply.inputs.start_percent, 0.15);
+  assert.equal(apply.inputs.end_percent, 0.85);
+  assert.equal(patched[apply.inputs.image[0]].inputs.image, "pose.png");
+});
+
+test("Anima unified preset: pose ControlNet fails clearly when its node pack or weight is unavailable", () => {
+  const request = baseRequest({
+    generationMode: "img2img",
+    parentAssetId: "asset_1",
+    controlnet: { poseImageDataUrl: null, poseImagePath: "/tmp/pose.png", strength: 1, startPercent: 0, endPercent: 1 }
+  });
+  assert.throws(
+    () => patchUnifiedSwitchWorkflow(
+      animaReferenceWorkflow(),
+      baseContext(request, {
+        uploadedImageName: "parent.png",
+        uploadedControlImageName: "pose.png",
+        featureAvailability: { controlnet: false, pulid: false, animaControlnet: false }
+      }),
+      "anima-prefix"
+    ),
+    /ComfyUI-Anima-LLLite/
+  );
+});
+
 test("Anima unified preset: uploaded identity reference injects the experimental In-Context chain", () => {
   const request = baseRequest({
     width: 768,

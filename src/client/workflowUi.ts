@@ -63,7 +63,7 @@ export function renderModelInstallModal(family: ModelFamily | null, modelCheck: 
           ${renderModelInstallNodeWarning(result)}
           <h3 class="model-install-section-title">ベース(常時必須)</h3>
           ${renderModelInstallTable(result?.models.filter((model) => model.feature === "base") ?? null)}
-          ${family === "anima" ? `<div class="workflow-diagram-warning">Anima プリセットは txt2img・img2img・inpaint・Anima用LoRAに対応します。キャラクター参照は実験機能です。ControlNet と PuLID-Flux は無効です。</div>` : ""}
+          ${family === "anima" ? `<div class="workflow-diagram-warning">Anima プリセットは txt2img・img2img・inpaint・Anima用LoRAに対応します。Anima ControlNet-LLLite を導入すると inpaint 補助とポーズ ControlNet もAPI/UIから利用できます。Chroma用ControlNetとPuLID-Fluxは使用しません。</div>` : ""}
           <h3 class="model-install-section-title">任意機能(導入済みモデル/ノードパックに応じて自動 ON/OFF)</h3>
           ${renderFeatureCards(result)}
         </div>

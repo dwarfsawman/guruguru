@@ -27,3 +27,8 @@ sandbox_models:
   clip: clip
   unet: unet
 
+agent_models:
+  base_path: /agent-models
+  controlnet: controlnet
+  diffusion_models: diffusion_models
+  loras: loras

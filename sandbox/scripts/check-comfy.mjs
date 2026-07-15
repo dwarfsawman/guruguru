@@ -15,6 +15,7 @@ if (!devices.some((device) => /cuda/i.test(String(device.type ?? device.name ?? 
 const objectInfo = await json("/object_info");
 const pulidNodes = Object.keys(objectInfo).filter((name) => /pulid/i.test(name));
 if (pulidNodes.length === 0) throw new Error("PuLID custom nodes are not registered");
+const animaLlliteNode = Boolean(objectInfo.AnimaLLLiteApply);
 
 const filenames = [];
 for (const node of Object.values(objectInfo)) {
@@ -32,12 +33,14 @@ const recognition = Object.fromEntries(
   Object.entries(modelPatterns).map(([key, pattern]) => [key, filenames.some((name) => pattern.test(name))]),
 );
 
+const ok = animaLlliteNode && Object.values(recognition).every(Boolean);
 console.log(JSON.stringify({
-  ok: true,
+  ok,
   comfyui: baseUrl,
   devices,
   pulidNodes,
+  animaLlliteNode,
   modelRecognition: recognition,
 }, null, 2));
 
-if (Object.values(recognition).some((available) => !available)) process.exitCode = 2;
+if (!ok) process.exitCode = 2;

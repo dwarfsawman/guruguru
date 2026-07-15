@@ -19,6 +19,7 @@ services:
         source: ${GURUGURU_MODELS_DIR:?Set GURUGURU_MODELS_DIR in sandbox/.env}
         target: /models
         read_only: true
+      - comfy-agent-models:/agent-models
       - comfy-input:/data/input
       - comfy-output:/data/output
       - comfy-temp:/data/temp
@@ -33,6 +34,7 @@ services:
       start_period: 30s
 
 volumes:
+  comfy-agent-models:
   comfy-input:
   comfy-output:
   comfy-temp:

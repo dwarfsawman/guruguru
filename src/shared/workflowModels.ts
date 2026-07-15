@@ -29,7 +29,13 @@ export type ModelKind =
  * トグル対象外)。それ以外はユーザーが任意にON/OFFできる機能で、`Docs/Feature-ConsistentCharacter.md`
  * の「必要ノードパック」表に対応する。
  */
-export type FeatureKey = "base" | "controlnet" | "pulid" | "animaInContext";
+export type FeatureKey =
+  | "base"
+  | "controlnet"
+  | "pulid"
+  | "animaInpaint"
+  | "animaControlnet"
+  | "animaInContext";
 
 export interface WorkflowModelRequirement {
   kind: ModelKind;

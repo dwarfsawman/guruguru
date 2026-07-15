@@ -2,6 +2,7 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 ARG COMFYUI_COMMIT=f3a36e74844893f32f77f22d249d08862805d8f4
 ARG PULID_COMMIT=52dc5068e0fc304e51273cfa5fbdd031e1ddb824
+ARG ANIMA_LLLITE_COMMIT=6701c8d6fc3bf1b2ed966b87c95ce609c52cebea
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -18,6 +19,8 @@ RUN apt-get update \
     && git -C /opt/ComfyUI checkout "$COMFYUI_COMMIT" \
     && git clone https://github.com/PaoloC68/ComfyUI-PuLID-Flux-Chroma.git /opt/ComfyUI/custom_nodes/ComfyUI-PuLID-Flux-Chroma \
     && git -C /opt/ComfyUI/custom_nodes/ComfyUI-PuLID-Flux-Chroma checkout "$PULID_COMMIT" \
+    && git clone https://github.com/kohya-ss/ComfyUI-Anima-LLLite.git /opt/ComfyUI/custom_nodes/ComfyUI-Anima-LLLite \
+    && git -C /opt/ComfyUI/custom_nodes/ComfyUI-Anima-LLLite checkout "$ANIMA_LLLITE_COMMIT" \
     && uv pip install --python /opt/venv/bin/python \
       torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 \
     && uv pip install --python /opt/venv/bin/python -r /opt/ComfyUI/requirements.txt \
@@ -25,7 +28,9 @@ RUN apt-get update \
          uv pip install --python /opt/venv/bin/python -r /opt/ComfyUI/custom_nodes/ComfyUI-PuLID-Flux-Chroma/requirements.txt; \
        fi \
     && apt-get purge -y --auto-remove build-essential python3-dev \
-    && rm -rf /var/lib/apt/lists/* /root/.cache /opt/ComfyUI/.git /opt/ComfyUI/custom_nodes/ComfyUI-PuLID-Flux-Chroma/.git
+    && rm -rf /var/lib/apt/lists/* /root/.cache /opt/ComfyUI/.git \
+      /opt/ComfyUI/custom_nodes/ComfyUI-PuLID-Flux-Chroma/.git \
+      /opt/ComfyUI/custom_nodes/ComfyUI-Anima-LLLite/.git
 
 RUN uv pip uninstall --python /opt/venv/bin/python onnxruntime onnxruntime-gpu \
     && uv pip install --python /opt/venv/bin/python "onnxruntime-gpu==1.22.0" \

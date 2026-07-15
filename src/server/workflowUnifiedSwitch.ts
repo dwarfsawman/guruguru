@@ -1,4 +1,5 @@
 import type { FeatureAvailabilityFlags, PatchContext } from "./workflow";
+import { detectWorkflowModelFamily } from "../shared/workflowModels";
 import {
   type JsonObject,
   findNodeIdByExactClass,
@@ -61,6 +62,8 @@ export function patchUnifiedSwitchWorkflow(
 ): JsonObject {
   const { request } = context;
   let roles = resolveUnifiedSwitchRoles(workflow);
+  const modelFamily = detectWorkflowModelFamily(workflow);
+  const isAnima = modelFamily === "anima";
 
   // Consistent Character (Docs/Feature-ConsistentCharacter.md): the base template hard-codes a
   // ControlNet model file, so unlike the other optional features it must be pruned out of the
@@ -69,9 +72,11 @@ export function patchUnifiedSwitchWorkflow(
   const featureAvailability: FeatureAvailabilityFlags = context.featureAvailability ?? {
     controlnet: true,
     pulid: false,
+    animaInpaint: false,
+    animaControlnet: false,
     animaInContext: false
   };
-  if (!featureAvailability.controlnet) {
+  if (!isAnima && !featureAvailability.controlnet) {
     if (request.generationMode === "controlnet") {
       throw new Error('ControlNet model is not installed; cannot use generationMode="controlnet"');
     }
@@ -87,7 +92,13 @@ export function patchUnifiedSwitchWorkflow(
     : request.generationMode === "controlnet"
       ? context.uploadedImageName ?? null
       : null;
-  const useControlNet = Boolean(controlImageName) && roles.useControlNetBoolNodeId !== null;
+  const controlRequested = Boolean(controlImageName);
+  if (isAnima && controlRequested && !featureAvailability.animaControlnet) {
+    throw new Error(
+      "Anima pose ControlNet requires ComfyUI-Anima-LLLite and anima-lllite-pose-1.safetensors"
+    );
+  }
+  const useControlNet = !isAnima && controlRequested && roles.useControlNetBoolNodeId !== null;
 
   const maskedContent = useMask && request.inpaint ? request.inpaint.maskedContent : "original";
   if (maskedContent !== "original" && !roles.useEmptyLatentContentBoolNodeId) {
@@ -213,7 +224,12 @@ export function patchUnifiedSwitchWorkflow(
   const animaOptions = request.reference?.animaInContext;
   assembleFeatureFragments(
     workflow,
-    { pulid: pulidEnabled, animaInContext: animaInContextEnabled },
+    {
+      pulid: pulidEnabled,
+      animaInpaint: isAnima && useMask && Boolean(featureAvailability.animaInpaint),
+      animaControlnet: isAnima && controlRequested && Boolean(featureAvailability.animaControlnet),
+      animaInContext: animaInContextEnabled
+    },
     context.uploadedReferenceImageName ?? null,
     request.loras ?? [],
     {
@@ -223,7 +239,15 @@ export function patchUnifiedSwitchWorkflow(
       startPercent: animaOptions?.startPercent,
       endPercent: animaOptions?.endPercent
     },
-    context.uploadedFullBodyReferenceImageName ?? null
+    context.uploadedFullBodyReferenceImageName ?? null,
+    {
+      parentImageName: context.uploadedImageName ?? null,
+      maskImageName: context.uploadedMaskName ?? null,
+      controlImageName,
+      controlStrength: request.controlnet?.strength,
+      controlStartPercent: request.controlnet?.startPercent,
+      controlEndPercent: request.controlnet?.endPercent
+    }
   );
 
   return workflow;

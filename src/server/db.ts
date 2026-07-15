@@ -8,6 +8,11 @@ import type { ComfySettings, LlmSettings, VlmAuditSettings } from "../shared/typ
 import { isPathInsideOrEqual } from "./paths";
 
 const isTestDataMode = process.env.GURUGURU_TEST_DB === "1" || process.env.NODE_ENV === "test";
+export const instanceMode = isTestDataMode
+  ? "test"
+  : process.env.GURUGURU_INSTANCE_MODE === "agent"
+    ? "agent"
+    : "user";
 type SqlValue = string | number | bigint | boolean | null | Uint8Array;
 
 export const dataRoot = resolveDataRoot();
@@ -57,8 +62,8 @@ export const jsonColumnNames = new Map<string, string>([
 ]);
 
 export const defaultComfySettings: ComfySettings = {
-  baseUrl: "http://127.0.0.1:8188",
-  websocketUrl: "ws://127.0.0.1:8188/ws",
+  baseUrl: process.env.GURUGURU_DEFAULT_COMFY_BASE_URL?.trim() || "http://127.0.0.1:8188",
+  websocketUrl: process.env.GURUGURU_DEFAULT_COMFY_WEBSOCKET_URL?.trim() || "ws://127.0.0.1:8188/ws",
   timeoutSeconds: 60,
   imageFetchMode: "view",
   storageDir: dataRoot,
