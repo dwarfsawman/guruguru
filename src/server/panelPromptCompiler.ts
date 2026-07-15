@@ -1,29 +1,26 @@
 import type { NarrativeEntity, NormalizedBox, PanelSpec } from "../shared/mangaPlanV2";
 import type { StoryGraphDialogueInput } from "./storyGraphBuilder";
 import type { ReferenceSetSnapshot } from "../shared/referenceSets";
+import { getDialoguePresentationMeaning, stripClausesContainingCharacterLabels } from "../shared/dialoguePresentation";
 
 export type PromptDialect = "natural" | "tags";
 export interface PanelConditioning { positive: string; negative: string }
 const TEXT_NEGATIVE = "text, letters, words, typography, captions, subtitles, speech bubbles, manga sound effects, signage, labels, logos, watermarks, UI overlays";
 const QUALITY_NEGATIVE = "low quality, blurry, deformed, bad anatomy, extra limbs, extra fingers";
 
-const VISUAL_TAG_TRANSLATIONS: Array<[RegExp, string]> = [
-  [/宇宙/u, "outer space"], [/人工衛星/u, "broken satellite debris"], [/月/u, "moon"],
-  [/白い.*(?:人型|機体|機動兵器)/u, "damaged white humanoid mecha"], [/黒い.*(?:塔|構造体)/u, "giant black mechanical tower"],
-  [/コックピット/u, "mecha cockpit"], [/警告灯/u, "red warning lights"], [/少女/u, "young woman"],
-  [/都市/u, "futuristic megacity"], [/雲海/u, "sea of clouds"], [/ホバーバイク/u, "futuristic hover bike"],
-  [/研究(?:区画|所|棟)/u, "abandoned research facility"], [/格納庫/u, "industrial hangar"],
-  [/爆発/u, "explosion"], [/閃光/u, "bright flash"], [/光弾/u, "red energy projectiles"],
-  [/雨/u, "rain"], [/夜/u, "night"], [/昼/u, "daylight"]
-];
-
 function tagSafeVisual(text: string): string {
   if (!text.trim()) return "";
-  const tags = VISUAL_TAG_TRANSLATIONS.filter(([pattern]) => pattern.test(text)).map(([, tag]) => tag);
-  const english = text.replace(/[\u3040-\u30ff\u3400-\u9fff]+/gu, " ")
-    .replace(/[^\x20-\x7e]+/g, " ").replace(/\s+/g, " ").trim();
-  if (english && /[a-z]{3}/i.test(english)) tags.push(english);
-  return [...new Set(tags)].join(", ");
+  // Never pseudo-translate through a title/genre-specific dictionary. Structured LLM plans
+  // should supply English visual facts for tag models; heuristic fallback keeps the source facts
+  // intact instead of silently deleting or inventing meaning.
+  return text.normalize("NFKC")
+    .replace(/[\r\n。；;]+/gu, ", ")
+    .replace(/、+/gu, ", ")
+    .replace(/[^\p{L}\p{N}\p{M}\s,.'’"!?%:+\-()/]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .replace(/(?:\s*,\s*)+/g, ", ")
+    .trim()
+    .replace(/^,\s*|,\s*$/g, "");
 }
 
 function regionName(box: NormalizedBox): string {
@@ -33,10 +30,10 @@ function regionName(box: NormalizedBox): string {
 }
 
 function speechAct(line: StoryGraphDialogueInput): string {
-  if (["telecom", "machine", "vo", "caption", "monitor"].includes(line.balloonStyle ?? "")) {
-    return "off-screen voice; the speaker is not depicted in this panel; the image contains no rendered text";
+  const meaning = getDialoguePresentationMeaning(line);
+  if (meaning.visibilityEvidence === "none") {
+    return `${meaning.delivery} delivered separately from the depicted action; do not infer speaking mouth movement; the image contains no rendered text`;
   }
-  if (line.semanticKind === "narration") return "off-panel narration; the image contains no rendered text";
   if (line.semanticKind === "monologue") return "quiet internal reaction with closed or resting mouth";
   if (line.semanticKind === "sfx") return "reacting to a sound; do not render sound-effect letters";
   if (/[?？]\s*$/.test(line.text)) return "asking a question while speaking";
@@ -201,6 +198,15 @@ interface PanelConditioningInput {
   referenceAppearances?: ReferenceSetSnapshot[];
 }
 
+function excludedIdentityLabels(input: Pick<PanelConditioningInput, "panel" | "entities">): string[] {
+  const excludedIds = new Set(input.panel.mustNotShow
+    .filter((constraint) => constraint.kind === "entity-absent" && constraint.entityId)
+    .map((constraint) => constraint.entityId!));
+  return input.entities
+    .filter((entity) => excludedIds.has(entity.id))
+    .flatMap((entity) => [entity.name, ...entity.aliases]);
+}
+
 /**
  * ぶち抜き立ち絵スロット(Docs/Reference-MangaCompositions.md)の条件付け。シーンバイブル・
  * 文字用余白などのシーン都合は使わず、単独人物の全身立ち姿を「無地の白背景」で生成させる。
@@ -219,6 +225,7 @@ function compileFigureConditioning(input: PanelConditioningInput): PanelConditio
     reference.mustNotChange.length > 0 ? `identity invariants: ${reference.mustNotChange.join(", ")}` : ""
   ]).filter(Boolean);
   const quality = input.qualityTags?.trim() || "masterpiece, best quality, high detail";
+  const excludedLabels = excludedIdentityLabels(input);
   const parts = [
     quality,
     "solo",
@@ -233,7 +240,10 @@ function compileFigureConditioning(input: PanelConditioningInput): PanelConditio
   ];
   const maxTerms = Math.max(12, input.maxTerms ?? 75);
   const positive = parts
-    .flatMap((part) => (input.dialect === "tags" ? tagSafeVisual(part ?? "") : part ?? "").split(/\s*,\s*|\.\s+/))
+    .flatMap((part) => {
+      const safe = stripClausesContainingCharacterLabels(part ?? "", excludedLabels);
+      return (input.dialect === "tags" ? tagSafeVisual(safe) : safe).split(/\s*,\s*|\.\s+/);
+    })
     .filter(Boolean)
     .slice(0, maxTerms)
     .join(input.dialect === "tags" ? ", " : ". ");
@@ -257,7 +267,8 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
   }
   const cleanPanel = { ...input.panel, mustNotShow: [] };
   const raw = compilePanelPrompt({ ...input, panel: cleanPanel });
-  const naturalRaw = /[\u3040-\u30ff\u3400-\u9fff]/u.test(raw) ? tagSafeVisual(raw) : raw;
+  const excludedLabels = excludedIdentityLabels(input);
+  const naturalRaw = stripClausesContainingCharacterLabels(raw, excludedLabels);
   const entityById = new Map(input.entities.map((entity) => [entity.id, entity]));
   const identities = input.panel.cast.flatMap((member) => {
     const entity = entityById.get(member.characterId);
@@ -275,8 +286,9 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
   const castCount = input.panel.cast.length === 0 ? "" : input.panel.cast.length === 1 ? "1character" : `${input.panel.cast.length}characters`;
   const positiveParts = input.dialect === "tags"
     ? [quality, castCount, ...approvedAppearances, ...identities,
-        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), ...scene, input.basePrompt].map((part) => tagSafeVisual(part ?? ""))
-    : [naturalRaw, ...approvedAppearances, ...identities, ...scene.map((part) => /[\u3040-\u30ff\u3400-\u9fff]/u.test(part) ? tagSafeVisual(part) : part)];
+        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), ...scene, input.basePrompt]
+        .map((part) => tagSafeVisual(stripClausesContainingCharacterLabels(part ?? "", excludedLabels)))
+    : [naturalRaw, ...approvedAppearances, ...identities, ...scene.map((part) => stripClausesContainingCharacterLabels(part, excludedLabels))];
   const maxTerms = Math.max(12, input.maxTerms ?? 75);
   const positive = positiveParts.flatMap((part) => part?.split(/\s*,\s*|\.\s+/) ?? []).filter(Boolean).slice(0, maxTerms).join(input.dialect === "tags" ? ", " : ". ");
   const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);

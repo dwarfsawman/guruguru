@@ -35,6 +35,7 @@ const template: WorkflowTemplate = {
 function run(): ScriptMangaRunView {
   return {
     id: "run-1",
+    predecessorRunId: null,
     projectId: "project-1",
     scriptId: "script-1",
     scriptRevisionId: "revision-1",
@@ -67,6 +68,8 @@ function run(): ScriptMangaRunView {
       attemptCount: 1,
       candidateAssetIds: ["asset-1"],
       selectedAssetId: null,
+      inheritedFromTaskId: null,
+      reuseFingerprint: null,
       scores: null,
       lastError: null
     }],
@@ -85,6 +88,9 @@ function props(currentRun: ScriptMangaRunView | null = null): ScriptMangaControl
       templateId: "template-1",
       planningMode: "heuristic",
       panelsPerPage: 6,
+      maxDialoguesPerPanel: 3,
+      targetPageCount: 24,
+      maxPanelCount: 160,
       dialoguePolicy: "preserve",
       auditMode: "vlm",
       poseControl: "off"
@@ -102,12 +108,19 @@ function props(currentRun: ScriptMangaRunView | null = null): ScriptMangaControl
   };
 }
 
-test("script manga card renders supported controls and marks future dialogue policies unavailable", () => {
+test("script manga card renders supported controls and keeps only generate unavailable", () => {
   const html = renderScriptMangaControlCard(props());
   assert.match(html, /data-script-manga-setting="templateId"/);
   assert.match(html, /data-script-manga-setting="planningMode"/);
   assert.match(html, /data-script-manga-setting="panelsPerPage"/);
   assert.match(html, /value="6" selected/);
+  assert.match(html, /data-script-manga-setting="maxDialoguesPerPanel"/);
+  assert.match(html, /value="3" selected/);
+  assert.match(html, /既定4、最終可否は文字preflight/);
+  assert.match(html, /data-script-manga-setting="targetPageCount"/);
+  assert.match(html, /value="24" selected>24 pages/);
+  assert.match(html, /data-script-manga-setting="maxPanelCount"/);
+  assert.match(html, /value="160" selected>160 panels/);
   assert.match(html, /value="preserve" selected/);
   assert.match(html, /value="adapt" >adapt（原文一致の呼吸分割）/);
   assert.match(html, /value="fill" >fill（分割＋caption\/monitor\/SFX）/);
@@ -152,6 +165,7 @@ test("script manga card renders run state and reviewable asset candidates", () =
   assert.match(html, /\/api\/assets\/asset-1\/thumbnail\?size=medium/);
   assert.match(html, /\/api\/assets\/asset-1\/image/);
   assert.match(html, /data-action="select-script-manga-candidate"/);
+  assert.match(html, /data-action="edit-script-manga-candidate-mask"/);
   assert.match(html, /data-id="task-1" data-asset-id="asset-1"/);
   assert.match(html, /data-action="retry-script-manga-task"/);
   assert.match(html, /data-id="task-1"/);
@@ -161,7 +175,7 @@ test("script manga card renders run state and reviewable asset candidates", () =
   }
 });
 
-test("completed script manga run offers PNG, PPTX and ORA downloads", () => {
+test("completed script manga run offers PNG, JPEG, PPTX and ORA downloads", () => {
   const completedRun = run();
   completedRun.status = "completed";
   completedRun.phase = "completed";
@@ -170,10 +184,9 @@ test("completed script manga run offers PNG, PPTX and ORA downloads", () => {
   completedRun.tasks[0]!.selectedAssetId = "asset-1";
   const html = renderScriptMangaControlCard(props(completedRun));
   assert.match(html, /完成ページ/);
-  for (const format of ["png", "pptx", "ora"]) {
+  for (const format of ["png", "jpeg", "pptx", "ora"]) {
     assert.match(html, new RegExp(`data-action="export-script-manga-run" data-format="${format}"`));
   }
-  assert.doesNotMatch(html, /data-format="jpeg"/);
 });
 
 test("scriptMangaVlmAuditFromScores bounds and normalizes untrusted audit payloads", () => {

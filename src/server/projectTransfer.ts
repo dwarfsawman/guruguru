@@ -132,8 +132,10 @@ const SCOPED_TABLES: ScopedTable[] = [
 
 const GENERATION_ROUND_NON_TERMINAL = new Set(["pending", "running"]);
 const GENERATION_JOB_NON_TERMINAL = new Set(["pending", "queued", "running"]);
-const SCRIPT_MANGA_RUN_NON_TERMINAL = new Set(["preparing", "running"]);
-const SCRIPT_MANGA_TASK_NON_TERMINAL = new Set(["pending", "submitting", "running"]);
+// `exporting` is also process-local: importing its row cannot resume the lost
+// export promise, so leaving it unchanged would strand the run permanently.
+const SCRIPT_MANGA_RUN_NON_TERMINAL = new Set(["preparing", "running", "exporting"]);
+const SCRIPT_MANGA_TASK_NON_TERMINAL = new Set(["pending", "inheriting", "submitting", "running", "selecting"]);
 
 type Row = Record<string, unknown>;
 
@@ -705,7 +707,8 @@ async function writeAll(
 }
 
 /**
- * `generation_rounds.parent_round_id` / `script_manga_tasks.repair_parent_task_id` は同じ
+ * `generation_rounds.parent_round_id` / `script_manga_runs.predecessor_run_id` /
+ * `script_manga_tasks.repair_parent_task_id` / `script_manga_tasks.inherited_from_task_id` は同じ
  * テーブル内の別行を指す自己参照 FK。INSERT 時点ではまだ参照先が挿入されていない可能性があるため、
  * 一旦 NULL で INSERT し、全行挿入後に UPDATE で復元する(`pages.ts` の reorder と同じ
  * BEGIN/COMMIT パターン内で完結させる)。
@@ -717,11 +720,25 @@ function deferSelfReferentialFk(table: string, row: Row, deferredPatches: Array<
     row.parent_round_id = null;
     deferredPatches.push(() => runSql("UPDATE generation_rounds SET parent_round_id = ? WHERE id = ?", [parentId, id]));
   }
+  if (table === "script_manga_runs" && typeof row.predecessor_run_id === "string") {
+    const predecessorId = row.predecessor_run_id;
+    const id = row.id;
+    row.predecessor_run_id = null;
+    deferredPatches.push(() => runSql("UPDATE script_manga_runs SET predecessor_run_id = ? WHERE id = ?", [predecessorId, id]));
+  }
   if (table === "script_manga_tasks" && typeof row.repair_parent_task_id === "string") {
     const parentId = row.repair_parent_task_id;
     const id = row.id;
     row.repair_parent_task_id = null;
     deferredPatches.push(() => runSql("UPDATE script_manga_tasks SET repair_parent_task_id = ? WHERE id = ?", [parentId, id]));
+  }
+  if (table === "script_manga_tasks" && typeof row.inherited_from_task_id === "string") {
+    const inheritedFromTaskId = row.inherited_from_task_id;
+    const id = row.id;
+    row.inherited_from_task_id = null;
+    deferredPatches.push(() =>
+      runSql("UPDATE script_manga_tasks SET inherited_from_task_id = ? WHERE id = ?", [inheritedFromTaskId, id])
+    );
   }
 }
 
@@ -742,9 +759,17 @@ function normalizeImportedStatus(table: string, row: Row) {
     row.status = "failed";
     row.last_error_json = IMPORTED_WHILE_IN_PROGRESS;
   }
-  if (table === "script_manga_tasks" && typeof row.status === "string" && SCRIPT_MANGA_TASK_NON_TERMINAL.has(row.status)) {
-    row.status = "failed";
-    row.last_error_json = IMPORTED_WHILE_IN_PROGRESS;
+  if (table === "script_manga_tasks") {
+    // Import remaps IDs and project-local paths inside request/intent/provenance JSON. Their stored
+    // hashes were computed before that rewrite, so even a completed task must be lazily re-signed
+    // from its imported immutable round/asset snapshots before it can authorize successor reuse.
+    row.reuse_fingerprint = null;
+    row.reuse_source_json = null;
+    if (typeof row.status === "string" && SCRIPT_MANGA_TASK_NON_TERMINAL.has(row.status)) {
+      row.status = "failed";
+      row.last_error_json = IMPORTED_WHILE_IN_PROGRESS;
+      row.inherited_from_task_id = null;
+    }
   }
 }
 

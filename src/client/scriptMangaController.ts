@@ -1,23 +1,36 @@
 import type {
+  CreateScriptMangaPlanCandidatesRequest,
   PrepareScriptMangaRunRequest,
   ScriptMangaPlanCandidatesResponse,
   ScriptMangaRunView,
   ScriptMangaUiSettings,
   VlmAuditServiceStatus
 } from "../shared/scriptMangaApi";
+import type { ProjectDetail } from "../shared/apiTypes";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { downloadBlob, filenameFromContentDisposition, responseErrorMessage } from "./downloadUtils";
 import { refreshLayoutTemplates } from "./layoutTemplateController";
+import { closeAssetDetail, openAssetDetail } from "./assetDetailController";
+import { findAsset } from "./assetLookup";
+import { inpaintDraftForAsset } from "./draftStore";
+import {
+  commitActiveMaskCanvas,
+  effectiveMaskDataUrl,
+  openMaskEditorForActiveAsset
+} from "./maskEditorController";
 
 type ScriptMangaSettingField = keyof ScriptMangaUiSettings;
-type ScriptMangaExportFormat = "png" | "pptx" | "ora";
+type ScriptMangaExportFormat = "png" | "jpeg" | "pptx" | "ora";
 
 const DEFAULT_SETTINGS: ScriptMangaUiSettings = {
   templateId: "",
   planningMode: "heuristic",
   panelsPerPage: 4,
+  maxDialoguesPerPanel: 4,
+  targetPageCount: 0,
+  maxPanelCount: 0,
   dialoguePolicy: "preserve",
   auditMode: "vlm",
   poseControl: "off"
@@ -62,6 +75,21 @@ export function nextScriptMangaSettings(
     if (!Number.isFinite(parsed)) return current;
     return { ...current, panelsPerPage: Math.min(6, Math.max(1, Math.trunc(parsed))) };
   }
+  if (field === "maxDialoguesPerPanel") {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) return current;
+    return { ...current, maxDialoguesPerPanel: Math.min(8, Math.max(1, Math.trunc(parsed))) };
+  }
+  if (field === "targetPageCount") {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) return current;
+    return { ...current, targetPageCount: Math.min(200, Math.max(0, Math.trunc(parsed))) };
+  }
+  if (field === "maxPanelCount") {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) return current;
+    return { ...current, maxPanelCount: Math.min(800, Math.max(0, Math.trunc(parsed))) };
+  }
   if (field === "dialoguePolicy" && (rawValue === "preserve" || rawValue === "adapt" || rawValue === "fill")) {
     return { ...current, dialoguePolicy: rawValue, panelsPerPage: rawValue === "preserve" ? current.panelsPerPage : Math.min(current.panelsPerPage, 2) };
   }
@@ -88,6 +116,23 @@ export function scriptMangaPrepareRequest(
     requireReferenceSets: true,
     allowReferenceFallback: false,
     ...(planCandidateId ? { planCandidateId } : {})
+  };
+}
+
+/** ネーム候補へUIの密度指定を明示的に渡すAPI payload。 */
+export function scriptMangaPlanCandidatesRequest(
+  scriptId: string,
+  count: number,
+  settings: ScriptMangaUiSettings,
+  groupId?: string
+): CreateScriptMangaPlanCandidatesRequest {
+  return {
+    scriptId,
+    count,
+    targetPageCount: settings.targetPageCount,
+    panelsPerPage: settings.panelsPerPage,
+    maxDialoguesPerPanel: settings.maxDialoguesPerPanel,
+    ...(groupId ? { groupId } : {})
   };
 }
 
@@ -149,7 +194,12 @@ async function generateCandidates(groupId?: string): Promise<void> {
       `/api/projects/${projectId}/script-manga-plan-candidates`,
       {
         method: "POST",
-        body: JSON.stringify({ scriptId, count: state.scriptMangaCandidateCount, ...(groupId ? { groupId } : {}) })
+        body: JSON.stringify(scriptMangaPlanCandidatesRequest(
+          scriptId,
+          state.scriptMangaCandidateCount,
+          state.scriptMangaSettings,
+          groupId
+        ))
       }
     );
     if (serial === candidateOperationSerial && state.scriptScreenOpen && state.activeScriptId === scriptId) {
@@ -380,6 +430,81 @@ async function selectCandidate(taskId: string, target: HTMLElement): Promise<voi
   }
 }
 
+async function editCandidateMask(taskId: string, target: HTMLElement): Promise<void> {
+  const projectId = state.currentProjectId;
+  const runId = state.scriptMangaRun?.id;
+  const assetId = target.dataset.assetId;
+  const task = state.scriptMangaRun?.tasks.find((candidate) => candidate.id === taskId);
+  if (
+    !projectId ||
+    !runId ||
+    !assetId ||
+    task?.status !== "awaiting_review" ||
+    !task.candidateAssetIds.includes(assetId)
+  ) return;
+  const serial = beginOperation();
+  if (serial === null) return;
+  try {
+    if (!findAsset(assetId)) {
+      const detail = await api<ProjectDetail>(`/api/projects/${projectId}`);
+      if (!operationIsCurrent(serial) || state.scriptMangaRun?.id !== runId) return;
+      state.detail = detail;
+    }
+    if (!findAsset(assetId)) throw new Error("候補assetの詳細を取得できませんでした。");
+    openAssetDetail(assetId);
+    openMaskEditorForActiveAsset();
+  } catch (error) {
+    reportOperationError(serial, error);
+  } finally {
+    finishOperation(serial);
+  }
+}
+
+async function repairCandidate(taskId: string, target: HTMLElement): Promise<void> {
+  const runId = state.scriptMangaRun?.id;
+  const assetId = target.dataset.assetId;
+  const task = state.scriptMangaRun?.tasks.find((candidate) => candidate.id === taskId);
+  if (
+    !runId ||
+    !assetId ||
+    task?.status !== "awaiting_review" ||
+    !task.candidateAssetIds.includes(assetId)
+  ) return;
+  commitActiveMaskCanvas();
+  const draft = inpaintDraftForAsset(assetId);
+  const maskDataUrl = draft ? effectiveMaskDataUrl(draft) : "";
+  if (!draft || !maskDataUrl.startsWith("data:image/png;base64,")) {
+    pushToast("白い修復範囲をマスクで描き、適用してから実行してください。", "error");
+    return;
+  }
+  const serial = beginOperation();
+  if (serial === null) return;
+  try {
+    const run = await api<ScriptMangaRunView>(`/api/script-manga-tasks/${taskId}/repair`, {
+      method: "POST",
+      body: JSON.stringify({
+        assetId,
+        inpaint: {
+          maskDataUrl,
+          maskedContent: draft.maskedContent,
+          inpaintArea: draft.inpaintArea,
+          onlyMaskedPadding: draft.onlyMaskedPadding,
+          featherRadius: draft.featherRadius
+        }
+      })
+    });
+    if (operationIsCurrent(serial) && state.scriptMangaRun?.id === runId) {
+      state.scriptMangaRun = run;
+      closeAssetDetail();
+      pushToast("マスク範囲だけを修復する候補を生成します。旧候補は保持されます。", "info");
+    }
+  } catch (error) {
+    reportOperationError(serial, error);
+  } finally {
+    finishOperation(serial);
+  }
+}
+
 async function retryTask(taskId: string): Promise<void> {
   const runId = state.scriptMangaRun?.id;
   const panelId = state.scriptMangaRun?.tasks.find((task) => task.id === taskId)?.panelId;
@@ -400,7 +525,7 @@ async function retryTask(taskId: string): Promise<void> {
 }
 
 function scriptMangaExportFormat(value: unknown): ScriptMangaExportFormat | null {
-  return value === "png" || value === "pptx" || value === "ora" ? value : null;
+  return value === "png" || value === "jpeg" || value === "pptx" || value === "ora" ? value : null;
 }
 
 async function exportRun(rawFormat: unknown): Promise<void> {
@@ -420,10 +545,17 @@ async function exportRun(rawFormat: unknown): Promise<void> {
     if (!operationIsCurrent(serial) || state.scriptMangaRun?.id !== runId) return;
     const fallbackName = format === "ora" && blob.type === "application/zip"
       ? "guruguru-manga-openraster.zip"
-      : `guruguru-manga.${format}`;
+      : format === "jpeg"
+        ? "guruguru-manga.jpg"
+        : `guruguru-manga.${format}`;
     const filename = filenameFromContentDisposition(response.headers.get("content-disposition")) ?? fallbackName;
     downloadBlob(blob, filename);
-    const labels: Record<ScriptMangaExportFormat, string> = { png: "PNG", pptx: "PPTX", ora: "OpenRaster" };
+    const labels: Record<ScriptMangaExportFormat, string> = {
+      png: "PNG",
+      jpeg: "JPEG",
+      pptx: "PPTX",
+      ora: "OpenRaster"
+    };
     pushToast(`${labels[format]}を書き出しました。`, "info");
   } catch (error) {
     reportOperationError(serial, error);
@@ -459,6 +591,8 @@ registerActions({
   "refresh-script-manga-run": () => void updateRun("refresh"),
   "cancel-script-manga-run": () => void updateRun("cancel"),
   "select-script-manga-candidate": (taskId, target) => void selectCandidate(taskId, target),
+  "edit-script-manga-candidate-mask": (taskId, target) => void editCandidateMask(taskId, target),
+  "repair-script-manga-candidate": (taskId, target) => void repairCandidate(taskId, target),
   "retry-script-manga-task": (taskId) => void retryTask(taskId),
   "export-script-manga-run": (_id, target) => void exportRun(target.dataset.format),
   "generate-script-manga-plan-candidates": () => void generateCandidates(),

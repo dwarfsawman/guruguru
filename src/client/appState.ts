@@ -714,6 +714,9 @@ export const state: AppState = {
     templateId: "",
     planningMode: "heuristic",
     panelsPerPage: 4,
+    maxDialoguesPerPanel: 4,
+    targetPageCount: 0,
+    maxPanelCount: 0,
     dialoguePolicy: "preserve",
     auditMode: "vlm",
     poseControl: "off"

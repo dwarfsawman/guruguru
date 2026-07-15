@@ -16,8 +16,19 @@ export interface PageNamingResult { pages: PageNamingPage[] }
 
 function flatten(plan: ScriptMangaPlan): ScriptMangaPanelPlan[] { return plan.pages.flatMap((page) => page.panels); }
 
+/** UI/API と同じ有効範囲へ正規化した、1ページあたりのコマ数上限。 */
+function normalizeMaxPanelsPerPage(value: number | undefined): number {
+  return Math.max(1, Math.min(6, Math.trunc(value ?? 6)));
+}
+
 /** N1契約を検証してScriptMangaPlanへ適用する。失敗時はnullで決定的packerへ戻せる。 */
-export function applyPageNaming(raw: unknown, source: ScriptMangaPlan, targetPageCount: number): ScriptMangaPlan | null {
+export function applyPageNaming(
+  raw: unknown,
+  source: ScriptMangaPlan,
+  targetPageCount: number,
+  maxDialoguesPerPanel = 4,
+  maxPanelsPerPage = 6
+): ScriptMangaPlan | null {
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as PageNamingResult).pages)) return null;
   const named = raw as PageNamingResult;
   const sourcePanels = flatten(source);
@@ -26,11 +37,12 @@ export function applyPageNaming(raw: unknown, source: ScriptMangaPlan, targetPag
   const observedIds: string[] = [];
   const minPages = Math.max(1, Math.floor(targetPageCount * 0.8));
   const maxPages = Math.max(minPages, Math.ceil(targetPageCount * 1.2));
+  const panelLimit = normalizeMaxPanelsPerPage(maxPanelsPerPage);
   if (named.pages.length < minPages || named.pages.length > maxPages) return null;
   const pages: ScriptMangaPagePlan[] = [];
   for (let pageIndex = 0; pageIndex < named.pages.length; pageIndex += 1) {
     const page = named.pages[pageIndex];
-    if (!page || page.index !== pageIndex || !page.pageIntent?.trim() || !Array.isArray(page.panels) || page.panels.length < 1 || page.panels.length > 6) return null;
+    if (!page || page.index !== pageIndex || !page.pageIntent?.trim() || !Array.isArray(page.panels) || page.panels.length < 1 || page.panels.length > panelLimit) return null;
     if (page.turnHook !== undefined && !["reveal", "cliffhanger", "none"].includes(page.turnHook)) return null;
     if (page.panels.some((panel) => panel.importance === "splash") && page.panels.length !== 1) return null;
     if (!scriptMangaLayoutCandidates(page.panels.length).length) return null;
@@ -41,13 +53,15 @@ export function applyPageNaming(raw: unknown, source: ScriptMangaPlan, targetPag
       if (parts.some((panel) => !panel)) return null;
       const concrete = parts as ScriptMangaPanelPlan[];
       if (new Set(concrete.map((panel) => panel.sceneIndex)).size !== 1) return null;
+      const dialogueOrderIndexes = concrete.flatMap((panel) => panel.dialogueOrderIndexes);
+      if (dialogueOrderIndexes.length > Math.max(1, Math.min(8, Math.trunc(maxDialoguesPerPanel)))) return null;
       observedIds.push(...namedPanel.sourcePanelIds);
       panels.push({
         ...concrete[0]!, id: namedPanel.id,
         sourceElementIds: concrete.flatMap((panel) => panel.sourceElementIds),
         sourceText: concrete.map((panel) => panel.sourceText).join("\n"),
         prompt: concrete.map((panel) => panel.prompt).join(" "),
-        dialogueOrderIndexes: concrete.flatMap((panel) => panel.dialogueOrderIndexes),
+        dialogueOrderIndexes,
         importance: namedPanel.importance
       });
     }
@@ -76,6 +90,10 @@ export interface BeatPageNamingContext {
   stylePrompt?: string;
   /** コマあたりの台詞文字量上限(ローカル計算)。既定 260。 */
   maxDialogueCharactersPerPanel?: number;
+  /** コマあたりの台詞要素数上限。既定 4、最大 8。 */
+  maxDialoguesPerPanel?: number;
+  /** 1ページあたりのコマ数上限。既定 6。 */
+  maxPanelsPerPage?: number;
 }
 
 /**
@@ -92,6 +110,8 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
   const expectedBeatIds = context.beats.map((beat) => beat.id);
   const observedBeatIds: string[] = [];
   const maxDialogueCharacters = Math.max(40, Math.trunc(context.maxDialogueCharactersPerPanel ?? 260));
+  const maxDialogues = Math.max(1, Math.min(8, Math.trunc(context.maxDialoguesPerPanel ?? 4)));
+  const panelLimit = normalizeMaxPanelsPerPage(context.maxPanelsPerPage);
   const minPages = Math.max(1, Math.floor(context.targetPageCount * 0.8));
   const maxPages = Math.max(minPages, Math.ceil(context.targetPageCount * 1.2));
   if (named.pages.length < minPages || named.pages.length > maxPages) return null;
@@ -101,7 +121,7 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
   let dialogueCount = 0;
   for (let pageIndex = 0; pageIndex < named.pages.length; pageIndex += 1) {
     const page = named.pages[pageIndex];
-    if (!page || page.index !== pageIndex || !page.pageIntent?.trim() || !Array.isArray(page.panels) || page.panels.length < 1 || page.panels.length > 6) return null;
+    if (!page || page.index !== pageIndex || !page.pageIntent?.trim() || !Array.isArray(page.panels) || page.panels.length < 1 || page.panels.length > panelLimit) return null;
     if (page.turnHook !== undefined && !["reveal", "cliffhanger", "none"].includes(page.turnHook)) return null;
     if (page.panels.some((panel) => panel.importance === "splash") && page.panels.length !== 1) return null;
     if (!scriptMangaLayoutCandidates(page.panels.length).length) return null;
@@ -119,6 +139,7 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
       if (new Set(unitsOfPanel.map((unit) => unit.sceneIndex)).size !== 1) return null;
       const dialogueUnits = unitsOfPanel.filter((unit) => unit.type === "dialogue");
       const dialogueCharacters = dialogueUnits.reduce((sum, unit) => sum + unit.dialogueCharacters, 0);
+      if (dialogueUnits.length > maxDialogues) return null;
       if (dialogueCharacters > maxDialogueCharacters) return null;
       observedBeatIds.push(...namedPanel.sourceBeatIds);
       panelIds.add(namedPanel.id);
@@ -162,24 +183,34 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
   };
 }
 
-export const BEAT_PAGE_NAMING_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["pages"], properties: { pages: { type: "array", items: {
-    type: "object", additionalProperties: false, required: ["index", "pageIntent", "turnHook", "panels"], properties: {
-      index: { type: "integer" }, pageIntent: { type: "string" }, turnHook: { type: "string", enum: ["reveal", "cliffhanger", "none"] },
-      panels: { type: "array", minItems: 1, maxItems: 6, items: { type: "object", additionalProperties: false,
-        required: ["id", "importance", "sourceBeatIds"], properties: { id: { type: "string" },
-          importance: { type: "string", enum: ["splash", "hero", "normal"] }, sourceBeatIds: { type: "array", minItems: 1, items: { type: "string" } } } } }
-    }
-  } } }
-} as const;
+/** panelsPerPage を JSON Schema にも反映し、LLM 側の構造化出力で超過を許さない。 */
+export function createBeatPageNamingSchema(maxPanelsPerPage = 6) {
+  return {
+    type: "object", additionalProperties: false, required: ["pages"], properties: { pages: { type: "array", items: {
+      type: "object", additionalProperties: false, required: ["index", "pageIntent", "turnHook", "panels"], properties: {
+        index: { type: "integer" }, pageIntent: { type: "string" }, turnHook: { type: "string", enum: ["reveal", "cliffhanger", "none"] },
+        panels: { type: "array", minItems: 1, maxItems: normalizeMaxPanelsPerPage(maxPanelsPerPage), items: { type: "object", additionalProperties: false,
+          required: ["id", "importance", "sourceBeatIds"], properties: { id: { type: "string" },
+            importance: { type: "string", enum: ["splash", "hero", "normal"] }, sourceBeatIds: { type: "array", minItems: 1, items: { type: "string" } } } } }
+      }
+    } } }
+  } as const;
+}
 
-export const PAGE_NAMING_SCHEMA = {
-  type: "object", additionalProperties: false, required: ["pages"], properties: { pages: { type: "array", items: {
-    type: "object", additionalProperties: false, required: ["index", "pageIntent", "turnHook", "panels"], properties: {
-      index: { type: "integer" }, pageIntent: { type: "string" }, turnHook: { type: "string", enum: ["reveal", "cliffhanger", "none"] },
-      panels: { type: "array", minItems: 1, maxItems: 6, items: { type: "object", additionalProperties: false,
-        required: ["id", "importance", "sourcePanelIds"], properties: { id: { type: "string" },
-          importance: { type: "string", enum: ["splash", "hero", "normal"] }, sourcePanelIds: { type: "array", minItems: 1, items: { type: "string" } } } } }
-    }
-  } } }
-} as const;
+/** panelsPerPage を JSON Schema にも反映し、従来 N1 経路にも同じ上限を課す。 */
+export function createPageNamingSchema(maxPanelsPerPage = 6) {
+  return {
+    type: "object", additionalProperties: false, required: ["pages"], properties: { pages: { type: "array", items: {
+      type: "object", additionalProperties: false, required: ["index", "pageIntent", "turnHook", "panels"], properties: {
+        index: { type: "integer" }, pageIntent: { type: "string" }, turnHook: { type: "string", enum: ["reveal", "cliffhanger", "none"] },
+        panels: { type: "array", minItems: 1, maxItems: normalizeMaxPanelsPerPage(maxPanelsPerPage), items: { type: "object", additionalProperties: false,
+          required: ["id", "importance", "sourcePanelIds"], properties: { id: { type: "string" },
+            importance: { type: "string", enum: ["splash", "hero", "normal"] }, sourcePanelIds: { type: "array", minItems: 1, items: { type: "string" } } } } }
+      }
+    } } }
+  } as const;
+}
+
+/** 後方互換用の既定(最大6コマ)スキーマ。N1 呼び出しでは動的 factory を使う。 */
+export const BEAT_PAGE_NAMING_SCHEMA = createBeatPageNamingSchema();
+export const PAGE_NAMING_SCHEMA = createPageNamingSchema();

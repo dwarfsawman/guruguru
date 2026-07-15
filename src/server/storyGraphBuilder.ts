@@ -8,6 +8,7 @@ import type {
   WorldState
 } from "../shared/mangaPlanV2";
 import type { SceneBible } from "../shared/mangaPlanV2";
+import { actionTextEstablishesVisibleActor } from "../shared/dialoguePresentation";
 
 export interface StoryGraphCharacterInput {
   id: string;
@@ -33,6 +34,7 @@ export interface StoryGraphBuildResult {
   settingIdByScene: Map<number, string>;
   characterById: Map<string, StoryGraphCharacterInput>;
   characterIdsForText(text: string): string[];
+  visibleCharacterIdsForActionText(text: string): string[];
   dialogueByOrder: Map<number, StoryGraphDialogueInput>;
 }
 
@@ -192,6 +194,9 @@ export function buildStoryGraph(input: {
       .filter(({ labels }) => labels.some((label) => includesLabel(normalized, label)))
       .map(({ character }) => character.id);
   };
+  const visibleCharacterIdsForActionText = (text: string): string[] => labelIndex
+    .filter(({ labels }) => actionTextEstablishesVisibleActor(text, labels))
+    .map(({ character }) => character.id);
 
   const warnings: NarrativeGraph["warnings"] = [];
   const japaneseGenericMention = /(?:^|[\s「『(（])(?:彼女|彼|少年|少女|男|女)(?=$|[はがをにのへともでや、。！？\s」』)）])/;
@@ -220,6 +225,7 @@ export function buildStoryGraph(input: {
     settingIdByScene,
     characterById,
     characterIdsForText,
+    visibleCharacterIdsForActionText,
     dialogueByOrder: new Map(dialogues.map((dialogue) => [dialogue.orderIndex, dialogue]))
   };
 }

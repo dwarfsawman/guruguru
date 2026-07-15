@@ -52,6 +52,7 @@ export const jsonColumnNames = new Map<string, string>([
   ["reference_manifest_json", "referenceManifest"],
   ["candidate_asset_ids_json", "candidateAssetIds"],
   ["scores_json", "scores"],
+  ["reuse_source_json", "reuseSource"],
   ["dependency_task_ids_json", "dependencyTaskIds"]
 ]);
 
@@ -524,6 +525,7 @@ export function initializeDb() {
     -- 同じ revision/plan から進捗を再構成でき、task は PanelSpec と generation_round を結ぶ。
     CREATE TABLE IF NOT EXISTS script_manga_runs (
       id TEXT PRIMARY KEY,
+      predecessor_run_id TEXT,
       project_id TEXT NOT NULL,
       script_id TEXT NOT NULL,
       script_revision_id TEXT NOT NULL,
@@ -546,6 +548,7 @@ export function initializeDb() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       completed_at TEXT,
+      FOREIGN KEY (predecessor_run_id) REFERENCES script_manga_runs(id) ON DELETE SET NULL,
       FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY (script_id) REFERENCES manga_scripts(id) ON DELETE CASCADE,
       FOREIGN KEY (script_revision_id) REFERENCES script_revisions(id) ON DELETE RESTRICT,
@@ -579,6 +582,9 @@ export function initializeDb() {
       scores_json TEXT,
       attempt_count INTEGER NOT NULL DEFAULT 0,
       repair_parent_task_id TEXT,
+      inherited_from_task_id TEXT,
+      reuse_fingerprint TEXT,
+      reuse_source_json TEXT,
       dependency_task_ids_json TEXT NOT NULL DEFAULT '[]',
       status TEXT NOT NULL DEFAULT 'pending',
       asset_id TEXT,
@@ -590,7 +596,8 @@ export function initializeDb() {
       FOREIGN KEY (round_id) REFERENCES generation_rounds(id) ON DELETE SET NULL,
       FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL,
       FOREIGN KEY (selected_asset_id) REFERENCES assets(id) ON DELETE SET NULL,
-      FOREIGN KEY (repair_parent_task_id) REFERENCES script_manga_tasks(id) ON DELETE SET NULL
+      FOREIGN KEY (repair_parent_task_id) REFERENCES script_manga_tasks(id) ON DELETE SET NULL,
+      FOREIGN KEY (inherited_from_task_id) REFERENCES script_manga_tasks(id) ON DELETE SET NULL
     );
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_character_bindings_char_provider ON character_bindings(character_id, provider_id);
@@ -687,6 +694,7 @@ export function initializeDb() {
   // MangaPlanV2/control layer: existing databases receive nullable relationship columns first;
   // all newly-created runs populate them before any page or generation side effect.
   ensureColumn("script_manga_runs", "script_revision_id", "TEXT");
+  ensureColumn("script_manga_runs", "predecessor_run_id", "TEXT");
   ensureColumn("script_manga_runs", "plan_id", "TEXT");
   ensureColumn("script_manga_runs", "plan_version", "INTEGER NOT NULL DEFAULT 1");
   ensureColumn("script_manga_runs", "planner_version", "TEXT NOT NULL DEFAULT ''");
@@ -704,10 +712,16 @@ export function initializeDb() {
   ensureColumn("script_manga_tasks", "scores_json", "TEXT");
   ensureColumn("script_manga_tasks", "attempt_count", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("script_manga_tasks", "repair_parent_task_id", "TEXT");
+  ensureColumn("script_manga_tasks", "inherited_from_task_id", "TEXT");
+  ensureColumn("script_manga_tasks", "reuse_fingerprint", "TEXT");
+  ensureColumn("script_manga_tasks", "reuse_source_json", "TEXT");
   ensureColumn("script_manga_tasks", "dependency_task_ids_json", "TEXT NOT NULL DEFAULT '[]'");
   db.exec("CREATE INDEX IF NOT EXISTS idx_generation_rounds_script_manga_task ON generation_rounds(script_manga_task_id, created_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_script_manga_runs_predecessor ON script_manga_runs(predecessor_run_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_script_manga_tasks_inherited_from ON script_manga_tasks(inherited_from_task_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_script_manga_tasks_reuse_fingerprint ON script_manga_tasks(reuse_fingerprint)");
   // ALTER TABLE cannot add foreign keys on existing SQLite databases. These triggers give upgraded
-  // databases the same SET NULL behavior as the fresh schema for the two optional task links.
+  // databases the same SET NULL behavior as the fresh schema for optional manga lineage links.
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS trg_assets_clear_script_manga_selected
     AFTER DELETE ON assets BEGIN
@@ -717,6 +731,14 @@ export function initializeDb() {
     CREATE TRIGGER IF NOT EXISTS trg_script_manga_task_clear_repair_parent
     AFTER DELETE ON script_manga_tasks BEGIN
       UPDATE script_manga_tasks SET repair_parent_task_id = NULL WHERE repair_parent_task_id = OLD.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_script_manga_run_clear_predecessor
+    AFTER DELETE ON script_manga_runs BEGIN
+      UPDATE script_manga_runs SET predecessor_run_id = NULL WHERE predecessor_run_id = OLD.id;
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_script_manga_task_clear_inherited_from
+    AFTER DELETE ON script_manga_tasks BEGIN
+      UPDATE script_manga_tasks SET inherited_from_task_id = NULL WHERE inherited_from_task_id = OLD.id;
     END;
   `);
 

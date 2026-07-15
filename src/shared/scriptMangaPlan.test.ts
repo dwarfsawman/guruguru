@@ -23,6 +23,55 @@ test("planScriptManga preserves every dialogue order and scene boundary", () => 
   ]);
 });
 
+test("planScriptManga defaults to at most four dialogue elements per panel", () => {
+  const { doc } = parseFountain(`INT. ROOM - DAY
+
+@Alice
+One.
+
+@Bob
+Two.
+
+@Alice
+Three.
+
+@Bob
+Four.
+
+@Alice
+Five.`);
+  const plan = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 8 });
+  assert.deepEqual(
+    plan.pages.flatMap((page) => page.panels.map((panel) => panel.dialogueOrderIndexes.length)),
+    [4, 1]
+  );
+});
+
+test("planScriptManga does not compress distinct action moments into one panel", () => {
+  const { doc } = parseFountain(`INT. ROOM - DAY
+
+Alice enters.
+
+@Alice
+First.
+
+Alice leaves.
+
+@Bob
+Second.`);
+  const plan = planScriptManga(doc, {
+    panelsPerPage: 4,
+    maxElementsPerPanel: 8,
+    maxDialoguesPerPanel: 4
+  });
+  const panels = plan.pages.flatMap((page) => page.panels);
+  assert.equal(panels.length, 2);
+  assert.deepEqual(panels.map((panel) => panel.dialogueOrderIndexes), [[0], [1]]);
+  assert.match(panels[0]!.sourceText, /Alice enters/);
+  assert.doesNotMatch(panels[0]!.sourceText, /Alice leaves/);
+  assert.match(panels[1]!.sourceText, /Alice leaves/);
+});
+
 test("planScriptManga selects a matching layout for the final partial page", () => {
   const { doc } = parseFountain(`INT. ROOM - DAY\n\nA.\n\nB.\n\nC.\n\nD.\n\nE.`);
   const plan = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 1 });
@@ -52,5 +101,24 @@ test("planScriptManga creates stable source element ids", () => {
   assert.deepEqual(
     first.pages.flatMap((page) => page.panels.flatMap((panel) => panel.sourceElementIds)),
     second.pages.flatMap((page) => page.panels.flatMap((panel) => panel.sourceElementIds))
+  );
+});
+
+test("planScriptManga uses targetPageCount as a best-effort deterministic page target", () => {
+  const { doc } = parseFountain(`INT. ROOM - DAY\n\nA.\n\nB.\n\nC.\n\nD.\n\nE.\n\nF.`);
+  const compact = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 1, targetPageCount: 1 });
+  const paced = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 1, targetPageCount: 3 });
+  const overTarget = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 1, targetPageCount: 100 });
+  const automatic = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 1, targetPageCount: 0 });
+
+  // 6 panels cannot fit on one page with a 4-panel ceiling, so the hard minimum wins.
+  assert.equal(compact.pages.length, 2);
+  assert.deepEqual(paced.pages.map((page) => page.panels.length), [2, 2, 2]);
+  // Empty pages are never synthesized; one panel per page is the deterministic upper bound.
+  assert.equal(overTarget.pages.length, 6);
+  assert.equal(automatic.pages.length, 2, "targetPageCount 0 keeps automatic packing semantics");
+  assert.deepEqual(
+    paced.pages.flatMap((page) => page.panels.flatMap((panel) => panel.sourceElementIds)),
+    compact.pages.flatMap((page) => page.panels.flatMap((panel) => panel.sourceElementIds))
   );
 });

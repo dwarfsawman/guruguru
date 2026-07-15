@@ -40,6 +40,12 @@ const DEFAULT_FONT_FAMILY_PRIORITY = [
   "メイリオ", "meiryo"
 ];
 
+/** 漫画の台詞・キャプションだけに適用する優先順。一般ページの `default` は変更しない。 */
+const MANGA_FONT_FAMILY_PRIORITY = [
+  "源暎アンチック", "gen'ei antique", "genei antique",
+  ...DEFAULT_FONT_FAMILY_PRIORITY
+];
+
 interface ScannedFile {
   path: string;
   source: "system" | "user";
@@ -181,11 +187,11 @@ export function listFonts(): FontSummary[] {
   return loadFontCache().fonts.map(({ id, familyName, subfamilyName, source }) => ({ id, familyName, subfamilyName, source }));
 }
 
-export function pickDefaultFont<T extends FontSummary>(fonts: T[]): T | null {
-  for (const needle of DEFAULT_FONT_FAMILY_PRIORITY) {
+function pickPreferredFont<T extends FontSummary>(fonts: T[], priority: readonly string[]): T | null {
+  for (const needle of priority) {
     const matches = fonts.filter((font) => font.familyName.toLowerCase().includes(needle));
     if (matches.length === 0) continue;
-    // 漫画本文はRegularだと細く見えるため、同じ日本語ファミリーのBoldを既定にする。
+    // 本文はRegularだと細く見えるため、同じ日本語ファミリーのBoldを既定にする。
     // "Noto Sans JP Black" のように太さがfamily名へ入った別faceより、標準familyのBoldを優先。
     const exactFamily = matches.filter((font) => font.familyName.toLowerCase() === needle);
     const candidates = exactFamily.length > 0 ? exactFamily : matches;
@@ -196,6 +202,14 @@ export function pickDefaultFont<T extends FontSummary>(fonts: T[]): T | null {
       ?? candidates[0]!;
   }
   return fonts[0] ?? null;
+}
+
+export function pickDefaultFont<T extends FontSummary>(fonts: T[]): T | null {
+  return pickPreferredFont(fonts, DEFAULT_FONT_FAMILY_PRIORITY);
+}
+
+export function pickMangaFont<T extends FontSummary>(fonts: T[]): T | null {
+  return pickPreferredFont(fonts, MANGA_FONT_FAMILY_PRIORITY);
 }
 
 // --- フォント本体のオープン(LRU、数件だけ保持) ---
@@ -301,4 +315,10 @@ export function resolveFontProvider(fontId: string): ResolvedFontProvider {
 export function resolveDefaultFontId(): string {
   const cache = loadFontCache();
   return pickDefaultFont(cache.fonts)?.id ?? "default";
+}
+
+/** script-mangaが新規配置する文字用。源暎アンチックが無ければ一般既定へ安全にfallbackする。 */
+export function resolveMangaFontId(): string {
+  const cache = loadFontCache();
+  return pickMangaFont(cache.fonts)?.id ?? "default";
 }

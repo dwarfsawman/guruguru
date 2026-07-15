@@ -44,6 +44,12 @@ export interface MaskGenerationParams {
   scheduler: string;
 }
 
+export interface ScriptMangaRepairContext {
+  taskId: string;
+  assetId: string;
+  busy: boolean;
+}
+
 function clampNumber(value: number, min: number, max: number, fallback: number) {
   if (!Number.isFinite(value)) {
     return fallback;
@@ -73,7 +79,8 @@ export function renderAssetModal(
   poseDraft: PoseDraft | null = null,
   generationParams: MaskGenerationParams | null = null,
   sidebarCollapsed = false,
-  selectedPoseEdges: ReadonlyArray<{ poseIndex: number; boneIndex: number }> = []
+  selectedPoseEdges: ReadonlyArray<{ poseIndex: number; boneIndex: number }> = [],
+  scriptMangaRepair: ScriptMangaRepairContext | null = null
 ) {
   if (!asset) {
     return "";
@@ -85,7 +92,7 @@ export function renderAssetModal(
     : ` style="--mask-zoom: ${formatCssNumber(draft.zoomScale)}; --mask-pan-x: ${formatCssNumber(draft.panOffset.x)}px; --mask-pan-y: ${formatCssNumber(draft.panOffset.y)}px;"`;
   const info = `Seed: ${asset.seed ?? "-"} / Steps: ${asset.steps ?? "-"} / CFG: ${asset.cfg ?? "-"} / Sampler: ${asset.sampler}`;
   const media = renderPreviewMedia(asset, draft, editing, zoomStyle, paintEditing, maskPanelTab, poseDraft, selectedPoseEdges, paintDraft);
-  const footer = renderPreviewFooter(asset, info);
+  const footer = renderPreviewFooter(asset, info, draft, scriptMangaRepair);
   return `
     <div class="preview-modal ${anyEditing ? "mask-editor-open" : ""}" role="dialog" aria-modal="true">
       <div class="preview-content ${anyEditing ? "mask-mode" : ""}">
@@ -155,7 +162,14 @@ export function renderPreviewMedia(
   `;
 }
 
-export function renderPreviewFooter(asset: Asset, info: string) {
+export function renderPreviewFooter(
+  asset: Asset,
+  info: string,
+  draft: InpaintDraft | null = null,
+  scriptMangaRepair: ScriptMangaRepairContext | null = null
+) {
+  const repairAvailable = scriptMangaRepair?.assetId === asset.id;
+  const hasRepairMask = repairAvailable && hasMaskData(draft);
   return `
     <div class="preview-footer">
       <div class="preview-info">
@@ -163,6 +177,14 @@ export function renderPreviewFooter(asset: Asset, info: string) {
         <small>${escapeHtml(asset.prompt)}</small>
       </div>
       <div class="preview-actions">
+        ${repairAvailable ? `
+          <div class="script-manga-repair-action">
+            <button class="button-primary" type="button" data-action="repair-script-manga-candidate"
+              data-id="${escapeAttr(scriptMangaRepair.taskId)}" data-asset-id="${escapeAttr(asset.id)}"
+              ${scriptMangaRepair.busy || !hasRepairMask ? "disabled" : ""}>このマスクでコマ修復</button>
+            ${hasRepairMask ? "" : `<small>白い修復範囲を描き「適用」してから実行してください。</small>`}
+          </div>
+        ` : ""}
         <button class="button-secondary" type="button" data-action="toggle-select" data-id="${asset.id}">選択切替</button>
         <button class="button-primary" type="button" data-action="generate-from-preview" data-id="${asset.id}" data-mode="img2img">この画像からブランチング</button>
       </div>

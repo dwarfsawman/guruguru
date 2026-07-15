@@ -164,8 +164,15 @@ export async function createScriptMangaPlanCandidates(
     : [];
   const planOptions: ScriptMangaPlanOptions = {
     scriptRevisionId: revision.id,
-    targetPageCount: typeof input.targetPageCount === "number" ? input.targetPageCount : undefined,
-    panelsPerPage: typeof input.panelsPerPage === "number" ? input.panelsPerPage : undefined
+    targetPageCount: typeof input.targetPageCount === "number" && input.targetPageCount > 0
+      ? Math.min(200, Math.trunc(input.targetPageCount))
+      : undefined,
+    panelsPerPage: typeof input.panelsPerPage === "number"
+      ? Math.max(1, Math.min(6, Math.trunc(input.panelsPerPage)))
+      : undefined,
+    maxDialoguesPerPanel: typeof input.maxDialoguesPerPanel === "number"
+      ? Math.max(1, Math.min(8, Math.trunc(input.maxDialoguesPerPanel)))
+      : undefined
   };
   const existingCount = getRow<{ count: number }>(
     "SELECT COUNT(*) AS count FROM script_manga_plan_candidates WHERE group_id = ?",

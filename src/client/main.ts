@@ -1237,6 +1237,12 @@ function renderAssetModalView() {
   const batchSizeValue = currentBatchSizeValue();
   const paintDraft = state.paintEditMode ? paintDraftForAsset(asset.id) ?? defaultPaintDraft(asset.id) : null;
   const poseDraft = poseDraftForAsset(asset.id);
+  const repairTask = state.scriptMangaRun?.tasks.find(
+    (task) => task.status === "awaiting_review" && task.candidateAssetIds.includes(asset.id)
+  );
+  const scriptMangaRepair = repairTask
+    ? { taskId: repairTask.id, assetId: asset.id, busy: state.scriptMangaBusy }
+    : null;
   const generationParams: MaskGenerationParams = {
     steps: currentStepsValue(),
     cfg: currentCfgValue(),
@@ -1261,6 +1267,7 @@ function renderAssetModalView() {
     poseDraft,
     generationParams,
     state.sidebarCollapsed,
-    getSelectedPoseEdges()
+    getSelectedPoseEdges(),
+    scriptMangaRepair
   );
 }

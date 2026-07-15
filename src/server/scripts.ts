@@ -9,6 +9,14 @@ import { createHash } from "node:crypto";
 import type { FountainDoc } from "../shared/fountain";
 import { parseFountain } from "../shared/fountain";
 import type { DialogueBalloonStyle, DialogueLine, DialogueSemanticKind, MangaScript, ScriptImportResult, ScriptRevision } from "../shared/apiTypes";
+import {
+  isDisplayReadoutText,
+  isDisplaySpeakerCue,
+  isMachineSpeakerCue,
+  parseParentheticalDelivery,
+  parseSpeakerCue,
+  type ExplicitDialogueDelivery
+} from "../shared/dialoguePresentation";
 import { createId, getRow, getRows, runSql, toApiRow, toApiRows } from "./db";
 import { HttpError } from "./http";
 import { findOrCreateCharacterByLabel } from "./characters";
@@ -124,16 +132,17 @@ export function resolveDialoguePresentation(
   if (/^SFX:/i.test(trimmedText)) {
     return { semanticKind: "sfx", balloonStyle: "sfx", text: trimmedText.replace(/^SFX:\s*/i, "") };
   }
-  if (/^《[^》]+》$/u.test(trimmedText) || /(?:機械音声|システム|アナウンス|computer|system)/iu.test(speakerLabel)) {
+  const cue = parseSpeakerCue(speakerLabel);
+  if (isMachineSpeakerCue(cue.identityLabel) || (isDisplaySpeakerCue(cue.identityLabel) && isDisplayReadoutText(trimmedText))) {
     return { semanticKind: "dialogue", balloonStyle: "machine", text: rawText };
   }
-  const parentheticalText = (parenthetical ?? "").replace(/[()（）]/g, "").trim();
-  if (/(?:V\.O\.|Ｖ\.Ｏ\.|記憶|記録|回想)/iu.test(parentheticalText)) {
-    return { semanticKind: "dialogue", balloonStyle: "vo", text: rawText };
-  }
-  if (/(?:通信|無線|拡声|スピーカー)/u.test(`${speakerLabel} ${parentheticalText}`)) {
-    return { semanticKind: "dialogue", balloonStyle: "telecom", text: rawText };
-  }
+  const delivery = parseParentheticalDelivery(parenthetical) ?? cue.delivery;
+  const balloonStyleByDelivery: Partial<Record<ExplicitDialogueDelivery, DialogueBalloonStyle>> = {
+    "voice-over": "vo",
+    telecom: "telecom",
+    machine: "machine"
+  };
+  if (delivery) return { semanticKind: "dialogue", balloonStyle: balloonStyleByDelivery[delivery]!, text: rawText };
   return { semanticKind: "dialogue", balloonStyle: "normal", text: rawText };
 }
 
@@ -171,7 +180,8 @@ function applyScriptRevisionDiff(projectId: string, scriptId: string, doc: Fount
       );
       return;
     }
-    const character = findOrCreateCharacterByLabel(projectId, item.speakerLabel);
+    // Delivery suffixes describe how a line is heard, not a separate character identity.
+    const character = findOrCreateCharacterByLabel(projectId, parseSpeakerCue(item.speakerLabel).identityLabel);
     const id = createId("line");
     runSql(
       `INSERT INTO dialogue_lines

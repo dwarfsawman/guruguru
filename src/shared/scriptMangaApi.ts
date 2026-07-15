@@ -1,8 +1,9 @@
 import type { DialoguePolicy, MangaPlanV2, MangaPlanValidationReport } from "./mangaPlanV2";
 import type { ScriptMangaReferenceSnapshot } from "./referenceSets";
 import type { ScriptMangaPlan } from "./scriptMangaPlan";
+import type { InpaintArea, MaskedContent } from "./types";
 
-export type ScriptMangaPlanningMode = "heuristic" | "llm";
+export type ScriptMangaPlanningMode = "heuristic" | "llm" | "provided";
 export type ScriptMangaAuditMode = "manual" | "vlm";
 /** 棒人間ControlNet(ネームv4 D4)。off=無効(既定)、それ以外は部分モード。 */
 export type ScriptMangaPoseControlMode = "off" | "full" | "upper" | "face";
@@ -27,6 +28,12 @@ export interface ScriptMangaUiSettings {
   templateId: string;
   planningMode: ScriptMangaPlanningMode;
   panelsPerPage: number;
+  /** 1コマへ割り当てる台詞要素数の上限(1..8、既定4)。最終可否は文字preflightで判定する。 */
+  maxDialoguesPerPanel: number;
+  /** 希望ページ数(1..200)。0は脚本量から自動決定。 */
+  targetPageCount: number;
+  /** plan全体のコマ数上限(1..800)。0は上限なし。 */
+  maxPanelCount: number;
   dialoguePolicy: DialoguePolicy;
   auditMode: ScriptMangaAuditMode;
   /** 棒人間骨格のControlNet条件付け(実験的、既定 off)。 */
@@ -41,6 +48,10 @@ export interface PrepareScriptMangaRunRequest extends ScriptMangaUiSettings {
   allowReferenceFallback: false;
   /** ネームv4 D3: 採用するプラン候補。指定時は planningMode を無視して候補プランで run を作る。 */
   planCandidateId?: string;
+  /** 変更前の採用済みコマを完全一致時だけ再利用する predecessor run。 */
+  predecessorRunId?: string;
+  /** predecessor の固定revisionを引き継いで編集した完全な MangaPlanV2。 */
+  successorPlan?: MangaPlanV2;
 }
 
 // --- プラン候補(ネームv4 D3) ---
@@ -85,6 +96,7 @@ export interface CreateScriptMangaPlanCandidatesRequest {
   profiles?: string[];
   targetPageCount?: number;
   panelsPerPage?: number;
+  maxDialoguesPerPanel?: number;
 }
 
 export interface ScriptMangaTaskView {
@@ -96,12 +108,33 @@ export interface ScriptMangaTaskView {
   attemptCount: number;
   candidateAssetIds: string[];
   selectedAssetId: string | null;
+  inheritedFromTaskId: string | null;
+  reuseFingerprint: string | null;
   scores: unknown;
   lastError: unknown;
 }
 
+/**
+ * 既存の漫画候補を親画像にした局所 inpaint。生成の物語条件・workflow・参照設定は
+ * サーバーが親候補の round から固定継承し、クライアントは修復範囲だけを指定する。
+ */
+export interface RepairScriptMangaTaskRequest {
+  assetId: string;
+  /** 親候補をどの程度描き直すか。省略時 0.45。 */
+  denoise?: number;
+  inpaint: {
+    /** 親候補と同じ寸法の、更新領域を白で示した PNG data URL。 */
+    maskDataUrl: string;
+    maskedContent?: MaskedContent;
+    inpaintArea?: InpaintArea;
+    onlyMaskedPadding?: number;
+    featherRadius?: number;
+  };
+}
+
 export interface ScriptMangaRunView {
   id: string;
+  predecessorRunId: string | null;
   projectId: string;
   scriptId: string;
   scriptRevisionId: string | null;

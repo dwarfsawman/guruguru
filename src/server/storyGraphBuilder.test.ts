@@ -36,6 +36,7 @@ test("story graph resolves an existing Character alias from action prose", () =>
   const action = result.graph.sourceElements.find((element) => element.type === "action");
   assert.ok(action);
   assert.deepEqual(result.characterIdsForText(action.text), ["character-luna"]);
+  assert.deepEqual(result.visibleCharacterIdsForActionText(action.text), ["character-luna"]);
   assert.equal(result.characterById.get("character-luna")?.name, "月城ルナ");
   assert.equal(result.graph.entities.find((entity) => entity.id === "character-luna")?.attributes.description, "silver hair");
 });
@@ -51,6 +52,17 @@ test("story graph grounds explicit silent character and prop tags", () => {
   assert.equal(silentCharacter.attributes.source, "explicit-fountain-tag");
   assert.equal(prop.attributes.source, "explicit-fountain-tag");
   assert.deepEqual(result.characterIdsForText("The Silent Child watches."), [silentCharacter.id]);
+  assert.deepEqual(result.visibleCharacterIdsForActionText("[[character: Silent Child]] watches."), [silentCharacter.id]);
+});
+
+test("story graph distinguishes physical cast evidence from media and ownership mentions", () => {
+  const characters: StoryGraphCharacterInput[] = [{ id: "character-mira", name: "ミラ", aliases: ["Mira"], notes: "" }];
+  const result = graphFor("INT. ROOM - NIGHT\n\nモニターにミラが映る。", characters);
+  assert.deepEqual(result.characterIdsForText("モニターにミラが映る。"), ["character-mira"], "generic mention lookup remains available");
+  assert.deepEqual(result.visibleCharacterIdsForActionText("モニターにミラが映る。"), []);
+  assert.deepEqual(result.visibleCharacterIdsForActionText("アリスがミラを探す。"), []);
+  assert.deepEqual(result.visibleCharacterIdsForActionText("ミラがモニターの横に立つ。"), ["character-mira"]);
+  assert.deepEqual(result.visibleCharacterIdsForActionText("ミラが部屋に入る。"), ["character-mira"]);
 });
 
 test("story graph warns about an unresolved Japanese pronoun in natural action prose", () => {

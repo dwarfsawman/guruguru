@@ -120,7 +120,7 @@ Fountain
    `id, project_id, script_id, script_revision_id, group_id, profile, temperature, plan_json(ScriptMangaPlan+importance/turnHook), provenance_json, status(active/adopted/archived), adopted_run_id, created_at`。
    既存 `script_manga_plans`/run の FK 意味論には触れない。
 3. **API** —
-   - `POST /api/projects/:id/script-manga-plan-candidates` `{ scriptId, count?, profiles?, targetPageCount?, panelsPerPage? }` → ビート注釈(キャッシュ利用)+N1×count。候補JSONの配列を返す。
+   - `POST /api/projects/:id/script-manga-plan-candidates` `{ scriptId, count?, profiles?, targetPageCount?, panelsPerPage?, maxDialoguesPerPanel? }` → ビート注釈(キャッシュ利用)+N1×count。`panelsPerPage`（1〜6）と`maxDialoguesPerPanel`（1〜8、既定4）はN1 prompt・schema・決定的validatorへ同じhard ceilingとして渡す。候補JSONの配列を返す。
    - `GET /api/projects/:id/script-manga-plan-candidates?scriptId=` → group 毎一覧。
    - 既存 `POST .../script-manga-runs` に `planCandidateId` を追加 → サーバー側で候補 plan を provided 相当として採用し、監督→V2→run を実行。**採用候補のページ割り・レイアウトは監督が変更不可**(監督バッチの `allowedLayouts` を候補の選択レイアウト1件に固定)。採用時に `status="adopted"`+`adopted_run_id` を記録。
    - クライアント型 `ScriptMangaPlanningMode` に `"provided"` 追加は不要になる(candidateId 経由で内部的に provided を使う)が、API型には `planCandidateId?` を追加(`src/shared/scriptMangaApi.ts`)。
@@ -248,6 +248,7 @@ Fountain
 
 ## 変更履歴
 
+- 2026-07-15: 候補APIの`maxDialoguesPerPanel`と、N1へ伝播するページ/コマ密度hard ceilingを追記。
 - 2026-07-14: **P1〜P4・P6 実装完了**(feature/manga-name-v4 → main)。MangaFlow(arXiv 2605.28173)の
   調査結果と取り込み点を「先行研究」節へ、計画との差分を「実装メモ」へ追記。P5は計画どおり保留。
   検証: typecheck / bun test 906件 / bun run check すべて緑。

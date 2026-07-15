@@ -210,16 +210,15 @@ split dialogue or re-plan the page: line_...(N chars)」** で失敗すること
    `four-grid` の1コマを割って5コマ化すると `builtin:five-panel` の小枠は `four-grid` の枠より
    低い)、1回の修復で新たな違反が生まれ得る。**予測→修復→再予測を収束(違反0件)するまで反復する**
    (ALICE_REBOOT_E02 では2周で収束)。
-5. 分割時は**その1発話だけの sourceText を作り直す**こと。元の複数発話ぶんの `sourceText` を
-   そのまま複製すると、他の発話の引用文中に含まれる別キャラクター名まで一緒に複製されてしまい、
-   `characterIdsForText`(`src/server/storyGraphBuilder.ts:189-194`、引用文かどうかを区別しない
-   単純な部分一致)経由で不在キャラクターが cast に紛れ込む副作用が出る。
+5. 分割時は**その1発話だけの sourceText を作り直す**こと。元の複数発話ぶんを複製すると、promptと
+   source traceが別の発話まで指して監査不能になる。現行cast正規化はdialogue引用の名前を根拠にせず、
+   通常の画面内発話、action/synopsisの保守的な肯定物理行動、明示`[[cast: Name]]`だけを使う。
 
 ### 12.3 既定パイプライン(heuristic/LLM監督)への波及
 
 この最小可読サイズゲートと `fontScale` ラダーはプランニングモードを問わず `materializeRun` から
 常に通る(`scriptManga.ts` 内、provided/heuristic/llm 共通)。決定的プランナー(heuristic)は
-既定で `panelsPerPage=4`・`maxDialoguesPerPanel=2` かつ常に各コマ数の**先頭候補レイアウト**
+既定で `panelsPerPage=4`・`maxDialoguesPerPanel=4` かつ常に各コマ数の**先頭候補レイアウト**
 (`layoutForPanelCount`、`scriptMangaPlan.ts:106-110`)を選ぶため、上記の「小さいスロットに複数発話」
 が起きにくい組み合わせに寄っているだけで、原理的には同じ422を踏み得る。`planningMode:"provided"`
 で `builtin:three-hero-bottom`/`builtin:four-hero-bottom`/`builtin:five-panel`/`builtin:six-panel`

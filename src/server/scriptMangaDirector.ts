@@ -17,8 +17,8 @@ import { getLlmSettings } from "./llm";
 import {
   applyBeatPageNaming,
   applyPageNaming,
-  BEAT_PAGE_NAMING_SCHEMA,
-  PAGE_NAMING_SCHEMA
+  createBeatPageNamingSchema,
+  createPageNamingSchema
 } from "./scriptMangaPageNaming";
 import { annotateScriptBeats, type BeatAnnotationResult } from "./scriptBeatAnnotator";
 
@@ -264,6 +264,8 @@ export async function generateScriptMangaN1Plan(
   const deterministicBase = planScriptManga(doc, options);
   const settings = getLlmSettings();
   const targetPageCount = Math.max(1, Math.trunc(options.targetPageCount ?? Math.max(deterministicBase.pages.length, deterministicBase.dialogueCount / 5)));
+  const maxPanelsPerPage = Math.max(1, Math.min(6, Math.trunc(options.panelsPerPage ?? 4)));
+  const maxDialoguesPerPanel = Math.max(1, Math.min(8, Math.trunc(options.maxDialoguesPerPanel ?? 4)));
   const temperature = n1Options.temperature ?? 0.3;
   const profileLines = n1Options.profileInstruction?.trim() ? [n1Options.profileInstruction.trim()] : [];
 
@@ -276,21 +278,24 @@ export async function generateScriptMangaN1Plan(
         systemPrompt: [
           "You are the N1 manga page-naming editor. Build pages and panels from the annotated story beats.",
           "Cover every beat id exactly once and in order via panels[].sourceBeatIds. A panel usually bundles 1-3 consecutive beats; never mix scenes in one panel.",
-          "Use 1-6 panels per page; splash means exactly one panel on its page.",
+          `Use 1-${maxPanelsPerPage} panels per page; this is a hard maximum. Splash means exactly one panel on its page.`,
           "Respect the annotations: give keepAlone beats their own panel; map desiredScale hero/splash to panel importance; put beats with high pageTurnAffinity at a page's final panel (tease) or a page's first panel (payoff).",
+          `No panel may contain more than ${maxDialoguesPerPanel} scripted dialogue elements; this is not a rendered-balloon target.`,
           `Keep each panel's total dialogue below ${Math.max(40, Math.trunc(options.maxSourceCharactersPerPanel ?? 260))} characters.`,
           ...N1_COMMON_PROMPT_LINES,
           ...profileLines
         ].join("\n"),
         userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Story beats (in order): ${JSON.stringify(beatCompact(annotation))}`,
-        schema: BEAT_PAGE_NAMING_SCHEMA,
+        schema: createBeatPageNamingSchema(maxPanelsPerPage),
         validate: (raw) => applyBeatPageNaming(raw, {
           title: deterministicBase.title,
           units: annotation.units,
           beats: annotation.beats,
           targetPageCount,
           stylePrompt: options.stylePrompt,
-          maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel
+          maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel,
+          maxDialoguesPerPanel,
+          maxPanelsPerPage
         }),
         temperature,
         timeoutMs: 180000
@@ -317,13 +322,14 @@ export async function generateScriptMangaN1Plan(
     const named = await generateStructuredJson<ScriptMangaPlan>({
       settings,
       systemPrompt: [
-        "You are the N1 manga page-naming editor. Preserve every sourcePanelId exactly once and in order. Never combine scenes. Use 1-6 panels per page; splash means one panel on its page. Design page turns and hero beats.",
+        `You are the N1 manga page-naming editor. Preserve every sourcePanelId exactly once and in order. Never combine scenes. Use 1-${maxPanelsPerPage} panels per page; this is a hard maximum. Splash means one panel on its page. Design page turns and hero beats.`,
+        `No panel may contain more than ${maxDialoguesPerPanel} scripted dialogue elements; this is not a rendered-balloon target.`,
         ...N1_COMMON_PROMPT_LINES,
         ...profileLines
       ].join("\n"),
       userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Source panels: ${JSON.stringify(sourcePanels)}`,
-      schema: PAGE_NAMING_SCHEMA,
-      validate: (raw) => applyPageNaming(raw, deterministicBase, targetPageCount),
+      schema: createPageNamingSchema(maxPanelsPerPage),
+      validate: (raw) => applyPageNaming(raw, deterministicBase, targetPageCount, maxDialoguesPerPanel, maxPanelsPerPage),
       temperature,
       timeoutMs: 180000
     });
@@ -447,7 +453,7 @@ async function directScriptMangaPages(
       const result = await generateStructuredJson<ScriptMangaPagePlan[]>({
       settings,
       systemPrompt: [
-        "あなたは商業SF漫画のネーム監督です。右綴じ・右から左へ読む日本漫画として、視線誘導と緩急を設計してください。",
+        "あなたは商業漫画のネーム監督です。右綴じ・右から左へ読む日本漫画として、視線誘導と緩急を設計してください。",
         "各コマは一つの瞬間、一つの主行動だけに絞り、誰が何をしてどう感じているかが静止画だけで判別できるようにします。",
         "同じ画角を連続させず、導入はwide、反応はclose-up、決めはlow angle/splashなど意図的に変化させます。",
         "台詞本文はpromptへ転記せず、speech act、表情、身振り、視線、口の状態という視覚化可能な演出へ変換してください。",

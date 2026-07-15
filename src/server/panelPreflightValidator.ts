@@ -19,6 +19,7 @@ export interface PanelPreflightReport {
     referencesTraceable: boolean;
     promptHasNoDialogueText: boolean;
     castNormalized: boolean;
+    visibleSpeakersIncluded: boolean;
     offscreenSpeakersExcluded: boolean;
     requiredReferencesReady: boolean;
   };
@@ -53,6 +54,7 @@ export function validatePanelPreflight(input: {
   layoutPanelId: string;
   dialogueTexts: string[];
   castNormalized?: boolean;
+  visibleSpeakerIds?: string[];
   offscreenSpeakerIds?: string[];
   requireReferences?: boolean;
   missingReferenceIds?: string[];
@@ -113,6 +115,8 @@ export function validatePanelPreflight(input: {
   }
   const castNormalized = input.castNormalized !== false;
   if (!castNormalized) violations.push({ code: "cast-not-normalized", severity: "error", message: "Panel cast contains duplicate character/variant entries" });
+  const visibleSpeakersIncluded = (input.visibleSpeakerIds ?? []).every((id) => panel.cast.some((member) => member.characterId === id));
+  if (!visibleSpeakersIncluded) violations.push({ code: "visible-speaker-missing", severity: "error", message: "A direct dialogue speaker is missing from the visual cast" });
   const offscreenSpeakersExcluded = (input.offscreenSpeakerIds ?? []).every((id) => !panel.cast.some((member) => member.characterId === id));
   if (!offscreenSpeakersExcluded) violations.push({ code: "offscreen-speaker-in-cast", severity: "error", message: "An off-screen-only speaker remains in the visual cast" });
   const requiredReferencesReady = !input.requireReferences || (input.missingReferenceIds ?? []).length === 0;
@@ -135,6 +139,7 @@ export function validatePanelPreflight(input: {
       referencesTraceable,
       promptHasNoDialogueText,
       castNormalized,
+      visibleSpeakersIncluded,
       offscreenSpeakersExcluded,
       requiredReferencesReady
     },

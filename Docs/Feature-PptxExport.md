@@ -95,8 +95,13 @@ E2E スタイル)で検証:
 (`fallbackImageExportName`)に pptx ケースを追加、成功トーストも pptx 時は「PPTXを書き出しました。」に
 変えた。
 
+編集可能な文字は、各`TextContent.style.fontId`を`GET /api/fonts`と同じ一覧からfamily名へ解決し、
+DrawingMLのlatin/east-Asian/complex-script typefaceへ明示する。`fontId:"default"`では一般既定fontを使い、
+script-mangaの自動文字は導入済みなら源暎アンチックの実font IDをpage objectへ明示する。フォントファイル自体はPPTXへ埋め込まない。
+
 ## 変更履歴
 
+- 2026-07-15: 編集可能テキストへ選択font familyを明示し、script-manga自動文字だけ導入済み源暎アンチックを優先するよう変更。
 - 2026-07-15: ページPNGを逐次一時ファイル化し、XML/relsをTypeScriptで生成してRust `pack`でPPTXへまとめる方式へ変更。PNGはSTORE、XMLはDEFLATE、HTTPはファイルストリーミング化。
 - 2026-07-11: 三角形と本体の重ね合わせをPowerPoint標準の吹き出し図形へ変更。文字サイズをページ幅比で算出するよう修正。
 - 2026-07-11: 背景の平坦画像と、編集可能な吹き出し本体・しっぽ・文字を分離して出力する方式へ変更。

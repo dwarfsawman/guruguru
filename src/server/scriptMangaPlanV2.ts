@@ -19,6 +19,7 @@ import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
 import type { PageLayout } from "../shared/pageLayout";
 import type { StyleLoraSelection } from "../shared/types";
 import { extractFillUnits } from "../shared/dialogueAdaptation";
+import { dialogueEstablishesVisibleSpeaker } from "../shared/dialoguePresentation";
 import { compilePanelPrompt } from "./panelPromptCompiler";
 import { resolvePanelReferences } from "./referenceResolver";
 import {
@@ -250,9 +251,19 @@ export function buildMangaPlanV2(input: {
         .map((order) => story.dialogueByOrder.get(order))
         .filter((line): line is StoryGraphDialogueInput => Boolean(line));
       dialogueLines.forEach((line) => sourceDialogueLineIds.add(line.id));
+      const sourceElementIds = inferSourceIds(legacyPanel, input.scriptRevisionId, story.graph.sourceElements);
+      const actionSources = sourceElementIds
+        .flatMap((sourceId) => {
+          const source = story.graph.sourceElements.find((candidate) => candidate.id === sourceId);
+          return source && (source.type === "action" || source.type === "synopsis") ? [source] : [];
+        });
+      const actionSourceText = actionSources.map((source) => source.text).join("\n");
+      const visibleDialogueLines = dialogueLines.filter(dialogueEstablishesVisibleSpeaker);
       const characterIds = [
-        ...dialogueLines.map((line) => line.characterId).filter((id): id is string => Boolean(id)),
-        ...story.characterIdsForText(legacyPanel.sourceText)
+        ...visibleDialogueLines.map((line) => line.characterId).filter((id): id is string => Boolean(id)),
+        // Dialogue source text contains speaker labels. Resolve silent cast only
+        // from action/synopsis elements so off-screen labels cannot become people.
+        ...actionSources.flatMap((source) => story.visibleCharacterIdsForActionText(source.text))
       ].filter((id, index, all) => all.indexOf(id) === index);
       const boxes = castBoxes(Math.max(1, characterIds.length));
       const cast: PanelCastSpec[] = characterIds.map((characterId, index) => {
@@ -285,13 +296,15 @@ export function buildMangaPlanV2(input: {
           pose: focal.pose || "standing full body"
         }];
       }
-      const sourceElementIds = inferSourceIds(legacyPanel, input.scriptRevisionId, story.graph.sourceElements);
       const fillUnitIds = fillUnits.filter((unit) =>
         (unit.sourceElementId && sourceElementIds.includes(unit.sourceElementId)) ||
         (unit.id === `fill:scene:${legacyPanel.sceneIndex}` && !captionedScenes.has(legacyPanel.sceneIndex))
       ).map((unit) => unit.id);
       if (fillUnitIds.includes(`fill:scene:${legacyPanel.sceneIndex}`)) captionedScenes.add(legacyPanel.sceneIndex);
-      const action = direction.action?.trim() || legacyPanel.sourceText.split("\n").find((line) => !line.includes(":")) || "visual story beat";
+      const action = direction.action?.trim() || actionSourceText.split("\n").map((line) => line.trim()).find(Boolean) ||
+        (dialogueLines.length > 0
+          ? "hold on the grounded setting or prop while the scripted line remains off-panel"
+          : "visual story beat");
       let panelBeatIds: string[];
       if (annotationUsable && legacyPanel.sourceBeatIds) {
         // 注釈済みビートからの引き継ぎ(ネームv4 D2)。ビートは既に beats へ登録済み。

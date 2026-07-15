@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { createId, defaultVlmAuditSettings, getRow, getRows, initializeDb, runSql, setSetting } from "./db.ts";
 import { createCharacter, listCharacters, putCharacterBinding } from "./characters.ts";
 import { approveReferenceSet, createReferenceSet, uploadReferenceSetImage } from "./referenceSets.ts";
@@ -20,9 +20,12 @@ import {
   updateScriptMangaPlan,
   withScriptMangaRunExport
 } from "./scriptManga.ts";
-import { fakeProvider, resetFakeProvider } from "./providers/fakeProvider.ts";
+import { fakeProvider, programFakeOutcomes, resetFakeProvider } from "./providers/fakeProvider.ts";
 import { registerProvider } from "./providers/registry.ts";
 import { deleteLayoutTemplate, importLayoutTemplate } from "./layoutTemplates.ts";
+import { findLayoutPreset } from "../shared/layoutPresets.ts";
+import type { MangaPlanV2 } from "../shared/mangaPlanV2.ts";
+import { listFonts, pickMangaFont } from "./fonts.ts";
 
 registerProvider(fakeProvider);
 
@@ -60,6 +63,77 @@ function chromaTemplate(): string {
     [id, JSON.stringify(workflow)]
   );
   return id;
+}
+
+function expandToTwoPanelPlan(plan: MangaPlanV2): MangaPlanV2 {
+  const expanded = structuredClone(plan);
+  const page = expanded.pages[0]!;
+  const original = page.panels[0]!;
+  const extra = structuredClone(original);
+  extra.id = `${original.id}:budget-extra`;
+  extra.sourceElementIds = [];
+  extra.beatIds = [];
+  extra.dialogueLineIds = [];
+  extra.fillUnitIds = [];
+  extra.continuityFromPanelIds = [];
+  extra.compiledPrompt = `${original.compiledPrompt}, alternate reaction insert`;
+  const layout = findLayoutPreset("builtin:two-horizontal");
+  assert.ok(layout);
+  page.layoutTemplateId = layout.id;
+  page.layoutSnapshot = structuredClone(layout.layout);
+  page.panels = [original, extra];
+  expanded.panelCount = 2;
+  return expanded;
+}
+
+function collapseToOneDialoguePanelPlan(plan: MangaPlanV2): MangaPlanV2 {
+  const collapsed = structuredClone(plan);
+  const panels = collapsed.pages.flatMap((page) => page.panels);
+  const first = panels[0]!;
+  const castByCharacter = new Map(first.cast.map((member) => [member.characterId, structuredClone(member)]));
+  for (const member of panels.flatMap((panel) => panel.cast)) {
+    const existing = castByCharacter.get(member.characterId);
+    if (!existing) {
+      castByCharacter.set(member.characterId, structuredClone(member));
+      continue;
+    }
+    existing.speakingLineIds = [...new Set([...existing.speakingLineIds, ...member.speakingLineIds])];
+  }
+  first.cast = [...castByCharacter.values()];
+  first.sourceElementIds = [...new Set(panels.flatMap((panel) => panel.sourceElementIds))];
+  first.beatIds = [...new Set(panels.flatMap((panel) => panel.beatIds))];
+  first.dialogueLineIds = [...new Set(panels.flatMap((panel) => panel.dialogueLineIds))];
+  first.dialogueOrderIndexes = [...new Set(panels.flatMap((panel) => panel.dialogueOrderIndexes))].sort((a, b) => a - b);
+  first.fillUnitIds = [...new Set(panels.flatMap((panel) => panel.fillUnitIds ?? []))];
+  first.continuityFromPanelIds = [];
+  const layout = findLayoutPreset("builtin:splash");
+  assert.ok(layout);
+  collapsed.pages = [{
+    ...collapsed.pages[0]!,
+    index: 0,
+    layoutTemplateId: layout.id,
+    layoutSnapshot: structuredClone(layout.layout),
+    panels: [first]
+  }];
+  collapsed.panelCount = 1;
+  return collapsed;
+}
+
+function mergeTwoSinglePanelPages(plan: MangaPlanV2): MangaPlanV2 {
+  const merged = structuredClone(plan);
+  const panels = merged.pages.flatMap((page) => page.panels);
+  assert.equal(panels.length, 2);
+  const layout = findLayoutPreset("builtin:two-horizontal");
+  assert.ok(layout);
+  merged.pages = [{
+    ...merged.pages[0]!,
+    index: 0,
+    layoutTemplateId: layout.id,
+    layoutSnapshot: structuredClone(layout.layout),
+    panels
+  }];
+  merged.panelCount = panels.length;
+  return merged;
 }
 
 test("approved run freezes Reference Set version and hashes across resume after appearance changes", async () => {
@@ -192,6 +266,11 @@ test("createScriptMangaRun awaits candidate review before assigning batch-1 pane
   const balloonFontSizes = pageObjects.filter((object: { kind: string }) => object.kind === "balloon")
     .map((object: { content: { style: { size: number } } }) => object.content.style.size);
   assert.ok(balloonFontSizes.every((size: number) => size >= 0.035), `unexpected auto manga font sizes: ${balloonFontSizes.join(", ")}`);
+  const expectedMangaFontId = pickMangaFont(listFonts())?.id ?? "default";
+  const balloonFontIds = pageObjects.filter((object: { kind: string }) => object.kind === "balloon")
+    .map((object: { content: { style: { fontId: string } } }) => object.content.style.fontId);
+  assert.ok(balloonFontIds.every((fontId: string) => fontId === expectedMangaFontId),
+    `unexpected auto manga font ids: ${balloonFontIds.join(", ")}`);
 
   for (const asset of getRows<{ image_path: string }>(
     "SELECT a.image_path FROM assets a JOIN script_manga_tasks t ON t.selected_asset_id = a.id WHERE t.run_id = ?",
@@ -210,6 +289,23 @@ test("createScriptMangaRun awaits candidate review before assigning batch-1 pane
 
 test("VLM audit scores generated candidates and still requires a human selection", async () => {
   resetFakeProvider();
+  const sharpModule = (await import("sharp")).default;
+  const gradient = Buffer.alloc(64 * 64 * 3);
+  for (let y = 0; y < 64; y += 1) for (let x = 0; x < 64; x += 1) {
+    const value = 32 + Math.round((x / 63) * 190);
+    const offset = (y * 64 + x) * 3;
+    gradient[offset] = value;
+    gradient[offset + 1] = value;
+    gradient[offset + 2] = value;
+  }
+  programFakeOutcomes([{
+    status: "completed",
+    images: [{
+      bytes: await sharpModule(gradient, { raw: { width: 64, height: 64, channels: 3 } }).png().toBuffer(),
+      filename: "vlm-audit-candidate.png",
+      outputNodeId: "fake-node"
+    }]
+  }]);
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -298,6 +394,569 @@ test("candidate auto-selection policies are rejected", async () => {
     }),
     /never auto-selected/
   );
+});
+
+test("maxPanelCount rejects an oversized plan before persisting a run or panel tasks", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-budget-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Panel budget",
+    fountainSource: [
+      "INT. LAB - NIGHT",
+      "",
+      "Alice enters.",
+      "",
+      "@Alice",
+      "ここはどこ？",
+      "",
+      "Mira points at the exit.",
+      "",
+      "@Mira",
+      "こちらです。"
+    ].join("\n")
+  });
+
+  await assert.rejects(
+    createScriptMangaRun(project.id, {
+      scriptId: imported.script.id,
+      templateId,
+      providerId: "fake",
+      generateImages: false,
+      panelsPerPage: 2,
+      maxElementsPerPanel: 1,
+      maxDialoguesPerPanel: 1,
+      maxPanelCount: 1
+    }),
+    /exceeding maxPanelCount 1/
+  );
+  assert.equal(getRows("SELECT id FROM script_manga_runs WHERE script_id = ?", [imported.script.id]).length, 0);
+  assert.equal(getRows("SELECT id FROM script_manga_tasks WHERE run_id IN (SELECT id FROM script_manga_runs WHERE script_id = ?)", [imported.script.id]).length, 0);
+});
+
+test("maxPanelCount remains a hard ceiling when a prepared plan is edited", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-budget-edit-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Panel budget edit",
+    fountainSource: ["INT. ROOM - DAY", "", "A clock ticks."].join("\n")
+  });
+  const prepared = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 1,
+    maxPanelCount: 1
+  });
+  assert.equal(prepared.panelCount, 1);
+  const expanded = expandToTwoPanelPlan(prepared.plan!);
+
+  assert.throws(
+    () => updateScriptMangaPlan(prepared.planId!, { plan: expanded }),
+    /exceeding maxPanelCount 1/
+  );
+  assert.equal(getScriptMangaRun(prepared.id).panelCount, 1);
+  assert.equal(JSON.parse(
+    getRow<{ plan_json: string }>("SELECT plan_json FROM script_manga_plans WHERE id = ?", [prepared.planId])!.plan_json
+  ).panelCount, 1);
+});
+
+test("approval, start, and resume recheck the run maxPanelCount ceiling", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-budget-gates-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Panel budget gates",
+    fountainSource: ["INT. ROOM - DAY", "", "A clock ticks."].join("\n")
+  });
+  const prepare = async () => createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 1,
+    maxPanelCount: 1
+  });
+
+  // Simulate a stale plan record written before the edit-time ceiling existed. Approval must still fail closed.
+  const awaitingApproval = await prepare();
+  const oversizedForApproval = expandToTwoPanelPlan(awaitingApproval.plan!);
+  runSql("UPDATE script_manga_plans SET plan_json = ? WHERE id = ?", [
+    JSON.stringify(oversizedForApproval),
+    awaitingApproval.planId
+  ]);
+  assert.throws(() => approveScriptMangaRun(awaitingApproval.id), /exceeding maxPanelCount 1/);
+
+  // Recheck immediately before either generation entry point, even after a run was approved.
+  const awaitingStart = await prepare();
+  approveScriptMangaRun(awaitingStart.id);
+  const oversizedForStart = expandToTwoPanelPlan(awaitingStart.plan!);
+  runSql("UPDATE script_manga_plans SET plan_json = ? WHERE id = ?", [
+    JSON.stringify(oversizedForStart),
+    awaitingStart.planId
+  ]);
+  await assert.rejects(startScriptMangaRun(awaitingStart.id), /exceeding maxPanelCount 1/);
+  await assert.rejects(resumeScriptMangaRun(awaitingStart.id), /exceeding maxPanelCount 1/);
+});
+
+test("panelsPerPage is a hard gate for provided, edited, approved, started, and resumed plans", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-page-density-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Page density",
+    fountainSource: ["INT. ROOM - DAY", "", "Alice enters.", "", "Alice sits."].join("\n")
+  });
+
+  await assert.rejects(
+    createScriptMangaRun(project.id, {
+      scriptId: imported.script.id,
+      templateId,
+      providerId: "fake",
+      planningMode: "provided",
+      directorPlan: {
+        title: "Provided page density",
+        pages: [{
+          index: 0,
+          layoutTemplateId: "builtin:two-horizontal",
+          panels: [{
+            id: "provided-page-density-1",
+            sceneIndex: 0,
+            sceneHeading: "INT. ROOM - DAY",
+            prompt: "Alice enters the room.",
+            sourceText: "Alice enters.",
+            dialogueOrderIndexes: []
+          }, {
+            id: "provided-page-density-2",
+            sceneIndex: 0,
+            sceneHeading: "INT. ROOM - DAY",
+            prompt: "Alice sits down.",
+            sourceText: "Alice sits.",
+            dialogueOrderIndexes: []
+          }]
+        }]
+      },
+      generateImages: false,
+      panelsPerPage: 1
+    }),
+    /exceeding panelsPerPage 1/
+  );
+
+  const prepare = async () => createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 1,
+    maxElementsPerPanel: 8
+  });
+
+  const editable = await prepare();
+  assert.throws(
+    () => updateScriptMangaPlan(editable.planId!, { plan: mergeTwoSinglePanelPages(editable.plan!) }),
+    /exceeding panelsPerPage 1/
+  );
+
+  const awaitingApproval = await prepare();
+  runSql("UPDATE script_manga_plans SET plan_json = ? WHERE id = ?", [
+    JSON.stringify(mergeTwoSinglePanelPages(awaitingApproval.plan!)),
+    awaitingApproval.planId
+  ]);
+  assert.throws(() => approveScriptMangaRun(awaitingApproval.id), /exceeding panelsPerPage 1/);
+
+  const awaitingStart = await prepare();
+  approveScriptMangaRun(awaitingStart.id);
+  runSql("UPDATE script_manga_plans SET plan_json = ? WHERE id = ?", [
+    JSON.stringify(mergeTwoSinglePanelPages(awaitingStart.plan!)),
+    awaitingStart.planId
+  ]);
+  await assert.rejects(startScriptMangaRun(awaitingStart.id), /exceeding panelsPerPage 1/);
+  await assert.rejects(resumeScriptMangaRun(awaitingStart.id), /exceeding panelsPerPage 1/);
+});
+
+test("maxDialoguesPerPanel is a hard gate for provided, edited, approved, started, and resumed plans", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-dialogue-budget-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Dialogue budget",
+    fountainSource: ["INT. ROOM - DAY", "", "@Alice", "One.", "", "@Bob", "Two."].join("\n")
+  });
+
+  await assert.rejects(
+    createScriptMangaRun(project.id, {
+      scriptId: imported.script.id,
+      templateId,
+      providerId: "fake",
+      planningMode: "provided",
+      directorPlan: {
+        title: "Provided dialogue budget",
+        pages: [{
+          index: 0,
+          layoutTemplateId: "builtin:splash",
+          panels: [{
+            id: "provided-panel",
+            sceneIndex: 0,
+            sceneHeading: "INT. ROOM - DAY",
+            prompt: "Two people exchange a short response in one continuous moment.",
+            sourceText: "Alice and Bob exchange two lines.",
+            dialogueOrderIndexes: [0, 1]
+          }]
+        }]
+      },
+      generateImages: false,
+      maxDialoguesPerPanel: 1
+    }),
+    /exceeding maxDialoguesPerPanel 1/
+  );
+
+  const prepare = async () => createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 2,
+    maxDialoguesPerPanel: 1
+  });
+
+  const editable = await prepare();
+  const collapsedForEdit = collapseToOneDialoguePanelPlan(editable.plan!);
+  assert.throws(
+    () => updateScriptMangaPlan(editable.planId!, { plan: collapsedForEdit }),
+    /exceeding maxDialoguesPerPanel 1/
+  );
+
+  const awaitingApproval = await prepare();
+  runSql("UPDATE script_manga_plans SET plan_json = ? WHERE id = ?", [
+    JSON.stringify(collapseToOneDialoguePanelPlan(awaitingApproval.plan!)),
+    awaitingApproval.planId
+  ]);
+  assert.throws(() => approveScriptMangaRun(awaitingApproval.id), /exceeding maxDialoguesPerPanel 1/);
+
+  const awaitingStart = await prepare();
+  approveScriptMangaRun(awaitingStart.id);
+  runSql("UPDATE script_manga_plans SET plan_json = ? WHERE id = ?", [
+    JSON.stringify(collapseToOneDialoguePanelPlan(awaitingStart.plan!)),
+    awaitingStart.planId
+  ]);
+  await assert.rejects(startScriptMangaRun(awaitingStart.id), /exceeding maxDialoguesPerPanel 1/);
+  await assert.rejects(resumeScriptMangaRun(awaitingStart.id), /exceeding maxDialoguesPerPanel 1/);
+});
+
+test("a successor inherits only fingerprint-identical selected assets and generates changed panels", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-successor-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Successor",
+    fountainSource: ["INT. LAB - NIGHT", "", "Alice looks up.", "", "@Alice", "行こう。"].join("\n")
+  });
+  const predecessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: true,
+    panelsPerPage: 1,
+    maxDialoguesPerPanel: 1
+  });
+  assert.equal(predecessor.tasks.length, 1);
+  assert.ok(predecessor.tasks[0]!.roundId);
+  await collectRound(predecessor.tasks[0]!.roundId!);
+  const review = getScriptMangaRun(predecessor.id);
+  const selectedAssetId = review.tasks[0]!.candidateAssetIds[0]!;
+  const completed = await selectScriptMangaTaskCandidate(review.tasks[0]!.id, { assetId: selectedAssetId });
+  assert.equal(completed.status, "completed");
+  assert.ok(completed.tasks[0]!.reuseFingerprint, "selected tasks persist a generation-time reuse signature");
+  assert.ok(completed.plan);
+  const newerRevision = addScriptRevision(imported.script.id, {
+    fountainSource: ["INT. LAB - DAY", "", "Alice sits down.", "", "@Alice", "戻ろう。"].join("\n")
+  });
+  assert.notEqual(newerRevision.revision.id, completed.scriptRevisionId);
+
+  const exactSuccessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: completed.id,
+    successorPlan: structuredClone(completed.plan),
+    generateImages: false
+  });
+  assert.equal(exactSuccessor.predecessorRunId, completed.id);
+  assert.equal(exactSuccessor.scriptRevisionId, completed.scriptRevisionId);
+  approveScriptMangaRun(exactSuccessor.id);
+  const inherited = await startScriptMangaRun(exactSuccessor.id);
+  assert.equal(inherited.status, "completed");
+  assert.equal(inherited.tasks[0]!.selectedAssetId, selectedAssetId);
+  assert.equal(inherited.tasks[0]!.inheritedFromTaskId, completed.tasks[0]!.id);
+  assert.ok(inherited.tasks[0]!.reuseFingerprint);
+  assert.equal(inherited.tasks[0]!.roundId, null);
+  assert.equal(getRows("SELECT id FROM generation_rounds WHERE script_manga_task_id = ?", [inherited.tasks[0]!.id]).length, 0);
+  assert.equal(
+    getRow<{ asset_id: string }>(
+      "SELECT asset_id FROM page_panel_assignments WHERE page_id = ? AND panel_id = ?",
+      [inherited.tasks[0]!.pageId, inherited.tasks[0]!.panelId]
+    )?.asset_id,
+    selectedAssetId
+  );
+
+  runSql(
+    "UPDATE script_manga_tasks SET inherited_from_task_id = ? WHERE id = ?",
+    [inherited.tasks[0]!.id, inherited.tasks[0]!.id]
+  );
+  const forgedLineageSuccessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: inherited.id,
+    successorPlan: structuredClone(inherited.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(forgedLineageSuccessor.id);
+  const forgedLineage = await startScriptMangaRun(forgedLineageSuccessor.id);
+  assert.equal(forgedLineage.tasks[0]!.inheritedFromTaskId, null);
+  assert.ok(forgedLineage.tasks[0]!.roundId, "a forged inherited-task chain must not authorize asset reuse");
+  await cancelScriptMangaRun(forgedLineageSuccessor.id);
+  runSql(
+    "UPDATE script_manga_tasks SET inherited_from_task_id = ? WHERE id = ?",
+    [completed.tasks[0]!.id, inherited.tasks[0]!.id]
+  );
+
+  const storedReuse = getRow<{ reuse_fingerprint: string; reuse_source_json: string }>(
+    "SELECT reuse_fingerprint, reuse_source_json FROM script_manga_tasks WHERE id = ?",
+    [completed.tasks[0]!.id]
+  )!;
+  runSql("UPDATE script_manga_tasks SET reuse_fingerprint = NULL, reuse_source_json = NULL WHERE id = ?", [completed.tasks[0]!.id]);
+  const legacySuccessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: completed.id,
+    successorPlan: structuredClone(completed.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(legacySuccessor.id);
+  const legacyResult = await startScriptMangaRun(legacySuccessor.id);
+  assert.equal(legacyResult.tasks[0]!.inheritedFromTaskId, completed.tasks[0]!.id);
+  assert.equal(legacyResult.tasks[0]!.selectedAssetId, selectedAssetId);
+  const lazilySigned = getRow<{ reuse_fingerprint: string | null; reuse_source_json: string | null }>(
+    "SELECT reuse_fingerprint, reuse_source_json FROM script_manga_tasks WHERE id = ?",
+    [completed.tasks[0]!.id]
+  );
+  assert.ok(lazilySigned?.reuse_fingerprint, "legacy task is signed from its frozen generation round on demand");
+  assert.ok(lazilySigned?.reuse_source_json);
+
+  const selectedRound = getRow<{ id: string; patched_workflow_json: string }>(
+    "SELECT r.id, r.patched_workflow_json FROM generation_rounds r JOIN assets a ON a.round_id = r.id WHERE a.id = ?",
+    [selectedAssetId]
+  )!;
+  runSql("UPDATE generation_rounds SET patched_workflow_json = NULL WHERE id = ?", [selectedRound.id]);
+  runSql("UPDATE script_manga_tasks SET reuse_fingerprint = NULL, reuse_source_json = NULL WHERE id = ?", [completed.tasks[0]!.id]);
+  const incompleteFrozenSuccessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: completed.id,
+    successorPlan: structuredClone(completed.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(incompleteFrozenSuccessor.id);
+  const incompleteFrozen = await startScriptMangaRun(incompleteFrozenSuccessor.id);
+  assert.equal(incompleteFrozen.tasks[0]!.inheritedFromTaskId, null);
+  assert.ok(incompleteFrozen.tasks[0]!.roundId, "legacy signing fails closed without a frozen native workflow");
+  await cancelScriptMangaRun(incompleteFrozenSuccessor.id);
+  runSql("UPDATE generation_rounds SET patched_workflow_json = ? WHERE id = ?", [selectedRound.patched_workflow_json, selectedRound.id]);
+  runSql(
+    "UPDATE script_manga_tasks SET reuse_fingerprint = ?, reuse_source_json = ? WHERE id = ?",
+    [storedReuse.reuse_fingerprint, JSON.stringify({ version: "forged" }), completed.tasks[0]!.id]
+  );
+  const forgedSourceSuccessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: completed.id,
+    successorPlan: structuredClone(completed.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(forgedSourceSuccessor.id);
+  const forgedSource = await startScriptMangaRun(forgedSourceSuccessor.id);
+  assert.equal(forgedSource.tasks[0]!.inheritedFromTaskId, null);
+  assert.ok(forgedSource.tasks[0]!.roundId, "present but invalid provenance is not silently replaced by lazy signing");
+  await cancelScriptMangaRun(forgedSourceSuccessor.id);
+  runSql(
+    "UPDATE script_manga_tasks SET reuse_fingerprint = ?, reuse_source_json = ? WHERE id = ?",
+    [storedReuse.reuse_fingerprint, storedReuse.reuse_source_json, completed.tasks[0]!.id]
+  );
+
+  const staleClaimSuccessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: completed.id,
+    successorPlan: structuredClone(completed.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(staleClaimSuccessor.id);
+  runSql("UPDATE script_manga_tasks SET status = 'inheriting' WHERE id = ?", [staleClaimSuccessor.tasks[0]!.id]);
+  const recovered = await resumeScriptMangaRun(staleClaimSuccessor.id);
+  assert.equal(recovered.tasks[0]!.status, "completed");
+  assert.equal(recovered.tasks[0]!.inheritedFromTaskId, completed.tasks[0]!.id);
+  assert.equal(
+    getRows("SELECT id FROM generation_rounds WHERE script_manga_task_id = ?", [recovered.tasks[0]!.id]).length,
+    0,
+    "a stale inheriting claim is recovered and reused instead of generated"
+  );
+
+  const selectedImage = getRow<{ image_path: string }>("SELECT image_path FROM assets WHERE id = ?", [selectedAssetId])!;
+  const hiddenSelectedImage = `${selectedImage.image_path}.reuse-missing`;
+  await rename(selectedImage.image_path, hiddenSelectedImage);
+  try {
+    const missingImageSuccessor = await createScriptMangaRun(project.id, {
+      scriptId: imported.script.id,
+      planningMode: "provided",
+      predecessorRunId: completed.id,
+      successorPlan: structuredClone(completed.plan),
+      generateImages: false
+    });
+    approveScriptMangaRun(missingImageSuccessor.id);
+    const missingImage = await startScriptMangaRun(missingImageSuccessor.id);
+    assert.equal(missingImage.tasks[0]!.inheritedFromTaskId, null);
+    assert.ok(missingImage.tasks[0]!.roundId, "a missing selected-asset image must regenerate instead of completing a broken assignment");
+    await cancelScriptMangaRun(missingImageSuccessor.id);
+  } finally {
+    await rename(hiddenSelectedImage, selectedImage.image_path);
+  }
+
+  const selectedImageBytes = await readFile(selectedImage.image_path);
+  await writeFile(selectedImage.image_path, Buffer.from("not an image"));
+  try {
+    const corruptImageSuccessor = await createScriptMangaRun(project.id, {
+      scriptId: imported.script.id,
+      planningMode: "provided",
+      predecessorRunId: completed.id,
+      successorPlan: structuredClone(completed.plan),
+      generateImages: false
+    });
+    approveScriptMangaRun(corruptImageSuccessor.id);
+    const corruptImage = await startScriptMangaRun(corruptImageSuccessor.id);
+    assert.equal(corruptImage.tasks[0]!.inheritedFromTaskId, null);
+    assert.ok(corruptImage.tasks[0]!.roundId, "a corrupt selected-asset image must regenerate instead of completing a broken assignment");
+    await cancelScriptMangaRun(corruptImageSuccessor.id);
+  } finally {
+    await writeFile(selectedImage.image_path, selectedImageBytes);
+  }
+
+  const sharpModule = (await import("sharp")).default;
+  const differentValidImage = await sharpModule({
+    create: { width: 2, height: 2, channels: 4, background: { r: 255, g: 0, b: 255, alpha: 1 } }
+  }).png().toBuffer();
+  await writeFile(selectedImage.image_path, differentValidImage);
+  try {
+    const replacedImageSuccessor = await createScriptMangaRun(project.id, {
+      scriptId: imported.script.id,
+      planningMode: "provided",
+      predecessorRunId: completed.id,
+      successorPlan: structuredClone(completed.plan),
+      generateImages: false
+    });
+    approveScriptMangaRun(replacedImageSuccessor.id);
+    const replacedImage = await startScriptMangaRun(replacedImageSuccessor.id);
+    assert.equal(replacedImage.tasks[0]!.inheritedFromTaskId, null);
+    assert.ok(replacedImage.tasks[0]!.roundId, "a different valid image at the same path must not inherit approval");
+    await cancelScriptMangaRun(replacedImageSuccessor.id);
+  } finally {
+    await writeFile(selectedImage.image_path, selectedImageBytes);
+  }
+
+  runSql(
+    "UPDATE workflow_templates SET version = version + 1, workflow_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    ["hash-after-selected-asset", templateId]
+  );
+  const templateChangedSuccessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: completed.id,
+    successorPlan: structuredClone(completed.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(templateChangedSuccessor.id);
+  const templateChanged = await startScriptMangaRun(templateChangedSuccessor.id);
+  assert.equal(templateChanged.tasks[0]!.inheritedFromTaskId, null);
+  assert.ok(templateChanged.tasks[0]!.roundId, "a workflow-template revision change must force generation");
+  await cancelScriptMangaRun(templateChanged.id);
+
+  const changedPlan = structuredClone(completed.plan!);
+  changedPlan.pages[0]!.panels[0]!.promptBase += ", camera behind Alice";
+  const changedSuccessor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: completed.id,
+    successorPlan: changedPlan,
+    generateImages: false
+  });
+  approveScriptMangaRun(changedSuccessor.id);
+  const changed = await startScriptMangaRun(changedSuccessor.id);
+  assert.equal(changed.tasks[0]!.inheritedFromTaskId, null);
+  assert.equal(changed.tasks[0]!.selectedAssetId, null);
+  assert.ok(changed.tasks[0]!.roundId, "changed panel should receive a new generation round");
+  assert.equal(getRows("SELECT id FROM generation_rounds WHERE script_manga_task_id = ?", [changed.tasks[0]!.id]).length, 1);
+  await cancelScriptMangaRun(changed.id);
+});
+
+test("a successor regenerates a continuity-dependent panel when its upstream selected asset cannot be inherited", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-continuity-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Continuity closure",
+    fountainSource: ["INT. CORRIDOR - NIGHT", "", "Alice opens the hatch.", "", "Alice steps through the hatch."].join("\n")
+  });
+  const prepared = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 2,
+    maxElementsPerPanel: 1
+  });
+  assert.equal(prepared.tasks.length, 2);
+  const predecessorPlan = structuredClone(prepared.plan!);
+  const firstPanel = predecessorPlan.pages[0]!.panels[0]!;
+  const dependentPanel = predecessorPlan.pages[0]!.panels[1]!;
+  dependentPanel.continuityFromPanelIds = [firstPanel.id];
+  updateScriptMangaPlan(predecessorPlan.id, predecessorPlan);
+  approveScriptMangaRun(prepared.id);
+  const started = await startScriptMangaRun(prepared.id);
+  for (const task of started.tasks) {
+    assert.ok(task.roundId);
+    await collectRound(task.roundId!);
+  }
+  const review = getScriptMangaRun(prepared.id);
+  const selectedDependent = await selectScriptMangaTaskCandidate(review.tasks[1]!.id, {
+    assetId: review.tasks[1]!.candidateAssetIds[0]!
+  });
+  assert.ok(selectedDependent.tasks[1]!.reuseFingerprint);
+  const canceled = await cancelScriptMangaRun(prepared.id);
+  assert.equal(canceled.tasks[0]!.status, "canceled");
+  assert.equal(canceled.tasks[1]!.status, "completed");
+
+  const successor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: canceled.id,
+    successorPlan: structuredClone(canceled.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(successor.id);
+  const result = await startScriptMangaRun(successor.id);
+  assert.deepEqual(result.tasks.map((task) => task.inheritedFromTaskId), [null, null]);
+  assert.ok(result.tasks.every((task) => task.roundId), "both the unavailable root and its dependent panel must regenerate");
+  const inheritance = (result.evaluation as { inheritance?: { continuitySkipped?: number; eligiblePredecessorTasks?: number } } | null)?.inheritance;
+  assert.equal(inheritance?.eligiblePredecessorTasks, 1);
+  assert.equal(inheritance?.continuitySkipped, 1);
+  await cancelScriptMangaRun(result.id);
 });
 
 test("createScriptMangaRun assigns directed prompts to the same RTL panels as their dialogues", async () => {
@@ -784,7 +1443,8 @@ test("figure スロット付きレイアウトの採用は切り抜き ImageObje
     scriptId: imported.script.id,
     templateId,
     providerId: "fake",
-    generateImages: false
+    generateImages: false,
+    maxDialoguesPerPanel: 2
   });
   assert.equal(prepared.pageCount, 1);
   assert.equal(prepared.panelCount, 3);
@@ -826,9 +1486,18 @@ test("figure スロット付きレイアウトの採用は切り抜き ImageObje
   await writeFile(figureAsset.image_path, await sharpModule(Buffer.from(figureSvg)).png().toBuffer());
 
   let view = awaitingReview;
-  for (const task of awaitingReview.tasks) {
+  for (const task of awaitingReview.tasks.filter((task) => task.id !== figureTask!.id)) {
     view = await selectScriptMangaTaskCandidate(task.id, { assetId: task.candidateAssetIds[0]! });
   }
+  const figureSelection = selectScriptMangaTaskCandidate(figureTask!.id, { assetId: figureAssetId });
+  const whileMaterializing = getScriptMangaRun(prepared.id);
+  assert.equal(
+    whileMaterializing.tasks.find((task) => task.id === figureTask!.id)?.status,
+    "selecting",
+    "figure selection remains non-terminal until its async cutout is committed"
+  );
+  assert.notEqual(whileMaterializing.status, "completed");
+  view = await figureSelection;
   assert.equal(view.status, "completed");
 
   const pageObjects = JSON.parse(
@@ -865,5 +1534,71 @@ test("figure スロット付きレイアウトの採用は切り抜き ImageObje
   assert.equal(
     getRows("SELECT id FROM dialogue_placements WHERE page_id = ? AND balloon_object_id IS NULL", [figureTask!.pageId]).length,
     0
+  );
+
+  const successor = await createScriptMangaRun(projectId, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: view.id,
+    successorPlan: structuredClone(view.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(successor.id);
+  await Promise.all([
+    startScriptMangaRun(successor.id),
+    resumeScriptMangaRun(successor.id)
+  ]);
+  const successorView = getScriptMangaRun(successor.id);
+  assert.ok(successorView.tasks.every((task) => task.status === "completed"));
+  assert.ok(successorView.tasks.every((task) => task.inheritedFromTaskId));
+  assert.equal(
+    getRows("SELECT id FROM generation_rounds WHERE script_manga_task_id IN (SELECT id FROM script_manga_tasks WHERE run_id = ?)", [successor.id]).length,
+    0,
+    "concurrent start/resume must not submit inherited tasks"
+  );
+  const inheritedFigureTask = successorView.tasks.find((task) => task.panelId === "figure")!;
+  const inheritedFigureObjects = JSON.parse(
+    getRow<{ objects_json: string }>("SELECT objects_json FROM pages WHERE id = ?", [inheritedFigureTask.pageId])!.objects_json
+  ) as Array<Record<string, unknown>>;
+  assert.equal(inheritedFigureObjects.filter((object) => object.id === "figure_figure").length, 1);
+  assert.equal(
+    getRows("SELECT id FROM page_media WHERE source_asset_id = ?", [figureAssetId]).length,
+    2,
+    "the predecessor and successor should each materialize one figure media row"
+  );
+
+  const canceledSuccessor = await createScriptMangaRun(projectId, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: view.id,
+    successorPlan: structuredClone(view.plan),
+    generateImages: false
+  });
+  approveScriptMangaRun(canceledSuccessor.id);
+  const canceledFigureTask = canceledSuccessor.tasks.find((task) => task.panelId === "figure")!;
+  const startCanceledSuccessor = startScriptMangaRun(canceledSuccessor.id);
+  let observedFigureInheritance = false;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const status = getRow<{ status: string }>("SELECT status FROM script_manga_tasks WHERE id = ?", [canceledFigureTask.id])?.status;
+    if (status === "inheriting") {
+      observedFigureInheritance = true;
+      break;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+  assert.equal(observedFigureInheritance, true, "test must cancel while figure cutout is awaiting async work");
+  await cancelScriptMangaRun(canceledSuccessor.id);
+  await startCanceledSuccessor;
+  const canceledView = getScriptMangaRun(canceledSuccessor.id);
+  assert.equal(canceledView.status, "canceled");
+  assert.equal(canceledView.tasks.find((task) => task.id === canceledFigureTask.id)?.status, "canceled");
+  const canceledObjects = JSON.parse(
+    getRow<{ objects_json: string }>("SELECT objects_json FROM pages WHERE id = ?", [canceledFigureTask.pageId])!.objects_json
+  ) as Array<Record<string, unknown>>;
+  assert.equal(canceledObjects.some((object) => object.id === "figure_figure"), false);
+  assert.equal(
+    getRows("SELECT id FROM page_media WHERE source_asset_id = ?", [figureAssetId]).length,
+    2,
+    "canceled async figure inheritance removes any newly created media before returning"
   );
 });

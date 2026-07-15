@@ -92,6 +92,25 @@ describe("compilePanelPrompt", () => {
     expect(result).not.toContain("もう戦わなくていい");
   });
 
+  test("an action-grounded visible character may also carry V.O. without a contradictory absence instruction", () => {
+    const voPanel = structuredClone(panel);
+    voPanel.cast[0]!.speakingLineIds = ["line-vo"];
+    const result = compilePanelPrompt({
+      panel: voPanel,
+      basePrompt: "Akari stands at the window and watches the rain",
+      entities: [entity],
+      dialogueById: new Map([["line-vo", {
+        id: "line-vo", orderIndex: 0, sceneIndex: 0, characterId: entity.id,
+        speakerLabel: "Akari (V.O.)", text: "I remember that night.", semanticKind: "dialogue", balloonStyle: "vo"
+      }]]),
+      narrativeMetadata: "append"
+    });
+
+    expect(result).toContain("voice-over delivered separately from the depicted action");
+    expect(result).not.toContain("speaker is not depicted");
+    expect(result).toContain("あかり");
+  });
+
   test("v3 moves avoid facts to negative conditioning and injects identity tags", () => {
     const englishEntity = { ...entity, attributes: { tags: "short silver hair, blue eyes, black jacket" } };
     const result = compilePanelConditioning({ panel, basePrompt: "damaged cockpit", entities: [englishEntity], dialogueById: new Map(), dialect: "tags" });
@@ -100,13 +119,24 @@ describe("compilePanelPrompt", () => {
     expect(result.negative).toContain("rain");
   });
 
-  test("tags dialect translates source-language visual facts and does not invent characters for an empty cast", () => {
+  test("tags dialect preserves untranslated source-language visual facts and does not invent characters for an empty cast", () => {
     const empty = { ...panel, cast: [], promptBase: "漆黒の宇宙。砕けた人工衛星。白い人型機動兵器。" };
     const result = compilePanelConditioning({ panel: empty, basePrompt: empty.promptBase, entities: [], dialogueById: new Map(), dialect: "tags" });
-    expect(result.positive).toMatch(/outer space/);
-    expect(result.positive).toMatch(/broken satellite debris/);
-    expect(result.positive).toMatch(/white humanoid mecha/);
-    expect(result.positive).not.toMatch(/[\u3040-\u30ff\u3400-\u9fff]|0characters/);
+    expect(result.positive).toMatch(/漆黒の宇宙/);
+    expect(result.positive).toMatch(/砕けた人工衛星/);
+    expect(result.positive).toMatch(/白い人型機動兵器/);
+    expect(result.positive).not.toMatch(/0characters/);
+  });
+
+  test("both dialects retain non-SF visual facts and never expand Japanese names into genre tags", () => {
+    const period = { ...panel, cast: [], promptBase: "江戸時代の茶屋で侍が刀を抜く。雨宮と月城と夜神が見守る。" };
+    for (const dialect of ["natural", "tags"] as const) {
+      const result = compilePanelConditioning({ panel: period, basePrompt: period.promptBase, entities: [], dialogueById: new Map(), dialect });
+      expect(result.positive).toMatch(/江戸時代の茶屋/);
+      expect(result.positive).toMatch(/侍が刀を抜く/);
+      expect(result.positive).toMatch(/雨宮と月城と夜神/);
+      expect(result.positive).not.toMatch(/\brain\b|\bmoon\b|\bnight\b|satellite|mecha|futuristic/iu);
+    }
   });
 
   test("approved Reference Set appearance is injected even for english-directed prompts", () => {

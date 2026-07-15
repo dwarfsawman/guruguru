@@ -107,6 +107,7 @@ import {
   getScriptMangaPlan,
   getScriptMangaRun,
   resumeScriptMangaRun,
+  repairScriptMangaTask,
   retryScriptMangaTask,
   selectScriptMangaTaskCandidate,
   startScriptMangaRun,
@@ -658,7 +659,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     sendJson(res, 200, result);
     return;
   }
-  const scriptMangaTaskActionMatch = path.match(/^\/api\/script-manga-tasks\/([^/]+)\/(retry|select|audit)$/);
+  const scriptMangaTaskActionMatch = path.match(/^\/api\/script-manga-tasks\/([^/]+)\/(retry|select|audit|repair)$/);
   if (method === "POST" && scriptMangaTaskActionMatch) {
     sendJson(
       res,
@@ -667,6 +668,8 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
         ? await retryScriptMangaTask(scriptMangaTaskActionMatch[1]!)
         : scriptMangaTaskActionMatch[2] === "audit"
           ? await auditScriptMangaTask(scriptMangaTaskActionMatch[1]!)
+          : scriptMangaTaskActionMatch[2] === "repair"
+            ? await repairScriptMangaTask(scriptMangaTaskActionMatch[1]!, await readJson(req))
           : await selectScriptMangaTaskCandidate(scriptMangaTaskActionMatch[1]!, await readJson(req))
     );
     return;

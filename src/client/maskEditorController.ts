@@ -996,6 +996,11 @@ function toggleMaskEditor() {
   requestRender();
 }
 
+/** Asset detailを外部の候補カードから開いた直後、既存のマスク編集sessionを開始する。 */
+export function openMaskEditorForActiveAsset() {
+  if (!state.maskEditMode && state.activeAssetId) toggleMaskEditor();
+}
+
 async function applyMaskEditor() {
   commitActiveMaskCanvas();
   const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;

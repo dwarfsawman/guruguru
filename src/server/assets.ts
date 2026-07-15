@@ -8,7 +8,7 @@ import { autoAssignPanelForSelectedAsset } from "./panelAssignments";
 import { ensureAssetThumbnail } from "./storage";
 import { objectBody, requiredString, stringOrNull } from "./validate";
 
-export function updateAssetStatus(assetId: string, body: unknown) {
+export function updateAssetStatus(assetId: string, body: unknown, options: { skipAutoAssign?: boolean } = {}) {
   const input = objectBody(body);
   const status = requiredString(input.status, "status") as AssetStatus;
   if (!["generated", "selected", "rejected", "favorite", "archived"].includes(status)) {
@@ -34,7 +34,7 @@ export function updateAssetStatus(assetId: string, body: unknown) {
 
   // コマ内生成(Docs/Feature-PanelGeneration.md): 「選択」にした画像は、その生成が特定コマ向け
   // (target_panel_id)なら自動でそのコマへ割り当てる。
-  if (status === "selected") {
+  if (status === "selected" && options.skipAutoAssign !== true) {
     autoAssignPanelForSelectedAsset(assetId, String(asset.round_id));
   }
 

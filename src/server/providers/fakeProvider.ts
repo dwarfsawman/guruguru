@@ -48,7 +48,12 @@ function defaultOutcome(jobRef: string): Extract<FakeJobOutcome, { status: "comp
     status: "completed",
     images: [
       {
-        bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        // A decodable 1x1 PNG. Reuse/inheritance intentionally validates the complete image,
+        // so a four-byte PNG signature is not a representative successful provider result.
+        bytes: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==",
+          "base64"
+        ),
         filename: `${jobRef}.png`,
         outputNodeId: "fake-node"
       }

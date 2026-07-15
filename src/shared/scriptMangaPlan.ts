@@ -72,19 +72,20 @@ export interface ScriptMangaPlan {
 export interface ScriptMangaPlanOptions {
   panelsPerPage?: number;
   maxElementsPerPanel?: number;
+  /** 1コマへ割り当てるFountain dialogue要素数の上限。1〜8、既定4。吹き出し数そのものではない。 */
   maxDialoguesPerPanel?: number;
   maxSourceCharactersPerPanel?: number;
   stylePrompt?: string;
   /** LLMネーム監督が全バッチへ再注入する人物固定票。決定的プランナーでは未使用。 */
   characterBible?: string;
-  /** N1ページネームの目標ページ数。省略時は発話量と決定的packerから算出。 */
+  /** 目標ページ数。決定的packerでは1ページ1コマ〜panelsPerPageの範囲でbest-effort配分する。 */
   targetPageCount?: number;
   /** ビート注釈キャッシュ(script_beat_annotations)のキー。未指定はキャッシュ不使用。 */
   scriptRevisionId?: string;
 }
 
 export const DEFAULT_SCRIPT_MANGA_STYLE =
-  "Japanese monochrome science fiction manga, cinematic composition, expressive characters, detailed ink line art, screentone, no text, no speech bubbles";
+  "Japanese monochrome manga, cinematic composition, expressive characters, detailed ink line art, screentone, no text, no speech bubbles";
 const DEFAULT_STYLE = DEFAULT_SCRIPT_MANGA_STYLE;
 
 /** 要素の「読める」テキスト(sourceText 用)。ビート層(preLayoutBeat)と共有する。 */
@@ -145,7 +146,7 @@ function layoutForPanelCount(count: number): string {
 export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOptions = {}): ScriptMangaPlan {
   const panelsPerPage = Math.max(1, Math.min(6, Math.trunc(options.panelsPerPage ?? 4)));
   const maxElements = Math.max(1, Math.trunc(options.maxElementsPerPanel ?? 6));
-  const maxDialogues = Math.max(1, Math.trunc(options.maxDialoguesPerPanel ?? 2));
+  const maxDialogues = Math.max(1, Math.min(8, Math.trunc(options.maxDialoguesPerPanel ?? 4)));
   const maxCharacters = Math.max(40, Math.trunc(options.maxSourceCharactersPerPanel ?? 260));
   const stylePrompt = options.stylePrompt?.trim() || DEFAULT_STYLE;
 
@@ -186,6 +187,12 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
       if (element.type === "section" || element.type === "transition") continue;
       const text = visibleText(element);
       if (!text) continue;
+      // A new action/synopsis paragraph is a conservative moment boundary. Keep the
+      // preceding action plus its dialogue exchange together, but never compress a
+      // later state-changing action into that same still image merely to save panels.
+      if (elements.length > 0 && (element.type === "action" || element.type === "synopsis")) {
+        flush();
+      }
       const nextDialogueCount = dialogueIndexes.length + (element.type === "dialogue" ? 1 : 0);
       if (
         elements.length > 0 &&
@@ -203,9 +210,23 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
     flush();
   });
 
+  const requestedPageCount = Number.isFinite(options.targetPageCount) && (options.targetPageCount ?? 0) > 0
+    ? Math.max(1, Math.trunc(options.targetPageCount!))
+    : null;
+  const minimumPageCount = Math.ceil(panels.length / panelsPerPage);
+  const pageCount = requestedPageCount === null || panels.length === 0
+    ? minimumPageCount
+    : Math.min(panels.length, Math.max(minimumPageCount, requestedPageCount));
   const pages: ScriptMangaPagePlan[] = [];
-  for (let offset = 0; offset < panels.length; offset += panelsPerPage) {
-    const pagePanels = panels.slice(offset, offset + panelsPerPage);
+  let offset = 0;
+  while (offset < panels.length) {
+    const remainingPages = pageCount - pages.length;
+    const remainingPanels = panels.length - offset;
+    // target指定時は連続順を維持したまま均等配分する。下限はhardなコマ密度制約から決まる。
+    const count = requestedPageCount === null
+      ? Math.min(panelsPerPage, remainingPanels)
+      : Math.min(panelsPerPage, Math.ceil(remainingPanels / remainingPages));
+    const pagePanels = panels.slice(offset, offset + count);
     const first = pagePanels[0];
     pages.push({
       index: pages.length,
@@ -213,6 +234,7 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
       layoutTemplateId: layoutForPanelCount(pagePanels.length),
       panels: pagePanels
     });
+    offset += count;
   }
 
   return {

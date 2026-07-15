@@ -20,7 +20,7 @@
  */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { PageRow } from "../shared/apiTypes";
+import type { FontSummary, PageRow } from "../shared/apiTypes";
 import type { BalloonObject, BoxObject, PageObject, TextContent, TextObject } from "../shared/pageObjects";
 import {
   computeExportCanvas,
@@ -33,6 +33,7 @@ import {
   type ExportProjectRow
 } from "./openRasterExport";
 import { finalizeFileExport, type FileExportMetrics, type FileExportResult } from "./fileExport";
+import { listFonts, pickDefaultFont } from "./fonts";
 import { packArchiveWithRust, type ArchivePackEntry } from "./projectArchive";
 
 const PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -79,6 +80,7 @@ export async function createPptxExport(
 
   const slideSize = computeSlideSize(rendered[0]!.canvas);
   const entries: ArchivePackEntry[] = [];
+  const fonts = listFonts();
   let textEntryIndex = 0;
   const addTextEntry = async (archivePath: string, content: string) => {
     textEntryIndex += 1;
@@ -109,7 +111,7 @@ export async function createPptxExport(
     const rect = computeSlidePicRect(slideSize, slide.canvas);
     await addTextEntry(
       `ppt/slides/slide${slideNumber}.xml`,
-      renderSlideXml(rect, slide.pageHeight, slide.editableObjects)
+      renderSlideXml(rect, slide.pageHeight, slide.editableObjects, fonts)
     );
     await addTextEntry(`ppt/slides/_rels/slide${slideNumber}.xml.rels`, renderSlideRelsXml(slideNumber));
     // PNGは圧縮済みなのでSTOREし、再DEFLATEのCPUと一時メモリを使わない。
@@ -462,13 +464,28 @@ function shapeXml(id: number, name: string, geometry: string, box: SlideRect, fi
   return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXml(name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm${rot ? ` rot="${rot}"` : ""}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm><a:prstGeom prst="${geometry}">${avLst}</a:prstGeom><a:solidFill><a:srgbClr val="${colorHex(fill, "FFFFFF")}"/></a:solidFill><a:ln w="${lineWidth}"><a:solidFill><a:srgbClr val="${colorHex(stroke, "000000")}"/></a:solidFill></a:ln></p:spPr></p:sp>`;
 }
 
-function textXml(id: number, name: string, content: TextContent, box: SlideRect, pageWidthEmu: number, rotation = 0): string {
+export function pptxTypefaceForFontId(fontId: string, fonts: FontSummary[]): string {
+  const selected = (fontId && fontId !== "default" ? fonts.find((font) => font.id === fontId) : null) ?? pickDefaultFont(fonts);
+  return selected?.familyName || "Calibri";
+}
+
+function textXml(
+  id: number,
+  name: string,
+  content: TextContent,
+  box: SlideRect,
+  pageWidthEmu: number,
+  fonts: FontSummary[],
+  rotation = 0
+): string {
   const rot = Math.round((rotation * 180 / Math.PI) * 60000);
   // guruguru の TextStyle.size は「ページ幅比」。テキスト枠幅ではなくページ配置幅から pt へ変換する。
   const fontSize = Math.max(500, Math.round((content.style.size * pageWidthEmu / 12700) * 100));
   const vertical = content.style.direction === "vertical" ? ` vert="eaVert"` : "";
   const align = content.style.align === "start" ? "l" : content.style.align === "end" ? "r" : "ctr";
-  const lines = content.text.split(/\r?\n/).map((line) => `<a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="ja-JP" sz="${fontSize}"><a:solidFill><a:srgbClr val="${colorHex(content.style.color, "000000")}"/></a:solidFill></a:rPr><a:t>${escapeXml(line)}</a:t></a:r><a:endParaRPr lang="ja-JP" sz="${fontSize}"/></a:p>`).join("");
+  const typeface = escapeXml(pptxTypefaceForFontId(content.style.fontId, fonts));
+  const typefaceXml = `<a:latin typeface="${typeface}"/><a:ea typeface="${typeface}"/><a:cs typeface="${typeface}"/>`;
+  const lines = content.text.split(/\r?\n/).map((line) => `<a:p><a:pPr algn="${align}"/><a:r><a:rPr lang="ja-JP" sz="${fontSize}"><a:solidFill><a:srgbClr val="${colorHex(content.style.color, "000000")}"/></a:solidFill>${typefaceXml}</a:rPr><a:t>${escapeXml(line)}</a:t></a:r><a:endParaRPr lang="ja-JP" sz="${fontSize}">${typefaceXml}</a:endParaRPr></a:p>`).join("");
   return `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${escapeXml(name)}"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm${rot ? ` rot="${rot}"` : ""}><a:off x="${box.x}" y="${box.y}"/><a:ext cx="${box.cx}" cy="${box.cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr wrap="square" anchor="ctr"${vertical}/><a:lstStyle/>${lines}</p:txBody></p:sp>`;
 }
 
@@ -482,6 +499,7 @@ function balloonGroupXml(
   box: SlideRect,
   textBox: SlideRect,
   pageWidthEmu: number,
+  fonts: FontSummary[],
   adjustments: Array<[string, number]>
 ): string {
   const left = Math.min(box.x, textBox.x);
@@ -489,7 +507,7 @@ function balloonGroupXml(
   const right = Math.max(box.x + box.cx, textBox.x + textBox.cx);
   const bottom = Math.max(box.y + box.cy, textBox.y + textBox.cy);
   const bounds = { x: left, y: top, cx: Math.max(1, right - left), cy: Math.max(1, bottom - top) };
-  return `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="${groupId}" name="${escapeXml(`${balloon.id} balloon and text`)}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="${bounds.x}" y="${bounds.y}"/><a:ext cx="${bounds.cx}" cy="${bounds.cy}"/><a:chOff x="${bounds.x}" y="${bounds.y}"/><a:chExt cx="${bounds.cx}" cy="${bounds.cy}"/></a:xfrm></p:grpSpPr>${shapeXml(shapeId, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation, adjustments)}${textXml(textId, `${balloon.id} text`, balloon.content!, textBox, pageWidthEmu, balloon.rotation)}</p:grpSp>`;
+  return `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="${groupId}" name="${escapeXml(`${balloon.id} balloon and text`)}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="${bounds.x}" y="${bounds.y}"/><a:ext cx="${bounds.cx}" cy="${bounds.cy}"/><a:chOff x="${bounds.x}" y="${bounds.y}"/><a:chExt cx="${bounds.cx}" cy="${bounds.cy}"/></a:xfrm></p:grpSpPr>${shapeXml(shapeId, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation, adjustments)}${textXml(textId, `${balloon.id} text`, balloon.content!, textBox, pageWidthEmu, fonts, balloon.rotation)}</p:grpSp>`;
 }
 
 function effectGroupKey(object: PageObject): string | null {
@@ -520,7 +538,7 @@ function effectGroupXml(groupId: number, firstShapeId: number, key: string, effe
   return `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="${groupId}" name="${escapeXml(key)}"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="${left}" y="${top}"/><a:ext cx="${cx}" cy="${cy}"/><a:chOff x="${left}" y="${top}"/><a:chExt cx="${cx}" cy="${cy}"/></a:xfrm></p:grpSpPr>${children}</p:grpSp>`;
 }
 
-function editableObjectsXml(objects: PageObject[], pageHeight: number, rect: SlideRect): string {
+function editableObjectsXml(objects: PageObject[], pageHeight: number, rect: SlideRect, fonts: FontSummary[]): string {
   let id = 3;
   const xml: string[] = [];
   const groupedEffects = new Set<string>();
@@ -543,7 +561,7 @@ function editableObjectsXml(objects: PageObject[], pageHeight: number, rect: Sli
       const adjustments: Array<[string, number]> = balloon.tail ? [["adj1", balloon.tail.tip.x / balloon.size.x * 100000], ["adj2", balloon.tail.tip.y / balloon.size.y * 100000]] : [];
       if (balloon.content?.text) {
         const textBox = objectRect(balloon.position, { x: balloon.size.x * 0.78, y: balloon.size.y * 0.72 }, pageHeight, rect);
-        xml.push(balloonGroupXml(id++, id++, id++, balloon, geometry, box, textBox, rect.cx, adjustments));
+        xml.push(balloonGroupXml(id++, id++, id++, balloon, geometry, box, textBox, rect.cx, fonts, adjustments));
       } else {
         xml.push(shapeXml(id++, `${balloon.id} balloon`, geometry, box, balloon.fill, balloon.strokeColor, balloon.strokeWidth, balloon.rotation, adjustments));
       }
@@ -551,17 +569,17 @@ function editableObjectsXml(objects: PageObject[], pageHeight: number, rect: Sli
       const boxObject = object as BoxObject;
       const box = objectRect(boxObject.position, boxObject.size, pageHeight, rect);
       xml.push(shapeXml(id++, `${boxObject.id} box`, boxObject.cornerRadius ? "roundRect" : "rect", box, boxObject.fill, boxObject.strokeColor, boxObject.strokeWidth, boxObject.rotation));
-      if (boxObject.content?.text) xml.push(textXml(id++, `${boxObject.id} text`, boxObject.content, objectRect(boxObject.position, { x: boxObject.size.x * 0.88, y: boxObject.size.y * 0.82 }, pageHeight, rect), rect.cx, boxObject.rotation));
+      if (boxObject.content?.text) xml.push(textXml(id++, `${boxObject.id} text`, boxObject.content, objectRect(boxObject.position, { x: boxObject.size.x * 0.88, y: boxObject.size.y * 0.82 }, pageHeight, rect), rect.cx, fonts, boxObject.rotation));
     } else if (object.kind === "text") {
       const textObject = object as TextObject;
       const size = { x: textObject.maxWidth ?? Math.max(0.08, textObject.content.style.size * 4), y: Math.max(0.08, textObject.content.style.size * 6) };
-      xml.push(textXml(id++, `${textObject.id} text`, textObject.content, objectRect(textObject.position, size, pageHeight, rect), rect.cx, textObject.rotation));
+      xml.push(textXml(id++, `${textObject.id} text`, textObject.content, objectRect(textObject.position, size, pageHeight, rect), rect.cx, fonts, textObject.rotation));
     }
   }
   return xml.join("\n      ");
 }
 
-function renderSlideXml(rect: SlideRect, pageHeight: number, objects: PageObject[]): string {
+function renderSlideXml(rect: SlideRect, pageHeight: number, objects: PageObject[], fonts: FontSummary[]): string {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld>
@@ -596,7 +614,7 @@ function renderSlideXml(rect: SlideRect, pageHeight: number, objects: PageObject
           </a:prstGeom>
         </p:spPr>
       </p:pic>
-      ${editableObjectsXml(objects, pageHeight, rect)}
+      ${editableObjectsXml(objects, pageHeight, rect, fonts)}
     </p:spTree>
   </p:cSld>
   <p:clrMapOvr>

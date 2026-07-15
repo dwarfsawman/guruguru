@@ -2,6 +2,7 @@ import type { ArtifactRef } from "./generationIntent";
 import type { PageLayout } from "./pageLayout";
 import type { DialogueUnit } from "./dialogueAdaptation";
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
+import { actionTextEstablishesVisibleActor, dialogueEstablishesVisibleSpeaker } from "./dialoguePresentation";
 
 export const MANGA_PLAN_VERSION = 2 as const;
 export const MANGA_PLANNER_VERSION = "manga-plan-v2.1";
@@ -312,9 +313,11 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
   if (plan.pages.length === 0 || plan.pages.length > 200) error("page-count", "Plan must contain 1..200 pages");
 
   const sourceIds = new Set<string>();
+  const sourceById = new Map<string, SourceElementRef>();
   for (const source of plan.narrativeGraph.sourceElements) {
     if (!source.id || sourceIds.has(source.id)) error("source-id", `Duplicate or empty source element id: ${source.id}`);
     sourceIds.add(source.id);
+    if (source.id && !sourceById.has(source.id)) sourceById.set(source.id, source);
   }
   const entityIds = new Set<string>();
   for (const entity of plan.narrativeGraph.entities) {
@@ -350,11 +353,14 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
   }
   const panelIds = new Set<string>();
   const dialogueSeen = new Set<string>();
+  const dialogueAssignmentOrder: string[] = [];
   const snapshotIds = new Set<string>();
+  const snapshotById = new Map<string, FrozenDialogueLine>();
   const fillUnitIds = new Set((plan.fillUnits ?? []).map((unit) => unit.id));
   for (const snapshot of plan.dialogueSnapshots) {
     if (!snapshot.id || snapshotIds.has(snapshot.id)) error("dialogue-snapshot", `Duplicate or empty dialogue snapshot id: ${snapshot.id}`);
     snapshotIds.add(snapshot.id);
+    if (snapshot.id && !snapshotById.has(snapshot.id)) snapshotById.set(snapshot.id, snapshot);
   }
   for (const lineId of plan.sourceDialogueLineIds) {
     if (!snapshotIds.has(lineId)) error("dialogue-snapshot-missing", `Frozen dialogue snapshot is missing: ${lineId}`);
@@ -431,14 +437,60 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
       if (!stateIds.has(panel.preStateId)) error("pre-state", `Unknown preStateId: ${panel.preStateId}`, pageIndex, panel.id);
       if (!entityIds.has(panel.settingId)) error("setting", `Unknown setting entity: ${panel.settingId}`, pageIndex, panel.id);
       for (const sourceId of panel.sourceElementIds) {
-        if (!sourceIds.has(sourceId)) error("source-reference", `Unknown source element: ${sourceId}`, pageIndex, panel.id);
+        const source = sourceById.get(sourceId);
+        if (!source) {
+          error("source-reference", `Unknown source element: ${sourceId}`, pageIndex, panel.id);
+        } else if (source.sceneIndex !== panel.sceneIndex) {
+          error(
+            "source-scene",
+            `Panel scene ${panel.sceneIndex} references source ${sourceId} from scene ${source.sceneIndex}`,
+            pageIndex,
+            panel.id
+          );
+        }
+      }
+      const panelVisualSources = panel.sourceElementIds
+        .map((sourceId) => sourceById.get(sourceId))
+        .filter((source): source is SourceElementRef =>
+          source !== undefined &&
+          source.sceneIndex === panel.sceneIndex &&
+          (source.type === "action" || source.type === "synopsis")
+        );
+      const intentionallyAbsentCharacterIds = new Set(panel.mustNotShow
+        .filter((constraint) => constraint.kind === "entity-absent" && constraint.entityId)
+        .map((constraint) => constraint.entityId!));
+      for (const entity of plan.narrativeGraph.entities) {
+        if (
+          entity.kind === "character" &&
+          !panel.cast.some((member) => member.characterId === entity.id) &&
+          !intentionallyAbsentCharacterIds.has(entity.id) &&
+          panelVisualSources.some((source) => actionTextEstablishesVisibleActor(source.text, [entity.name, ...entity.aliases]))
+        ) {
+          error(
+            "source-actor-cast",
+            `Action-grounded visible character is missing from panel cast: ${entity.id}`,
+            pageIndex,
+            panel.id
+          );
+        }
       }
       for (const beatId of panel.beatIds) {
         if (!beatIds.has(beatId)) error("beat-reference", `Unknown beat: ${beatId}`, pageIndex, panel.id);
       }
       for (const cast of panel.cast) {
         if (!entityIds.has(cast.characterId)) error("cast-reference", `Unknown character: ${cast.characterId}`, pageIndex, panel.id);
+        if (intentionallyAbsentCharacterIds.has(cast.characterId)) {
+          error("cast-explicitly-absent", `Panel cast includes a character marked entity-absent: ${cast.characterId}`, pageIndex, panel.id);
+        }
         if (!validBox(cast.bbox)) error("cast-box", `Invalid cast bbox for ${cast.characterId}`, pageIndex, panel.id);
+        for (const lineId of cast.speakingLineIds) {
+          const line = snapshotById.get(lineId);
+          if (!panel.dialogueLineIds.includes(lineId)) {
+            error("cast-dialogue-panel", `Cast member references dialogue outside the panel: ${lineId}`, pageIndex, panel.id);
+          } else if (!line || line.characterId !== cast.characterId) {
+            error("cast-dialogue-speaker", `Cast member does not match dialogue speaker: ${lineId}`, pageIndex, panel.id);
+          }
+        }
       }
       if (!entityIds.has(panel.shot.focalSubjectId)) {
         error("focal-subject", `Unknown focal subject: ${panel.shot.focalSubjectId}`, pageIndex, panel.id);
@@ -466,8 +518,39 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
         }
       }
       for (const lineId of panel.dialogueLineIds) {
+        dialogueAssignmentOrder.push(lineId);
         if (dialogueSeen.has(lineId)) error("dialogue-duplicate", `Dialogue line is assigned more than once: ${lineId}`, pageIndex, panel.id);
         dialogueSeen.add(lineId);
+        const line = snapshotById.get(lineId);
+        if (line && line.sceneIndex !== panel.sceneIndex) {
+          error(
+            "dialogue-scene",
+            `Panel scene ${panel.sceneIndex} references dialogue ${lineId} from scene ${line.sceneIndex}`,
+            pageIndex,
+            panel.id
+          );
+        }
+        if (
+          line?.characterId &&
+          dialogueEstablishesVisibleSpeaker(line) &&
+          !panel.cast.some((member) => member.characterId === line.characterId)
+        ) {
+          error("visible-speaker-cast", `Visible dialogue speaker is missing from panel cast: ${lineId}`, pageIndex, panel.id);
+        }
+      }
+      const expectedOrderIndexes = panel.dialogueLineIds
+        .map((lineId) => snapshotById.get(lineId)?.orderIndex)
+        .filter((orderIndex): orderIndex is number => orderIndex !== undefined);
+      if (
+        expectedOrderIndexes.length !== panel.dialogueOrderIndexes.length ||
+        expectedOrderIndexes.some((orderIndex, index) => panel.dialogueOrderIndexes[index] !== orderIndex)
+      ) {
+        error(
+          "dialogue-order-indexes",
+          "dialogueOrderIndexes must match dialogueLineIds in panel reading order",
+          pageIndex,
+          panel.id
+        );
       }
       for (const unitId of panel.fillUnitIds ?? []) {
         if (!fillUnitIds.has(unitId)) error("fill-unit-missing", `Panel references unknown fill unit: ${unitId}`, pageIndex, panel.id);
@@ -492,6 +575,18 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
   }
   for (const lineId of dialogueSeen) {
     if (!plan.sourceDialogueLineIds.includes(lineId)) error("dialogue-extra", `Panel references a line outside the frozen revision set: ${lineId}`);
+  }
+  const sourceOrderIndexes = plan.sourceDialogueLineIds
+    .map((lineId) => snapshotById.get(lineId)?.orderIndex)
+    .filter((orderIndex): orderIndex is number => orderIndex !== undefined);
+  if (sourceOrderIndexes.some((orderIndex, index) => index > 0 && sourceOrderIndexes[index - 1]! >= orderIndex)) {
+    error("dialogue-source-order", "sourceDialogueLineIds must follow strictly increasing frozen orderIndex values");
+  }
+  if (
+    dialogueAssignmentOrder.length !== plan.sourceDialogueLineIds.length ||
+    dialogueAssignmentOrder.some((lineId, index) => plan.sourceDialogueLineIds[index] !== lineId)
+  ) {
+    error("dialogue-order", "Panel dialogue assignments must follow the frozen script order");
   }
   for (const source of plan.narrativeGraph.sourceElements) {
     const assigned = plan.pages.some((page) => page.panels.some((panel) => panel.sourceElementIds.includes(source.id)));

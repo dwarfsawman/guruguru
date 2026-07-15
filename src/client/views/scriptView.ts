@@ -273,6 +273,8 @@ function renderCandidateTask(task: ScriptMangaTaskView, busy: boolean, auditMode
                   ${renderCandidateVlmAudit(task, assetId, auditMode)}
                   <div class="script-manga-candidate-actions">
                     <a href="/api/assets/${encodedAssetId}/image" target="_blank" rel="noopener">原寸</a>
+                    <button class="button-secondary compact" type="button" data-action="edit-script-manga-candidate-mask"
+                      data-id="${escapeAttr(task.id)}" data-asset-id="${escapeAttr(assetId)}" ${busy ? "disabled" : ""}>マスク編集</button>
                     <button class="button-primary compact" type="button" data-action="select-script-manga-candidate"
                       data-id="${escapeAttr(task.id)}" data-asset-id="${escapeAttr(assetId)}" ${busy ? "disabled" : ""}>採用</button>
                   </div>
@@ -330,6 +332,7 @@ function renderRunSummary(run: ScriptMangaRunView, busy: boolean): string {
         <div class="script-manga-export-actions" aria-label="完成ページを書き出す">
           <span>完成ページ</span>
           <button class="button-secondary compact" type="button" data-action="export-script-manga-run" data-format="png" ${busy ? "disabled" : ""}>PNG</button>
+          <button class="button-secondary compact" type="button" data-action="export-script-manga-run" data-format="jpeg" ${busy ? "disabled" : ""}>JPEG</button>
           <button class="button-secondary compact" type="button" data-action="export-script-manga-run" data-format="pptx" ${busy ? "disabled" : ""}>PPTX</button>
           <button class="button-secondary compact" type="button" data-action="export-script-manga-run" data-format="ora" ${busy ? "disabled" : ""}>ORA</button>
         </div>
@@ -560,10 +563,34 @@ export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps)
           </select>
         </label>
         <label class="script-field">
-          <span>panels / page</span>
+          <span title="target pages指定時は1ページあたりの上限。未指定時は最終ページを除く既定密度です。">panels / page (max)</span>
           <select data-script-manga-setting="panelsPerPage" ${props.scriptMangaBusy ? "disabled" : ""}>
             ${Array.from({ length: 6 }, (_, index) => index + 1).map((count) => `
               <option value="${count}" ${count === settings.panelsPerPage ? "selected" : ""}>${count}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label class="script-field">
+          <span title="吹き出し数ではなくFountainの台詞要素数。既定4、最終可否は文字preflightで判定します。">dialogues / panel (max)</span>
+          <select data-script-manga-setting="maxDialoguesPerPanel" ${props.scriptMangaBusy ? "disabled" : ""}>
+            ${Array.from({ length: 8 }, (_, index) => index + 1).map((count) => `
+              <option value="${count}" ${count === settings.maxDialoguesPerPanel ? "selected" : ""}>${count}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label class="script-field">
+          <span>target pages</span>
+          <select data-script-manga-setting="targetPageCount" ${props.scriptMangaBusy ? "disabled" : ""}>
+            ${[0, 8, 12, 16, 24, 32, 48, 64, 96, 128].map((count) => `
+              <option value="${count}" ${count === settings.targetPageCount ? "selected" : ""}>${count === 0 ? "auto" : `${count} pages`}</option>
+            `).join("")}
+          </select>
+        </label>
+        <label class="script-field">
+          <span>max panels</span>
+          <select data-script-manga-setting="maxPanelCount" ${props.scriptMangaBusy ? "disabled" : ""}>
+            ${[0, 40, 80, 120, 160, 240, 320, 480, 800].map((count) => `
+              <option value="${count}" ${count === settings.maxPanelCount ? "selected" : ""}>${count === 0 ? "no hard ceiling" : `${count} panels`}</option>
             `).join("")}
           </select>
         </label>

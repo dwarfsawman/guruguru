@@ -14,6 +14,12 @@ import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPl
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import type { ScriptMangaPlanView, ScriptMangaRunView, ScriptMangaTaskView } from "../shared/scriptMangaApi";
 import type { DialogueBalloonStyle, DialogueSemanticKind, PageRow } from "../shared/apiTypes";
+import {
+  actionTextEstablishesVisibleActor,
+  dialogueEstablishesVisibleSpeaker,
+  stripClausesContainingCharacterLabels,
+  textContainsCharacterLabel
+} from "../shared/dialoguePresentation";
 import type { ReferenceModelFamily, ScriptMangaReferenceSnapshot } from "../shared/referenceSets";
 import { referenceSnapshotKey } from "../shared/referenceSets";
 import { updateAssetStatus } from "./assets";
@@ -30,7 +36,7 @@ import { fitPageBalloonText } from "./balloonTextFit";
 import { compilePanelConditioning } from "./panelPromptCompiler";
 import { inferPromptProfile } from "./templates";
 import { releaseComfyModelsForAudit } from "./comfy";
-import { createId, getRow, getRows, runSql, toApiRow } from "./db";
+import { createId, dataRoot, getRow, getRows, runSql, toApiRow } from "./db";
 import { allocateDialoguePages } from "./dialogueAllocation";
 import { applyDialogueLayout, reflowDialogueLayout } from "./dialogueAutoLayoutApi";
 import { cutoutFigure } from "./figureCutout";
@@ -44,6 +50,7 @@ import { evaluatePanelCandidate } from "./panelVisualEvaluator";
 import { evaluateDeterministicPanelQuality } from "./deterministicPanelQuality";
 import { resolvePanelReferences } from "./referenceResolver";
 import { createGenerationRound, ensureRoundMonitor, interruptRound } from "./rounds";
+import { resolveRoundAttachmentPath, type RoundAttachmentKind } from "./roundAttachments";
 import { withImageExport, type ImageExportResult } from "./imageExport";
 import { withOpenRasterExport, type OpenRasterExportResult } from "./openRasterExport";
 import sharp from "sharp";
@@ -54,12 +61,29 @@ import { readCachedBeatAnnotation, type BeatAnnotationResult } from "./scriptBea
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
 import { adoptablePlanCandidate, markPlanCandidateAdopted } from "./scriptMangaPlanCandidates";
 import { buildMangaPlanV2 } from "./scriptMangaPlanV2";
+import {
+  computeScriptMangaReuseFingerprint,
+  matchScriptMangaReuseCandidatesWithReservations,
+  SCRIPT_MANGA_REUSE_FINGERPRINT_VERSION
+} from "./scriptMangaInheritance";
 import { acquireVlmModel, getVlmAuditSettings, releaseVlmModel } from "./vlmAudit";
 import type { StoryGraphCharacterInput, StoryGraphDialogueInput } from "./storyGraphBuilder";
 import { objectBody, requiredString, stringOr } from "./validate";
+import { createHash } from "node:crypto";
+import { open, readFile, realpath } from "node:fs/promises";
+import { resolve } from "node:path";
+import { hashJson } from "./workflowGraph";
+import { normalizeGenerationRequest } from "./generationRequest";
+import { isPathInside } from "./paths";
+import { resolveMangaFontId } from "./fonts";
+import {
+  buildScriptMangaRepairGenerationRequest,
+  parseScriptMangaRepairRequest
+} from "./scriptMangaRepair";
 
 interface RunRow {
   id: string;
+  predecessor_run_id: string | null;
   project_id: string;
   script_id: string;
   script_revision_id: string | null;
@@ -99,6 +123,9 @@ interface TaskRow {
   scores_json: string | null;
   attempt_count: number;
   repair_parent_task_id: string | null;
+  inherited_from_task_id: string | null;
+  reuse_fingerprint: string | null;
+  reuse_source_json: string | null;
   dependency_task_ids_json: string;
   status: string;
   asset_id: string | null;
@@ -138,6 +165,7 @@ interface ScriptMangaRunConfig {
   batchSize: 1;
   planningMode: "heuristic" | "llm" | "provided";
   pageLimit: number;
+  maxPanelCount: number;
   loras: StyleLoraSelection[];
   generateImages: boolean;
   candidateSelectionPolicy: "review" | "metadata";
@@ -216,6 +244,8 @@ const SCRIPT_MANGA_MAX_BALLOON_COVERAGE = 0.45;
 /** plan の cast bbox から顔領域とみなす高さ比(bbox 上端からこの割合)。auditLettering と共有。 */
 const CAST_FACE_HEIGHT_RATIO = 0.38;
 const activeTaskSubmissions = new Set<string>();
+const activeTaskInheritances = new Set<string>();
+const activeTaskSelections = new Set<string>();
 const activeAuditRuns = new Map<string, Promise<void>>();
 let visualAuditQueue: Promise<void> = Promise.resolve();
 
@@ -244,6 +274,19 @@ function latestRevision(scriptId: string): { id: string; doc: FountainDoc } {
     [scriptId]
   );
   if (!row) throw new HttpError(400, "Script has no Fountain revision");
+  try {
+    return { id: row.id, doc: JSON.parse(row.parsed_json) as FountainDoc };
+  } catch {
+    throw new HttpError(500, "Stored Fountain revision is invalid");
+  }
+}
+
+function revisionById(scriptId: string, revisionId: string): { id: string; doc: FountainDoc } {
+  const row = getRow<{ id: string; parsed_json: string }>(
+    "SELECT id, parsed_json FROM script_revisions WHERE id = ? AND script_id = ?",
+    [revisionId, scriptId]
+  );
+  if (!row) throw new HttpError(409, "The predecessor's pinned Fountain revision is unavailable");
   try {
     return { id: row.id, doc: JSON.parse(row.parsed_json) as FountainDoc };
   } catch {
@@ -300,6 +343,8 @@ function taskView(row: TaskRow): ScriptMangaTaskView {
     attemptCount: row.attempt_count,
     candidateAssetIds: parseJson<string[]>(row.candidate_asset_ids_json, []),
     selectedAssetId,
+    inheritedFromTaskId: row.inherited_from_task_id,
+    reuseFingerprint: row.reuse_fingerprint,
     scores: parseJson<unknown>(row.scores_json, null),
     lastError: parseJson<unknown>(row.last_error_json, null)
   };
@@ -310,6 +355,7 @@ function runView(row: RunRow): ScriptMangaRunView {
   const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at ASC", [row.id]);
   return {
     id: row.id,
+    predecessorRunId: row.predecessor_run_id,
     projectId: row.project_id,
     scriptId: row.script_id,
     scriptRevisionId: row.script_revision_id,
@@ -625,7 +671,7 @@ function collectReferenceSnapshot(run: RunRow, plan: MangaPlanV2, config: Script
   const missing = new Set<string>();
   const dialogueById = new Map(plan.dialogueSnapshots.map((line) => [line.id, line]));
   for (const panel of plan.pages.flatMap((page) => page.panels)) {
-    const normalized = normalizePanelCast(panel, dialogueById);
+    const normalized = normalizePanelCast(panel, dialogueById, sourceGroundedCharacterIds(panel, plan.narrativeGraph));
     const resolved = resolvePanelReferences({
       projectId: run.project_id,
       providerId: config.providerId,
@@ -675,8 +721,144 @@ function parseConfig(run: RunRow): ScriptMangaRunConfig {
   const parsed = parseJson<Partial<ScriptMangaRunConfig>>(run.config_json, {});
   return {
     ...parsed,
-    auditMode: parsed.auditMode === "vlm" ? "vlm" : "manual"
+    auditMode: parsed.auditMode === "vlm" ? "vlm" : "manual",
+    maxPanelCount: typeof parsed.maxPanelCount === "number" ? parsed.maxPanelCount : 0
   } as ScriptMangaRunConfig;
+}
+
+function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, Math.trunc(value)))
+    : fallback;
+}
+
+function planningOptionsFromInput(
+  input: Record<string, unknown>,
+  fallback: ScriptMangaPlanOptions = {}
+): ScriptMangaPlanOptions {
+  const requestedTarget = input.targetPageCount;
+  const targetPageCount = typeof requestedTarget === "number" && Number.isFinite(requestedTarget)
+    ? Math.trunc(requestedTarget) > 0
+      ? Math.max(1, Math.min(200, Math.trunc(requestedTarget)))
+      : undefined
+    : fallback.targetPageCount;
+  const requestedStyle = typeof input.stylePrompt === "string" ? input.stylePrompt.trim() : null;
+  return {
+    panelsPerPage: boundedInteger(input.panelsPerPage, fallback.panelsPerPage ?? 4, 1, 6),
+    maxElementsPerPanel: boundedInteger(input.maxElementsPerPanel, fallback.maxElementsPerPanel ?? 6, 1, 24),
+    targetPageCount,
+    maxDialoguesPerPanel: boundedInteger(input.maxDialoguesPerPanel, fallback.maxDialoguesPerPanel ?? 4, 1, 8),
+    stylePrompt: requestedStyle === null ? fallback.stylePrompt : requestedStyle || undefined
+  };
+}
+
+function styleLorasFromInput(value: unknown, fallback: StyleLoraSelection[] = []): StyleLoraSelection[] {
+  if (!Array.isArray(value)) return fallback.map((item) => ({ ...item }));
+  return value.flatMap((raw) =>
+    raw && typeof raw === "object"
+      ? [{
+          name: stringOr((raw as Record<string, unknown>).name, ""),
+          strength: typeof (raw as Record<string, unknown>).strength === "number"
+            ? (raw as Record<string, number>).strength
+            : 1
+        }]
+      : []
+  ).filter((item) => item.name.trim()).slice(0, 4);
+}
+
+function restoreFrozenPlanSources(candidate: MangaPlanV2, original: MangaPlanV2): void {
+  candidate.narrativeGraph = {
+    ...candidate.narrativeGraph,
+    sourceElements: structuredClone(original.narrativeGraph.sourceElements),
+    entities: structuredClone(original.narrativeGraph.entities),
+    warnings: structuredClone(original.narrativeGraph.warnings)
+  };
+  candidate.fillUnits = original.fillUnits ? structuredClone(original.fillUnits) : undefined;
+}
+
+function completeSuccessorPlan(raw: unknown, original: MangaPlanV2, planId: string): MangaPlanV2 {
+  if (!raw || typeof raw !== "object") throw new HttpError(400, "successorPlan must be a complete MangaPlanV2 object");
+  let candidate: MangaPlanV2;
+  try {
+    candidate = JSON.parse(JSON.stringify(raw)) as MangaPlanV2;
+  } catch {
+    throw new HttpError(400, "successorPlan must be valid JSON");
+  }
+  if (candidate.version !== 2 || !Array.isArray(candidate.pages) || !candidate.narrativeGraph) {
+    throw new HttpError(400, "successorPlan must be a complete MangaPlanV2 object");
+  }
+  const originalPages = new Map(original.pages.map((page) => [page.index, page]));
+  try {
+    candidate.pages = candidate.pages.map((page) => {
+      if (!page || typeof page !== "object" || !Array.isArray(page.panels) || typeof page.layoutTemplateId !== "string") {
+        throw new HttpError(400, "successorPlan contains a malformed page");
+      }
+      const originalPage = originalPages.get(page.index);
+      const snapshot = originalPage?.layoutTemplateId === page.layoutTemplateId
+        ? originalPage.layoutSnapshot
+        : resolveLayoutTemplate(page.layoutTemplateId);
+      if (!snapshot) throw new HttpError(422, `Layout template could not be resolved: ${page.layoutTemplateId}`);
+      return { ...page, layoutSnapshot: clonePageLayout(snapshot) };
+    });
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(400, "successorPlan contains malformed pages");
+  }
+  candidate.id = planId;
+  candidate.scriptId = original.scriptId;
+  candidate.scriptRevisionId = original.scriptRevisionId;
+  candidate.sourceDialogueLineIds = [...original.sourceDialogueLineIds];
+  candidate.dialogueSnapshots = original.dialogueSnapshots.map((snapshot) => ({ ...snapshot }));
+  candidate.dialoguePolicy = original.dialoguePolicy;
+  candidate.plannerVersion = original.plannerVersion;
+  candidate.promptCompilerVersion = original.promptCompilerVersion;
+  candidate.plannerProvenance = original.plannerProvenance;
+  restoreFrozenPlanSources(candidate, original);
+  candidate.title = typeof candidate.title === "string" && candidate.title.trim() ? candidate.title : original.title;
+  candidate.panelCount = candidate.pages.reduce((sum, page) => sum + page.panels.length, 0);
+  candidate.dialogueCount = new Set(candidate.pages.flatMap((page) => page.panels.flatMap((panel) => panel.dialogueLineIds))).size;
+  candidate.createdAt = new Date().toISOString();
+  return candidate;
+}
+
+function requirePanelBudget(plan: MangaPlanV2, maxPanelCount: number): void {
+  if (maxPanelCount > 0 && plan.panelCount > maxPanelCount) {
+    throw new HttpError(
+      422,
+      `MangaPlanV2 has ${plan.panelCount} panels, exceeding maxPanelCount ${maxPanelCount}; revise the name before generation`
+    );
+  }
+}
+
+function requireDialogueBudget(plan: MangaPlanV2, maxDialoguesPerPanel: number): void {
+  const maximum = Math.max(1, Math.min(8, Math.trunc(maxDialoguesPerPanel)));
+  const oversized = plan.pages
+    .flatMap((page) => page.panels.map((panel) => ({ pageIndex: page.index, panel })))
+    .find(({ panel }) => panel.dialogueLineIds.length > maximum);
+  if (oversized) {
+    throw new HttpError(
+      422,
+      `Panel ${oversized.panel.id} on page ${oversized.pageIndex + 1} has ${oversized.panel.dialogueLineIds.length} dialogue elements, exceeding maxDialoguesPerPanel ${maximum}`
+    );
+  }
+}
+
+function requirePagePanelBudget(plan: MangaPlanV2, panelsPerPage: number): void {
+  const maximum = Math.max(1, Math.min(6, Math.trunc(panelsPerPage)));
+  const oversized = plan.pages.find((page) => page.panels.length > maximum);
+  if (oversized) {
+    throw new HttpError(
+      422,
+      `Page ${oversized.index + 1} has ${oversized.panels.length} panels, exceeding panelsPerPage ${maximum}`
+    );
+  }
+}
+
+function requireRunPanelBudget(run: RunRow, plan: MangaPlanV2): void {
+  const config = parseConfig(run);
+  requirePanelBudget(plan, config.maxPanelCount);
+  requireDialogueBudget(plan, config.planOptions?.maxDialoguesPerPanel ?? 4);
+  requirePagePanelBudget(plan, config.planOptions?.panelsPerPage ?? 4);
 }
 
 function persistPlan(projectId: string, plan: MangaPlanV2, validation: MangaPlanValidationReport): void {
@@ -891,7 +1073,12 @@ function ensureDialogueLettering(
       avoidZones: planCastAvoidZones(pageSpec, layoutPanels),
       maxPanelCoverageRatio: SCRIPT_MANGA_MAX_BALLOON_COVERAGE
     });
+  }
+  const fontChanged = applyMangaDialogueFont(pageId, lineIds);
+  if (placementIds.length > 0 || fontChanged) {
     fitPageBalloonText(run.project_id, pageId);
+  }
+  if (placementIds.length > 0) {
     aimInitialBalloonTails(pageId);
   }
   requireReadableBalloonText(pageId);
@@ -914,6 +1101,40 @@ function ensureDialogueLettering(
     JSON.stringify({ ...evaluation, lettering: { ...(evaluation.lettering as Record<string, unknown> ?? {}), [pageId]: letteringReport } }),
     run.id
   ]);
+}
+
+/**
+ * script-mangaが自動配置した文字だけへ漫画用fontを明示する。一般ページの`default`解決順や、
+ * ユーザーが明示選択済みのfontは変更しない。
+ */
+function applyMangaDialogueFont(pageId: string, lineIds: string[]): boolean {
+  if (lineIds.length === 0) return false;
+  const objectIds = new Set(getRows<{ balloon_object_id: string | null }>(
+    `SELECT balloon_object_id FROM dialogue_placements
+     WHERE page_id = ? AND line_id IN (${lineIds.map(() => "?").join(", ")}) AND balloon_object_id IS NOT NULL`,
+    [pageId, ...lineIds]
+  ).flatMap((row) => row.balloon_object_id ? [row.balloon_object_id] : []));
+  if (objectIds.size === 0) return false;
+  const pageRow = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
+  const objects = normalizePageObjects(pageRow?.objects_json ? JSON.parse(pageRow.objects_json) : []);
+  const fontId = resolveMangaFontId();
+  let changed = false;
+  const updated = objects.map((object) => {
+    if (!objectIds.has(object.id)) return object;
+    if (object.kind === "text" && object.content.style.fontId === "default" && fontId !== "default") {
+      changed = true;
+      return { ...object, content: { ...object.content, style: { ...object.content.style, fontId } } };
+    }
+    if ((object.kind === "balloon" || object.kind === "box") && object.content?.style.fontId === "default" && fontId !== "default") {
+      changed = true;
+      return { ...object, content: { ...object.content, style: { ...object.content.style, fontId } } };
+    }
+    return object;
+  });
+  if (changed) {
+    runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [JSON.stringify(updated), pageId]);
+  }
+  return changed;
 }
 
 function upsertPreparedTask(input: {
@@ -964,29 +1185,63 @@ function upsertPreparedTask(input: {
   );
 }
 
-function normalizePanelCast(panel: PanelSpec, dialogueById: Map<string, StoryGraphDialogueInput>): {
+function sourceGroundedCharacterIds(panel: PanelSpec, graph: MangaPlanV2["narrativeGraph"]): Set<string> {
+  const sourceIds = new Set(panel.sourceElementIds);
+  const visualSources = graph.sourceElements.filter((source) =>
+    sourceIds.has(source.id) &&
+    source.sceneIndex === panel.sceneIndex &&
+    (source.type === "action" || source.type === "synopsis")
+  );
+  return new Set(graph.entities
+    .filter((entity) => entity.kind === "character" &&
+      visualSources.some((source) => actionTextEstablishesVisibleActor(source.text, [entity.name, ...entity.aliases])))
+    .map((entity) => entity.id));
+}
+
+function normalizePanelCast(
+  panel: PanelSpec,
+  dialogueById: Map<string, StoryGraphDialogueInput>,
+  sourceGroundedIds: ReadonlySet<string>
+): {
   cast: PanelSpec["cast"];
   excludedOffscreenIds: string[];
 } {
-  const offscreenStyles = new Set(["telecom", "machine", "vo", "caption", "monitor"]);
   const excludedOffscreenIds: string[] = [];
   const byKey = new Map<string, PanelSpec["cast"][number]>();
   for (const member of panel.cast) {
-    const lines = member.speakingLineIds.map((id) => dialogueById.get(id)).filter((line): line is StoryGraphDialogueInput => Boolean(line));
-    const offscreenOnly = member.characterId !== panel.shot.focalSubjectId && lines.length > 0 && lines.every((line) =>
-      line.semanticKind === "narration" || offscreenStyles.has(line.balloonStyle ?? "")
-    );
-    if (offscreenOnly) {
+    // A provided plan may omit speakingLineIds. Reconstruct the member's actual panel lines from
+    // the frozen dialogue assignment instead of trusting that denormalized convenience field.
+    const lineIds = [...new Set([...member.speakingLineIds, ...panel.dialogueLineIds])];
+    const lines = lineIds
+      .map((id) => dialogueById.get(id))
+      .filter((line): line is StoryGraphDialogueInput => line !== undefined && line.characterId === member.characterId);
+    const dialogueGroundsSpeaker = lines.some((line) => dialogueEstablishesVisibleSpeaker(line));
+    const explicitlyVisible = sourceGroundedIds.has(member.characterId);
+    if (!dialogueGroundsSpeaker && !explicitlyVisible) {
       excludedOffscreenIds.push(member.characterId);
       continue;
     }
     const key = referenceSnapshotKey(member.characterId, member.variantId);
     const existing = byKey.get(key);
     if (!existing) {
-      byKey.set(key, { ...member, speakingLineIds: [...new Set(member.speakingLineIds)] });
+      byKey.set(key, { ...member, speakingLineIds: lines.map((line) => line.id) });
       continue;
     }
     existing.speakingLineIds = [...new Set([...existing.speakingLineIds, ...member.speakingLineIds])];
+  }
+  for (const lineId of panel.dialogueLineIds) {
+    const line = dialogueById.get(lineId);
+    if (line?.characterId && !dialogueEstablishesVisibleSpeaker(line) && !sourceGroundedIds.has(line.characterId)) {
+      excludedOffscreenIds.push(line.characterId);
+    }
+  }
+  const explicitAbsentIds = new Set(panel.mustNotShow
+    .filter((constraint) => constraint.kind === "entity-absent" && constraint.entityId)
+    .map((constraint) => constraint.entityId!));
+  for (const characterId of sourceGroundedIds) {
+    if (explicitAbsentIds.has(characterId) && !panel.cast.some((member) => member.characterId === characterId)) {
+      excludedOffscreenIds.push(characterId);
+    }
   }
   return { cast: [...byKey.values()], excludedOffscreenIds: [...new Set(excludedOffscreenIds)] };
 }
@@ -1040,8 +1295,43 @@ function materializeRun(runId: string): void {
       // 役割の正は layout snapshot 側(provided plan が role を書き忘れても立ち絵仕様になる)。
       if (layoutPanel.role === "figure") panel.role = "figure";
       else delete panel.role;
-      const castNormalization = normalizePanelCast(panel, dialogueById);
+      const castNormalization = normalizePanelCast(panel, dialogueById, sourceGroundedCharacterIds(panel, plan.narrativeGraph));
       panel.cast = castNormalization.cast;
+      const excludedCharacterIds = new Set(castNormalization.excludedOffscreenIds);
+      if (excludedCharacterIds.size > 0) {
+        const excludedLabels = plan.narrativeGraph.entities
+          .filter((entity) => excludedCharacterIds.has(entity.id))
+          .flatMap((entity) => [entity.name, ...entity.aliases]);
+        panel.mustShow = panel.mustShow.filter((constraint) =>
+          !(constraint.entityId && excludedCharacterIds.has(constraint.entityId)) &&
+          !textContainsCharacterLabel(constraint.description, excludedLabels)
+        );
+        panel.promptBase = stripClausesContainingCharacterLabels(panel.promptBase, excludedLabels) ||
+          "Depict only the source-grounded setting, props, and planned visible cast in one coherent moment";
+        panel.shot.compositionIntent = stripClausesContainingCharacterLabels(panel.shot.compositionIntent, excludedLabels) ||
+          "single clear action with only the planned visible cast";
+        if (panel.postStateDelta.characterStates) {
+          panel.postStateDelta.characterStates = Object.fromEntries(
+            Object.entries(panel.postStateDelta.characterStates)
+              .filter(([characterId]) => !excludedCharacterIds.has(characterId))
+          );
+        }
+        if (excludedCharacterIds.has(panel.shot.focalSubjectId)) {
+          panel.shot.focalSubjectId = panel.cast[0]?.characterId ?? panel.settingId;
+        }
+      }
+      for (const characterId of castNormalization.excludedOffscreenIds) {
+        if (panel.mustNotShow.some((constraint) => constraint.kind === "entity-absent" && constraint.entityId === characterId)) continue;
+        const entity = plan.narrativeGraph.entities.find((candidate) => candidate.id === characterId);
+        const identity = entity?.attributes.tags?.trim() || entity?.name || characterId;
+        panel.mustNotShow.push({
+          kind: "entity-absent",
+          entityId: characterId,
+          description: panel.cast.length === 0
+            ? `off-screen speaker ${identity}; people, human figures, faces, crowds, reflections, or silhouettes`
+            : `off-screen speaker ${identity}; extra people, extra faces, crowds, background characters, reflections, or silhouettes beyond the planned visible cast`
+        });
+      }
       panel.textSafeZones = actualTextSafeZones(pageId, layout, layoutPanel.id);
       const references = resolvePanelReferences({
         projectId: run.project_id,
@@ -1077,6 +1367,10 @@ function materializeRun(runId: string): void {
         requireReferences: config.requireReferenceSets && Boolean(modelFamily) && !config.allowReferenceFallback,
         missingReferenceIds: references.missingReferenceIds,
         castNormalized: true,
+        visibleSpeakerIds: panel.dialogueLineIds.flatMap((lineId) => {
+          const line = dialogueById.get(lineId);
+          return line?.characterId && dialogueEstablishesVisibleSpeaker(line) ? [line.characterId] : [];
+        }),
         offscreenSpeakerIds: castNormalization.excludedOffscreenIds
       });
       upsertPreparedTask({ runId: run.id, pageId, layoutPanelId: layoutPanel.id, panel, preflight });
@@ -1099,6 +1393,949 @@ function materializeRun(runId: string): void {
        updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [run.id]
   );
+}
+
+interface WorkflowTemplateReuseRow {
+  version: number;
+  workflow_hash: string;
+  workflow_json: string;
+}
+
+interface ScriptMangaReuseTemplateSnapshot {
+  id: string;
+  version: number;
+  workflowHash: string;
+}
+
+interface ScriptMangaReuseRoundRow {
+  id: string;
+  parent_round_id: string | null;
+  template_id: string;
+  provider_id: string;
+  status: string;
+  request_json: string;
+  intent_json: string | null;
+  patched_workflow_json: string | null;
+  script_manga_task_id: string | null;
+}
+
+interface ScriptMangaReuseAssetRow {
+  id: string;
+  project_id: string;
+  round_id: string;
+  workflow_template_id: string;
+  workflow_template_version: number;
+  workflow_snapshot_hash: string;
+  image_path: string;
+}
+
+interface StoredTaskReuseSource {
+  version: typeof SCRIPT_MANGA_REUSE_FINGERPRINT_VERSION;
+  fingerprint: string;
+  /** The root txt2img signature used to compare this reviewed result with a successor target. */
+  matchFingerprint: string;
+  /** SHA-256 of the reviewed image bytes; protects reuse from path-stable file replacement. */
+  assetContentHash: string;
+  assetWidth: number;
+  assetHeight: number;
+  roundId: string;
+  providerId: string;
+  template: ScriptMangaReuseTemplateSnapshot;
+  requestHash: string;
+  intentHash: string;
+  workflowSnapshotHash: string;
+  generationMode: "txt2img" | "repair-img2img";
+  parentLineage?: {
+    parentAssetId: string;
+    parentFingerprint: string;
+    /** Exact parent bytes used by the reviewed repair, not merely its generation recipe. */
+    parentAssetContentHash: string;
+    parentAssetWidth: number;
+    parentAssetHeight: number;
+    relationType: "img2img";
+  };
+  maskContentHash?: string;
+}
+
+interface TaskReusePlanContext {
+  panel: PanelSpec;
+  layout: PageLayout;
+  layoutPanel: PageLayout["panels"][number];
+  resolvedBeats: MangaPlanV2["narrativeGraph"]["beats"];
+  resolvedPreState: MangaPlanV2["narrativeGraph"]["worldStates"][number] | null;
+  resolvedContinuityPanels: PanelSpec[];
+}
+
+function taskReusePlanContext(
+  run: RunRow,
+  plan: MangaPlanV2,
+  task: TaskRow,
+  materializedPanels: ReadonlyMap<string, PanelSpec>
+): TaskReusePlanContext | null {
+  try {
+    const panel = parseJson<PanelSpec | null>(task.panel_spec_json, null);
+    if (!panel) return null;
+    const pageIndex = getRow<{ page_index: number }>(
+      "SELECT page_index FROM script_manga_run_pages WHERE run_id = ? AND page_id = ?",
+      [run.id, task.page_id]
+    )?.page_index;
+    if (typeof pageIndex !== "number") return null;
+    const pageSpec = plan.pages.find((page) => page.index === pageIndex);
+    if (!pageSpec) return null;
+    const layout = pageLayout(task.page_id);
+    const layoutPanel = layout.panels.find((item) => item.id === task.panel_id);
+    if (!layoutPanel) return null;
+    const beatsById = new Map(plan.narrativeGraph.beats.map((beat) => [beat.id, beat]));
+    const statesById = new Map(plan.narrativeGraph.worldStates.map((state) => [state.id, state]));
+    const planPanelsById = new Map(plan.pages.flatMap((page) => page.panels).map((item) => [item.id, item]));
+    return {
+      panel,
+      layout,
+      layoutPanel,
+      resolvedBeats: panel.beatIds.flatMap((id) => {
+        const beat = beatsById.get(id);
+        return beat ? [beat] : [];
+      }),
+      resolvedPreState: statesById.get(panel.preStateId) ?? null,
+      resolvedContinuityPanels: panel.continuityFromPanelIds.flatMap((id) => {
+        const prior = materializedPanels.get(id) ?? planPanelsById.get(id);
+        return prior ? [prior] : [];
+      })
+    };
+  } catch {
+    return null;
+  }
+}
+
+function computeTaskReuseFingerprint(
+  run: RunRow,
+  plan: MangaPlanV2,
+  context: TaskReusePlanContext,
+  panel: PanelSpec,
+  generation: unknown
+): string {
+  return computeScriptMangaReuseFingerprint({
+    scriptRevisionId: run.script_revision_id!,
+    panel,
+    resolvedBeats: context.resolvedBeats,
+    resolvedPreState: context.resolvedPreState,
+    resolvedContinuityPanels: context.resolvedContinuityPanels,
+    layoutPanel: context.layoutPanel,
+    generation: { promptCompilerVersion: plan.promptCompilerVersion, ...generation as Record<string, unknown> },
+    referenceSnapshot: frozenReferenceSnapshot(run)
+  });
+}
+
+function parsedJsonSnapshot(raw: string | null): { value: unknown; hash: string } | null {
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (value === null) return null;
+    return { value, hash: hashJson(value) };
+  } catch {
+    return null;
+  }
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function frozenImageContentHash(dataUrl: unknown, rawPath: unknown): Promise<string | null> {
+  if (typeof dataUrl === "string" && dataUrl.startsWith("data:image/")) {
+    const separator = dataUrl.indexOf(",");
+    if (separator < 0) return null;
+    try {
+      return sha256(Buffer.from(dataUrl.slice(separator + 1), "base64"));
+    } catch {
+      return null;
+    }
+  }
+  if (typeof rawPath === "string" && rawPath.trim()) {
+    const path = resolve(rawPath);
+    if (!isPathInside(path, resolve(dataRoot))) return null;
+    try {
+      return sha256(await readFile(path));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function controlImageHash(control: GenerationRequest["controlnet"]): Promise<string | null> {
+  if (!control) return null;
+  return frozenImageContentHash(control.poseImageDataUrl, control.poseImagePath);
+}
+
+function canonicalReference(
+  reference: GenerationRequest["reference"],
+  snapshot: ScriptMangaReferenceSnapshot | null
+): unknown | undefined {
+  if (!reference) return null;
+  const setId = reference.referenceSet?.setId?.trim();
+  const version = reference.referenceSet?.version;
+  // A mutable character binding has no immutable content checksum in the run snapshot.
+  if (!setId || typeof version !== "number" || !snapshot?.sets.some((set) => set.setId === setId && set.version === version)) {
+    return undefined;
+  }
+  return {
+    referenceSet: { setId, version },
+    strict: reference.strict === true,
+    face: { enabled: reference.face?.enabled === true },
+    animaInContext: reference.animaInContext
+      ? {
+          enabled: reference.animaInContext.enabled === true,
+          strength: reference.animaInContext.strength ?? 1,
+          startPercent: reference.animaInContext.startPercent ?? 0,
+          endPercent: reference.animaInContext.endPercent ?? 1
+        }
+      : null
+  };
+}
+
+async function canonicalGenerationMaterial(input: {
+  providerId: string;
+  template: ScriptMangaReuseTemplateSnapshot;
+  request: GenerationRequest;
+  referenceSnapshot: ScriptMangaReferenceSnapshot | null;
+}): Promise<Record<string, unknown> | null> {
+  const request = normalizeGenerationRequest(input.request);
+  if (request.generationMode !== "txt2img" || request.parentAssetId || input.request.inpaint || input.request.pasteComposite) return null;
+  const common = await canonicalGenerationRequestMaterial(input.request, input.referenceSnapshot);
+  if (!common) return null;
+  return {
+    providerId: input.providerId,
+    template: input.template,
+    request: common
+  };
+}
+
+async function canonicalGenerationRequestMaterial(
+  rawRequest: GenerationRequest,
+  referenceSnapshot: ScriptMangaReferenceSnapshot | null
+): Promise<Record<string, unknown> | null> {
+  const request = normalizeGenerationRequest(rawRequest);
+  const reference = canonicalReference(rawRequest.reference, referenceSnapshot);
+  if (reference === undefined) return null;
+  const controlHash = await controlImageHash(rawRequest.controlnet);
+  if (rawRequest.controlnet && !controlHash) return null;
+  return {
+    templateId: request.templateId,
+    prompt: request.prompt,
+    negativePrompt: request.negativePrompt,
+    batchSize: request.batchSize,
+    steps: request.steps,
+    cfg: request.cfg,
+    sampler: request.sampler,
+    scheduler: request.scheduler,
+    denoise: request.denoise,
+    width: request.width,
+    height: request.height,
+    generationMode: request.generationMode,
+    loras: request.loras ?? [],
+    reference,
+    controlnet: rawRequest.controlnet
+      ? {
+          contentHash: controlHash,
+          strength: rawRequest.controlnet.strength,
+          startPercent: rawRequest.controlnet.startPercent,
+          endPercent: rawRequest.controlnet.endPercent
+        }
+      : null
+  };
+}
+
+async function canonicalRepairGenerationMaterial(input: {
+  providerId: string;
+  template: ScriptMangaReuseTemplateSnapshot;
+  request: GenerationRequest;
+  referenceSnapshot: ScriptMangaReferenceSnapshot | null;
+  parentLineage: NonNullable<StoredTaskReuseSource["parentLineage"]>;
+  frozenRound: Pick<StoredTaskReuseSource, "requestHash" | "intentHash" | "workflowSnapshotHash">;
+}): Promise<{ generation: Record<string, unknown>; maskContentHash: string } | null> {
+  const request = normalizeGenerationRequest(input.request);
+  const inpaint = input.request.inpaint;
+  if (
+    request.generationMode !== "img2img" ||
+    request.parentAssetId !== input.parentLineage.parentAssetId ||
+    request.relationType !== "img2img" ||
+    !inpaint ||
+    input.request.pasteComposite
+  ) return null;
+  const common = await canonicalGenerationRequestMaterial(input.request, input.referenceSnapshot);
+  const maskContentHash = await frozenImageContentHash(inpaint.maskDataUrl, inpaint.maskPath);
+  if (!common || !maskContentHash) return null;
+  return {
+    maskContentHash,
+    generation: {
+      providerId: input.providerId,
+      template: input.template,
+      request: {
+        ...common,
+        parentAssetId: request.parentAssetId,
+        relationType: request.relationType,
+        inpaint: {
+          contentHash: maskContentHash,
+          maskWidth: inpaint.maskWidth ?? null,
+          maskHeight: inpaint.maskHeight ?? null,
+          maskedContent: inpaint.maskedContent,
+          inpaintArea: inpaint.inpaintArea,
+          onlyMaskedPadding: inpaint.onlyMaskedPadding,
+          featherRadius: inpaint.featherRadius ?? 0
+        }
+      },
+      parentLineage: input.parentLineage,
+      frozenRound: input.frozenRound
+    }
+  };
+}
+
+function reuseTemplateSnapshot(templateId: string): (ScriptMangaReuseTemplateSnapshot & { workflowJson: string }) | null {
+  const template = getRow<WorkflowTemplateReuseRow>(
+    "SELECT version, workflow_hash, workflow_json FROM workflow_templates WHERE id = ? AND deleted_at IS NULL",
+    [templateId]
+  );
+  return template
+    ? { id: templateId, version: template.version, workflowHash: template.workflow_hash, workflowJson: template.workflow_json }
+    : null;
+}
+
+async function taskReuseFingerprintForTarget(
+  run: RunRow,
+  plan: MangaPlanV2,
+  config: ScriptMangaRunConfig,
+  task: TaskRow,
+  materializedPanels: ReadonlyMap<string, PanelSpec>
+): Promise<string | null> {
+  try {
+    const context = taskReusePlanContext(run, plan, task, materializedPanels);
+    const template = reuseTemplateSnapshot(config.templateId);
+    if (!context || !template) return null;
+    const promptProfile = templatePromptProfile(config.templateId);
+    const modelFamily = referenceModelFamily(config.templateId);
+    const references = resolvePanelReferences({
+      projectId: run.project_id,
+      providerId: config.providerId,
+      cast: context.panel.cast,
+      focalSubjectId: context.panel.shot.focalSubjectId,
+      globalLoras: config.loras,
+      modelFamily: modelFamily ?? "chroma",
+      frozenSnapshot: frozenReferenceSnapshot(run)
+    });
+    const conditioning = compilePanelConditioning({
+      panel: context.panel,
+      basePrompt: context.panel.promptBase,
+      entities: plan.narrativeGraph.entities,
+      dialogueById: new Map(),
+      narrativeMetadata: "english-directed",
+      dialect: promptProfile.dialect,
+      qualityTags: promptProfile.qualityTags,
+      negativeBase: promptProfile.negativeBase,
+      sceneBible: plan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === context.panel.settingId),
+      referenceAppearances: references.appearances
+    });
+    const size = panelGenerationSize(context.layout, task.panel_id, config.longEdge, modelFamily ? "chroma" : "sdxl");
+    const request: GenerationRequest = {
+      templateId: config.templateId,
+      prompt: conditioning.positive,
+      negativePrompt: conditioning.negative,
+      seed: null,
+      seedMode: "random",
+      batchSize: 1,
+      steps: config.steps,
+      cfg: config.cfg,
+      sampler: config.sampler,
+      scheduler: config.scheduler,
+      denoise: 1,
+      width: size.width,
+      height: size.height,
+      generationMode: "txt2img",
+      loras: references.loras,
+      reference: references.primaryReferenceSet
+        ? {
+            referenceSet: references.primaryReferenceSet,
+            face: { enabled: modelFamily === "chroma" },
+            animaInContext: { enabled: modelFamily === "anima" },
+            strict: true
+          }
+        : references.primaryCharacterBinding
+          ? {
+              characterBinding: references.primaryCharacterBinding,
+              face: { enabled: true },
+              animaInContext: { enabled: true }
+            }
+          : null
+    };
+    if (config.poseControl?.enabled && template.workflowJson.includes("ControlNetApplyAdvanced")) {
+      try {
+        const attachment = await buildPoseControlAttachment(context.panel, size.width, size.height, config.poseControl);
+        if (attachment) {
+          request.controlnet = {
+            poseImageDataUrl: attachment.poseImageDataUrl,
+            strength: attachment.strength,
+            startPercent: attachment.startPercent,
+            endPercent: attachment.endPercent
+          };
+        }
+      } catch {
+        // Generation also falls back to no ControlNet when pose construction fails.
+      }
+    }
+    const generation = await canonicalGenerationMaterial({
+      providerId: config.providerId,
+      template: { id: template.id, version: template.version, workflowHash: template.workflowHash },
+      request,
+      referenceSnapshot: frozenReferenceSnapshot(run)
+    });
+    if (!generation) return null;
+    const normalizedPanel: PanelSpec = {
+      ...context.panel,
+      referenceManifest: references.manifest,
+      compiledPrompt: conditioning.positive
+    };
+    return computeTaskReuseFingerprint(run, plan, context, normalizedPanel, generation);
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredReuseSource(task: TaskRow): StoredTaskReuseSource | null {
+  const source = parseJson<StoredTaskReuseSource | null>(task.reuse_source_json, null);
+  if (
+    !source ||
+    source.version !== SCRIPT_MANGA_REUSE_FINGERPRINT_VERSION ||
+    !source.fingerprint ||
+    !source.matchFingerprint ||
+    !source.assetContentHash ||
+    !Number.isFinite(source.assetWidth) || source.assetWidth <= 0 ||
+    !Number.isFinite(source.assetHeight) || source.assetHeight <= 0 ||
+    !source.roundId ||
+    !source.providerId ||
+    (source.generationMode !== "txt2img" && source.generationMode !== "repair-img2img")
+  ) return null;
+  if (
+    source.generationMode === "repair-img2img" &&
+    (
+      !source.parentLineage?.parentAssetId ||
+      !source.parentLineage.parentFingerprint ||
+      !source.parentLineage.parentAssetContentHash ||
+      !Number.isFinite(source.parentLineage.parentAssetWidth) || source.parentLineage.parentAssetWidth <= 0 ||
+      !Number.isFinite(source.parentLineage.parentAssetHeight) || source.parentLineage.parentAssetHeight <= 0 ||
+      source.parentLineage.relationType !== "img2img"
+    )
+  ) return null;
+  return source;
+}
+
+function taskReuseLineageIncludes(task: TaskRow, sourceTaskId: string | null): boolean {
+  if (!sourceTaskId) return false;
+  let current: TaskRow | null = getRow<TaskRow>("SELECT * FROM script_manga_tasks WHERE id = ?", [task.id]) ?? task;
+  const visited = new Set<string>();
+  while (current && !visited.has(current.id)) {
+    if (current.id === sourceTaskId) return true;
+    visited.add(current.id);
+    if (current.status !== "completed" || !current.selected_asset_id || !current.inherited_from_task_id) return false;
+    const parentTask: TaskRow | null = getRow<TaskRow>(
+      "SELECT * FROM script_manga_tasks WHERE id = ?",
+      [current.inherited_from_task_id]
+    );
+    if (
+      !parentTask ||
+      parentTask.status !== "completed" ||
+      parentTask.selected_asset_id !== current.selected_asset_id
+    ) return false;
+    const [currentRun, parentRun] = [
+      getRow<RunRow>("SELECT * FROM script_manga_runs WHERE id = ?", [current.run_id]),
+      getRow<RunRow>("SELECT * FROM script_manga_runs WHERE id = ?", [parentTask.run_id])
+    ];
+    if (
+      !currentRun ||
+      !parentRun ||
+      currentRun.predecessor_run_id !== parentRun.id ||
+      currentRun.project_id !== parentRun.project_id ||
+      currentRun.script_id !== parentRun.script_id ||
+      currentRun.script_revision_id !== parentRun.script_revision_id
+    ) return false;
+    current = parentTask;
+  }
+  return false;
+}
+
+async function reusableAssetImageSnapshot(
+  projectId: string,
+  rawPath: string
+): Promise<{ contentHash: string; width: number; height: number } | null> {
+  try {
+    const project = getRow<{ storage_dir: string }>("SELECT storage_dir FROM projects WHERE id = ?", [projectId]);
+    if (!project?.storage_dir) return null;
+    const [imagePath, projectRoot] = await Promise.all([
+      realpath(resolve(rawPath)),
+      realpath(resolve(project.storage_dir))
+    ]);
+    if (!isPathInside(imagePath, projectRoot)) return null;
+    const handle = await open(imagePath, "r");
+    try {
+      const metadata = await handle.stat();
+      if (!metadata.isFile() || metadata.size <= 0) return null;
+    } finally {
+      await handle.close();
+    }
+    // metadata() performs an actual image decode/header validation. Hash the exact reviewed bytes
+    // afterwards so a different, still-valid image at the same path cannot inherit approval.
+    const metadata = await sharp(imagePath).metadata();
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    if (width <= 0 || height <= 0) return null;
+    const bytes = await readFile(imagePath);
+    return { contentHash: createHash("sha256").update(bytes).digest("hex"), width, height };
+  } catch {
+    return null;
+  }
+}
+
+async function taskReuseSourceFromAsset(
+  run: RunRow,
+  plan: MangaPlanV2,
+  task: TaskRow,
+  assetId: string,
+  materializedPanels: ReadonlyMap<string, PanelSpec>,
+  visitedAssetIds = new Set<string>()
+): Promise<StoredTaskReuseSource | null> {
+  try {
+    if (visitedAssetIds.has(assetId)) return null;
+    const nextVisited = new Set(visitedAssetIds).add(assetId);
+    const asset = getRow<ScriptMangaReuseAssetRow>(
+      `SELECT id, project_id, round_id, workflow_template_id, workflow_template_version, workflow_snapshot_hash, image_path
+       FROM assets WHERE id = ? AND project_id = ?`,
+      [assetId, run.project_id]
+    );
+    if (!asset) return null;
+    const assetSnapshot = await reusableAssetImageSnapshot(run.project_id, asset.image_path);
+    if (!assetSnapshot) return null;
+    const round = getRow<ScriptMangaReuseRoundRow>(
+      `SELECT id, parent_round_id, template_id, provider_id, status, request_json, intent_json, patched_workflow_json,
+              script_manga_task_id
+       FROM generation_rounds WHERE id = ? AND project_id = ?`,
+      [asset.round_id, run.project_id]
+    );
+    if (
+      !round ||
+      round.status !== "completed" ||
+      round.template_id !== asset.workflow_template_id ||
+      !taskReuseLineageIncludes(task, round.script_manga_task_id)
+    ) return null;
+    const requestSnapshot = parsedJsonSnapshot(round.request_json);
+    const intentSnapshot = parsedJsonSnapshot(round.intent_json);
+    const workflowSnapshot = parsedJsonSnapshot(round.patched_workflow_json);
+    if (!requestSnapshot || !intentSnapshot || !workflowSnapshot) return null;
+    const intent = intentSnapshot.value as { recipe?: { providerId?: unknown; recipeId?: unknown; revision?: unknown } };
+    if (
+      intent.recipe?.providerId !== round.provider_id ||
+      intent.recipe?.recipeId !== asset.workflow_template_id ||
+      String(intent.recipe?.revision ?? "") !== String(asset.workflow_template_version)
+    ) return null;
+    const context = taskReusePlanContext(run, plan, task, materializedPanels);
+    if (!context) return null;
+    const template = {
+      id: asset.workflow_template_id,
+      version: asset.workflow_template_version,
+      workflowHash: asset.workflow_snapshot_hash
+    };
+    const request = requestSnapshot.value as GenerationRequest;
+    const normalizedPanel: PanelSpec = {
+      ...context.panel,
+      compiledPrompt: request.prompt
+    };
+    const frozenRound = {
+      requestHash: requestSnapshot.hash,
+      intentHash: intentSnapshot.hash,
+      workflowSnapshotHash: workflowSnapshot.hash
+    };
+    const normalizedRequest = normalizeGenerationRequest(request);
+    if (normalizedRequest.generationMode === "txt2img") {
+      if (round.parent_round_id !== null) return null;
+      const generation = await canonicalGenerationMaterial({
+        providerId: round.provider_id,
+        template,
+        request,
+        referenceSnapshot: frozenReferenceSnapshot(run)
+      });
+      if (!generation) return null;
+      const fingerprint = computeTaskReuseFingerprint(run, plan, context, normalizedPanel, generation);
+      return {
+        version: SCRIPT_MANGA_REUSE_FINGERPRINT_VERSION,
+        fingerprint,
+        matchFingerprint: fingerprint,
+        assetContentHash: assetSnapshot.contentHash,
+        assetWidth: assetSnapshot.width,
+        assetHeight: assetSnapshot.height,
+        roundId: asset.round_id,
+        providerId: round.provider_id,
+        template,
+        ...frozenRound,
+        generationMode: "txt2img"
+      };
+    }
+    if (normalizedRequest.generationMode !== "img2img" || !normalizedRequest.parentAssetId) return null;
+    const parentLinks = getRows<{ parent_asset_id: string; relation_type: string }>(
+      "SELECT parent_asset_id, relation_type FROM asset_parents WHERE child_asset_id = ?",
+      [asset.id]
+    );
+    if (
+      parentLinks.length !== 1 ||
+      parentLinks[0]!.parent_asset_id !== normalizedRequest.parentAssetId ||
+      parentLinks[0]!.relation_type !== "img2img"
+    ) return null;
+    const parentSource = await taskReuseSourceFromAsset(
+      run,
+      plan,
+      task,
+      normalizedRequest.parentAssetId,
+      materializedPanels,
+      nextVisited
+    );
+    if (!parentSource) return null;
+    if (round.parent_round_id !== parentSource.roundId) return null;
+    if (
+      round.provider_id !== parentSource.providerId ||
+      hashJson(template) !== hashJson(parentSource.template)
+    ) return null;
+    const parentRound = getRow<Pick<ScriptMangaReuseRoundRow, "request_json">>(
+      "SELECT request_json FROM generation_rounds WHERE id = ? AND project_id = ?",
+      [parentSource.roundId, run.project_id]
+    );
+    const parentRequestSnapshot = parsedJsonSnapshot(parentRound?.request_json ?? null);
+    const [parentCommon, childCommon] = await Promise.all([
+      parentRequestSnapshot
+        ? canonicalGenerationRequestMaterial(
+            parentRequestSnapshot.value as GenerationRequest,
+            frozenReferenceSnapshot(run)
+          )
+        : null,
+      canonicalGenerationRequestMaterial(request, frozenReferenceSnapshot(run))
+    ]);
+    if (!parentCommon || !childCommon) return null;
+    const {
+      generationMode: _parentMode,
+      denoise: _parentDenoise,
+      width: _parentRequestWidth,
+      height: _parentRequestHeight,
+      ...parentFrozenCommon
+    } = parentCommon;
+    const {
+      generationMode: _childMode,
+      denoise: _childDenoise,
+      width: childWidth,
+      height: childHeight,
+      ...childFrozenCommon
+    } = childCommon;
+    if (
+      childWidth !== parentSource.assetWidth ||
+      childHeight !== parentSource.assetHeight ||
+      hashJson(parentFrozenCommon) !== hashJson(childFrozenCommon)
+    ) return null;
+    const parentLineage: NonNullable<StoredTaskReuseSource["parentLineage"]> = {
+      parentAssetId: normalizedRequest.parentAssetId,
+      parentFingerprint: parentSource.fingerprint,
+      parentAssetContentHash: parentSource.assetContentHash,
+      parentAssetWidth: parentSource.assetWidth,
+      parentAssetHeight: parentSource.assetHeight,
+      relationType: "img2img"
+    };
+    const repair = await canonicalRepairGenerationMaterial({
+      providerId: round.provider_id,
+      template,
+      request,
+      referenceSnapshot: frozenReferenceSnapshot(run),
+      parentLineage,
+      frozenRound
+    });
+    if (!repair) return null;
+    const fingerprint = computeTaskReuseFingerprint(run, plan, context, normalizedPanel, repair.generation);
+    return {
+      version: SCRIPT_MANGA_REUSE_FINGERPRINT_VERSION,
+      fingerprint,
+      matchFingerprint: parentSource.matchFingerprint,
+      assetContentHash: assetSnapshot.contentHash,
+      assetWidth: assetSnapshot.width,
+      assetHeight: assetSnapshot.height,
+      roundId: asset.round_id,
+      providerId: round.provider_id,
+      template,
+      ...frozenRound,
+      generationMode: "repair-img2img",
+      parentLineage,
+      maskContentHash: repair.maskContentHash
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function verifiedStoredTaskReuseFingerprint(
+  run: RunRow,
+  plan: MangaPlanV2,
+  task: TaskRow,
+  materializedPanels: ReadonlyMap<string, PanelSpec>
+): Promise<string | null> {
+  const assetId = task.selected_asset_id;
+  if (!assetId) return null;
+  const stored = parseStoredReuseSource(task);
+  // Older reviewed tasks predate reuse_source_json. Reconstruct and persist only from the
+  // immutable asset/round snapshots; never consult the current mutable workflow template.
+  if (!stored) {
+    if (task.reuse_source_json?.trim()) return null;
+    const reconstructed = await taskReuseSourceFromAsset(run, plan, task, assetId, materializedPanels);
+    if (!reconstructed) return null;
+    const raw = JSON.stringify(reconstructed);
+    const updated = runSql(
+      `UPDATE script_manga_tasks SET reuse_fingerprint = ?, reuse_source_json = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status = 'completed' AND selected_asset_id = ?`,
+      [reconstructed.fingerprint, raw, task.id, assetId]
+    ) as { changes?: number };
+    if (updated.changes !== 1) return null;
+    task.reuse_fingerprint = reconstructed.fingerprint;
+    task.reuse_source_json = raw;
+    return reconstructed.matchFingerprint;
+  }
+  if (stored.fingerprint !== task.reuse_fingerprint) return null;
+  const reconstructed = await taskReuseSourceFromAsset(run, plan, task, assetId, materializedPanels);
+  if (!reconstructed) return null;
+  if (hashJson(reconstructed) !== hashJson(stored)) return null;
+  return stored.matchFingerprint;
+}
+
+async function inheritSelectedTasks(runId: string): Promise<void> {
+  const run = requireRun(runId);
+  if (!run.predecessor_run_id || !run.plan_id) return;
+  const predecessor = requireRun(run.predecessor_run_id);
+  if (!predecessor.plan_id || predecessor.script_revision_id !== run.script_revision_id) return;
+  const plan = planFromRow(requirePlan(run.plan_id));
+  const predecessorPlan = planFromRow(requirePlan(predecessor.plan_id));
+  const config = parseConfig(run);
+  const predecessorTasks = getRows<TaskRow>(
+    `SELECT * FROM script_manga_tasks
+     WHERE run_id = ? AND status = 'completed' AND selected_asset_id IS NOT NULL ORDER BY created_at ASC, id ASC`,
+    [predecessor.id]
+  ).filter((task) => Boolean(getRow("SELECT id FROM assets WHERE id = ?", [task.selected_asset_id])));
+  const successorTasks = getRows<TaskRow>(
+    "SELECT * FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+    [run.id]
+  );
+  const predecessorPanels = new Map(getRows<TaskRow>(
+    "SELECT * FROM script_manga_tasks WHERE run_id = ?",
+    [predecessor.id]
+  ).flatMap((task) => {
+    const panel = parseJson<PanelSpec | null>(task.panel_spec_json, null);
+    return panel ? [[panel.id, panel] as const] : [];
+  }));
+  const successorPanels = new Map(getRows<TaskRow>(
+    "SELECT * FROM script_manga_tasks WHERE run_id = ?",
+    [run.id]
+  ).flatMap((task) => {
+    const panel = parseJson<PanelSpec | null>(task.panel_spec_json, null);
+    return panel ? [[panel.id, panel] as const] : [];
+  }));
+
+  const predecessorCandidates = (await Promise.all(predecessorTasks.map(async (task) => ({
+    fingerprint: await verifiedStoredTaskReuseFingerprint(predecessor, predecessorPlan, task, predecessorPanels),
+    value: task
+  })))).filter((candidate) => Boolean(candidate.fingerprint));
+  const successorCandidates = await Promise.all(successorTasks.map(async (task) => {
+    if (task.status !== "pending") return { fingerprint: task.reuse_fingerprint, value: task };
+    const fingerprint = await taskReuseFingerprintForTarget(run, plan, config, task, successorPanels);
+    const recorded = runSql(
+      `UPDATE script_manga_tasks SET reuse_fingerprint = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status = 'pending'`,
+      [fingerprint, task.id]
+    ) as { changes?: number };
+    if (recorded.changes === 1) {
+      task.reuse_fingerprint = fingerprint;
+      return { fingerprint, value: task };
+    }
+    // Another overlapping start/resume may already have inherited (and possibly completed) this
+    // task. Re-read instead of overwriting the selected repair's material fingerprint.
+    const latest = requireTask(task.id);
+    return { fingerprint: latest.reuse_fingerprint, value: latest };
+  }));
+  // Reserve exact sources already claimed by this successor before matching duplicate
+  // fingerprints. Repair assets store a material fingerprint different from their root match
+  // fingerprint, so matching every non-pending task by reuse_fingerprint can otherwise consume
+  // the same predecessor again after a restart.
+  const predecessorIndexByTaskId = new Map(predecessorCandidates.map((candidate, index) => [candidate.value.id, index] as const));
+  const matches = matchScriptMangaReuseCandidatesWithReservations(predecessorCandidates, successorCandidates.map((candidate) => {
+    const target = candidate.value;
+    if ((target.status !== "completed" && target.status !== "inheriting") || !target.inherited_from_task_id) return candidate;
+    const predecessorIndex = predecessorIndexByTaskId.get(target.inherited_from_task_id);
+    if (predecessorIndex === undefined) return candidate;
+    const source = predecessorCandidates[predecessorIndex];
+    if (!source || (target.status === "completed" && target.selected_asset_id !== source.value.selected_asset_id)) return candidate;
+    return { ...candidate, reservedPredecessorIndex: predecessorIndex };
+  }));
+  const sourcePanelByTaskId = new Map(predecessorTasks.flatMap((task) => {
+    const panel = parseJson<PanelSpec | null>(task.panel_spec_json, null);
+    return panel ? [[task.id, panel] as const] : [];
+  }));
+  const targetPanelByTaskId = new Map(successorTasks.flatMap((task) => {
+    const panel = parseJson<PanelSpec | null>(task.panel_spec_json, null);
+    return panel ? [[task.id, panel] as const] : [];
+  }));
+  const matchBySourcePanelId = new Map(matches.flatMap((match) => {
+    const panel = sourcePanelByTaskId.get(match.predecessor.id);
+    return panel ? [[panel.id, match] as const] : [];
+  }));
+  const matchByTargetPanelId = new Map(matches.flatMap((match) => {
+    const panel = targetPanelByTaskId.get(match.successor.id);
+    return panel ? [[panel.id, match] as const] : [];
+  }));
+  const dependencyMatches = (match: typeof matches[number]): Array<typeof matches[number]> | null => {
+    const sourcePanel = sourcePanelByTaskId.get(match.predecessor.id);
+    const targetPanel = targetPanelByTaskId.get(match.successor.id);
+    if (!sourcePanel || !targetPanel || sourcePanel.continuityFromPanelIds.length !== targetPanel.continuityFromPanelIds.length) return null;
+    const dependencies: Array<typeof matches[number]> = [];
+    for (let index = 0; index < sourcePanel.continuityFromPanelIds.length; index += 1) {
+      const sourceDependency = matchBySourcePanelId.get(sourcePanel.continuityFromPanelIds[index]!);
+      const targetDependency = matchByTargetPanelId.get(targetPanel.continuityFromPanelIds[index]!);
+      if (!sourceDependency || sourceDependency !== targetDependency) return null;
+      dependencies.push(sourceDependency);
+    }
+    return dependencies;
+  };
+  // A dependent panel is reusable only when the exact predecessor→successor dependency mapping is
+  // reusable too. Iteration propagates a missing root through the whole continuity chain.
+  const continuityEligible = new Set(matches);
+  let closureChanged = true;
+  while (closureChanged) {
+    closureChanged = false;
+    for (const match of [...continuityEligible]) {
+      const dependencies = dependencyMatches(match);
+      if (!dependencies || dependencies.some((dependency) => !continuityEligible.has(dependency))) {
+        continuityEligible.delete(match);
+        closureChanged = true;
+      }
+    }
+  }
+  let assignmentFailures = 0;
+  let continuitySkipped = matches.length - continuityEligible.size;
+  const remaining = new Set([...continuityEligible].filter((match) => match.successor.status === "pending"));
+  let madeProgress = true;
+  while (remaining.size > 0 && madeProgress) {
+    madeProgress = false;
+    for (const match of [...remaining]) {
+      const dependencies = dependencyMatches(match) ?? [];
+      if (dependencies.some((dependency) => remaining.has(dependency))) continue;
+      const dependencySatisfied = dependencies.every((dependency) => {
+        const source = dependency.predecessor;
+        const target = requireTask(dependency.successor.id);
+        return target.status === "completed" &&
+          target.inherited_from_task_id === source.id &&
+          target.selected_asset_id === source.selected_asset_id;
+      });
+      remaining.delete(match);
+      madeProgress = true;
+      if (!dependencySatisfied) {
+        continuitySkipped += 1;
+        continue;
+      }
+      const source = match.predecessor;
+      const target = requireTask(match.successor.id);
+      const assetId = source.selected_asset_id;
+      if (!assetId || target.status !== "pending") continue;
+      // Claim the task before mutating the page. start/resume can overlap, and figure
+      // materialization has asynchronous work before it writes page media/objects.
+      const claimed = runSql(
+        `UPDATE script_manga_tasks SET status = 'inheriting', inherited_from_task_id = ?, last_error_json = NULL,
+         updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'`,
+        [source.id, target.id]
+      ) as { changes?: number };
+      if (claimed.changes !== 1) continue;
+      activeTaskInheritances.add(target.id);
+      try {
+        const layout = pageLayout(target.page_id);
+        const layoutPanel = layout.panels.find((panel) => panel.id === target.panel_id);
+        if (layoutPanel?.role === "figure") {
+          const figureResult = await materializeFigureForTask(target, assetId, {
+            canCommit: () => {
+              const latestRun = requireRun(run.id);
+              const latestTask = requireTask(target.id);
+              return latestRun.status !== "canceled" && latestTask.status === "inheriting";
+            }
+          });
+          if (!figureResult.committed) {
+            throw new Error("Successor figure materialization failed");
+          }
+        } else {
+          const page = toApiRow(getRow("SELECT * FROM pages WHERE id = ?", [target.page_id])) as unknown as PageRow | null;
+          if (!page?.layout) throw new Error("Successor page layout is unavailable");
+          upsertPanelAssignment(page, target.panel_id, { assetId });
+        }
+        const scores = parseJson<Record<string, unknown>>(target.scores_json, {});
+        const completed = runSql(
+          `UPDATE script_manga_tasks SET status = 'completed', asset_id = ?, selected_asset_id = ?,
+           candidate_asset_ids_json = ?, inherited_from_task_id = ?, reuse_fingerprint = ?, reuse_source_json = ?, scores_json = ?,
+           round_id = NULL, last_error_json = NULL, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND status = 'inheriting'`,
+          [
+            assetId,
+            assetId,
+            JSON.stringify([assetId]),
+            source.id,
+            source.reuse_fingerprint,
+            source.reuse_source_json,
+            JSON.stringify({
+              ...scores,
+              inheritance: {
+                predecessorRunId: predecessor.id,
+                predecessorTaskId: source.id,
+                fingerprintVersion: SCRIPT_MANGA_REUSE_FINGERPRINT_VERSION
+              }
+            }),
+            target.id
+          ]
+        ) as { changes?: number };
+        if (completed.changes !== 1) throw new Error("Successor inheritance claim was lost");
+      } catch (error) {
+        assignmentFailures += 1;
+        runSql(
+          `UPDATE script_manga_tasks SET status = 'pending', inherited_from_task_id = NULL,
+           last_error_json = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND status = 'inheriting'`,
+          [errorJson(error), target.id]
+        );
+      } finally {
+        activeTaskInheritances.delete(target.id);
+      }
+    }
+  }
+  // Cyclic or otherwise unsatisfied dependencies fail closed and remain pending for generation.
+  continuitySkipped += remaining.size;
+  const taskCount = getRow<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM script_manga_tasks WHERE run_id = ?",
+    [run.id]
+  )?.count ?? 0;
+  const inherited = getRow<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM script_manga_tasks WHERE run_id = ? AND inherited_from_task_id IS NOT NULL",
+    [run.id]
+  )?.count ?? 0;
+  const evaluation = parseJson<Record<string, unknown>>(requireRun(run.id).evaluation_json, {});
+  runSql("UPDATE script_manga_runs SET evaluation_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+    JSON.stringify({
+      ...evaluation,
+      inheritance: {
+        predecessorRunId: predecessor.id,
+        fingerprintVersion: SCRIPT_MANGA_REUSE_FINGERPRINT_VERSION,
+        eligiblePredecessorTasks: predecessorCandidates.length,
+        checkedSuccessorTasks: taskCount,
+        inherited,
+        skipped: Math.max(0, taskCount - inherited),
+        continuitySkipped,
+        assignmentFailures,
+        checkedAt: new Date().toISOString()
+      }
+    }),
+    run.id
+  ]);
 }
 
 async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
@@ -1236,8 +2473,30 @@ function recoverSubmittingTasks(runId: string): void {
   for (const task of tasks) {
     if (activeTaskSubmissions.has(task.id)) continue;
     if (!task.round_id) {
-      // createGenerationRound links the round before provider submission. No link means no provider call occurred.
-      runSql("UPDATE script_manga_tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitting'", [task.id]);
+      // createGenerationRound links the round before provider submission. No link means no provider
+      // call occurred, so the claimed attempt must be returned. A repair claim retains reviewed
+      // candidates; restore that review (and its latest candidate round) instead of turning it into
+      // a fresh txt2img submission after restart.
+      const candidateIds = parseJson<string[]>(task.candidate_asset_ids_json, []);
+      const latestCandidateRound = candidateIds.length > 0
+        ? getRow<{ round_id: string }>(
+            `SELECT a.round_id
+             FROM assets a
+             JOIN generation_rounds r ON r.id = a.round_id
+             WHERE a.id IN (${candidateIds.map(() => "?").join(", ")})
+               AND r.script_manga_task_id = ?
+             ORDER BY r.round_index DESC, a.batch_index DESC
+             LIMIT 1`,
+            [...candidateIds, task.id]
+          )
+        : null;
+      runSql(
+        `UPDATE script_manga_tasks
+         SET status = ?, round_id = ?, attempt_count = CASE WHEN attempt_count > 0 THEN attempt_count - 1 ELSE 0 END,
+             last_error_json = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND status = 'submitting'`,
+        [latestCandidateRound ? "awaiting_review" : "pending", latestCandidateRound?.round_id ?? null, task.id]
+      );
       continue;
     }
     const round = getRow<{ status: string; last_error_json: string | null }>(
@@ -1266,6 +2525,80 @@ function recoverSubmittingTasks(runId: string): void {
         [failure, task.id]
       );
     }
+  }
+}
+
+/** Remove page mutations that may have landed immediately before a task-claim completion CAS. */
+function cleanupRecoveredTaskPageEffects(task: TaskRow, candidateAssetIds: ReadonlySet<string>): void {
+  if (candidateAssetIds.size === 0) return;
+  const assignment = getRow<{ asset_id: string }>(
+    "SELECT asset_id FROM page_panel_assignments WHERE page_id = ? AND panel_id = ?",
+    [task.page_id, task.panel_id]
+  );
+  if (assignment && candidateAssetIds.has(assignment.asset_id)) {
+    runSql(
+      "DELETE FROM page_panel_assignments WHERE page_id = ? AND panel_id = ? AND asset_id = ?",
+      [task.page_id, task.panel_id, assignment.asset_id]
+    );
+  }
+
+  const page = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [task.page_id]);
+  const objects = normalizePageObjects(page?.objects_json ? parseJson(page.objects_json, []) : []);
+  const figureObjectId = `figure_${task.panel_id}`;
+  const figure = objects.find((object): object is ImageObject => object.kind === "image" && object.id === figureObjectId);
+  if (figure) {
+    const media = getRow<{ source_asset_id: string | null }>("SELECT source_asset_id FROM page_media WHERE id = ?", [figure.mediaId]);
+    if (media?.source_asset_id && candidateAssetIds.has(media.source_asset_id)) {
+      runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+        JSON.stringify(normalizePageObjects(objects.filter((object) => object.id !== figureObjectId))),
+        task.page_id
+      ]);
+      deletePageMedia(figure.mediaId);
+    }
+  }
+
+  const run = requireRun(task.run_id);
+  const evaluation = parseJson<Record<string, unknown>>(run.evaluation_json, {});
+  const figures = { ...((evaluation.figures as Record<string, unknown>) ?? {}) };
+  const record = figures[task.id] as { assetId?: unknown } | undefined;
+  if (record && typeof record.assetId === "string" && candidateAssetIds.has(record.assetId)) {
+    delete figures[task.id];
+    runSql("UPDATE script_manga_runs SET evaluation_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+      JSON.stringify({ ...evaluation, figures }),
+      run.id
+    ]);
+  }
+}
+
+/** Recover a predecessor-asset claim left behind if the process stopped during page materialization. */
+function recoverInheritingTasks(runId: string): void {
+  const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ? AND status = 'inheriting'", [runId]);
+  for (const task of tasks) {
+    if (activeTaskInheritances.has(task.id)) continue;
+    const source = task.inherited_from_task_id
+      ? getRow<Pick<TaskRow, "selected_asset_id">>("SELECT selected_asset_id FROM script_manga_tasks WHERE id = ?", [task.inherited_from_task_id])
+      : null;
+    cleanupRecoveredTaskPageEffects(task, new Set(source?.selected_asset_id ? [source.selected_asset_id] : []));
+    runSql(
+      `UPDATE script_manga_tasks SET status = 'pending', inherited_from_task_id = NULL, last_error_json = NULL,
+       updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'inheriting'`,
+      [task.id]
+    );
+  }
+}
+
+/** Recover a candidate-selection claim left behind before its synchronous completion CAS. */
+function recoverSelectingTasks(runId: string): void {
+  const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ? AND status = 'selecting'", [runId]);
+  for (const task of tasks) {
+    if (activeTaskSelections.has(task.id)) continue;
+    cleanupRecoveredTaskPageEffects(task, new Set(parseJson<string[]>(task.candidate_asset_ids_json, [])));
+    runSql(
+      `UPDATE script_manga_tasks SET status = 'awaiting_review', inherited_from_task_id = NULL,
+       reuse_fingerprint = NULL, reuse_source_json = NULL, last_error_json = NULL,
+       updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'selecting'`,
+      [task.id]
+    );
   }
 }
 
@@ -1319,14 +2652,56 @@ function candidateScores(task: TaskRow): CandidateScore[] {
   });
 }
 
-function selectTaskCandidateInternal(task: TaskRow, assetId: string): void {
-  const candidate = getRow<{ id: string }>("SELECT id FROM assets WHERE id = ? AND round_id = ?", [assetId, task.round_id]);
+function selectTaskCandidateInternal(task: TaskRow, assetId: string, options: { skipPanelAssignment?: boolean } = {}): void {
+  const candidate = getRow<{ id: string }>(
+    `SELECT a.id FROM assets a
+     JOIN generation_rounds r ON r.id = a.round_id
+     WHERE a.id = ? AND r.script_manga_task_id = ?`,
+    [assetId, task.id]
+  );
   if (!candidate) throw new HttpError(400, "Asset is not a candidate for this task");
-  updateAssetStatus(assetId, { status: "selected", note: `script manga run ${task.run_id}; reviewed candidate` });
+  runSql("SAVEPOINT script_manga_candidate_select");
+  try {
+    const completed = runSql(
+      `UPDATE script_manga_tasks SET status = 'completed', asset_id = ?, selected_asset_id = ?,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status = 'selecting'
+         AND EXISTS (
+           SELECT 1 FROM script_manga_runs r
+           WHERE r.id = script_manga_tasks.run_id AND r.approval_status = 'approved' AND r.status <> 'canceled'
+         )`,
+      [assetId, assetId, task.id]
+    ) as { changes?: number };
+    if (completed.changes !== 1) throw new HttpError(409, "Task stopped accepting the candidate selection");
+    updateAssetStatus(
+      assetId,
+      { status: "selected", note: `script manga run ${task.run_id}; reviewed candidate` },
+      { skipAutoAssign: options.skipPanelAssignment === true }
+    );
+    runSql("RELEASE script_manga_candidate_select");
+  } catch (error) {
+    runSql("ROLLBACK TO script_manga_candidate_select");
+    runSql("RELEASE script_manga_candidate_select");
+    throw error;
+  }
+}
+
+async function persistSelectedTaskReuseSource(task: TaskRow, assetId: string): Promise<void> {
+  const run = requireRun(task.run_id);
+  const plan = run.plan_id ? planFromRow(requirePlan(run.plan_id)) : null;
+  if (!plan) return;
+  const panels = new Map(getRows<TaskRow>(
+    "SELECT * FROM script_manga_tasks WHERE run_id = ?",
+    [run.id]
+  ).flatMap((candidate) => {
+    const panel = parseJson<PanelSpec | null>(candidate.panel_spec_json, null);
+    return panel ? [[panel.id, panel] as const] : [];
+  }));
+  const source = await taskReuseSourceFromAsset(run, plan, task, assetId, panels);
   runSql(
-    `UPDATE script_manga_tasks SET status = 'completed', asset_id = ?, selected_asset_id = ?,
-       updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [assetId, assetId, task.id]
+    `UPDATE script_manga_tasks SET reuse_fingerprint = ?, reuse_source_json = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND status = 'selecting'`,
+    [source?.fingerprint ?? null, source ? JSON.stringify(source) : null, task.id]
   );
 }
 
@@ -1337,16 +2712,18 @@ function syncTaskFromRound(task: TaskRow, config: ScriptMangaRunConfig): void {
     task.status === "failed" ||
     task.status === "blocked" ||
     task.status === "canceled" ||
+    task.status === "selecting" ||
     task.status === "awaiting_review" ||
     task.status === "auditing"
   ) return;
+  const hasFallbackCandidates = parseJson<string[]>(task.candidate_asset_ids_json, []).length > 0;
   const round = getRow<{ status: string; last_error_json: string | null }>("SELECT status, last_error_json FROM generation_rounds WHERE id = ?", [
     task.round_id
   ]);
   if (!round) {
     runSql(
-      "UPDATE script_manga_tasks SET status = 'failed', last_error_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [JSON.stringify({ message: "Generation round no longer exists" }), task.id]
+      "UPDATE script_manga_tasks SET status = ?, last_error_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [hasFallbackCandidates ? "awaiting_review" : "failed", JSON.stringify({ message: "Generation round no longer exists" }), task.id]
     );
     return;
   }
@@ -1354,8 +2731,12 @@ function syncTaskFromRound(task: TaskRow, config: ScriptMangaRunConfig): void {
     const scores = candidateScores(task);
     if (scores.length === 0) {
       runSql(
-        "UPDATE script_manga_tasks SET status = 'failed', last_error_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        [JSON.stringify({ message: "Generation completed without any candidate assets" }), task.id]
+        "UPDATE script_manga_tasks SET status = ?, last_error_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        [
+          hasFallbackCandidates ? "awaiting_review" : "failed",
+          JSON.stringify({ message: "Generation completed without any candidate assets" }),
+          task.id
+        ]
       );
       return;
     }
@@ -1380,8 +2761,8 @@ function syncTaskFromRound(task: TaskRow, config: ScriptMangaRunConfig): void {
     );
   } else if (round?.status === "failed" || round?.status === "interrupted") {
     runSql(
-      "UPDATE script_manga_tasks SET status = 'failed', last_error_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [round.last_error_json, task.id]
+      "UPDATE script_manga_tasks SET status = ?, last_error_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      [hasFallbackCandidates ? "awaiting_review" : "failed", round.last_error_json, task.id]
     );
   }
 }
@@ -1411,7 +2792,7 @@ async function performRunVisualAudit(runId: string): Promise<void> {
   const config = parseConfig(run);
   if (config.auditMode !== "vlm") return;
   const allTasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ?", [runId]);
-  if (allTasks.some((task) => task.status === "pending" || task.status === "submitting" || task.status === "running")) {
+  if (allTasks.some((task) => task.status === "pending" || task.status === "inheriting" || task.status === "submitting" || task.status === "running" || task.status === "selecting")) {
     throw new Error("VLM audit is deferred until every generation task is idle");
   }
   const auditTasks = allTasks.filter((task) => task.status === "auditing");
@@ -1531,7 +2912,7 @@ function scheduleRunVisualAudit(runId: string): void {
   const config = parseConfig(run);
   const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ?", [runId]);
   if (!tasks.some((task) => task.status === "auditing")) return;
-  if (tasks.some((task) => task.status === "pending" || task.status === "submitting" || task.status === "running")) return;
+  if (tasks.some((task) => task.status === "pending" || task.status === "inheriting" || task.status === "submitting" || task.status === "running" || task.status === "selecting")) return;
 
   const operation = visualAuditQueue.then(() => config.auditMode === "vlm" ? performRunVisualAudit(runId) : performRunDeterministicAudit(runId));
   visualAuditQueue = operation.catch(() => undefined);
@@ -1547,9 +2928,10 @@ function refreshRunStatus(runId: string): RunRow {
   const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ?", [run.id]);
   const completed = tasks.filter((task) => task.status === "completed").length;
   const failed = tasks.filter((task) => task.status === "failed" || task.status === "blocked").length;
-  const awaitingReview = tasks.filter((task) => task.status === "awaiting_review").length;
+  const selecting = tasks.filter((task) => task.status === "selecting").length;
+  const awaitingReview = tasks.filter((task) => task.status === "awaiting_review").length + selecting;
   const auditing = tasks.filter((task) => task.status === "auditing").length;
-  const active = tasks.filter((task) => task.status === "running" || task.status === "submitting").length;
+  const active = tasks.filter((task) => task.status === "running" || task.status === "submitting" || task.status === "inheriting").length;
   const pending = tasks.filter((task) => task.status === "pending").length;
   const vlmReports = tasks.flatMap((task) => {
     const scores = parseJson<{ vlmAudit?: { reports?: unknown } }>(task.scores_json, {});
@@ -1583,6 +2965,7 @@ function refreshRunStatus(runId: string): RunRow {
     failed,
     auditing,
     awaitingReview,
+    selecting,
     visualAuditRequired: auditing > 0 || awaitingReview > 0,
     vlmAuditedCandidates: vlmReports.length,
     vlmPassedCandidates: vlmReports.filter((report) => report.passed === true).length,
@@ -1603,23 +2986,42 @@ function refreshRunStatus(runId: string): RunRow {
 export async function createScriptMangaRun(projectId: string, body: unknown): Promise<ScriptMangaRunView> {
   const input = objectBody(body);
   const scriptId = requiredString(input.scriptId, "scriptId");
-  const templateId = requiredString(input.templateId, "templateId");
-  const providerId = stringOr(input.providerId, "comfy");
   requireScript(projectId, scriptId);
-  if (!getRow("SELECT id FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [templateId])) {
-    throw new HttpError(404, "Workflow template was not found");
-  }
-  const planOptions: ScriptMangaPlanOptions = {
-    panelsPerPage: typeof input.panelsPerPage === "number" ? input.panelsPerPage : 4,
-    maxElementsPerPanel: typeof input.maxElementsPerPanel === "number" ? input.maxElementsPerPanel : 6,
-    targetPageCount: typeof input.targetPageCount === "number" ? input.targetPageCount : undefined,
-    maxDialoguesPerPanel: typeof input.maxDialoguesPerPanel === "number" ? input.maxDialoguesPerPanel : 2,
-    stylePrompt: stringOr(input.stylePrompt, "") || undefined
-  };
+
+  const predecessorRunId = typeof input.predecessorRunId === "string" && input.predecessorRunId.trim()
+    ? input.predecessorRunId.trim()
+    : null;
+  const predecessor = predecessorRunId ? requireRun(predecessorRunId) : null;
   const planningMode = stringOr(input.planningMode, "heuristic");
   if (planningMode !== "heuristic" && planningMode !== "llm" && planningMode !== "provided") {
     throw new HttpError(400, 'planningMode must be "heuristic", "llm", or "provided"');
   }
+  if (predecessor) {
+    if (predecessor.project_id !== projectId || predecessor.script_id !== scriptId) {
+      throw new HttpError(404, "predecessorRunId was not found for this project and script");
+    }
+    if (!(["canceled", "completed", "completed_with_errors", "failed"] as string[]).includes(predecessor.status)) {
+      throw new HttpError(409, "Cancel or finish the predecessor run before creating a successor");
+    }
+    if (planningMode !== "provided") throw new HttpError(400, 'A successor run requires planningMode "provided"');
+    if (!predecessor.plan_id || !predecessor.script_revision_id) {
+      throw new HttpError(409, "The predecessor has no pinned MangaPlanV2 revision");
+    }
+    if (input.successorPlan === undefined) throw new HttpError(400, "A complete successorPlan is required");
+    if (input.planCandidateId !== undefined) throw new HttpError(400, "planCandidateId cannot be combined with predecessorRunId");
+  } else if (input.successorPlan !== undefined) {
+    throw new HttpError(400, "successorPlan requires predecessorRunId");
+  }
+
+  const predecessorConfig = predecessor ? parseConfig(predecessor) : null;
+  const templateId = typeof input.templateId === "string" && input.templateId.trim()
+    ? input.templateId.trim()
+    : predecessorConfig?.templateId ?? requiredString(input.templateId, "templateId");
+  const providerId = stringOr(input.providerId, predecessorConfig?.providerId ?? "comfy");
+  if (!getRow("SELECT id FROM workflow_templates WHERE id = ? AND deleted_at IS NULL", [templateId])) {
+    throw new HttpError(404, "Workflow template was not found");
+  }
+  const planOptions = planningOptionsFromInput(input, predecessorConfig?.planOptions);
   if (input.candidateSelectionPolicy !== undefined && input.candidateSelectionPolicy !== "review") {
     throw new HttpError(400, 'candidateSelectionPolicy must be "review"; generated candidates are never auto-selected');
   }
@@ -1627,125 +3029,145 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
   if (input.auditMode !== undefined && input.auditMode !== "manual" && input.auditMode !== "vlm") {
     throw new HttpError(400, 'auditMode must be "manual" or "vlm"');
   }
-  const auditMode = input.auditMode === "vlm" ? "vlm" : "manual";
-  const dialoguePolicy = parseDialoguePolicy(input.dialoguePolicy);
-  if ((dialoguePolicy === "adapt" || dialoguePolicy === "fill") && input.panelsPerPage === undefined) {
+  const auditMode = input.auditMode === "vlm"
+    ? "vlm"
+    : input.auditMode === "manual"
+      ? "manual"
+      : predecessorConfig?.auditMode ?? "manual";
+  const predecessorPlan = predecessor?.plan_id ? planFromRow(requirePlan(predecessor.plan_id)) : null;
+  const dialoguePolicy = predecessorPlan?.dialoguePolicy ?? parseDialoguePolicy(input.dialoguePolicy);
+  if (predecessorPlan && input.dialoguePolicy !== undefined && parseDialoguePolicy(input.dialoguePolicy) !== predecessorPlan.dialoguePolicy) {
+    throw new HttpError(409, "A successor must preserve the predecessor dialoguePolicy");
+  }
+  if (!predecessor && (dialoguePolicy === "adapt" || dialoguePolicy === "fill") && input.panelsPerPage === undefined) {
     // 分割unitを可読サイズで置けるよう、既定packerも呼吸単位向けの大きめコマへ切り替える。
     planOptions.panelsPerPage = 2;
-    if (input.maxDialoguesPerPanel === undefined) planOptions.maxDialoguesPerPanel = 1;
   }
-  const revision = latestRevision(scriptId);
+  const revision = predecessor
+    ? revisionById(scriptId, predecessor.script_revision_id!)
+    : latestRevision(scriptId);
   const planCandidateId = typeof input.planCandidateId === "string" && input.planCandidateId.trim()
     ? input.planCandidateId.trim()
     : null;
-  let beatAnnotation: BeatAnnotationResult | null = null;
-  let fullPlan: ScriptMangaPlan | null;
-  if (planCandidateId) {
-    // ネームv4 D3: 採用候補のページ割り・レイアウトは監督が変更できない(lockLayouts)。
-    const adoptable = adoptablePlanCandidate(planCandidateId, projectId, scriptId, revision.id);
-    fullPlan = await directAdoptedCandidatePlan(revision.doc, adoptable.plan, {
-      ...planOptions,
-      scriptRevisionId: revision.id,
-      characterBible: stringOr(input.characterBible, "") || undefined
-    });
-    // 候補がビート化N1由来なら、キャッシュ済み注釈から beats を引き継ぐ(無ければ従来経路)。
-    const units = buildPreLayoutUnits(revision.doc);
-    const cachedBeats = readCachedBeatAnnotation(revision.id, units);
-    beatAnnotation = cachedBeats
-      ? { units, beats: cachedBeats, fallback: false, cached: true }
-      : null;
-  } else if (planningMode === "llm") {
-    const detailed = await planScriptMangaWithDirectorDetailed(revision.doc, {
-      ...planOptions,
-      scriptRevisionId: revision.id,
-      characterBible: stringOr(input.characterBible, "") || undefined
-    });
-    fullPlan = detailed.plan;
-    beatAnnotation = detailed.beatAnnotation;
-  } else if (planningMode === "provided") {
-    fullPlan = validateProvidedScriptMangaPlan(revision.doc, input.directorPlan, layoutPanelCount);
+  const loras = styleLorasFromInput(input.loras, predecessorConfig?.loras);
+  const planId = createId("manga_plan");
+  let pageLimit: number;
+  let plan: MangaPlanV2;
+  if (predecessorPlan) {
+    plan = completeSuccessorPlan(input.successorPlan, predecessorPlan, planId);
+    pageLimit = plan.pages.length;
   } else {
-    fullPlan = planScriptManga(revision.doc, planOptions);
-  }
-  if (!fullPlan) throw new HttpError(400, "directorPlan is invalid or does not preserve every dialogue exactly once");
-  const pageLimit =
-    typeof input.pageLimit === "number"
+    let beatAnnotation: BeatAnnotationResult | null = null;
+    let fullPlan: ScriptMangaPlan | null;
+    if (planCandidateId) {
+      // ネームv4 D3: 採用候補のページ割り・レイアウトは監督が変更できない(lockLayouts)。
+      const adoptable = adoptablePlanCandidate(planCandidateId, projectId, scriptId, revision.id);
+      fullPlan = await directAdoptedCandidatePlan(revision.doc, adoptable.plan, {
+        ...planOptions,
+        scriptRevisionId: revision.id,
+        characterBible: stringOr(input.characterBible, "") || undefined
+      });
+      const units = buildPreLayoutUnits(revision.doc);
+      const cachedBeats = readCachedBeatAnnotation(revision.id, units);
+      beatAnnotation = cachedBeats ? { units, beats: cachedBeats, fallback: false, cached: true } : null;
+    } else if (planningMode === "llm") {
+      const detailed = await planScriptMangaWithDirectorDetailed(revision.doc, {
+        ...planOptions,
+        scriptRevisionId: revision.id,
+        characterBible: stringOr(input.characterBible, "") || undefined
+      });
+      fullPlan = detailed.plan;
+      beatAnnotation = detailed.beatAnnotation;
+    } else if (planningMode === "provided") {
+      fullPlan = validateProvidedScriptMangaPlan(revision.doc, input.directorPlan, layoutPanelCount);
+    } else {
+      fullPlan = planScriptManga(revision.doc, planOptions);
+    }
+    if (!fullPlan) throw new HttpError(400, "directorPlan is invalid or does not preserve every dialogue exactly once");
+    pageLimit = typeof input.pageLimit === "number"
       ? Math.max(1, Math.min(fullPlan.pages.length, Math.trunc(input.pageLimit)))
       : fullPlan.pages.length;
-  const limitedPages = fullPlan.pages.slice(0, pageLimit);
-  const legacyPlan = {
-    ...fullPlan,
-    pages: limitedPages,
-    panelCount: limitedPages.reduce((sum, page) => sum + page.panels.length, 0),
-    dialogueCount: new Set(limitedPages.flatMap((page) => page.panels.flatMap((panel) => panel.dialogueOrderIndexes))).size
-  };
-  const loras: StyleLoraSelection[] = Array.isArray(input.loras)
-    ? input.loras.flatMap((raw) =>
-        raw && typeof raw === "object"
-          ? [{
-              name: stringOr((raw as Record<string, unknown>).name, ""),
-              strength: typeof (raw as Record<string, unknown>).strength === "number" ? (raw as Record<string, number>).strength : 1
-            }]
-          : []
-      ).filter((item) => item.name.trim()).slice(0, 4)
-    : [];
-  const planId = createId("manga_plan");
-  const plan = buildMangaPlanV2({
-    id: planId,
-    projectId,
-    scriptId,
-    scriptRevisionId: revision.id,
-    doc: revision.doc,
-    legacyPlan,
-    characters: loadCharacters(projectId),
-    dialogues: loadActiveDialogues(scriptId),
-    providerId,
-    globalLoras: loras,
-    dialoguePolicy,
-    resolveLayoutTemplate,
-    beatAnnotation: beatAnnotation ? { units: beatAnnotation.units, beats: beatAnnotation.beats } : null
-  });
+    const limitedPages = fullPlan.pages.slice(0, pageLimit);
+    const legacyPlan = {
+      ...fullPlan,
+      pages: limitedPages,
+      panelCount: limitedPages.reduce((sum, page) => sum + page.panels.length, 0),
+      dialogueCount: new Set(limitedPages.flatMap((page) => page.panels.flatMap((panel) => panel.dialogueOrderIndexes))).size
+    };
+    plan = buildMangaPlanV2({
+      id: planId,
+      projectId,
+      scriptId,
+      scriptRevisionId: revision.id,
+      doc: revision.doc,
+      legacyPlan,
+      characters: loadCharacters(projectId),
+      dialogues: loadActiveDialogues(scriptId),
+      providerId,
+      globalLoras: loras,
+      dialoguePolicy,
+      resolveLayoutTemplate,
+      beatAnnotation: beatAnnotation ? { units: beatAnnotation.units, beats: beatAnnotation.beats } : null
+    });
+  }
   const validation = validatePlan(plan);
   if (!validation.ok) throw new HttpError(422, "Generated MangaPlanV2 failed deterministic validation");
+  const maxPanelCount = boundedInteger(input.maxPanelCount, predecessorConfig?.maxPanelCount ?? 0, 0, 800);
+  requirePanelBudget(plan, maxPanelCount);
+  requireDialogueBudget(plan, planOptions.maxDialoguesPerPanel ?? 4);
+  requirePagePanelBudget(plan, planOptions.panelsPerPage ?? 4);
   persistPlan(projectId, plan, validation);
 
-  const generateImages = input.generateImages !== false;
-  const poseControl = parsePoseControlInput(input.poseControl);
+  const generateImages = typeof input.generateImages === "boolean"
+    ? input.generateImages
+    : predecessorConfig?.generateImages ?? true;
+  const poseControl = input.poseControl === undefined
+    ? predecessorConfig?.poseControl
+    : parsePoseControlInput(input.poseControl);
   const config: ScriptMangaRunConfig = {
     templateId,
     providerId,
     batchSize: 1,
     // 候補採用run はN1+監督由来(english-directed)なので llm として扱う。
-    planningMode: planCandidateId ? "llm" : planningMode,
+    planningMode: predecessor ? "provided" : planCandidateId ? "llm" : planningMode,
     pageLimit,
+    maxPanelCount,
     loras,
     generateImages,
     candidateSelectionPolicy,
     auditMode,
-    longEdge: typeof input.longEdge === "number" ? input.longEdge : 1024,
-    steps: typeof input.steps === "number" ? input.steps : 20,
-    cfg: typeof input.cfg === "number" ? input.cfg : 5,
-    sampler: stringOr(input.sampler, "euler"),
-    scheduler: stringOr(input.scheduler, "beta"),
+    longEdge: typeof input.longEdge === "number" ? input.longEdge : predecessorConfig?.longEdge ?? 1024,
+    steps: typeof input.steps === "number" ? input.steps : predecessorConfig?.steps ?? 20,
+    cfg: typeof input.cfg === "number" ? input.cfg : predecessorConfig?.cfg ?? 5,
+    sampler: stringOr(input.sampler, predecessorConfig?.sampler ?? "euler"),
+    scheduler: stringOr(input.scheduler, predecessorConfig?.scheduler ?? "beta"),
     planOptions,
-    requireReferenceSets: providerId === "comfy" && (input.requireReferenceSets === true || generateImages),
-    allowReferenceFallback: input.allowReferenceFallback === true,
+    requireReferenceSets: typeof input.requireReferenceSets === "boolean"
+      ? input.requireReferenceSets
+      : predecessorConfig?.requireReferenceSets ?? (providerId === "comfy" && generateImages),
+    allowReferenceFallback: typeof input.allowReferenceFallback === "boolean"
+      ? input.allowReferenceFallback
+      : predecessorConfig?.allowReferenceFallback ?? false,
     ...(poseControl ? { poseControl } : {})
   };
+  const predecessorBudget = predecessor
+    ? parseJson<{ maxAttemptsPerPanel?: number; maxConcurrentSubmissions?: number }>(predecessor.generation_budget_json, {})
+    : {};
   const generationBudget = {
-    maxAttemptsPerPanel: 3,
-    maxConcurrentSubmissions: 1,
+    maxAttemptsPerPanel: predecessorBudget.maxAttemptsPerPanel ?? 3,
+    maxConcurrentSubmissions: predecessorBudget.maxConcurrentSubmissions ?? 1,
     candidateSelectionPolicy,
     auditMode
   };
   const runId = createId("manga");
   runSql(
     `INSERT INTO script_manga_runs
-       (id, project_id, script_id, script_revision_id, plan_id, plan_version, planner_version,
+       (id, predecessor_run_id, project_id, script_id, script_revision_id, plan_id, plan_version, planner_version,
         prompt_compiler_version, status, phase, approval_status, page_count, panel_count, config_json, generation_budget_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'preparing', 'planning', 'pending', ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'preparing', 'planning', 'pending', ?, ?, ?, ?)`,
     [
       runId,
+      predecessor?.id ?? null,
       projectId,
       scriptId,
       revision.id,
@@ -1763,7 +3185,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     materializeRun(runId);
     if (generateImages) {
       approveScriptMangaRun(runId);
-      await submitTasks(runId);
+      await startScriptMangaRun(runId);
     }
   } catch (error) {
     runSql(
@@ -1812,6 +3234,7 @@ export function updateScriptMangaPlan(planId: string, body: unknown): ScriptMang
   candidate.plannerVersion = row.planner_version;
   candidate.promptCompilerVersion = row.prompt_compiler_version;
   candidate.plannerProvenance = originalPlan.plannerProvenance;
+  restoreFrozenPlanSources(candidate, originalPlan);
   candidate.createdAt = originalPlan.createdAt;
   let validation: MangaPlanValidationReport;
   try {
@@ -1820,6 +3243,7 @@ export function updateScriptMangaPlan(planId: string, body: unknown): ScriptMang
     throw new HttpError(400, "Malformed MangaPlanV2 object");
   }
   if (!validation.ok) throw new HttpError(422, "Edited MangaPlanV2 failed deterministic validation");
+  for (const run of runRows) requireRunPanelBudget(run, candidate);
   runSql("BEGIN IMMEDIATE");
   try {
     runSql(
@@ -1853,7 +3277,9 @@ export function approveScriptMangaRun(runId: string): ScriptMangaRunView {
   const plan = requirePlan(run.plan_id);
   const validation = parseJson<MangaPlanValidationReport>(plan.validation_json, { ok: false, issues: [] });
   if (!validation.ok) throw new HttpError(422, "Plan validation must pass before approval");
-  const snapshot = collectReferenceSnapshot(run, planFromRow(plan), parseConfig(run));
+  const mangaPlan = planFromRow(plan);
+  requireRunPanelBudget(run, mangaPlan);
+  const snapshot = collectReferenceSnapshot(run, mangaPlan, parseConfig(run));
   runSql("UPDATE script_manga_plans SET status = 'approved', approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [plan.id]);
   runSql(
     `UPDATE script_manga_runs SET status = 'approved', phase = 'preparing_references', approval_status = 'approved',
@@ -1867,7 +3293,12 @@ export async function startScriptMangaRun(runId: string): Promise<ScriptMangaRun
   const run = requireRun(runId);
   if (run.approval_status !== "approved") throw new HttpError(409, "Approve the prepared run before starting generation");
   if (run.status === "canceled") throw new HttpError(409, "Canceled runs cannot be started");
+  if (!run.plan_id) throw new HttpError(409, "Run has no persisted plan");
+  requireRunPanelBudget(run, planFromRow(requirePlan(run.plan_id)));
+  recoverInheritingTasks(run.id);
+  recoverSelectingTasks(run.id);
   materializeRun(run.id);
+  await inheritSelectedTasks(run.id);
   await submitTasks(run.id);
   return runView(refreshRunStatus(run.id));
 }
@@ -1875,8 +3306,15 @@ export async function startScriptMangaRun(runId: string): Promise<ScriptMangaRun
 export async function resumeScriptMangaRun(runId: string): Promise<ScriptMangaRunView> {
   const run = requireRun(runId);
   if (run.status === "canceled") throw new HttpError(409, "Canceled runs cannot be resumed");
+  if (run.approval_status === "approved") {
+    if (!run.plan_id) throw new HttpError(409, "Run has no persisted plan");
+    requireRunPanelBudget(run, planFromRow(requirePlan(run.plan_id)));
+  }
   recoverSubmittingTasks(run.id);
+  recoverInheritingTasks(run.id);
+  recoverSelectingTasks(run.id);
   materializeRun(run.id);
+  await inheritSelectedTasks(run.id);
   for (const task of getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ? AND status = 'running'", [run.id])) {
     if (task.round_id) ensureRoundMonitor(task.round_id);
   }
@@ -1890,6 +3328,18 @@ export async function cancelScriptMangaRun(runId: string): Promise<ScriptMangaRu
     "SELECT round_id FROM script_manga_tasks WHERE run_id = ? AND status IN ('submitting', 'running') AND round_id IS NOT NULL",
     [run.id]
   ).map((row) => row.round_id);
+  // Close every local commit/submit gate before awaiting a provider. An interrupt can take an
+  // arbitrary amount of time; leaving the run active during that wait admits new work which was
+  // not present in roundIds and therefore would escape this cancellation.
+  runSql(
+    `UPDATE script_manga_runs SET status = 'canceled', phase = 'canceled', completed_at = CURRENT_TIMESTAMP,
+     updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [run.id]
+  );
+  runSql(
+    "UPDATE script_manga_tasks SET status = 'canceled', updated_at = CURRENT_TIMESTAMP WHERE run_id = ? AND status NOT IN ('completed', 'failed')",
+    [run.id]
+  );
   for (const roundId of roundIds) {
     try {
       await interruptRound(roundId);
@@ -1897,15 +3347,6 @@ export async function cancelScriptMangaRun(runId: string): Promise<ScriptMangaRu
       // Run cancellation remains authoritative even if a provider is temporarily unreachable.
     }
   }
-  runSql(
-    "UPDATE script_manga_tasks SET status = 'canceled', updated_at = CURRENT_TIMESTAMP WHERE run_id = ? AND status NOT IN ('completed', 'failed')",
-    [run.id]
-  );
-  runSql(
-    `UPDATE script_manga_runs SET status = 'canceled', phase = 'canceled', completed_at = CURRENT_TIMESTAMP,
-     updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [run.id]
-  );
   return runView(requireRun(run.id));
 }
 
@@ -1913,23 +3354,219 @@ export async function retryScriptMangaTask(taskId: string): Promise<ScriptMangaR
   const task = requireTask(taskId);
   const run = requireRun(task.run_id);
   if (run.approval_status !== "approved" || run.status === "canceled") throw new HttpError(409, "Task cannot be retried in the current run state");
-  if (task.status === "running" || task.status === "submitting" || task.status === "auditing" || task.status === "completed" || task.status === "canceled") {
+  if (task.status !== "failed" && task.status !== "blocked" && task.status !== "awaiting_review") {
     throw new HttpError(409, "Only failed, blocked, or unselected review tasks can be retried");
   }
   const budget = parseJson<{ maxAttemptsPerPanel?: number }>(run.generation_budget_json, {});
   if (task.attempt_count >= (budget.maxAttemptsPerPanel ?? 3)) throw new HttpError(409, "Task generation budget is exhausted");
   const previousScores = parseJson<{ preflight?: unknown }>(task.scores_json, {});
-  runSql(
+  const reset = runSql(
     `UPDATE script_manga_tasks SET status = 'pending', round_id = NULL, asset_id = NULL, selected_asset_id = NULL,
-     candidate_asset_ids_json = '[]', scores_json = ?, last_error_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+     inherited_from_task_id = NULL, reuse_fingerprint = NULL, reuse_source_json = NULL,
+     candidate_asset_ids_json = '[]', scores_json = ?, last_error_json = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND status IN ('failed', 'blocked', 'awaiting_review')
+       AND EXISTS (
+         SELECT 1 FROM script_manga_runs r
+         WHERE r.id = script_manga_tasks.run_id AND r.approval_status = 'approved' AND r.status <> 'canceled'
+       )`,
     [JSON.stringify({ preflight: previousScores.preflight ?? null }), task.id]
-  );
+  ) as { changes?: number };
+  if (reset.changes !== 1) throw new HttpError(409, "Task stopped accepting the retry request");
   runSql(
     `UPDATE script_manga_runs SET status = 'running', phase = 'repairing', completed_at = NULL,
      updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [run.id]
   );
   await submitTasks(run.id, [task.id]);
+  return runView(refreshRunStatus(run.id));
+}
+
+interface RepairParentAssetRow {
+  id: string;
+  project_id: string;
+  round_id: string;
+  width: number | null;
+  height: number | null;
+  seed: number | null;
+  workflow_template_id: string;
+  workflow_template_version: number;
+  workflow_snapshot_hash: string;
+  request_json: string;
+  provider_id: string;
+}
+
+function attachmentMimeType(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return "image/png";
+}
+
+async function repairAttachmentDataUrl(roundId: string, kind: RoundAttachmentKind): Promise<string> {
+  try {
+    const path = resolveRoundAttachmentPath(roundId, kind);
+    const bytes = await readFile(path);
+    return `data:${attachmentMimeType(path)};base64,${bytes.toString("base64")}`;
+  } catch {
+    throw new HttpError(409, `The parent candidate ${kind} attachment could not be reproduced`);
+  }
+}
+
+/**
+ * Repair one persisted candidate in-place while retaining the old candidate set. The caller may
+ * supply only the mask controls; all story and generation conditioning is frozen from the parent.
+ */
+export async function repairScriptMangaTask(taskId: string, body: unknown): Promise<ScriptMangaRunView> {
+  const task = requireTask(taskId);
+  const run = requireRun(task.run_id);
+  if (run.approval_status !== "approved" || run.status === "canceled") {
+    throw new HttpError(409, "Task cannot be repaired in the current run state");
+  }
+  if (task.status !== "awaiting_review") {
+    throw new HttpError(409, "Only an unselected candidate review task can be repaired");
+  }
+  const repair = parseScriptMangaRepairRequest(body);
+  const candidateIds = parseJson<string[]>(task.candidate_asset_ids_json, []);
+  if (!candidateIds.includes(repair.assetId)) {
+    throw new HttpError(400, "Asset is not in the persisted candidate set");
+  }
+  const budget = parseJson<{ maxAttemptsPerPanel?: number }>(run.generation_budget_json, {});
+  if (task.attempt_count >= (budget.maxAttemptsPerPanel ?? 3)) {
+    throw new HttpError(409, "Task generation budget is exhausted");
+  }
+
+  const parent = getRow<RepairParentAssetRow>(
+    `SELECT a.id, a.project_id, a.round_id, a.width, a.height, a.seed,
+            a.workflow_template_id, a.workflow_template_version, a.workflow_snapshot_hash,
+            r.request_json, r.provider_id
+     FROM assets a
+     JOIN generation_rounds r ON r.id = a.round_id
+     WHERE a.id = ? AND a.project_id = ? AND r.script_manga_task_id = ?`,
+    [repair.assetId, run.project_id, task.id]
+  );
+  if (!parent) throw new HttpError(400, "Asset is not a candidate generated for this task");
+  const currentTemplate = getRow<{ id: string; version: number; workflow_hash: string }>(
+    "SELECT id, version, workflow_hash FROM workflow_templates WHERE id = ? AND deleted_at IS NULL",
+    [parent.workflow_template_id]
+  );
+  if (
+    !currentTemplate ||
+    currentTemplate.version !== parent.workflow_template_version ||
+    currentTemplate.workflow_hash !== parent.workflow_snapshot_hash
+  ) {
+    throw new HttpError(409, "The parent candidate workflow revision is no longer available for exact repair");
+  }
+  const parentRequest = parseJson<GenerationRequest | null>(parent.request_json, null);
+  if (!parentRequest || parentRequest.templateId !== parent.workflow_template_id) {
+    throw new HttpError(409, "The parent candidate generation request is not reproducible");
+  }
+
+  const poseImageDataUrl = parentRequest.controlnet
+    ? typeof parentRequest.controlnet.poseImageDataUrl === "string" && parentRequest.controlnet.poseImageDataUrl
+      ? parentRequest.controlnet.poseImageDataUrl
+      : await repairAttachmentDataUrl(parent.round_id, "pose")
+    : null;
+  const hasPinnedReferenceSet = Boolean(
+    parentRequest.reference?.referenceSet?.setId && parentRequest.reference.referenceSet.version > 0
+  );
+  const usesUnpinnedReference = Boolean(
+    parentRequest.reference &&
+    !hasPinnedReferenceSet &&
+    (
+      parentRequest.reference.imageDataUrl ||
+      parentRequest.reference.imagePath ||
+      parentRequest.reference.images?.facePath ||
+      parentRequest.reference.characterBinding
+    )
+  );
+  const referenceImageDataUrl = usesUnpinnedReference
+    ? typeof parentRequest.reference?.imageDataUrl === "string" && parentRequest.reference.imageDataUrl
+      ? parentRequest.reference.imageDataUrl
+      : await repairAttachmentDataUrl(parent.round_id, "reference")
+    : null;
+  const request = buildScriptMangaRepairGenerationRequest({
+    assetId: parent.id,
+    width: parent.width ?? 0,
+    height: parent.height ?? 0,
+    seed: parent.seed,
+    providerId: parent.provider_id,
+    request: parentRequest,
+    poseImageDataUrl,
+    referenceImageDataUrl
+  }, repair);
+
+  const previousScores = parseJson<Record<string, unknown>>(task.scores_json, {});
+  const previousRepairs = Array.isArray(previousScores.repairs) ? previousScores.repairs : [];
+  const claimed = runSql(
+    `UPDATE script_manga_tasks SET status = 'submitting', round_id = NULL,
+       attempt_count = attempt_count + 1, last_error_json = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND status = 'awaiting_review'`,
+    [task.id]
+  ) as { changes?: number };
+  if (claimed.changes !== 1) throw new HttpError(409, "Task is no longer awaiting candidate review");
+  runSql(
+    `UPDATE script_manga_runs SET status = 'running', phase = 'repairing', completed_at = NULL,
+       last_error_json = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'canceled'`,
+    [run.id]
+  );
+
+  activeTaskSubmissions.add(task.id);
+  let createdRoundId: string | null = null;
+  try {
+    const created = await createGenerationRound(run.project_id, request, task.page_id, task.panel_id, task.id);
+    if (!created.round) throw new Error("Repair generation round was not created");
+    createdRoundId = created.round.id;
+    const latestRun = requireRun(run.id);
+    const latestTask = requireTask(task.id);
+    if (latestRun.status === "canceled" || latestTask.status === "canceled") {
+      try {
+        await interruptRound(createdRoundId);
+      } catch {
+        // Cancellation remains authoritative; provider cleanup is best effort.
+      }
+      return runView(requireRun(run.id));
+    }
+    const repairs = [
+      ...previousRepairs,
+      {
+        roundId: createdRoundId,
+        parentAssetId: parent.id,
+        denoise: repair.denoise,
+        maskedContent: repair.inpaint.maskedContent,
+        onlyMaskedPadding: repair.inpaint.onlyMaskedPadding,
+        featherRadius: repair.inpaint.featherRadius,
+        createdAt: new Date().toISOString()
+      }
+    ];
+    const updated = runSql(
+      `UPDATE script_manga_tasks SET round_id = ?, status = 'running', scores_json = ?,
+         updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitting'`,
+      [createdRoundId, JSON.stringify({ ...previousScores, repairs }), task.id]
+    ) as { changes?: number };
+    if (updated.changes !== 1) {
+      try {
+        await interruptRound(createdRoundId);
+      } catch {
+        // The task CAS failure is the primary error.
+      }
+      throw new HttpError(409, "Task stopped accepting the repair generation round");
+    }
+  } catch (error) {
+    runSql(
+      `UPDATE script_manga_tasks SET status = 'awaiting_review', round_id = ?, attempt_count = ?,
+         scores_json = ?, last_error_json = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status = 'submitting'`,
+      [task.round_id, task.attempt_count, task.scores_json, errorJson(error), task.id]
+    );
+    runSql(
+      "UPDATE script_manga_runs SET last_error_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'canceled'",
+      [JSON.stringify({ message: error instanceof Error ? error.message : String(error), phase: "repairing" }), run.id]
+    );
+    refreshRunStatus(run.id);
+    throw error;
+  } finally {
+    activeTaskSubmissions.delete(task.id);
+  }
   return runView(refreshRunStatus(run.id));
 }
 
@@ -1979,30 +3616,41 @@ function reflowLetteringAroundFigure(run: RunRow, task: TaskRow): void {
  * コマ枠の前面へ重ねる。切り抜きが成立しない画像(無地背景でない等)は通常のコマ画像割当へ
  * フォールバックする。再採用時は同 id のオブジェクトと旧メディアを差し替える。
  */
-async function materializeFigureForTask(task: TaskRow, assetId: string): Promise<void> {
+async function materializeFigureForTask(
+  task: TaskRow,
+  assetId: string,
+  options: { canCommit?: () => boolean } = {}
+): Promise<{ committed: boolean; mode: "cutout" | "fallback" | null }> {
   const run = requireRun(task.run_id);
   const layout = pageLayout(task.page_id);
   const layoutPanel = layout.panels.find((panel) => panel.id === task.panel_id);
-  if (layoutPanel?.role !== "figure") return;
+  if (layoutPanel?.role !== "figure") return { committed: false, mode: null };
   const asset = getRow<{ image_path: string }>("SELECT image_path FROM assets WHERE id = ?", [assetId]);
-  if (!asset) return;
+  if (!asset) return { committed: false, mode: null };
 
   const cutout = await cutoutFigure(asset.image_path);
+  if (options.canCommit && !options.canCommit()) return { committed: false, mode: null };
   if (!cutout) {
     // 無地背景でない等で切り抜き不成立 → 枠なしコマとして通常割当(絵は出るがぶち抜きにはならない)。
     const page = toApiRow(getRow("SELECT * FROM pages WHERE id = ?", [task.page_id])) as unknown as PageRow | null;
+    let assigned = false;
     if (page?.layout) {
       try {
         upsertPanelAssignment(page, task.panel_id, { assetId });
+        assigned = true;
       } catch {
-        // 割当に失敗しても候補採用自体は成立させる。
+        // 候補採用は成立させるが、successor 継承では失敗として生成へ戻す。
       }
     }
-    recordFigureResult(run.id, task.id, { state: "fallback-panel-assignment", assetId });
-    return;
+    recordFigureResult(run.id, task.id, { state: assigned ? "fallback-panel-assignment" : "fallback-panel-assignment-failed", assetId });
+    return { committed: assigned, mode: assigned ? "fallback" : null };
   }
 
   const media = await createPageMediaFromBuffer(run.project_id, cutout.png, assetId);
+  if (options.canCommit && !options.canCommit()) {
+    deletePageMedia(media.mediaId);
+    return { committed: false, mode: null };
+  }
   const [px0, py0, px1, py1] = panelBounds(layoutPanel.shape);
   const slotWidth = Math.max(1e-6, px1 - px0);
   const slotHeight = Math.max(1e-6, py1 - py0);
@@ -2046,6 +3694,7 @@ async function materializeFigureForTask(task: TaskRow, assetId: string): Promise
     foregroundRatio: Number(cutout.foregroundRatio.toFixed(4))
   });
   reflowLetteringAroundFigure(run, task);
+  return { committed: true, mode: "cutout" };
 }
 
 export async function selectScriptMangaTaskCandidate(taskId: string, body: unknown): Promise<ScriptMangaRunView> {
@@ -2053,6 +3702,9 @@ export async function selectScriptMangaTaskCandidate(taskId: string, body: unkno
   const run = requireRun(task.run_id);
   const input = objectBody(body);
   const assetId = requiredString(input.assetId, "assetId");
+  if (run.approval_status !== "approved" || run.status === "canceled") {
+    throw new HttpError(409, "Task cannot accept candidate selection in the current run state");
+  }
   if (task.status !== "awaiting_review") throw new HttpError(409, "Task is not awaiting candidate review");
   const candidates = parseJson<string[]>(task.candidate_asset_ids_json, []);
   if (!candidates.includes(assetId)) throw new HttpError(400, "Asset is not in the persisted candidate set");
@@ -2069,16 +3721,53 @@ export async function selectScriptMangaTaskCandidate(taskId: string, body: unkno
       throw new HttpError(409, "The selected candidate failed VLM audit; repair or regenerate this panel");
     }
   }
-  selectTaskCandidateInternal(task, assetId);
+  const claimed = runSql(
+    `UPDATE script_manga_tasks SET status = 'selecting', last_error_json = NULL, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND status = 'awaiting_review'
+       AND EXISTS (
+         SELECT 1 FROM script_manga_runs r
+         WHERE r.id = script_manga_tasks.run_id AND r.approval_status = 'approved' AND r.status <> 'canceled'
+       )`,
+    [task.id]
+  ) as { changes?: number };
+  if (claimed.changes !== 1) throw new HttpError(409, "Task is no longer awaiting candidate review");
+  activeTaskSelections.add(task.id);
   try {
-    await materializeFigureForTask(requireTask(task.id), assetId);
+    await persistSelectedTaskReuseSource(task, assetId);
+    const latestTask = requireTask(task.id);
+    const layout = pageLayout(latestTask.page_id);
+    const layoutPanel = layout.panels.find((panel) => panel.id === latestTask.panel_id);
+    let skipPanelAssignment = false;
+    if (layoutPanel?.role === "figure") {
+      try {
+        const result = await materializeFigureForTask(latestTask, assetId, {
+          canCommit: () => {
+            const latestRun = requireRun(task.run_id);
+            const currentTask = requireTask(task.id);
+            return latestRun.status !== "canceled" && currentTask.status === "selecting";
+          }
+        });
+        skipPanelAssignment = result.committed && result.mode === "cutout";
+      } catch (error) {
+        // 切り抜き失敗時も通常のコマ割当で採用できるようにし、原因は evaluation に残す。
+        recordFigureResult(task.run_id, task.id, {
+          state: "failed",
+          assetId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    selectTaskCandidateInternal(task, assetId, { skipPanelAssignment });
   } catch (error) {
-    // 立ち絵化の失敗で候補採用まで巻き戻さない(採用は成立、原因は evaluation で追える)。
-    recordFigureResult(task.run_id, task.id, {
-      state: "failed",
-      assetId,
-      message: error instanceof Error ? error.message : String(error)
-    });
+    runSql(
+      `UPDATE script_manga_tasks SET status = 'awaiting_review', updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status = 'selecting'
+         AND EXISTS (SELECT 1 FROM script_manga_runs r WHERE r.id = script_manga_tasks.run_id AND r.status <> 'canceled')`,
+      [task.id]
+    );
+    throw error;
+  } finally {
+    activeTaskSelections.delete(task.id);
   }
   return runView(refreshRunStatus(task.run_id));
 }
@@ -2094,10 +3783,11 @@ export async function auditScriptMangaTask(taskId: string): Promise<ScriptMangaR
   }
   if (task.status === "awaiting_review") {
     const scores = parseJson<Record<string, unknown>>(task.scores_json, {});
-    runSql("UPDATE script_manga_tasks SET status = 'auditing', scores_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
+    const claimed = runSql("UPDATE script_manga_tasks SET status = 'auditing', scores_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'awaiting_review'", [
       JSON.stringify({ ...scores, vlmAudit: { state: "queued" } }),
       task.id
-    ]);
+    ]) as { changes?: number };
+    if (claimed.changes !== 1) throw new HttpError(409, "Task stopped accepting the audit request");
   }
   scheduleRunVisualAudit(run.id);
   await activeAuditRuns.get(run.id)?.catch(() => undefined);
@@ -2163,6 +3853,8 @@ export async function withScriptMangaRunExport<T>(
 export function getScriptMangaRun(runId: string): ScriptMangaRunView {
   const run = requireRun(runId);
   recoverSubmittingTasks(run.id);
+  recoverInheritingTasks(run.id);
+  recoverSelectingTasks(run.id);
   const config = parseConfig(run);
   for (const task of getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ?", [run.id])) {
     syncTaskFromRound(task, config);

@@ -176,6 +176,76 @@ test("validateMangaPlanV2 detects missing and duplicate dialogue coverage", () =
   assert.ok(issueCodes(duplicate).includes("dialogue-duplicate"));
 });
 
+test("validateMangaPlanV2 preserves frozen dialogue order, indexes, and scene ownership", () => {
+  const reversed = validPlan();
+  reversed.sourceDialogueLineIds.push("line-2");
+  reversed.dialogueSnapshots.push({
+    ...reversed.dialogueSnapshots[0]!,
+    id: "line-2",
+    orderIndex: 1,
+    text: "Again."
+  });
+  reversed.dialogueCount = 2;
+  reversed.pages[0]!.panels[0]!.dialogueLineIds = ["line-2", "line-1"];
+  reversed.pages[0]!.panels[0]!.dialogueOrderIndexes = [1, 0];
+  reversed.pages[0]!.panels[0]!.cast[0]!.speakingLineIds = ["line-2", "line-1"];
+  assert.ok(issueCodes(reversed).includes("dialogue-order"));
+
+  const wrongIndexes = validPlan();
+  wrongIndexes.pages[0]!.panels[0]!.dialogueOrderIndexes = [99];
+  assert.ok(issueCodes(wrongIndexes).includes("dialogue-order-indexes"));
+
+  const wrongScene = validPlan();
+  wrongScene.dialogueSnapshots[0]!.sceneIndex = 1;
+  assert.ok(issueCodes(wrongScene).includes("dialogue-scene"));
+
+  const unorderedSource = structuredClone(reversed);
+  unorderedSource.sourceDialogueLineIds = ["line-2", "line-1"];
+  assert.ok(issueCodes(unorderedSource).includes("dialogue-source-order"));
+});
+
+test("validateMangaPlanV2 requires direct speakers in cast and validates speaking-line ownership", () => {
+  const missingSpeaker = validPlan();
+  missingSpeaker.pages[0]!.panels[0]!.cast = [];
+  assert.ok(issueCodes(missingSpeaker).includes("visible-speaker-cast"));
+
+  const wrongSpeaker = validPlan();
+  wrongSpeaker.pages[0]!.panels[0]!.cast[0]!.characterId = "prop-key";
+  assert.ok(issueCodes(wrongSpeaker).includes("cast-dialogue-speaker"));
+
+  const foreignLine = validPlan();
+  foreignLine.pages[0]!.panels[0]!.cast[0]!.speakingLineIds = ["line-outside-panel"];
+  assert.ok(issueCodes(foreignLine).includes("cast-dialogue-panel"));
+});
+
+test("validateMangaPlanV2 requires action-grounded actors even when their dialogue is off-screen", () => {
+  const plan = validPlan();
+  plan.dialogueSnapshots[0]!.balloonStyle = "vo";
+  plan.pages[0]!.panels[0]!.cast = [];
+  const codes = issueCodes(plan);
+  assert.ok(codes.includes("source-actor-cast"));
+  assert.ok(!codes.includes("visible-speaker-cast"));
+});
+
+test("validateMangaPlanV2 permits an explicit off-frame action actor without adding them to cast", () => {
+  const plan = validPlan();
+  const panel = plan.pages[0]!.panels[0]!;
+  plan.dialogueSnapshots[0]!.balloonStyle = "vo";
+  panel.cast = [];
+  panel.mustShow = [];
+  panel.mustNotShow.push({
+    kind: "entity-absent",
+    entityId: "character-alice",
+    description: "Alice remains outside this close-up frame"
+  });
+  const report = validateMangaPlanV2(plan);
+  assert.equal(report.ok, true, JSON.stringify(report.issues));
+  assert.ok(!report.issues.some((issue) => issue.code === "source-actor-cast"));
+
+  panel.cast = [structuredClone(validPlan().pages[0]!.panels[0]!.cast[0]!)];
+  assert.ok(issueCodes(plan).includes("cast-explicitly-absent"));
+});
+
 test("validateMangaPlanV2 checks state, beat and entity references", () => {
   const plan = validPlan();
   const panel = plan.pages[0]!.panels[0]!;
@@ -188,6 +258,19 @@ test("validateMangaPlanV2 checks state, beat and entity references", () => {
   for (const code of ["pre-state", "setting", "beat-reference", "cast-reference", "prop-reference"]) {
     assert.ok(codes.includes(code), code);
   }
+});
+
+test("validateMangaPlanV2 rejects source elements borrowed from another scene", () => {
+  const plan = validPlan();
+  plan.narrativeGraph.sourceElements.push({
+    id: "source-other-scene",
+    sceneIndex: 1,
+    elementIndex: 0,
+    type: "action",
+    text: "Alice stands outside."
+  });
+  plan.pages[0]!.panels[0]!.sourceElementIds.push("source-other-scene");
+  assert.ok(issueCodes(plan).includes("source-scene"));
 });
 
 test("validateMangaPlanV2 rejects invalid cast, prop and lettering geometry", () => {
