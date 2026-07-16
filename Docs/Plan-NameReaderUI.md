@@ -1,6 +1,9 @@
 # Plan: ネームリーダーUI — テキストネームの比較・選択・編集(人間参加ゲート)
 
-> 状態: **計画(承認待ち、2026-07-16 起票)**。
+> 状態: **[Plan-NameStudioV5.md](Plan-NameStudioV5.md) に置換(2026-07-16)**。互換性を要求しない方針転換により、
+> 本計画のUI部(D1/D2/D3/D4/D5)はV5のD5〜D7へ吸収された。実装時の要注意点(既存panelBounds・座標系・
+> PATCH同期materialize・domMorph保護範囲・採用前提条件)はV5からも参照される。
+> (旧状態: 計画・承認待ち、2026-07-16 起票)
 > 前提仕様: [Plan-MangaNameV4.md](Plan-MangaNameV4.md)(P1〜P4・P6 実装済み。特に D3 候補比較UI)、
 > [Feature-MangaPlanV2.md](Feature-MangaPlanV2.md)、[Reference-ScriptMangaAgentWorkflow.md](Reference-ScriptMangaAgentWorkflow.md)、
 > [Reference-AgentInstanceApi.md](Reference-AgentInstanceApi.md)。
