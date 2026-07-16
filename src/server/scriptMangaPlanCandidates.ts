@@ -4,12 +4,20 @@
  * 監督・画像生成は採用後に1回だけ(createScriptMangaRun の planCandidateId ルート)。
  */
 import type { FountainDoc } from "../shared/fountain";
+import { buildPanelDemand, rankLayouts } from "../shared/layoutMatcher";
+import { resolveScriptMangaLayout } from "../shared/layoutPresets";
 import type {
   CreateScriptMangaPlanCandidatesRequest,
   ScriptMangaPlanCandidatesResponse,
-  ScriptMangaPlanCandidateView
+  ScriptMangaPlanCandidateView,
+  SetCandidateLayoutResponse
 } from "../shared/scriptMangaApi";
-import { normalizeScriptMangaPlanScales, type ScriptMangaPlan, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
+import {
+  applyLayoutOverrides,
+  normalizeScriptMangaPlanScales,
+  type ScriptMangaPlan,
+  type ScriptMangaPlanOptions
+} from "../shared/scriptMangaPlan";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
 import { createId, getRow, getRows, runSql } from "./db";
 import { HttpError } from "./http";
@@ -29,6 +37,8 @@ export interface PlanCandidateRow {
   provenance_json: string | null;
   status: string;
   adopted_run_id: string | null;
+  layout_overrides_json: string | null;
+  edit_version: number;
   created_at: string;
 }
 
@@ -74,6 +84,19 @@ function parseCandidatePlan(row: PlanCandidateRow): ScriptMangaPlan {
   }
 }
 
+/** 人間のページ別レイアウト選択(V5 D5)。壊れたJSON・不正キーは黙って捨てる。 */
+function parseOverrides(row: PlanCandidateRow): Record<number, string> {
+  if (!row.layout_overrides_json) return {};
+  const parsed = safeParse(row.layout_overrides_json);
+  if (!parsed || typeof parsed !== "object") return {};
+  const overrides: Record<number, string> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const index = Number(key);
+    if (Number.isInteger(index) && index >= 0 && typeof value === "string" && value) overrides[index] = value;
+  }
+  return overrides;
+}
+
 function candidateView(row: PlanCandidateRow): ScriptMangaPlanCandidateView {
   const provenance = row.provenance_json ? safeParse(row.provenance_json) : null;
   const pageNaming = provenance && typeof provenance === "object" && provenance !== null
@@ -91,9 +114,11 @@ function candidateView(row: PlanCandidateRow): ScriptMangaPlanCandidateView {
     groupId: row.group_id,
     profile: row.profile,
     temperature: row.temperature,
-    status: row.status === "adopted" || row.status === "archived" ? row.status : "active",
+    status: row.status === "adopted" || row.status === "archived" || row.status === "adopting" ? row.status : "active",
     adoptedRunId: row.adopted_run_id,
     plan: parseCandidatePlan(row),
+    layoutOverrides: parseOverrides(row),
+    editVersion: row.edit_version,
     pageNaming: mode ? { mode, fallback: pageNaming?.fallback === true, ...(pageNaming?.beatAnnotatorFallback !== undefined ? { beatAnnotatorFallback: pageNaming.beatAnnotatorFallback } : {}) } : null,
     createdAt: row.created_at
   };
@@ -224,22 +249,43 @@ export function archiveScriptMangaPlanCandidate(candidateId: string): { archived
   return { archived: true, id: row.id };
 }
 
-/** 採用処理(createScriptMangaRun から呼ぶ): 候補の検証と plan の取り出し。 */
+/**
+ * 採用処理(createScriptMangaRun から呼ぶ): 候補の検証と**実効プラン**(基礎プラン+人間の
+ * レイアウト選択)の取り出し。expectedVersion 指定時は楽観ロック検査も行う(V5 D5)。
+ */
 export function adoptablePlanCandidate(
   candidateId: string,
   projectId: string,
   scriptId: string,
-  latestRevisionId: string
+  latestRevisionId: string,
+  expectedVersion?: number
 ): { row: PlanCandidateRow; plan: ScriptMangaPlan } {
   const row = requirePlanCandidate(candidateId);
   if (row.project_id !== projectId || row.script_id !== scriptId) {
     throw new HttpError(404, "Plan candidate does not belong to this script");
   }
   if (row.status === "archived") throw new HttpError(409, "Archived plan candidates cannot be adopted");
+  if (row.status === "adopting") throw new HttpError(409, "Plan candidate is already being adopted");
   if (row.script_revision_id !== latestRevisionId) {
     throw new HttpError(409, "Plan candidate was made for an older script revision; regenerate candidates");
   }
-  return { row, plan: parseCandidatePlan(row) };
+  if (expectedVersion !== undefined && expectedVersion !== row.edit_version) {
+    throw new HttpError(409, "Plan candidate was modified concurrently; reload and retry");
+  }
+  return { row, plan: applyLayoutOverrides(parseCandidatePlan(row), parseOverrides(row)) };
+}
+
+/**
+ * 採用ウィンドウの開始(V5 D5)。採用は監督LLM実行を挟んで数分かかるため、この間の
+ * set-layout を 409 にして「受理されたように見えて run に反映されない」lost update を防ぐ。
+ */
+export function beginPlanCandidateAdoption(candidateId: string): void {
+  runSql("UPDATE script_manga_plan_candidates SET status = 'adopting' WHERE id = ?", [candidateId]);
+}
+
+/** 採用失敗時の巻き戻し(adopting → active)。 */
+export function revertPlanCandidateAdoption(candidateId: string): void {
+  runSql("UPDATE script_manga_plan_candidates SET status = 'active' WHERE id = ? AND status = 'adopting'", [candidateId]);
 }
 
 /** 採用成立の記録(run 作成成功後に呼ぶ)。 */
@@ -248,4 +294,67 @@ export function markPlanCandidateAdopted(candidateId: string, runId: string): vo
     "UPDATE script_manga_plan_candidates SET status = 'adopted', adopted_run_id = ? WHERE id = ?",
     [runId, candidateId]
   );
+}
+
+/**
+ * ページ別レイアウトフリップ(V5 D5、本計画唯一の新エンドポイント)。基礎プランは不変で、
+ * 人間の選択は layout_overrides_json に版数つきで持つ(undo/リセット・競合検出・選好ログ)。
+ */
+export function setCandidateLayoutOverride(candidateId: string, body: unknown): SetCandidateLayoutResponse {
+  const input = objectBody(body);
+  const row = requirePlanCandidate(candidateId);
+  if (row.status === "archived") throw new HttpError(409, "Archived plan candidates cannot be edited");
+  if (row.status === "adopting" || row.status === "adopted") {
+    throw new HttpError(409, "Candidate is being adopted or already adopted; the layout can no longer change");
+  }
+  const revision = latestRevision(row.script_id);
+  if (row.script_revision_id !== revision.id) {
+    throw new HttpError(409, "Plan candidate was made for an older script revision; regenerate candidates");
+  }
+  const pageIndex = typeof input.pageIndex === "number" && Number.isInteger(input.pageIndex) && input.pageIndex >= 0
+    ? input.pageIndex
+    : null;
+  if (pageIndex === null) throw new HttpError(400, "pageIndex must be a non-negative integer");
+  const layoutTemplateId = requiredString(input.layoutTemplateId, "layoutTemplateId");
+  if (typeof input.expectedVersion !== "number" || !Number.isInteger(input.expectedVersion)) {
+    throw new HttpError(400, "expectedVersion is required (optimistic lock)");
+  }
+  if (input.expectedVersion !== row.edit_version) {
+    throw new HttpError(409, "Plan candidate was modified concurrently; reload and retry");
+  }
+  const basePlan = parseCandidatePlan(row);
+  const page = basePlan.pages.find((candidatePage) => candidatePage.index === pageIndex);
+  if (!page) throw new HttpError(400, "pageIndex is out of range");
+  const layout = resolveScriptMangaLayout(layoutTemplateId);
+  if (!layout) throw new HttpError(422, `Layout template could not be resolved: ${layoutTemplateId}`);
+  if (layout.panels.length !== page.panels.length) {
+    throw new HttpError(400, "Layout panel count does not match the page");
+  }
+  // 実現可能性(hard constraint)検査: 台詞収容の絶対下限・figureスロットの要不要。
+  const units = buildPreLayoutUnits(revision.doc);
+  const charsByOrder: number[] = [];
+  for (const unit of units) {
+    if (unit.dialogueOrderIndex !== undefined) charsByOrder[unit.dialogueOrderIndex] = unit.dialogueCharacters;
+  }
+  const demands = page.panels.map((panel) => buildPanelDemand({
+    visualScale: panel.visualScale,
+    totalCharacters: panel.dialogueOrderIndexes.reduce((sum, orderIndex) => sum + (charsByOrder[orderIndex] ?? 0), 0),
+    balloonCount: panel.dialogueOrderIndexes.length
+  }));
+  const ranked = rankLayouts(demands, { candidateIds: [layoutTemplateId] });
+  if (ranked.length === 0 || ranked[0]!.hardViolations.length > 0) {
+    throw new HttpError(422, "Layout is not feasible for this page (capacity/figure constraints)");
+  }
+  const overrides = parseOverrides(row);
+  if (layoutTemplateId === page.layoutTemplateId) {
+    delete overrides[pageIndex]; // 基礎プランと同じ選択 = リセット(元のLLM案へ戻す)
+  } else {
+    overrides[pageIndex] = layoutTemplateId;
+  }
+  const version = row.edit_version + 1;
+  runSql(
+    "UPDATE script_manga_plan_candidates SET layout_overrides_json = ?, edit_version = ? WHERE id = ? AND edit_version = ?",
+    [Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : null, version, row.id, row.edit_version]
+  );
+  return { version, candidate: candidateView(requirePlanCandidate(row.id)) };
 }

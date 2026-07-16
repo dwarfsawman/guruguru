@@ -652,6 +652,9 @@ export function initializeDb() {
   ensureColumn("generation_rounds", "branch_reason", "TEXT");
   ensureColumn("generation_rounds", "branch_key", "TEXT");
   ensureColumn("generation_rounds", "page_id", "TEXT");
+  // ネームスタジオV5 D5: 基礎プランを不変に保ち、人間のレイアウト選択と楽観ロックを別カラムで持つ。
+  ensureColumn("script_manga_plan_candidates", "layout_overrides_json", "TEXT");
+  ensureColumn("script_manga_plan_candidates", "edit_version", "INTEGER NOT NULL DEFAULT 0");
   db.exec("CREATE INDEX IF NOT EXISTS idx_rounds_project_page ON generation_rounds(project_id, page_id)");
   ensureColumn("asset_paste_attachments", "enabled", "INTEGER NOT NULL DEFAULT 1");
   // Book モード: 'single'（既定・従来の1枚生成）/ 'book'（複数ページ）。

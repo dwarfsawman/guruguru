@@ -311,6 +311,8 @@ test("plan candidate card renders an imported autoManga layout wireframe", () =>
     temperature: null,
     status: "active",
     adoptedRunId: null,
+    layoutOverrides: {},
+    editVersion: 0,
     plan: {
       title: "Imported layout plan",
       panelCount: 1,

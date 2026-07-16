@@ -116,7 +116,9 @@ import {
 import {
   archiveScriptMangaPlanCandidate,
   createScriptMangaPlanCandidates,
-  listScriptMangaPlanCandidates
+  listScriptMangaPlanCandidates,
+  revertPlanCandidateAdoption,
+  setCandidateLayoutOverride
 } from "./scriptMangaPlanCandidates";
 import { applySpeakerAnchors } from "./speakerAnchors";
 import { importProjectFromStream, withProjectExportArchive } from "./projectTransfer";
@@ -630,7 +632,17 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   // Fountain → 自動コマ割り → コマ別画像生成 → 吹き出し完成の一括実行。
   const scriptMangaCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-runs$/);
   if (method === "POST" && scriptMangaCreateMatch) {
-    sendJson(res, 201, await createScriptMangaRun(scriptMangaCreateMatch[1]!, await readJson(req)));
+    const runBody = await readJson(req);
+    const adoptionCandidateId = runBody && typeof runBody === "object" && typeof (runBody as { planCandidateId?: unknown }).planCandidateId === "string"
+      ? (runBody as { planCandidateId: string }).planCandidateId
+      : null;
+    try {
+      sendJson(res, 201, await createScriptMangaRun(scriptMangaCreateMatch[1]!, runBody));
+    } catch (error) {
+      // V5 D5: 採用失敗時は adopting → active へ巻き戻す(成立時は adopted なので no-op)。
+      if (adoptionCandidateId) revertPlanCandidateAdoption(adoptionCandidateId);
+      throw error;
+    }
     return;
   }
   const scriptMangaRunMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)$/);
@@ -652,6 +664,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const scriptMangaCandidateArchiveMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/archive$/);
   if (method === "POST" && scriptMangaCandidateArchiveMatch) {
     sendJson(res, 200, archiveScriptMangaPlanCandidate(scriptMangaCandidateArchiveMatch[1]!));
+    return;
+  }
+  // V5 D5: ページ別レイアウトフリップ(基礎プラン不変+layout overrides+楽観ロック)。
+  const scriptMangaCandidateSetLayoutMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/set-layout$/);
+  if (method === "POST" && scriptMangaCandidateSetLayoutMatch) {
+    sendJson(res, 200, setCandidateLayoutOverride(scriptMangaCandidateSetLayoutMatch[1]!, await readJson(req)));
     return;
   }
   const scriptMangaPlanMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)$/);

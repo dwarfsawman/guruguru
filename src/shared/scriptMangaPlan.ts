@@ -3,6 +3,24 @@ import { scriptMangaLayoutCandidates } from "./layoutPresets";
 import { type MangaPageTurnHook, type MangaVisualScale, normalizeLegacyVisualScale } from "./mangaPlanV2";
 
 /**
+ * 人間のページ別レイアウト選択(V5 D5)を不変の基礎プランへ適用した「実効プラン」を返す。
+ * 基礎プランは書き換えない(undo/リセット・生成案と人間修正の区別のため)。
+ */
+export function applyLayoutOverrides(
+  plan: ScriptMangaPlan,
+  overrides: Record<number, string> | undefined
+): ScriptMangaPlan {
+  if (!overrides || Object.keys(overrides).length === 0) return plan;
+  return {
+    ...plan,
+    pages: plan.pages.map((page) => {
+      const override = overrides[page.index];
+      return override && override !== page.layoutTemplateId ? { ...page, layoutTemplateId: override } : page;
+    })
+  };
+}
+
+/**
  * 永続 candidate plan のparse直後に呼ぶ入力adapter(V5 D1)。旧語彙(importance)しか持たない
  * コマへ visualScale を補完する(in-place)。
  */

@@ -60,7 +60,7 @@ import { reconstructPanelPoses, type PoseControlMode } from "./panelPoseReconstr
 import { directAdoptedCandidatePlan, planScriptMangaWithDirectorDetailed } from "./scriptMangaDirector";
 import { readCachedBeatAnnotation, type BeatAnnotationResult } from "./scriptBeatAnnotator";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
-import { adoptablePlanCandidate, markPlanCandidateAdopted } from "./scriptMangaPlanCandidates";
+import { adoptablePlanCandidate, beginPlanCandidateAdoption, markPlanCandidateAdopted } from "./scriptMangaPlanCandidates";
 import { buildMangaPlanV2 } from "./scriptMangaPlanV2";
 import {
   computeScriptMangaReuseFingerprint,
@@ -3065,8 +3065,14 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     let beatAnnotation: BeatAnnotationResult | null = null;
     let fullPlan: ScriptMangaPlan | null;
     if (planCandidateId) {
-      // ネームv4 D3: 採用候補のページ割り・レイアウトは監督が変更できない(lockLayouts)。
-      const adoptable = adoptablePlanCandidate(planCandidateId, projectId, scriptId, revision.id);
+      // V5 D5: 実効プラン(基礎プラン+人間のフリップ)を採用する。監督スキーマにレイアウトは
+      // 無いので「採用後レイアウト不変」は構造的に保証される。採用は数分かかるため adopting 状態で
+      // フリップを凍結し、失敗時はルート側(index.ts)が active へ巻き戻す。
+      const expectedCandidateVersion = typeof input.expectedCandidateVersion === "number" && Number.isInteger(input.expectedCandidateVersion)
+        ? input.expectedCandidateVersion
+        : undefined;
+      const adoptable = adoptablePlanCandidate(planCandidateId, projectId, scriptId, revision.id, expectedCandidateVersion);
+      beginPlanCandidateAdoption(planCandidateId);
       fullPlan = await directAdoptedCandidatePlan(revision.doc, adoptable.plan, {
         ...planOptions,
         scriptRevisionId: revision.id,
