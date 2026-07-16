@@ -12,6 +12,15 @@
 - For UI layout validation, explicitly check a wide browser viewport such as `1680x920` or `1600x900`, especially for sidebars, modals, and workflow/template panels. Confirm the viewport dimensions before judging the result, and reset any temporary viewport override after verification.
 - The manga pipeline supports free-form page compositions beyond framed grids: full-bleed (borderless) panels, slanted polygon gutters, punch-out standing figures (`role: "figure"` layout slots that become background-removed cut-out `ImageObject`s over the frames), and balloon placement with face-avoid zones and per-panel coverage caps. Read `Docs/Reference-MangaCompositions.md` before extending script-manga layouts, authoring provided plans, or adding layout templates, so these capabilities are used instead of reimplemented.
 
+## Script Manga Agent Roles
+
+- Treat `claude`, `codex`, `local llm`, and similar values in a production request as provider-neutral role assignments unless the user explicitly asks to run a named CLI or service. A `claude` supervisor label alone must not make Claude Code a prerequisite or stop a capable current agent from doing the work.
+- When the user assigns naming, character/scene/shot direction, prompt supervision, or visual candidate auditing to the current coding agent, use that agent and its native subagents when available. A configured GURUGURU LLM or VLM endpoint is optional for this external-agent path.
+- GURUGURU `planningMode: "llm"` means the embedded OpenAI-compatible LLM connection. Agent-authored or agent-corrected plans use `planningMode: "provided"` and must still pass MangaPlan validation and every panel preflight.
+- GURUGURU `auditMode: "vlm"` means the embedded LM Studio/OpenAI-compatible VLM connection. When Codex, Claude Code, or another external vision-capable agent audits candidates through GURUGURU's API/UI, use `auditMode: "manual"`; here `manual` means explicit review without the embedded VLM and does not require a human to be the reviewer unless the production request reserves that gate for a human.
+- Embedded LLM/VLM connection failures are not blockers for an authorized external-agent path. Inspect plans and candidate images through GURUGURU's API/UI, never through the runtime database, data directory, production ComfyUI `/history` or `/view`, or ComfyUI input/output directories.
+- A human gate remains a human gate. In attended Name Studio V5 work, external agents may prepare the requested candidates, but after presenting the Script URL they must not edit layouts, adopt a candidate, or approve the run; they resume only after recording the human-selected `adoptedRunId` and observing approval.
+
 ## Client Architecture
 
 - Client app state lives in `src/client/appState.ts`. Modules must `import { state } from "./appState"` and request re-renders via `requestRender()`; never import `main.ts`.

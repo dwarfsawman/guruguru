@@ -193,7 +193,7 @@ export function scriptMangaVlmAuditFromScores(scores: unknown): ScriptMangaVlmAu
 
 function renderVlmServiceStatus(status: VlmAuditServiceStatus | null, auditMode: ScriptMangaAuditMode): string {
   if (auditMode === "manual") {
-    return `<span class="script-manga-vlm-service is-manual">VLM OFF</span>`;
+    return `<span class="script-manga-vlm-service is-manual">内蔵VLM OFF · 外部/手動レビュー</span>`;
   }
   if (!status) {
     return `<span class="script-manga-vlm-service is-loading">VLM確認中</span>`;
@@ -216,7 +216,7 @@ function renderVlmServiceStatus(status: VlmAuditServiceStatus | null, auditMode:
 
 function renderCandidateVlmAudit(task: ScriptMangaTaskView, assetId: string, auditMode: ScriptMangaAuditMode): string {
   if (auditMode === "manual") {
-    return `<div class="script-manga-vlm-result is-manual"><strong>人間レビュー</strong><span>VLM監査なし</span></div>`;
+    return `<div class="script-manga-vlm-result is-manual"><strong>外部エージェント / 人間レビュー</strong><span>内蔵VLM監査なし</span></div>`;
   }
   const audit = scriptMangaVlmAuditFromScores(task.scores);
   if (!audit) {
@@ -334,7 +334,7 @@ function renderRunSummary(run: ScriptMangaRunView, busy: boolean): string {
         <div><span>approval</span><strong>${escapeHtml(run.approvalStatus)}</strong></div>
         <div><span>pages / panels</span><strong>${run.pageCount} / ${run.panelCount}</strong></div>
         <div><span>completed / failed</span><strong>${run.completedCount} / ${run.failedCount}</strong></div>
-        <div><span>audit</span><strong>${run.auditMode === "vlm" ? "VLM + review" : "manual review"}</strong></div>
+        <div><span>audit</span><strong>${run.auditMode === "vlm" ? "embedded VLM + review" : "external / manual review"}</strong></div>
         <div><span>revision</span><strong title="${escapeAttr(run.scriptRevisionId ?? "")}">${escapeHtml(run.scriptRevisionId ?? "未固定")}</strong></div>
       </div>
       <div class="script-manga-run-actions">
@@ -479,8 +479,8 @@ export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps)
         <label class="script-field">
           <span>画像候補の監査</span>
           <select data-script-manga-setting="auditMode" ${props.scriptMangaBusy ? "disabled" : ""}>
-            <option value="vlm" ${settings.auditMode === "vlm" ? "selected" : ""}>VLM自動監査 → 人間レビュー</option>
-            <option value="manual" ${settings.auditMode === "manual" ? "selected" : ""}>人間レビューのみ（VLMなし）</option>
+            <option value="vlm" ${settings.auditMode === "vlm" ? "selected" : ""}>内蔵VLM自動監査 → 明示レビュー</option>
+            <option value="manual" ${settings.auditMode === "manual" ? "selected" : ""}>外部エージェント / 人間レビュー（内蔵VLMなし）</option>
           </select>
         </label>
         <label class="script-field">
@@ -497,7 +497,7 @@ export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps)
         <p class="script-manga-audit-note">
           ${settings.auditMode === "vlm"
             ? "生成完了後にComfyUIモデルを解放してVLMへVRAMを入れ替え、各候補を採点します。監査中は画像生成を待機します。"
-            : "VLMを起動せず、生成された候補をそのまま人が確認します。"}
+            : "内蔵VLMを起動せず、生成された候補を外部の視覚対応エージェントまたは人が明示的に確認します。"}
         </p>
         ${renderVlmServiceStatus(props.scriptMangaVlmStatus, settings.auditMode)}
       </div>

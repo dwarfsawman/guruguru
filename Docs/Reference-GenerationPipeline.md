@@ -16,7 +16,7 @@
 - Fountain一括漫画では、`script_revision_id`、LLM provenance、`dialogueSnapshots`、ページごとの`layoutSnapshot`を含む`script_manga_plans`を先に保存する。run所有ページとコマ単位の`script_manga_tasks`を準備してから、各taskをbatch 1の`generation_rounds`へ接続する。実行時に最新revision、最新台詞、mutableなlayout templateを再解決しない。
 - runの主要phaseは`planning → awaiting_approval → preparing_references → rendering → auditing(VLM時) → reviewing → completed`。`generateImages:false`は`awaiting_approval`で止まり、通常作成はapprove/startまで自動で進む。
 - `resume`は`script_manga_run_pages`と既存taskを再利用し、running roundの監視を張り直して承認済みpending taskだけを投入する。ページ/taskのunique制約により再開時の重複を防ぐ。
-- round完了後は候補assetとメタデータscoreをtaskへ保存する。`auditMode:manual`はそのままreview、`auditMode:vlm`は補助監査後にreviewへ進み、いずれも`select`による人間の明示採用後だけコマへ割り当てる。
+- round完了後は候補assetとメタデータscoreをtaskへ保存する。`auditMode:manual`はそのまま外部エージェント/人間review、`auditMode:vlm`は内蔵VLM補助監査後にreviewへ進み、いずれも`select`による明示採用後だけコマへ割り当てる。
 - run所有ページのlayout変更・直接削除と、script manga task履歴を含むround treeの削除は409で拒否する。未承認planのPATCHだけがownershipを保った再materializeを行える。
 - runの`cancel`はactive roundへ既存のinterrupt処理をbest effortで適用する。taskの`retry`は同じtask IDを再利用して新しいroundへ接続する。
 - 全task選択後のcompleted runは`POST /api/script-manga-runs/:runId/export`で所有ページだけを`png/jpeg/pptx/ora`へ書き出し、`export_manifest_json`へpage順と成果物情報を保存する。
@@ -24,7 +24,7 @@
 
 ## VLM監査・GPU入替
 
-- run作成時の`auditMode`は`manual | vlm`。raw APIで省略するとmanual、Script画面の初期値はvlmである。候補policyは常にreviewで、自動採用はしない。
+- run作成時の`auditMode`は`manual | vlm`。raw APIで省略するとmanual、Script画面の初期値はvlmである。`manual`は内蔵VLMを使わず、許可された外部エージェントまたは人間が明示レビューする後方互換名である。候補policyは常にreviewで、自動採用はしない。
 - 既定VLMはLM Studioで管理するHauhauCS Gemma-4-E2B Q6_K_P + matching mmproj。model fileはrepository/dataRootへ保存せず、LM Studio model storageへ事前importする。GURUGURUはdownloadしない。
 - `getVlmAuditStatus()`は`/api/v1/models`によるreadiness probeだけを行い、load/unloadや候補画像の読取をしない。設定は`GET/PUT /api/settings/vlm-audit`、probeは`GET /api/vlm-audit/status`。
 - 同じrunのgeneration taskがすべてidleになった後、Comfy providerではglobal `/queue`のrunning/pendingが空かを確認する。busyなら`deferred`として`/free`を呼ばない。idleなら`/free { unload_models:true, free_memory:true }`でComfy modelを解放する。

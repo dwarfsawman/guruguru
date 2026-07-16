@@ -127,10 +127,24 @@ test("script manga card renders supported controls and keeps only generate unava
   assert.match(html, /value="fill" >fill（分割＋caption\/monitor\/SFX）/);
   assert.match(html, /value="generate" disabled>generate（今後対応）/);
   assert.match(html, /data-script-manga-setting="auditMode"/);
-  assert.match(html, /VLM自動監査 → 人間レビュー/);
+  assert.match(html, /内蔵VLM自動監査 → 明示レビュー/);
   assert.match(html, /ComfyUIモデルを解放してVLMへVRAMを入れ替え/);
   assert.match(html, /VLM on-demand · audit-model/);
   assert.match(html, /data-action="prepare-script-manga-run"/);
+});
+
+test("script manga manual audit is presented as external-agent or human explicit review", () => {
+  const manualProps = props();
+  manualProps.scriptMangaSettings.auditMode = "manual";
+  const manualRun = run();
+  manualRun.auditMode = "manual";
+  manualProps.scriptMangaRun = manualRun;
+  const html = renderScriptMangaControlCard(manualProps);
+  assert.match(html, /外部エージェント \/ 人間レビュー（内蔵VLMなし）/);
+  assert.match(html, /内蔵VLM OFF · 外部\/手動レビュー/);
+  assert.match(html, /外部エージェント \/ 人間レビュー/);
+  assert.match(html, /external \/ manual review/);
+  assert.doesNotMatch(html, /VLM unreachable/);
 });
 
 test("script manga card shows ready, on-demand and unreachable VLM service states safely", () => {
