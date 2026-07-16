@@ -1,11 +1,5 @@
 import { scriptMangaLayoutCandidates, selectScriptMangaLayoutId } from "../shared/layoutPresets";
-import {
-  importanceFromVisualScale,
-  type MangaPageTurnHook,
-  type MangaPanelImportance,
-  type MangaVisualScale,
-  visualScaleFromImportance
-} from "../shared/mangaPlanV2";
+import type { MangaPageTurnHook, MangaVisualScale } from "../shared/mangaPlanV2";
 import { type AnnotatedBeat, derivePanelVisualScale, type PreLayoutUnit } from "../shared/preLayoutBeat";
 import {
   DEFAULT_SCRIPT_MANGA_STYLE,
@@ -14,7 +8,6 @@ import {
   type ScriptMangaPlan
 } from "../shared/scriptMangaPlan";
 
-export type PanelImportance = MangaPanelImportance;
 export type TurnHook = MangaPageTurnHook;
 
 /** UI/API と同じ有効範囲へ正規化した、1ページあたりのコマ数上限。 */
@@ -28,7 +21,6 @@ function panelFromUnits(input: {
   unitsOfPanel: readonly PreLayoutUnit[];
   sourceBeatIds: readonly string[];
   stylePrompt: string;
-  importance: MangaPanelImportance;
   visualScale: MangaVisualScale;
 }): ScriptMangaPanelPlan {
   const first = input.unitsOfPanel[0]!;
@@ -47,7 +39,6 @@ function panelFromUnits(input: {
     prompt: `${input.stylePrompt}. ${sceneContext} ${visualParts.join(" ")}`.replace(/\s+/g, " ").trim(),
     sourceText: input.unitsOfPanel.map((unit) => unit.text).join("\n"),
     dialogueOrderIndexes: dialogueUnits.map((unit) => unit.dialogueOrderIndex!),
-    importance: input.importance,
     visualScale: input.visualScale,
     sourceBeatIds: [...input.sourceBeatIds]
   };
@@ -55,7 +46,8 @@ function panelFromUnits(input: {
 
 // --- ビート化 N1(ネームv4 D2): beats を入力に、コマ = ビート束としてページ設計する ---
 
-export interface BeatPageNamingPanel { id: string; importance: PanelImportance; sourceBeatIds: string[] }
+/** V5 D1: N1はスケールを再出力しない。コマのvisualScaleは含有ビートから決定的に導出する。 */
+export interface BeatPageNamingPanel { id: string; sourceBeatIds: string[] }
 export interface BeatPageNamingPage { index: number; pageIntent: string; turnHook?: TurnHook; panels: BeatPageNamingPanel[] }
 export interface BeatPageNamingResult { pages: BeatPageNamingPage[] }
 
@@ -100,11 +92,10 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
     const page = named.pages[pageIndex];
     if (!page || page.index !== pageIndex || !page.pageIntent?.trim() || !Array.isArray(page.panels) || page.panels.length < 1 || page.panels.length > panelLimit) return null;
     if (page.turnHook !== undefined && !["reveal", "cliffhanger", "none"].includes(page.turnHook)) return null;
-    if (page.panels.some((panel) => panel.importance === "splash") && page.panels.length !== 1) return null;
     if (!scriptMangaLayoutCandidates(page.panels.length).length) return null;
     const panels: ScriptMangaPanelPlan[] = [];
     for (const namedPanel of page.panels) {
-      if (!namedPanel?.id || panelIds.has(namedPanel.id) || !["splash", "hero", "normal"].includes(namedPanel.importance)) return null;
+      if (!namedPanel?.id || panelIds.has(namedPanel.id)) return null;
       if (!Array.isArray(namedPanel.sourceBeatIds) || namedPanel.sourceBeatIds.length === 0) return null;
       const beats = namedPanel.sourceBeatIds.map((beatId) => beatById.get(beatId));
       if (beats.some((beat) => !beat)) return null;
@@ -133,15 +124,17 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
         unitsOfPanel,
         sourceBeatIds: namedPanel.sourceBeatIds,
         stylePrompt,
-        importance: namedPanel.importance,
-        // V5 D1 P1a: 旧N1スキーマが生きている間は importance 出力を新語彙へ写すシム
-        // (N1スキーマからの importance 削除は P1c)。
-        visualScale: visualScaleFromImportance(namedPanel.importance)
+        // V5 D1: コマの解決スケールは含有ビートから決定的に導出(N1は再出力しない)。
+        visualScale: derivePanelVisualScale(concreteBeats, {
+          turnHook: page.turnHook,
+          panelIndex: panels.length,
+          panelCount: page.panels.length
+        })
       }));
     }
-    // V5 D1 hard規則: 1ページの large(hero)コマは2つまで(プロンプトの "one or two" を決定的に固定)。
-    if (panels.filter((panel) => panel.importance === "hero").length > 2) return null;
-    const layoutTemplateId = selectScriptMangaLayoutId(panels.map((panel) => panel.importance ?? "normal"))
+    // V5 D1 hard規則: 1ページの large コマは2つまで(プロンプトの "one or two" を決定的に固定)。
+    if (panels.filter((panel) => panel.visualScale === "large").length > 2) return null;
+    const layoutTemplateId = selectScriptMangaLayoutId(panels.map((panel) => panel.visualScale ?? "medium"))
       ?? scriptMangaLayoutCandidates(panels.length)[0]!;
     pages.push({
       index: pageIndex,
@@ -168,8 +161,8 @@ export function createBeatPageNamingSchema(maxPanelsPerPage = 6) {
       type: "object", additionalProperties: false, required: ["index", "pageIntent", "turnHook", "panels"], properties: {
         index: { type: "integer" }, pageIntent: { type: "string" }, turnHook: { type: "string", enum: ["reveal", "cliffhanger", "none"] },
         panels: { type: "array", minItems: 1, maxItems: normalizeMaxPanelsPerPage(maxPanelsPerPage), items: { type: "object", additionalProperties: false,
-          required: ["id", "importance", "sourceBeatIds"], properties: { id: { type: "string" },
-            importance: { type: "string", enum: ["splash", "hero", "normal"] }, sourceBeatIds: { type: "array", minItems: 1, items: { type: "string" } } } } }
+          required: ["id", "sourceBeatIds"], properties: { id: { type: "string" },
+            sourceBeatIds: { type: "array", minItems: 1, items: { type: "string" } } } } }
       }
     } } }
   } as const;
@@ -288,7 +281,7 @@ export function packAnnotatedBeatsDeterministically(input: BeatPackerInput): Scr
   let panelSerial = 0;
   const closePage = () => {
     if (pagePanels.length === 0) return;
-    const layoutTemplateId = selectScriptMangaLayoutId(pagePanels.map((panel) => panel.importance ?? "normal"))
+    const layoutTemplateId = selectScriptMangaLayoutId(pagePanels.map((panel) => panel.visualScale ?? "medium"))
       ?? scriptMangaLayoutCandidates(pagePanels.length)[0]!;
     pages.push({
       index: pages.length,
@@ -310,7 +303,6 @@ export function packAnnotatedBeatsDeterministically(input: BeatPackerInput): Scr
       unitsOfPanel: draft.units,
       sourceBeatIds: draft.beatIds,
       stylePrompt,
-      importance: importanceFromVisualScale(visualScale),
       visualScale
     }));
     if (visualScale === "large") pageLargeCount += 1;

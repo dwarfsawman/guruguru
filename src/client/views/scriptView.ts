@@ -403,7 +403,7 @@ function candidatePageThumb(
     return `<div class="plan-candidate-page is-unknown" title="${escapeAttr(page.layoutTemplateId)}">?</div>`;
   }
   const panels: WireframePanelInfo[] = page.panels.map((panel) => ({
-    importance: panel.importance,
+    visualScale: panel.visualScale,
     dialogueCharacters: panel.dialogueOrderIndexes.reduce(
       (sum, orderIndex) => sum + (props.scriptMangaCandidateDialogueChars[orderIndex] ?? 0),
       0
@@ -425,11 +425,11 @@ function candidatePageThumb(
 function candidateSummaryLine(candidate: ScriptMangaPlanCandidateView): string {
   const pages = candidate.plan.pages;
   const panelCount = candidate.plan.panelCount;
-  const heroes = pages.reduce((sum, page) => sum + page.panels.filter((panel) => panel.importance === "hero").length, 0);
-  const splashes = pages.reduce((sum, page) => sum + page.panels.filter((panel) => panel.importance === "splash").length, 0);
+  const larges = pages.reduce((sum, page) => sum + page.panels.filter((panel) => panel.visualScale === "large").length, 0);
+  const splashes = pages.reduce((sum, page) => sum + page.panels.filter((panel) => panel.visualScale === "splash").length, 0);
   const hooks = pages.filter((page) => page.turnHook === "reveal" || page.turnHook === "cliffhanger").length;
   const avg = pages.length > 0 ? (panelCount / pages.length).toFixed(1) : "0";
-  return `${pages.length}p / 平均${avg}コマ / hero ${heroes} / splash ${splashes} / hook ${hooks}`;
+  return `${pages.length}p / 平均${avg}コマ / 大 ${larges} / splash ${splashes} / hook ${hooks}`;
 }
 
 function candidateModeBadge(candidate: ScriptMangaPlanCandidateView): string {

@@ -13,7 +13,6 @@ import {
   LAYOUT_PRESETS,
   describeScriptMangaLayouts,
   findLayoutPreset,
-  scriptMangaLayoutAlignsImportance,
   scriptMangaLayoutCandidates,
   selectScriptMangaLayoutId,
   setExternalScriptMangaLayouts
@@ -145,11 +144,10 @@ test("候補プール参加: candidate:true の取り込みテンプレが候補
     assert.equal(described.length, 1);
     assert.ok(described[0]!.description.includes("borderless hero panel"), "autoManga.description を使う");
     assert.equal(described[0]!.figureSlot, 3, "figureスロット位置(reading order)");
-    // emphasisPanelIds=['hero'] → hero は reading order 先頭スロット。
-    assert.equal(scriptMangaLayoutAlignsImportance(imported.template.id, ["hero", "normal", "normal"]), true);
-    assert.equal(scriptMangaLayoutAlignsImportance(imported.template.id, ["normal", "normal", "hero"]), false);
+    // emphasisPanelIds の強調スロット上書きは selectScriptMangaLayoutId 内部(emphasizedSlotForLayout)で
+    // 引き続き尊重される(旧 alignsImportance はV5 X3で監督検証ごと削除。P2のrankLayoutsで再テスト)。
     // 事前選択は figure スロット付きを避ける(既存方針のまま)。
-    assert.equal(selectScriptMangaLayoutId(["hero", "normal", "normal"]), "builtin:three-hero-top");
+    assert.equal(selectScriptMangaLayoutId(["large", "medium", "medium"]), "builtin:three-hero-top");
   } finally {
     deleteLayoutTemplate(imported.template.id);
   }

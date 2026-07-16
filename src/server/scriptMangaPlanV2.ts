@@ -363,7 +363,6 @@ export function buildMangaPlanV2(input: {
       const provisional: PanelSpec = {
         id: legacyPanel.id,
         ...(layoutRole === "figure" ? { role: "figure" as const } : {}),
-        ...(legacyPanel.importance !== undefined ? { importance: legacyPanel.importance } : {}),
         ...(legacyPanel.visualScale !== undefined ? { visualScale: legacyPanel.visualScale } : {}),
         sourceElementIds,
         beatIds: panelBeatIds,

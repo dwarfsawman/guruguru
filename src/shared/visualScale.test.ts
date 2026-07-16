@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  importanceFromVisualScale,
-  normalizeLegacyVisualScale,
-  visualScaleFromImportance
-} from "./mangaPlanV2.ts";
+import { normalizeLegacyVisualScale } from "./mangaPlanV2.ts";
 import { parseFountain } from "./fountain.ts";
 import {
   type AnnotatedBeat,
@@ -25,16 +21,6 @@ test("normalizeLegacyVisualScale: visualScale優先、importance/desiredScaleは
   assert.equal(normalizeLegacyVisualScale({ desiredScale: "splash" }), "splash");
   assert.equal(normalizeLegacyVisualScale({ importance: "huge", desiredScale: 3 }), undefined);
   assert.equal(normalizeLegacyVisualScale({}), undefined);
-});
-
-test("visualScale⇄importance 写像: splash/large(hero)は保存され、small/mediumはnormalへ畳まれる", () => {
-  assert.equal(visualScaleFromImportance("splash"), "splash");
-  assert.equal(visualScaleFromImportance("hero"), "large");
-  assert.equal(visualScaleFromImportance("normal"), "medium");
-  assert.equal(importanceFromVisualScale("splash"), "splash");
-  assert.equal(importanceFromVisualScale("large"), "hero");
-  assert.equal(importanceFromVisualScale("medium"), "normal");
-  assert.equal(importanceFromVisualScale("small"), "normal");
 });
 
 function beat(id: string, preferredScale: AnnotatedBeat["preferredScale"], overrides: Partial<AnnotatedBeat> = {}): AnnotatedBeat {
@@ -121,7 +107,8 @@ test("normalizeScriptMangaPlanScales: 旧importanceしか無いコマへvisualSc
   const plan = planScriptManga(doc);
   const firstPanel = plan.pages[0]!.panels[0]!;
   assert.equal(firstPanel.visualScale, undefined, "決定的プランナーはスケール未設定");
-  firstPanel.importance = "hero";
+  // 旧語彙フィールドは型から削除済み — 永続JSON由来の残存を模す。
+  (firstPanel as { importance?: string }).importance = "hero";
   const normalized = normalizeScriptMangaPlanScales(plan);
   assert.equal(normalized.pages[0]!.panels[0]!.visualScale, "large");
 });

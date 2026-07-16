@@ -12,25 +12,17 @@ export type DialoguePolicy = "preserve" | "adapt" | "fill" | "generate";
 export type NarrativeEntityKind = "character" | "setting" | "prop" | "vehicle" | "unknown";
 export type MangaShotSize = "extreme-wide" | "wide" | "medium" | "close-up" | "insert";
 export type MangaReferenceRole = "identity" | "outfit" | "pose" | "background" | "prop" | "style";
-/** N1ページネームが付けるコマの物語的な重み(ネームv4 D1)。省略 = normal 相当。 */
-export type MangaPanelImportance = "splash" | "hero" | "normal";
 /** ページめくり演出(reveal=次ページ冒頭で開示 / cliffhanger=緊張の頂点で切る)。省略 = none 相当。 */
 export type MangaPageTurnHook = "reveal" | "cliffhanger" | "none";
 
 /**
  * ネームスタジオV5 D1: 統一スケール語彙。ビート側は preferredScale(演出上の希望)、
  * コマ側は visualScale(ページ全体を踏まえて解決された値)としてフィールド名を分ける。
+ * 旧語彙 MangaPanelImportance("splash"|"hero"|"normal")はP1cで削除済み — 永続データ・
+ * API入力に残る旧値は normalizeLegacyVisualScale が写像する。
  */
 export const MANGA_VISUAL_SCALES = ["small", "medium", "large", "splash"] as const;
 export type MangaVisualScale = (typeof MANGA_VISUAL_SCALES)[number];
-
-export function visualScaleFromImportance(importance: MangaPanelImportance): MangaVisualScale {
-  return importance === "splash" ? "splash" : importance === "hero" ? "large" : "medium";
-}
-
-export function importanceFromVisualScale(scale: MangaVisualScale): MangaPanelImportance {
-  return scale === "splash" ? "splash" : scale === "large" ? "hero" : "normal";
-}
 
 /**
  * 旧語彙(コマ importance enum / ビート desiredScale)が混在する永続データ・API入力を
@@ -45,8 +37,10 @@ export function normalizeLegacyVisualScale(input: {
   if (typeof input.visualScale === "string" && (MANGA_VISUAL_SCALES as readonly string[]).includes(input.visualScale)) {
     return input.visualScale as MangaVisualScale;
   }
-  if (typeof input.importance === "string" && ["splash", "hero", "normal"].includes(input.importance)) {
-    return visualScaleFromImportance(input.importance as MangaPanelImportance);
+  if (typeof input.importance === "string") {
+    if (input.importance === "splash") return "splash";
+    if (input.importance === "hero") return "large";
+    if (input.importance === "normal") return "medium";
   }
   if (typeof input.desiredScale === "string") {
     if (input.desiredScale === "small") return "small";
@@ -204,9 +198,7 @@ export interface PanelSpec {
    * 実行時の正はあくまで layout snapshot 側で、materialize がここへ写す。
    */
   role?: "figure";
-  /** N1由来のコマの重み(ネームv4 D1)。レイアウト事前選択・候補比較UIが使う。additive。 */
-  importance?: MangaPanelImportance;
-  /** 解決済みコマスケール(ネームスタジオV5 D1)。importance の後継。additive。 */
+  /** 解決済みコマスケール(ネームスタジオV5 D1)。旧 importance enum の後継。additive。 */
   visualScale?: MangaVisualScale;
   sourceElementIds: string[];
   beatIds: string[];
@@ -308,7 +300,8 @@ export function normalizeMangaPlanV2Scales<T extends { pages?: Array<{ panels?: 
   for (const page of plan.pages ?? []) {
     for (const panel of page.panels ?? []) {
       if (!panel.visualScale) {
-        const scale = normalizeLegacyVisualScale({ importance: panel.importance });
+        // 旧語彙の importance は型からは削除済みだが、永続JSONには残っている。
+        const scale = normalizeLegacyVisualScale({ importance: (panel as { importance?: unknown }).importance });
         if (scale) panel.visualScale = scale;
       }
     }

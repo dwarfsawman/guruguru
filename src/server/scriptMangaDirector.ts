@@ -1,10 +1,6 @@
 import type { FountainDoc } from "../shared/fountain";
 import { deriveSceneBibles } from "./storyGraphBuilder";
-import {
-  describeScriptMangaLayouts,
-  scriptMangaLayoutAlignsImportance,
-  scriptMangaLayoutCandidates
-} from "../shared/layoutPresets";
+import { describeScriptMangaLayouts } from "../shared/layoutPresets";
 import {
   planScriptManga,
   type ScriptMangaPagePlan,
@@ -33,9 +29,9 @@ interface DirectedPanel {
   avoid?: string[];
 }
 
+/** V5 X3: レイアウトは監督の出力から削除(人間/rankLayoutsが決めた値を監督は変更できない)。 */
 interface DirectedPage {
   index: number;
-  layoutTemplateId: string;
   pageIntent: string;
   panels: DirectedPanel[];
 }
@@ -52,10 +48,9 @@ const schema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["index", "layoutTemplateId", "pageIntent", "panels"],
+        required: ["index", "pageIntent", "panels"],
         properties: {
           index: { type: "integer" },
-          layoutTemplateId: { type: "string" },
           pageIntent: { type: "string" },
           panels: {
             type: "array",
@@ -105,18 +100,11 @@ const ANGLES = new Set(["eye-level", "low", "high", "overhead", "dutch", "pov"])
 const POSITIONS = new Set(["upper-left", "upper-center", "upper-right", "middle-left", "middle-center", "middle-right", "lower-left", "lower-center", "lower-right"]);
 const NON_ENGLISH_OR_NEGATION = /[\u3040-\u30ff\u3400-\u9fff]|\b(?:no|not|without|never)\b/iu;
 
-export interface DirectedBatchValidationOptions {
-  /** ネームv4 D3: 採用候補のレイアウトを固定(監督はレイアウト変更不可)。 */
-  lockLayouts?: boolean;
-}
-
 export function validateDirectedMangaBatch(
   raw: unknown,
   sourcePages: ScriptMangaPagePlan[],
-  entityNames: string[] = [],
-  validationOptions: DirectedBatchValidationOptions = {}
+  entityNames: string[] = []
 ): DirectedBatch | null {
-
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as DirectedBatch).pages)) return null;
   const pages = (raw as DirectedBatch).pages;
   if (pages.length !== sourcePages.length) return null;
@@ -131,20 +119,6 @@ export function validateDirectedMangaBatch(
       !Array.isArray(page.panels) ||
       page.panels.length !== source.panels.length
     ) return null;
-    if (validationOptions.lockLayouts) {
-      // 採用候補のレイアウトは人間が見比べて選んだもの。監督には変更させない。
-      if (page.layoutTemplateId !== source.layoutTemplateId) return null;
-    } else {
-      if (!scriptMangaLayoutCandidates(source.panels.length).includes(page.layoutTemplateId)) return null;
-      // ネームv4 D1: 監督がレイアウトを差し替える場合も hero×強調スロット整合を守らせる。
-      // 整合可能な候補が1つも無い importance 構成では強制しない(判定はどの候補でも false になるため)。
-      const importances = source.panels.map((panel) => panel.importance ?? "normal");
-      if (!scriptMangaLayoutAlignsImportance(page.layoutTemplateId, importances)) {
-        const anyAligned = scriptMangaLayoutCandidates(source.panels.length)
-          .some((candidateId) => scriptMangaLayoutAlignsImportance(candidateId, importances));
-        if (anyAligned) return null;
-      }
-    }
     for (let p = 0; p < page.panels.length; p += 1) {
       const panel = page.panels[p];
       if (
@@ -173,16 +147,15 @@ export function validateDirectedMangaBatch(
 export function applyScriptMangaDirectorBatch(
   raw: unknown,
   sourcePages: ScriptMangaPagePlan[],
-  stylePrompt?: string,
-  validationOptions: DirectedBatchValidationOptions = {}
+  stylePrompt?: string
 ): ScriptMangaPagePlan[] | null {
-  const directed = validateDirectedMangaBatch(raw, sourcePages, [], validationOptions);
+  const directed = validateDirectedMangaBatch(raw, sourcePages, []);
   if (!directed) return null;
   return sourcePages.map((source, pageIndex) => {
     const directedPage = directed.pages[pageIndex]!;
     return {
       ...source,
-      layoutTemplateId: directedPage.layoutTemplateId,
+      // V5 X3: layoutTemplateId は source(人間/rankLayoutsの選択)のまま。監督は演出のみ。
       pageIntent: directedPage.pageIntent.trim(),
       panels: source.panels.map((panel, panelIndex) => {
         const directedPanel = directedPage.panels[panelIndex]!;
@@ -378,8 +351,8 @@ export async function planScriptMangaWithDirectorDetailed(
 }
 
 /**
- * 採用済みプラン候補(ネームv4 D3)へ監督を適用する。候補のページ割り・レイアウトは
- * 人間が選んだものなので監督は変更できない(lockLayouts)。
+ * 採用済みプラン候補へ監督を適用する。V5 X3: 監督スキーマにレイアウトが無いので、
+ * 「採用後レイアウト不変」は構造的に保証される(旧 lockLayouts は不要になった)。
  */
 export async function directAdoptedCandidatePlan(
   doc: FountainDoc,
@@ -387,7 +360,7 @@ export async function directAdoptedCandidatePlan(
   options: ScriptMangaPlanOptions = {}
 ): Promise<ScriptMangaPlan> {
   const settings = getLlmSettings();
-  const directed = await directScriptMangaPages(doc, candidatePlan.pages, options, { lockLayouts: true });
+  const directed = await directScriptMangaPages(doc, candidatePlan.pages, options);
   return {
     ...candidatePlan,
     pages: directed.pages,
@@ -412,8 +385,7 @@ interface DirectedPagesResult {
 async function directScriptMangaPages(
   doc: FountainDoc,
   basePages: ScriptMangaPagePlan[],
-  options: ScriptMangaPlanOptions = {},
-  validationOptions: DirectedBatchValidationOptions = {}
+  options: ScriptMangaPlanOptions = {}
 ): Promise<DirectedPagesResult> {
   const settings = getLlmSettings();
   const fixedIdentity = options.characterBible?.trim() ?? "";
@@ -424,23 +396,20 @@ async function directScriptMangaPages(
 
   const directedPages: ScriptMangaPagePlan[] = [];
   for (const batch of batches) {
-    const pageAllowedLayouts = (page: ScriptMangaPagePlan): string[] =>
-      validationOptions.lockLayouts ? [page.layoutTemplateId] : scriptMangaLayoutCandidates(page.panels.length);
     const compact = batch.map((page) => ({
       index: page.index,
       title: page.title,
-      // ネームv4 D1: N1 の意図(pageIntent/turnHook/importance)と事前選択レイアウトを監督にも渡す。
+      // V5 X3: レイアウトは確定済みの読み取り専用コンテキスト。監督には選択権が無い。
       pageIntent: page.pageIntent,
       turnHook: page.turnHook,
-      preselectedLayout: page.layoutTemplateId,
-      allowedLayouts: pageAllowedLayouts(page),
+      layout: page.layoutTemplateId,
       panels: page.panels.map((panel) => ({
-        id: panel.id, scene: panel.sceneHeading, importance: panel.importance, source: panel.sourceText
+        id: panel.id, scene: panel.sceneHeading, visualScale: panel.visualScale, source: panel.sourceText
       }))
     }));
-    // バッチ内で許可されている全レイアウトの説明(bleed/figure スロットの意味と読み順位置を含む)。
+    // 確定済みレイアウトの説明(bleed/figure スロットの意味と読み順位置)を読み取り専用情報として渡す。
     const layoutGuide = describeScriptMangaLayouts([
-      ...new Set(batch.flatMap((page) => pageAllowedLayouts(page)))
+      ...new Set(batch.map((page) => page.layoutTemplateId))
     ]);
     try {
       const result = await generateStructuredJson<ScriptMangaPagePlan[]>({
@@ -454,14 +423,14 @@ async function directScriptMangaPages(
         "Write prompt in English with panel-specific visual facts only. Never include appearance/style attributes, dialogue, non-English text, or the words no/not/without/never. Put exclusions in avoid as English noun phrases.",
         "Layout ids containing 'bleed' extend panels past the page edge (borderless art) — pick them for climactic, atmospheric, or montage pages instead of always using framed grids.",
         "Layouts with a figureSlot render that reading position as a borderless full-body character cut-out standing over the page (punch-out). Panels are mapped to layout slots in reading order, so the panel at that position becomes the figure: give it a single character-defining beat, set its subject to full body, and keep its dialogue minimal.",
-        "Panels marked importance=hero must land on the layout's largest slot (panels map to slots in reading order). Keep preselectedLayout unless another allowedLayout also keeps every hero on an emphasized slot.",
+        "Each page's layout is already decided and read-only (see the layout guide). Panels map to layout slots in reading order — direct each panel to fit its slot: visualScale=large panels sit on the biggest slots, so stage them as the page's visual peak.",
         "On pages with turnHook=reveal, stage the final panel as a tease and leave the disclosure to the next page's first panel. On turnHook=cliffhanger pages, end at peak tension mid-action.",
         fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
         `登場話者: ${speakerNames(doc).join(", ")}`
       ].join("\n"),
-      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. ${validationOptions.lockLayouts ? "The layoutTemplateId of every page is locked — echo it back unchanged. " : ""}Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Layout guide: ${JSON.stringify(layoutGuide)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
+      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Layout guide (read-only): ${JSON.stringify(layoutGuide)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
       schema,
-      validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt, validationOptions),
+      validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt),
       temperature: 0.35,
       timeoutMs: 180000
       });

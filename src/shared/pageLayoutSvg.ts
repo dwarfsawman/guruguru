@@ -11,7 +11,7 @@
  */
 import type { LayoutPanel, PageLayout, PanelShape } from "./pageLayout";
 import { DEFAULT_PANEL_FRAME, panelBounds } from "./pageLayout";
-import { type MangaPageTurnHook, type MangaPanelImportance, type MangaVisualScale, normalizeLegacyVisualScale } from "./mangaPlanV2";
+import type { MangaPageTurnHook, MangaVisualScale } from "./mangaPlanV2";
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
 import { escapeAttr } from "./htmlEscape";
 
@@ -148,9 +148,7 @@ export function renderPageLayoutSvg(layout: PageLayout, options: PageLayoutSvgOp
 
 /** reading-order で layout スロットと対応する、コマ1つ分の注釈情報。 */
 export interface WireframePanelInfo {
-  /** @deprecated 旧語彙。正は visualScale(未指定時のフォールバックとしてのみ参照)。 */
-  importance?: MangaPanelImportance;
-  /** 解決済みコマスケール(ネームスタジオV5 D1)。large/splash は強調塗り、small は減光。 */
+  /** 解決済みコマスケール(V5 D1)。large/splash は強調塗り、small は減光。旧planはparse境界で正規化済み。 */
   visualScale?: MangaVisualScale;
   /** コマ内台詞の合計文字数(台詞量バー)。 */
   dialogueCharacters?: number;
@@ -199,7 +197,7 @@ export function renderPageWireframeSvg(layout: PageLayout, options: PageWirefram
     if (!info) return;
     const [x1, y1, x2, y2] = panelBounds(panel.shape);
     const panelWidth = Math.max(0, x2 - x1);
-    const scale = info.visualScale ?? normalizeLegacyVisualScale({ importance: info.importance });
+    const scale = info.visualScale;
     if (scale === "large") {
       overlays.push(shapeGeometryElement(panel.shape, `fill="var(--wire-hero, rgba(217,119,6,0.30))" stroke="var(--wire-hero-stroke, rgba(217,119,6,0.9))" stroke-width="0.008"`));
     } else if (scale === "splash") {

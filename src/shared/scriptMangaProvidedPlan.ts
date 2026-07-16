@@ -1,6 +1,6 @@
 import type { FountainDoc } from "./fountain";
 import { builtinLayoutPanelCount } from "./layoutPresets";
-import { importanceFromVisualScale, MANGA_VISUAL_SCALES, visualScaleFromImportance } from "./mangaPlanV2";
+import { MANGA_VISUAL_SCALES, type MangaVisualScale, normalizeLegacyVisualScale } from "./mangaPlanV2";
 import {
   planScriptManga,
   type ScriptMangaPanelDirection,
@@ -97,12 +97,12 @@ export function validateProvidedScriptMangaPlan(
       const sourceIds = sourceElementIds(rawPanel);
       const direction = panelDirection(rawPanel);
       // V5 D1: 旧語彙(importance)と新語彙(visualScale)の両方を受理する(providedはDB非経由の
-      // 生API入力なので、ここが normalizeLegacyVisualScale の適用境界のひとつ)。
+      // 生API入力なので、ここが normalizeLegacyVisualScale の適用境界のひとつ)。保存は visualScale のみ。
       const importance = optionalEnum(rawPanel.importance, ["splash", "hero", "normal"] as const);
       const visualScale = optionalEnum(rawPanel.visualScale, MANGA_VISUAL_SCALES);
       if (sourceIds === null || direction === null || importance === null || visualScale === null) return [];
-      const resolvedScale = visualScale ?? (importance ? visualScaleFromImportance(importance) : undefined);
-      const resolvedImportance = importance ?? (visualScale ? importanceFromVisualScale(visualScale) : undefined);
+      const resolvedScale: MangaVisualScale | undefined =
+        normalizeLegacyVisualScale({ importance, visualScale });
       if (!Array.isArray(rawPanel.dialogueOrderIndexes)) return [];
       const indexes: number[] = [];
       for (const value of rawPanel.dialogueOrderIndexes) {
@@ -120,7 +120,6 @@ export function validateProvidedScriptMangaPlan(
         sourceText,
         dialogueOrderIndexes: indexes,
         ...(direction ? { direction } : {}),
-        ...(resolvedImportance ? { importance: resolvedImportance } : {}),
         ...(resolvedScale ? { visualScale: resolvedScale } : {})
       });
     }

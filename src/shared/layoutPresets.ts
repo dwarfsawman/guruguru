@@ -15,7 +15,7 @@
  */
 import { DEFAULT_PANEL_FRAME, PANEL_BLEED_OVERSHOOT, panelBounds, type LayoutPanel, type PageLayout, type PanelShape } from "./pageLayout";
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
-import type { MangaPanelImportance } from "./mangaPlanV2";
+import type { MangaVisualScale } from "./mangaPlanV2";
 
 /** 内蔵テンプレの1件。id は `builtin:<slug>` で衝突を避ける。 */
 export interface BuiltinLayoutTemplate {
@@ -517,8 +517,13 @@ export type ScriptMangaLayoutResolver = (id: string) => PageLayout | null;
 export const resolveScriptMangaLayout: ScriptMangaLayoutResolver = (id) =>
   findLayoutPreset(id)?.layout ?? findExternalScriptMangaLayout(id)?.layout ?? null;
 
-function heroSlotIndexes(importances: readonly MangaPanelImportance[]): number[] {
-  return importances.flatMap((value, index) => (value === "hero" || value === "splash" ? [index] : []));
+function largeSlotIndexes(scales: readonly MangaVisualScale[]): number[] {
+  return scales.flatMap((value, index) => (value === "large" || value === "splash" ? [index] : []));
+}
+
+/** visualScale → 目標面積の重み(V5 D1: small 0.6 / medium 1.0 / large 2.0)。 */
+function scaleTargetWeight(scale: MangaVisualScale): number {
+  return scale === "large" || scale === "splash" ? 2 : scale === "small" ? 0.6 : 1;
 }
 
 /**
@@ -536,54 +541,38 @@ function emphasizedSlotForLayout(id: string, layout: PageLayout): number | null 
 }
 
 /**
- * hero 構成とレイアウトの整合(heroコマが強調スロットに乗るか)。hero なし・単コマは常に整合。
- * 未解決 id やコマ数不一致は「判定不能」として整合扱い(監督/呼び出し側の裁量に任せる)。
- */
-export function scriptMangaLayoutAlignsImportance(
-  layoutTemplateId: string,
-  importances: readonly MangaPanelImportance[],
-  resolveLayout: ScriptMangaLayoutResolver = resolveScriptMangaLayout
-): boolean {
-  const heroes = heroSlotIndexes(importances);
-  if (heroes.length === 0 || importances.length < 2) return true;
-  const layout = resolveLayout(layoutTemplateId);
-  if (!layout || layout.panels.length !== importances.length) return true;
-  const slot = emphasizedSlotForLayout(layoutTemplateId, layout);
-  return slot !== null && heroes.includes(slot);
-}
-
-/**
- * N1 の importance 構成からレイアウトを決定的に事前選択する(ネームv4 D1)。
+ * コマの visualScale 構成からレイアウトを決定的に事前選択する(V5 D1で語彙のみ更新)。
  * - splash(単コマページ)→ 全面裁ち切り(bleed 候補)を優先。
- * - hero あり → hero×強調スロット一致を最優先。次点は「hero=2 / normal=1」の
+ * - large あり → large×強調スロット一致を最優先。次点は「large=2 / medium=1 / small=0.6」の
  *   目標面積比との L1 距離が小さい候補。figure スロット付きは単独人物切り抜きへ
- *   意味が変わるため事前選択では避ける(監督が明示的に選ぶのは可)。
- * - 全 normal → 従来どおり候補先頭(既定構図の互換維持)。
+ *   意味が変わるため事前選択では避ける。
+ * - 全 medium/small → 従来どおり候補先頭(既定構図の互換維持)。
+ * P2 で rankLayouts(top-k・実現可能性ゲート)へ置換予定。
  */
 export function selectScriptMangaLayoutId(
-  importances: readonly MangaPanelImportance[],
+  scales: readonly MangaVisualScale[],
   resolveLayout: ScriptMangaLayoutResolver = resolveScriptMangaLayout
 ): string | null {
-  const candidates = scriptMangaLayoutCandidates(importances.length);
+  const candidates = scriptMangaLayoutCandidates(scales.length);
   if (candidates.length === 0) return null;
-  if (importances.length === 1) {
-    if (importances[0] !== "splash") return candidates[0]!;
+  if (scales.length === 1) {
+    if (scales[0] !== "splash") return candidates[0]!;
     return candidates.find((id) => id.includes("bleed")) ?? candidates[0]!;
   }
-  const heroes = heroSlotIndexes(importances);
-  if (heroes.length === 0) return candidates[0]!;
-  const targetWeights = importances.map((value) => (value === "hero" || value === "splash" ? 2 : 1));
+  const larges = largeSlotIndexes(scales);
+  if (larges.length === 0) return candidates[0]!;
+  const targetWeights = scales.map(scaleTargetWeight);
   const targetTotal = targetWeights.reduce((sum, weight) => sum + weight, 0);
   let best: { id: string; aligns: boolean; fit: number } | null = null;
   for (const id of candidates) {
     const layout = resolveLayout(id);
-    if (!layout || layout.panels.length !== importances.length) continue;
+    if (!layout || layout.panels.length !== scales.length) continue;
     const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
     if (ordered.some((panel) => panel.role === "figure")) continue;
     const areas = pageLayoutAreaProfile(layout);
     const slot = emphasizedSlotForLayout(id, layout);
-    const aligns = slot !== null && heroes.includes(slot);
-    const fit = -importances.reduce(
+    const aligns = slot !== null && larges.includes(slot);
+    const fit = -scales.reduce(
       (sum, _, position) => sum + Math.abs(targetWeights[position]! / targetTotal - (areas[position] ?? 0)),
       0
     );
