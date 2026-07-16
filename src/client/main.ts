@@ -91,6 +91,7 @@ import "./lazyImageController";
 import "./modelCheckController";
 import "./confirmDialogController";
 import "./scriptMangaController";
+import "./nameStudioController";
 import "./referenceSetController";
 import { importImagesAsPages } from "./bookController";
 import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
@@ -857,7 +858,8 @@ function render(_options: RenderOptions = {}) {
             scriptMangaCandidateBeatKinds: state.scriptMangaCandidateBeatKinds,
             scriptMangaCandidateDialogueChars: state.scriptMangaCandidateDialogueChars,
             scriptMangaCandidatesBusy: state.scriptMangaCandidatesBusy,
-            scriptMangaCandidateCount: state.scriptMangaCandidateCount
+            scriptMangaCandidateCount: state.scriptMangaCandidateCount,
+            nameStudio: state.nameStudio
           })
         : state.book
           ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds, {

@@ -123,6 +123,13 @@ export interface ChronicleUiState {
   allocationPolicy: ExistingPlacementPolicy;
 }
 
+/** ネームスタジオ(V5 D5)の表示状態。takeId=選択中候補(null=先頭)、pageIndex=表示ページ。 */
+export interface NameStudioState {
+  takeId: string | null;
+  pageIndex: number;
+  selectedPanelId: string | null;
+}
+
 export interface ConfirmDialogState {
   id: string;
   title: string;
@@ -559,6 +566,8 @@ export interface AppState {
   scriptMangaCandidatesBusy: boolean;
   /** 「候補を生成」で一度に走らせるN1回数(1..6)。 */
   scriptMangaCandidateCount: number;
+  /** ネームスタジオ(V5 D5)の表示状態: 選択中テイク・ページ・コマ。 */
+  nameStudio: NameStudioState;
   /** そのプロジェクトのキャラクタ一覧。脚本画面を開いた時に取得する。 */
   characters: Character[];
   /** キャラクタ一覧で選択中(編集対象)の id。null=未選択。 */
@@ -729,6 +738,7 @@ export const state: AppState = {
   scriptMangaCandidateDialogueChars: [],
   scriptMangaCandidatesBusy: false,
   scriptMangaCandidateCount: 3,
+  nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: null },
   characters: [],
   selectedCharacterId: null,
   selectedCharacterBinding: null,
