@@ -34,8 +34,22 @@ test("script manga layout candidates cover every panel count from one through si
     assert.ok(candidates.length > 0, `missing candidates for ${panelCount} panels`);
     for (const id of candidates) assert.equal(builtinLayoutPanelCount(id), panelCount, id);
   }
-  assert.deepEqual(scriptMangaLayoutCandidates(5), ["builtin:five-panel", "builtin:five-hero-top"]);
-  assert.deepEqual(scriptMangaLayoutCandidates(6), ["builtin:six-panel", "builtin:six-hero-right"]);
+  // V5 P3a: 4〜6コマの薄い行へ手書きプリセットを追加(先頭=既定は不変)。
+  assert.deepEqual(scriptMangaLayoutCandidates(5), [
+    "builtin:five-panel",
+    "builtin:five-hero-top",
+    "builtin:five-hero-middle",
+    "builtin:five-side-hero-right",
+    "builtin:five-dense-top",
+    "builtin:five-bleed-hero-top"
+  ]);
+  assert.deepEqual(scriptMangaLayoutCandidates(6), [
+    "builtin:six-panel",
+    "builtin:six-hero-right",
+    "builtin:six-hero-top",
+    "builtin:six-hero-bottom",
+    "builtin:six-vertical-hero-right"
+  ]);
   assert.deepEqual(scriptMangaLayoutCandidates(0), []);
   assert.deepEqual(scriptMangaLayoutCandidates(7), []);
 });
@@ -127,7 +141,18 @@ test("layoutAreaProfile: 全プリセットの reading-order 面積比スナッ�
     "builtin:five-hero-top": [0.4388, 0.1403, 0.1403, 0.1403, 0.1403],
     "builtin:six-panel": [0.1667, 0.1667, 0.1667, 0.1667, 0.1667, 0.1667],
     "builtin:six-hero-right": [0.1316, 0.1316, 0.3199, 0.1445, 0.1362, 0.1362],
-    "builtin:yonkoma": [0.25, 0.25, 0.25, 0.25]
+    "builtin:yonkoma": [0.25, 0.25, 0.25, 0.25],
+    // V5 P3a 追加分
+    "builtin:four-hero-top": [0.4049, 0.1371, 0.1371, 0.3209],
+    "builtin:four-vertical-hero-left": [0.179, 0.179, 0.4631, 0.179],
+    "builtin:four-bleed-hero-top": [0.6193, 0.1269, 0.1269, 0.1269],
+    "builtin:five-hero-middle": [0.1226, 0.1226, 0.4388, 0.1579, 0.1579],
+    "builtin:five-side-hero-right": [0.1193, 0.1193, 0.5226, 0.1193, 0.1193],
+    "builtin:five-dense-top": [0.1506, 0.1506, 0.1506, 0.2741, 0.2741],
+    "builtin:five-bleed-hero-top": [0.5642, 0.109, 0.109, 0.109, 0.109],
+    "builtin:six-hero-top": [0.4416, 0.1389, 0.1389, 0.0936, 0.0936, 0.0936],
+    "builtin:six-hero-bottom": [0.1389, 0.1389, 0.0956, 0.0956, 0.0956, 0.4355],
+    "builtin:six-vertical-hero-right": [0.0991, 0.0991, 0.5044, 0.0991, 0.0991, 0.0991]
   };
   for (const template of LAYOUT_PRESETS) {
     const profile = layoutAreaProfile(template.id);

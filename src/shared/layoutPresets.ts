@@ -319,6 +319,193 @@ function fourFigureLeftPanels(): LayoutPanel[] {
   ];
 }
 
+// --- V5 P3a: 4〜6コマの薄い行を埋める手書きプリセット(決定ゲートの第一手) ---
+
+/** 上段全幅の大ゴマ→中段2コマ→下段全幅の締め(開幕の見せ場から会話へ落とす)。 */
+function fourHeroTopPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroBottom = MARGIN + 0.52;
+  const half = (right - left - GUTTER) / 2;
+  const midBottom = heroBottom + GUTTER + 0.36;
+  return [
+    rectPanel("hero", 1, left, MARGIN, right, heroBottom),
+    rectPanel("mid-right", 2, left + half + GUTTER, heroBottom + GUTTER, right, midBottom),
+    rectPanel("mid-left", 3, left, heroBottom + GUTTER, left + half, midBottom),
+    rectPanel("closer", 4, left, midBottom + GUTTER, right, bottom)
+  ];
+}
+
+/** 右3段で進めて左の縦大ゴマで締める(読み順の最後が見せ場)。 */
+function fourVerticalHeroLeftPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroRight = 0.45;
+  const columnLeft = heroRight + GUTTER;
+  const rowHeight = (bottom - MARGIN - GUTTER * 2) / 3;
+  return [
+    rectPanel("right-top", 1, columnLeft, MARGIN, right, MARGIN + rowHeight),
+    rectPanel("right-middle", 2, columnLeft, MARGIN + rowHeight + GUTTER, right, MARGIN + rowHeight * 2 + GUTTER),
+    rectPanel("right-bottom", 3, columnLeft, MARGIN + (rowHeight + GUTTER) * 2, right, bottom),
+    rectPanel("hero-left", 4, left, MARGIN, heroRight, bottom)
+  ];
+}
+
+/** 天と左右へ裁ち切る大ゴマ+下段3コマ(クライマックス→残響の列挙)。 */
+function fourBleedHeroTopPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroBottom = 0.78;
+  const columnWidth = (right - left - GUTTER * 2) / 3;
+  const rowTop = heroBottom + GUTTER;
+  return [
+    rectPanel("hero-bleed", 1, -BLEED, -BLEED, 1 + BLEED, heroBottom),
+    rectPanel("after-right", 2, right - columnWidth, rowTop, right, bottom),
+    rectPanel("after-center", 3, left + columnWidth + GUTTER, rowTop, right - columnWidth - GUTTER, bottom),
+    rectPanel("after-left", 4, left, rowTop, left + columnWidth, bottom)
+  ];
+}
+
+/** 上段2コマ→中段全幅の大ゴマ→下段2コマ(ページ中腹の見せ場)。 */
+function fiveHeroMiddlePanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const half = (right - left - GUTTER) / 2;
+  const topBottom = MARGIN + 0.32;
+  const heroTop = topBottom + GUTTER;
+  const heroBottom = heroTop + 0.56;
+  const tailTop = heroBottom + GUTTER;
+  return [
+    rectPanel("top-right", 1, left + half + GUTTER, MARGIN, right, topBottom),
+    rectPanel("top-left", 2, left, MARGIN, left + half, topBottom),
+    rectPanel("hero", 3, left, heroTop, right, heroBottom),
+    rectPanel("bottom-right", 4, left + half + GUTTER, tailTop, right, bottom),
+    rectPanel("bottom-left", 5, left, tailTop, left + half, bottom)
+  ];
+}
+
+/** 右の縦大ゴマ(全高)を先に読み、左4段へ流す(対決・移動の方向感を強く出す5コマ)。 */
+function fiveSideHeroRightPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroLeft = 0.5;
+  const columnRight = heroLeft - GUTTER;
+  const rowHeight = (bottom - MARGIN - GUTTER * 3) / 4;
+  return [
+    rectPanel("hero-right", 1, heroLeft, MARGIN, right, bottom),
+    rectPanel("left-1", 2, left, MARGIN, columnRight, MARGIN + rowHeight),
+    rectPanel("left-2", 3, left, MARGIN + (rowHeight + GUTTER), columnRight, MARGIN + rowHeight * 2 + GUTTER),
+    rectPanel("left-3", 4, left, MARGIN + (rowHeight + GUTTER) * 2, columnRight, MARGIN + rowHeight * 3 + GUTTER * 2),
+    rectPanel("left-4", 5, left, MARGIN + (rowHeight + GUTTER) * 3, columnRight, bottom)
+  ];
+}
+
+/** 上段3列+下段2コマ(会話の刻みから受けの2コマへ。強調なしのバランス型)。 */
+function fiveDenseTopPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const columnWidth = (right - left - GUTTER * 2) / 3;
+  const topBottom = MARGIN + 0.6;
+  const bottomTop = topBottom + GUTTER;
+  const half = (right - left - GUTTER) / 2;
+  return [
+    rectPanel("top-right", 1, right - columnWidth, MARGIN, right, topBottom),
+    rectPanel("top-center", 2, left + columnWidth + GUTTER, MARGIN, right - columnWidth - GUTTER, topBottom),
+    rectPanel("top-left", 3, left, MARGIN, left + columnWidth, topBottom),
+    rectPanel("bottom-right", 4, left + half + GUTTER, bottomTop, right, bottom),
+    rectPanel("bottom-left", 5, left, bottomTop, left + half, bottom)
+  ];
+}
+
+/** 天と左右へ裁ち切る大ゴマ+2段×2コマ(見せ場から会話へ戻す5コマ)。 */
+function fiveBleedHeroTopPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroBottom = 0.7;
+  const half = (right - left - GUTTER) / 2;
+  const row1Top = heroBottom + GUTTER;
+  const rowHeight = (bottom - row1Top - GUTTER) / 2;
+  const row2Top = row1Top + rowHeight + GUTTER;
+  return [
+    rectPanel("hero-bleed", 1, -BLEED, -BLEED, 1 + BLEED, heroBottom),
+    rectPanel("row1-right", 2, left + half + GUTTER, row1Top, right, row1Top + rowHeight),
+    rectPanel("row1-left", 3, left, row1Top, left + half, row1Top + rowHeight),
+    rectPanel("row2-right", 4, left + half + GUTTER, row2Top, right, bottom),
+    rectPanel("row2-left", 5, left, row2Top, left + half, bottom)
+  ];
+}
+
+/** 上段全幅の大ゴマ→中段2コマ→下段3コマ(開幕の見せ場から密度を上げる6コマ)。 */
+function sixHeroTopPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroBottom = MARGIN + 0.56;
+  const half = (right - left - GUTTER) / 2;
+  const midTop = heroBottom + GUTTER;
+  const midBottom = midTop + 0.36;
+  const lastTop = midBottom + GUTTER;
+  const columnWidth = (right - left - GUTTER * 2) / 3;
+  return [
+    rectPanel("hero", 1, left, MARGIN, right, heroBottom),
+    rectPanel("mid-right", 2, left + half + GUTTER, midTop, right, midBottom),
+    rectPanel("mid-left", 3, left, midTop, left + half, midBottom),
+    rectPanel("last-right", 4, right - columnWidth, lastTop, right, bottom),
+    rectPanel("last-center", 5, left + columnWidth + GUTTER, lastTop, right - columnWidth - GUTTER, bottom),
+    rectPanel("last-left", 6, left, lastTop, left + columnWidth, bottom)
+  ];
+}
+
+/** 上段2コマ→中段3コマ→下段全幅の大ゴマ(溜めてから決める6コマ)。 */
+function sixHeroBottomPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const half = (right - left - GUTTER) / 2;
+  const topBottom = MARGIN + 0.36;
+  const midTop = topBottom + GUTTER;
+  const midBottom = midTop + 0.38;
+  const heroTop = midBottom + GUTTER;
+  const columnWidth = (right - left - GUTTER * 2) / 3;
+  return [
+    rectPanel("top-right", 1, left + half + GUTTER, MARGIN, right, topBottom),
+    rectPanel("top-left", 2, left, MARGIN, left + half, topBottom),
+    rectPanel("mid-right", 3, right - columnWidth, midTop, right, midBottom),
+    rectPanel("mid-center", 4, left + columnWidth + GUTTER, midTop, right - columnWidth - GUTTER, midBottom),
+    rectPanel("mid-left", 5, left, midTop, left + columnWidth, midBottom),
+    rectPanel("hero", 6, left, heroTop, right, bottom)
+  ];
+}
+
+/** 右の縦大ゴマ(全高)+左5段(圧の強い相手と刻む反応の6コマ)。 */
+function sixVerticalHeroRightPanels(): LayoutPanel[] {
+  const left = MARGIN;
+  const right = 1 - MARGIN;
+  const bottom = PAGE_HEIGHT - MARGIN;
+  const heroLeft = 0.52;
+  const columnRight = heroLeft - GUTTER;
+  const rowHeight = (bottom - MARGIN - GUTTER * 4) / 5;
+  return [
+    rectPanel("hero-right", 1, heroLeft, MARGIN, right, bottom),
+    ...Array.from({ length: 5 }, (_, index) =>
+      rectPanel(
+        `left-${index + 1}`,
+        index + 2,
+        left,
+        MARGIN + (rowHeight + GUTTER) * index,
+        columnRight,
+        index === 4 ? bottom : MARGIN + (rowHeight + GUTTER) * index + rowHeight
+      ))
+  ];
+}
+
 /** 内蔵テンプレ一覧(表示順)。 */
 export const LAYOUT_PRESETS: BuiltinLayoutTemplate[] = [
   preset("cover", "表紙(タイトル+大ゴマ)", coverPanels()),
@@ -343,7 +530,18 @@ export const LAYOUT_PRESETS: BuiltinLayoutTemplate[] = [
   preset("five-hero-top", "5コマ(上段大ゴマ)", fiveHeroTopPanels()),
   preset("six-panel", "6コマ(3段×2)", gridPanels(3, 2)),
   preset("six-hero-right", "6コマ(中段右大ゴマ)", sixHeroRightPanels()),
-  preset("yonkoma", "4コマ(縦4段)", gridPanels(4, 1))
+  preset("yonkoma", "4コマ(縦4段)", gridPanels(4, 1)),
+  // V5 P3a: 4〜6コマの多様性追加(決定ゲート第一手の手書きプリセット)。
+  preset("four-hero-top", "4コマ(上段大ゴマ)", fourHeroTopPanels()),
+  preset("four-vertical-hero-left", "4コマ(左縦大ゴマで締め)", fourVerticalHeroLeftPanels()),
+  preset("four-bleed-hero-top", "4コマ(上段裁ち切り大ゴマ)", fourBleedHeroTopPanels()),
+  preset("five-hero-middle", "5コマ(中段大ゴマ)", fiveHeroMiddlePanels()),
+  preset("five-side-hero-right", "5コマ(右縦大ゴマ)", fiveSideHeroRightPanels()),
+  preset("five-dense-top", "5コマ(上段3列)", fiveDenseTopPanels()),
+  preset("five-bleed-hero-top", "5コマ(上段裁ち切り大ゴマ)", fiveBleedHeroTopPanels()),
+  preset("six-hero-top", "6コマ(上段大ゴマ)", sixHeroTopPanels()),
+  preset("six-hero-bottom", "6コマ(下段大ゴマ)", sixHeroBottomPanels()),
+  preset("six-vertical-hero-right", "6コマ(右縦大ゴマ)", sixVerticalHeroRightPanels())
 ];
 
 /**
@@ -364,9 +562,30 @@ const SCRIPT_MANGA_LAYOUTS_BY_PANEL_COUNT: Readonly<Record<number, readonly stri
     "builtin:three-diagonal",
     "builtin:three-figure-left"
   ],
-  4: ["builtin:four-grid", "builtin:four-hero-bottom", "builtin:four-vertical-hero", "builtin:four-figure-left"],
-  5: ["builtin:five-panel", "builtin:five-hero-top"],
-  6: ["builtin:six-panel", "builtin:six-hero-right"]
+  4: [
+    "builtin:four-grid",
+    "builtin:four-hero-bottom",
+    "builtin:four-vertical-hero",
+    "builtin:four-figure-left",
+    "builtin:four-hero-top",
+    "builtin:four-vertical-hero-left",
+    "builtin:four-bleed-hero-top"
+  ],
+  5: [
+    "builtin:five-panel",
+    "builtin:five-hero-top",
+    "builtin:five-hero-middle",
+    "builtin:five-side-hero-right",
+    "builtin:five-dense-top",
+    "builtin:five-bleed-hero-top"
+  ],
+  6: [
+    "builtin:six-panel",
+    "builtin:six-hero-right",
+    "builtin:six-hero-top",
+    "builtin:six-hero-bottom",
+    "builtin:six-vertical-hero-right"
+  ]
 };
 
 /**
@@ -450,7 +669,17 @@ const SCRIPT_MANGA_LAYOUT_DESCRIPTIONS: Readonly<Record<string, string>> = {
   "builtin:six-panel": "3x2 grid",
   "builtin:six-hero-right": "two setup panels on top, a large hero panel on the middle right with a narrow side panel, two closing panels below",
   "builtin:yonkoma": "four vertical strips (4-koma)",
-  "builtin:cover": "title band plus large art panel"
+  "builtin:cover": "title band plus large art panel",
+  "builtin:four-hero-top": "wide hero panel on top, two middle panels, wide closer strip below",
+  "builtin:four-vertical-hero-left": "three stacked panels on the right and a tall hero panel on the left",
+  "builtin:four-bleed-hero-top": "top hero panel bleeds off the page edges (borderless); three framed aftermath panels below",
+  "builtin:five-hero-middle": "two setup panels on top, a wide hero panel across the middle, two closing panels below",
+  "builtin:five-side-hero-right": "full-height hero panel on the right, four stacked reaction panels on the left",
+  "builtin:five-dense-top": "three narrow panels on top for rapid exchange, two wider panels below (balanced, no single peak)",
+  "builtin:five-bleed-hero-top": "top hero panel bleeds off the page edges (borderless); a 2x2 grid of framed follow-ups below",
+  "builtin:six-hero-top": "wide hero panel on top, two middle panels, three narrow closing panels below",
+  "builtin:six-hero-bottom": "two setup panels, three quick middle panels, then a wide payoff panel across the bottom",
+  "builtin:six-vertical-hero-right": "full-height hero panel on the right, five stacked reaction slats on the left"
 };
 
 // --- 面積プロファイルとレイアウト事前選択(ネームv4 D1) ---
