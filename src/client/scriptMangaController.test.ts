@@ -9,6 +9,7 @@ import {
   clearScriptMangaUiState,
   initializeScriptMangaUiState,
   nextScriptMangaSettings,
+  scriptMangaCandidateAdoptRequest,
   scriptMangaPlanCandidatesRequest,
   scriptMangaPrepareRequest
 } from "./scriptMangaController.ts";
@@ -71,6 +72,17 @@ test("scriptMangaPrepareRequest always prepares a review run without generating 
   assert.deepEqual(scriptMangaPrepareRequest("script-1", settings), {
     scriptId: "script-1",
     ...settings,
+    generateImages: false,
+    candidateSelectionPolicy: "review",
+    requireReferenceSets: true,
+    allowReferenceFallback: false
+  });
+});
+
+test("scriptMangaCandidateAdoptRequest leaves candidate identity to the dedicated URL", () => {
+  assert.deepEqual(scriptMangaCandidateAdoptRequest(settings, 3), {
+    ...settings,
+    expectedCandidateVersion: 3,
     generateImages: false,
     candidateSelectionPolicy: "review",
     requireReferenceSets: true,

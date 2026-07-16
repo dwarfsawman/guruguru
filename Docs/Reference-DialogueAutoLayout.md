@@ -187,6 +187,15 @@ split dialogue or re-plan the page: line_...(N chars)」** で失敗すること
 
 ### 12.2 予測・自動修復の手順(このコマンドで再現できる)
 
+現在の一次ゲートは`agent:cli candidate preflight --candidate-id ... --template-id ...`である。
+候補の実効planを本番と同じ`materializeRun`へ通し、台詞未配置は`dialogue-placement`、この422は
+`dialogue-readability`(lineId、文字数、`minimumReadableSize`)として返す。materializeは本番DBから
+分離したsnapshot内で行い、run/page/task/placementは破棄する。成功した組み込み候補だけは、検査した
+演出planを本番candidateへ固定して`editVersion`を進める。失敗時はcandidateも変更しない。
+候補をName Studioへ提示または採用する前にこれを通し、`ok:false`なら修正後のplanを再importして
+再実行する。report内のmaterialize由来IDは一時IDなので、安定した`lineId`と`pageIndex`を修正根拠にする。
+以下の`/api/text-layout`手順は、違反をまとめて予測して修正案を作るための補助である。
+
 `requiredSizeVariantsFor` 相当のサイズ計算(`dialogueAutoLayoutApi.ts:201-237`)は DB 非依存で、
 実運用中のサーバーの `POST /api/text-layout`(`src/server/textLayoutApi.ts`)を呼べば実フォントの
 正確な bbox が得られる。これを使い、投げる前にローカルで全コマを検査できる。

@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Database } from "bun:sqlite";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { ComfySettings, LlmSettings, VlmAuditSettings } from "../shared/types";
@@ -23,6 +24,36 @@ export const dbPath = join(dataRoot, "app.db");
 mkdirSync(dirname(dbPath), { recursive: true });
 
 export const db = new Database(dbPath);
+const databaseContext = new AsyncLocalStorage<Database>();
+
+/**
+ * 現在のDBをインメモリへ複製する。dry-runはこのsnapshotを使い、本番接続上で
+ * SAVEPOINTを開かない（別request/background writeを誤rollbackしないため）。
+ */
+export function createIsolatedDatabaseSnapshot(): Database {
+  // sqlite3_serialize keeps the source file header's WAL read/write versions (bytes 18/19 = 2).
+  // An anonymous deserialized DB has no sibling `-wal` path, so its first prepared statement then
+  // fails with SQLITE_CANTOPEN. The serialized image already contains the connection's current
+  // logical contents; clone it and switch only those documented header bytes back to rollback mode.
+  const serialized = Uint8Array.from(db.serialize());
+  if (serialized.length >= 20) {
+    serialized[18] = 1;
+    serialized[19] = 1;
+  }
+  const snapshot = Database.deserialize(serialized);
+  snapshot.exec("PRAGMA journal_mode = MEMORY");
+  snapshot.exec("PRAGMA foreign_keys = ON");
+  return snapshot;
+}
+
+/** runSql/getRow/getRowsだけを指定connectionへ向けるasync-context境界。 */
+export function withDatabaseConnection<T>(connection: Database, action: () => T): T {
+  return databaseContext.run(connection, action);
+}
+
+function activeDatabase(): Database {
+  return databaseContext.getStore() ?? db;
+}
 
 // projectTransfer.ts(.guruzip エクスポート/インポート)が「この列は JSON なので parse して
 // 再帰的にパス/ID を書き換える」判定に使うため export する(toApiRow のロジックとは独立に必要)。
@@ -752,6 +783,66 @@ export function initializeDb() {
     END;
   `);
 
+  // A crash before materializeRun's terminal phase update can leave partial run-owned pages/tasks.
+  // They were never observable as an adopted run, so remove the orphan atomically before releasing
+  // the claim. This prevents a retry from accumulating inaccessible run-owned pages.
+  const incompleteCandidateRuns = getRows<{ id: string; plan_id: string }>(`
+    SELECT run.id, run.plan_id
+      FROM script_manga_runs run
+      JOIN script_manga_plan_candidates candidate
+        ON candidate.id = json_extract(run.config_json, '$.planCandidateId')
+     WHERE candidate.status = 'adopting'
+       AND candidate.adopted_run_id IS NULL
+       AND run.phase = 'planning'
+  `);
+  for (const run of incompleteCandidateRuns) {
+    const pageIds = getRows<{ page_id: string }>(
+      "SELECT page_id FROM script_manga_run_pages WHERE run_id = ?",
+      [run.id]
+    );
+    runSql("SAVEPOINT recover_incomplete_candidate_run");
+    try {
+      runSql("DELETE FROM script_manga_runs WHERE id = ?", [run.id]);
+      for (const page of pageIds) runSql("DELETE FROM pages WHERE id = ?", [page.page_id]);
+      runSql(
+        "DELETE FROM script_manga_plans WHERE id = ? AND NOT EXISTS (SELECT 1 FROM script_manga_runs WHERE plan_id = ?)",
+        [run.plan_id, run.plan_id]
+      );
+      runSql("RELEASE SAVEPOINT recover_incomplete_candidate_run");
+    } catch (error) {
+      runSql("ROLLBACK TO SAVEPOINT recover_incomplete_candidate_run");
+      runSql("RELEASE SAVEPOINT recover_incomplete_candidate_run");
+      throw error;
+    }
+  }
+
+  // A crash can occur after a candidate-owned run finished materialization but before the final
+  // candidate update. Reconcile that durable identity first; only claim-only/planning orphans go
+  // back to active. config_json is written in the initial run INSERT specifically for this recovery.
+  runSql(`
+    UPDATE script_manga_plan_candidates
+       SET status = 'adopted',
+           adopted_run_id = (
+             SELECT run.id
+               FROM script_manga_runs run
+              WHERE json_extract(run.config_json, '$.planCandidateId') = script_manga_plan_candidates.id
+                AND run.phase <> 'planning'
+              ORDER BY run.created_at DESC, run.id DESC
+              LIMIT 1
+           )
+     WHERE status = 'adopting'
+       AND adopted_run_id IS NULL
+       AND EXISTS (
+         SELECT 1
+           FROM script_manga_runs run
+          WHERE json_extract(run.config_json, '$.planCandidateId') = script_manga_plan_candidates.id
+            AND run.phase <> 'planning'
+       )
+  `);
+  runSql(
+    "UPDATE script_manga_plan_candidates SET status = 'active' WHERE status = 'adopting' AND adopted_run_id IS NULL"
+  );
+
   const existing = getSetting<Partial<ComfySettings>>("comfy");
   if (!existing) {
     setSetting("comfy", defaultComfySettings);
@@ -801,17 +892,17 @@ export function setSetting(key: string, value: unknown) {
 }
 
 export function runSql(sql: string, params: unknown[] = []) {
-  const statement = db.prepare(sql);
+  const statement = activeDatabase().prepare(sql);
   return statement.run(...(params as SqlValue[]));
 }
 
 export function getRow<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | null {
-  const statement = db.prepare(sql);
+  const statement = activeDatabase().prepare(sql);
   return (statement.get(...(params as SqlValue[])) as T | undefined) ?? null;
 }
 
 export function getRows<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
-  const statement = db.prepare(sql);
+  const statement = activeDatabase().prepare(sql);
   return statement.all(...(params as SqlValue[])) as T[];
 }
 

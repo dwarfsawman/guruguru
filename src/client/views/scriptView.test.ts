@@ -6,7 +6,9 @@ import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../sha
 import {
   candidateDiffSignatures,
   candidatePageSignature,
+  candidatePlanStructureSignature,
   renderScriptMangaControlCard,
+  scriptMangaExternalAuditFromScores,
   scriptMangaVlmAuditFromScores,
   type ScriptMangaControlViewProps
 } from "./scriptView.ts";
@@ -145,8 +147,48 @@ test("script manga manual audit is presented as external-agent or human explicit
   assert.match(html, /外部エージェント \/ 人間レビュー（内蔵VLMなし）/);
   assert.match(html, /内蔵VLM OFF · 外部\/手動レビュー/);
   assert.match(html, /外部エージェント \/ 人間レビュー/);
+  assert.match(html, /監査結果は未登録/);
   assert.match(html, /external \/ manual review/);
   assert.doesNotMatch(html, /VLM unreachable/);
+});
+
+test("script manga manual audit renders registered external-agent evidence safely", () => {
+  const manualProps = props();
+  manualProps.scriptMangaSettings.auditMode = "manual";
+  const manualRun = run();
+  manualRun.auditMode = "manual";
+  manualRun.tasks[0]!.scores = {
+    externalAudit: {
+      state: "completed",
+      reports: [{
+        assetId: "asset-1",
+        passed: false,
+        score: 0.27,
+        checks: { visualIdentity: "fail", actionAlignment: "pass", ignored: "unknown" },
+        violations: ["wrong face <script>alert(1)</script>"],
+        reviewer: "codex-agent",
+        model: "vision-model<script>",
+        notes: "Regenerate this candidate <img src=x onerror=alert(1)>",
+        evaluatedAt: "2026-07-16T00:00:00.000Z"
+      }]
+    }
+  };
+  manualProps.scriptMangaRun = manualRun;
+  const html = renderScriptMangaControlCard(manualProps);
+  assert.match(html, /外部監査 27%/);
+  assert.match(html, />FAIL</);
+  assert.match(html, /visualIdentity: FAIL/);
+  assert.match(html, /wrong face &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(html, /codex-agent · vision-model&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>|<img src=x/);
+
+  (manualRun.tasks[0]!.scores as { externalAudit: { reports: Array<{ violations: string[] }> } })
+    .externalAudit.reports[0]!.violations = [];
+  assert.match(renderScriptMangaControlCard(manualProps), /違反詳細は未登録/);
+
+  assert.equal(scriptMangaExternalAuditFromScores({
+    externalAudit: { state: "pending", reports: [] }
+  }).length, 0);
 });
 
 test("script manga card shows ready, on-demand and unreachable VLM service states safely", () => {
@@ -554,6 +596,20 @@ test("candidate diff keeps page and panel boundaries instead of flattening beat 
     { ...base, id: "b", plan: { title: "B", panelCount: 1, dialogueCount: 0, pages: [pageB] } }
   ];
   assert.equal(candidateDiffSignatures(candidates).size, 2);
+  const beatOnly = structuredClone(candidates[0]!);
+  beatOnly.plan.pages[0]!.panels[0]!.sourceBeatIds = ["different-annotation"];
+  assert.equal(
+    candidatePlanStructureSignature(candidates[0]!),
+    candidatePlanStructureSignature(beatOnly),
+    "optional beat annotations do not split the same server-side structure"
+  );
+  const dialogueChanged = structuredClone(candidates[0]!);
+  dialogueChanged.plan.pages[0]!.panels[0]!.dialogueOrderIndexes = [0];
+  assert.notEqual(
+    candidatePlanStructureSignature(candidates[0]!),
+    candidatePlanStructureSignature(dialogueChanged),
+    "dialogue assignment differences remain distinct in the client"
+  );
 });
 
 test("name studio keeps small panels concise and exposes hover/click detail", () => {

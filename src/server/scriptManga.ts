@@ -13,7 +13,13 @@ import { normalizeEditedPageLayout, panelBounds, panelBoundsSize, type PageLayou
 import { planScriptManga, type ScriptMangaPlan, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
-import type { ScriptMangaPlanView, ScriptMangaRunView, ScriptMangaTaskView } from "../shared/scriptMangaApi";
+import type {
+  RecordExternalScriptMangaTaskAuditResponse,
+  ScriptMangaExternalAuditReport,
+  ScriptMangaPlanView,
+  ScriptMangaRunView,
+  ScriptMangaTaskView
+} from "../shared/scriptMangaApi";
 import type { DialogueBalloonStyle, DialogueSemanticKind, PageRow } from "../shared/apiTypes";
 import {
   actionTextEstablishesVisibleActor,
@@ -60,7 +66,16 @@ import { reconstructPanelPoses, type PoseControlMode } from "./panelPoseReconstr
 import { directAdoptedCandidatePlan, planScriptMangaWithDirectorDetailed } from "./scriptMangaDirector";
 import { readCachedBeatAnnotation, type BeatAnnotationResult } from "./scriptBeatAnnotator";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
-import { adoptablePlanCandidate, beginPlanCandidateAdoption, markPlanCandidateAdopted } from "./scriptMangaPlanCandidates";
+import {
+  adoptablePlanCandidate,
+  beginPlanCandidateAdoption,
+  fixedEmbeddedCandidateDirection,
+  isExternallyDirectedPlanCandidate,
+  isFixedDirectedPlanCandidate,
+  markPlanCandidateAdopted,
+  revertPlanCandidateAdoption,
+  scriptMangaCandidateDirectionInputHash
+} from "./scriptMangaPlanCandidates";
 import { buildMangaPlanV2 } from "./scriptMangaPlanV2";
 import {
   computeScriptMangaReuseFingerprint,
@@ -181,6 +196,8 @@ interface ScriptMangaRunConfig {
   requireReferenceSets: boolean;
   allowReferenceFallback: boolean;
   poseControl?: PoseControlConfig;
+  /** Persisted before materialization so startup can reconcile a crash after candidate claim. */
+  planCandidateId?: string;
 }
 
 /**
@@ -755,6 +772,23 @@ function planningOptionsFromInput(
     targetPageCount,
     maxDialoguesPerPanel: boundedInteger(input.maxDialoguesPerPanel, fallback.maxDialoguesPerPanel ?? 4, 1, 8),
     stylePrompt: requestedStyle === null ? fallback.stylePrompt : requestedStyle || undefined
+  };
+}
+
+/** Candidate preflight and adoption must hash the exact same direction-affecting options. */
+export function scriptMangaCandidateDirectionOptionsFromInput(
+  input: Record<string, unknown>,
+  scriptRevisionId: string
+): ScriptMangaPlanOptions {
+  const options = planningOptionsFromInput(input);
+  const dialoguePolicy = parseDialoguePolicy(input.dialoguePolicy);
+  if ((dialoguePolicy === "adapt" || dialoguePolicy === "fill") && input.panelsPerPage === undefined) {
+    options.panelsPerPage = 2;
+  }
+  return {
+    ...options,
+    scriptRevisionId,
+    characterBible: stringOr(input.characterBible, "") || undefined
   };
 }
 
@@ -2997,6 +3031,23 @@ function refreshRunStatus(runId: string): RunRow {
 }
 
 export async function createScriptMangaRun(projectId: string, body: unknown): Promise<ScriptMangaRunView> {
+  let claimedCandidateId: string | null = null;
+  try {
+    return await createScriptMangaRunInternal(projectId, body, (candidateId) => {
+      claimedCandidateId = candidateId;
+    });
+  } catch (error) {
+    // この呼び出しがactive→adoptingを取得した場合だけ戻す。並行した別採用のclaimは触らない。
+    if (claimedCandidateId) revertPlanCandidateAdoption(claimedCandidateId);
+    throw error;
+  }
+}
+
+async function createScriptMangaRunInternal(
+  projectId: string,
+  body: unknown,
+  onCandidateClaimed: (candidateId: string) => void
+): Promise<ScriptMangaRunView> {
   const input = objectBody(body);
   const scriptId = requiredString(input.scriptId, "scriptId");
   requireScript(projectId, scriptId);
@@ -3062,6 +3113,7 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
   const planCandidateId = typeof input.planCandidateId === "string" && input.planCandidateId.trim()
     ? input.planCandidateId.trim()
     : null;
+  let candidatePlanningMode: "llm" | "provided" = "llm";
   const loras = styleLorasFromInput(input.loras, predecessorConfig?.loras);
   const planId = createId("manga_plan");
   let pageLimit: number;
@@ -3075,17 +3127,25 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     if (planCandidateId) {
       // V5 D5: 実効プラン(基礎プラン+人間のフリップ)を採用する。監督スキーマにレイアウトは
       // 無いので「採用後レイアウト不変」は構造的に保証される。採用は数分かかるため adopting 状態で
-      // フリップを凍結し、失敗時はルート側(index.ts)が active へ巻き戻す。
+      // フリップを凍結し、失敗時は createScriptMangaRun wrapper が active へ巻き戻す。
       const expectedCandidateVersion = typeof input.expectedCandidateVersion === "number" && Number.isInteger(input.expectedCandidateVersion)
         ? input.expectedCandidateVersion
         : undefined;
       const adoptable = adoptablePlanCandidate(planCandidateId, projectId, scriptId, revision.id, expectedCandidateVersion);
       beginPlanCandidateAdoption(planCandidateId);
-      fullPlan = await directAdoptedCandidatePlan(revision.doc, adoptable.plan, {
-        ...planOptions,
-        scriptRevisionId: revision.id,
-        characterBible: stringOr(input.characterBible, "") || undefined
-      });
+      onCandidateClaimed(planCandidateId);
+      const directionIsFixed = isFixedDirectedPlanCandidate(adoptable.row);
+      candidatePlanningMode = isExternallyDirectedPlanCandidate(adoptable.row) ? "provided" : "llm";
+      const candidateDirectionOptions = scriptMangaCandidateDirectionOptionsFromInput(input, revision.id);
+      if (directionIsFixed) {
+        fixedEmbeddedCandidateDirection(
+          adoptable.row,
+          scriptMangaCandidateDirectionInputHash(candidateDirectionOptions)
+        );
+      }
+      fullPlan = directionIsFixed
+        ? adoptable.plan
+        : await directAdoptedCandidatePlan(revision.doc, adoptable.plan, candidateDirectionOptions);
       const units = buildPreLayoutUnits(revision.doc);
       const cachedBeats = readCachedBeatAnnotation(revision.id, units);
       beatAnnotation = cachedBeats ? { units, beats: cachedBeats, fallback: false, cached: true } : null;
@@ -3103,7 +3163,8 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
       fullPlan = planScriptManga(revision.doc, planOptions);
     }
     if (!fullPlan) throw new HttpError(400, "directorPlan is invalid or does not preserve every dialogue exactly once");
-    pageLimit = typeof input.pageLimit === "number"
+    // 候補採用は候補全体を1つのrunへ固定する。部分runをadoptedRunIdに結び付けない。
+    pageLimit = !planCandidateId && typeof input.pageLimit === "number"
       ? Math.max(1, Math.min(fullPlan.pages.length, Math.trunc(input.pageLimit)))
       : fullPlan.pages.length;
     const limitedPages = fullPlan.pages.slice(0, pageLimit);
@@ -3147,8 +3208,12 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     templateId,
     providerId,
     batchSize: 1,
-    // 候補採用run はN1+監督由来(english-directed)なので llm として扱う。
-    planningMode: predecessor ? "provided" : planCandidateId ? "llm" : planningMode,
+    // 外部agentが演出済みの候補は、そのdirectionを固定して組み込み監督を重ねない。
+    planningMode: predecessor
+      ? "provided"
+      : planCandidateId
+        ? candidatePlanningMode
+        : planningMode,
     pageLimit,
     maxPanelCount,
     loras,
@@ -3167,7 +3232,8 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     allowReferenceFallback: typeof input.allowReferenceFallback === "boolean"
       ? input.allowReferenceFallback
       : predecessorConfig?.allowReferenceFallback ?? false,
-    ...(poseControl ? { poseControl } : {})
+    ...(poseControl ? { poseControl } : {}),
+    ...(planCandidateId ? { planCandidateId } : {})
   };
   const predecessorBudget = predecessor
     ? parseJson<{ maxAttemptsPerPanel?: number; maxConcurrentSubmissions?: number }>(predecessor.generation_budget_json, {})
@@ -3804,7 +3870,17 @@ export async function selectScriptMangaTaskCandidate(taskId: string, body: unkno
   if (task.status !== "awaiting_review") throw new HttpError(409, "Task is not awaiting candidate review");
   const candidates = parseJson<string[]>(task.candidate_asset_ids_json, []);
   if (!candidates.includes(assetId)) throw new HttpError(400, "Asset is not in the persisted candidate set");
-  if (parseConfig(run).auditMode === "vlm") {
+  const auditMode = parseConfig(run).auditMode;
+  if (auditMode === "manual") {
+    const scores = parseJson<{
+      externalAudit?: { reports?: Array<{ assetId?: string; passed?: boolean }> };
+    }>(task.scores_json, {});
+    const report = scores.externalAudit?.reports?.find((candidate) => candidate.assetId === assetId);
+    if (report?.passed === false) {
+      throw new HttpError(409, "The selected candidate failed external audit; repair or regenerate this panel");
+    }
+  }
+  if (auditMode === "vlm") {
     const scores = parseJson<{ vlmAudit?: { state?: string; reports?: Array<{ assetId?: string; passed?: boolean }> } }>(
       task.scores_json,
       {}
@@ -3866,6 +3942,119 @@ export async function selectScriptMangaTaskCandidate(taskId: string, body: unkno
     activeTaskSelections.delete(task.id);
   }
   return runView(refreshRunStatus(task.run_id));
+}
+
+function requiredExternalAuditText(value: unknown, name: string, maxLength: number): string {
+  if (typeof value !== "string" || !value.trim()) throw new HttpError(400, `${name} is required`);
+  const normalized = value.trim();
+  if (normalized.length > maxLength) throw new HttpError(400, `${name} is too long`);
+  return normalized;
+}
+
+function externalAuditNotes(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value !== "string") throw new HttpError(400, "notes must be a string");
+  const normalized = value.trim();
+  if (normalized.length > 2000) throw new HttpError(400, "notes is too long");
+  return normalized;
+}
+
+function externalAuditChecks(value: unknown): Record<string, "pass" | "fail"> {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "checks must be an object");
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 16) throw new HttpError(400, "checks has too many entries");
+  const checks: Record<string, "pass" | "fail"> = {};
+  for (const [rawName, result] of entries) {
+    const name = rawName.trim();
+    if (!name || name.length > 80 || (result !== "pass" && result !== "fail")) {
+      throw new HttpError(400, "checks must contain short names with pass or fail values");
+    }
+    checks[name] = result;
+  }
+  return checks;
+}
+
+function externalAuditViolations(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 32) {
+    throw new HttpError(400, "violations must be a bounded string array");
+  }
+  const violations: string[] = [];
+  for (const rawViolation of value) {
+    if (typeof rawViolation !== "string" || !rawViolation.trim() || rawViolation.length > 300) {
+      throw new HttpError(400, "violations must contain short non-empty strings");
+    }
+    const violation = rawViolation.trim();
+    if (!violations.includes(violation)) violations.push(violation);
+  }
+  return violations;
+}
+
+/**
+ * Persist an explicit external-agent review without retaining the caller's raw payload. Manual
+ * selection stays backward compatible when no report exists, while an explicit failed report is
+ * authoritative for that candidate until it is replaced or the task is retried.
+ */
+export function recordExternalScriptMangaTaskAudit(
+  taskId: string,
+  body: unknown
+): RecordExternalScriptMangaTaskAuditResponse {
+  const task = requireTask(taskId);
+  const run = requireRun(task.run_id);
+  if (parseConfig(run).auditMode !== "manual") {
+    throw new HttpError(409, "Only manual-audit runs accept external audit results");
+  }
+  if (run.approval_status !== "approved" || run.status === "canceled") {
+    throw new HttpError(409, "Task cannot accept external audit in the current run state");
+  }
+  if (task.status !== "awaiting_review") throw new HttpError(409, "Task is not awaiting candidate review");
+
+  const input = objectBody(body);
+  const assetId = requiredString(input.assetId, "assetId");
+  const candidates = parseJson<string[]>(task.candidate_asset_ids_json, []);
+  if (!candidates.includes(assetId)) throw new HttpError(400, "Asset is not in the persisted candidate set");
+  if (typeof input.passed !== "boolean") throw new HttpError(400, "passed must be a boolean");
+  if (input.score !== undefined && (
+    typeof input.score !== "number" || !Number.isFinite(input.score) || input.score < 0 || input.score > 1
+  )) {
+    throw new HttpError(400, "score must be between 0 and 1");
+  }
+
+  const report: ScriptMangaExternalAuditReport = {
+    assetId,
+    passed: input.passed,
+    ...(typeof input.score === "number" ? { score: input.score } : {}),
+    checks: externalAuditChecks(input.checks),
+    violations: externalAuditViolations(input.violations),
+    reviewer: requiredExternalAuditText(input.reviewer, "reviewer", 160),
+    model: requiredExternalAuditText(input.model, "model", 160),
+    notes: externalAuditNotes(input.notes),
+    evaluatedAt: new Date().toISOString()
+  };
+  const scores = parseJson<Record<string, unknown>>(task.scores_json, {});
+  const previousAudit = scores.externalAudit && typeof scores.externalAudit === "object" && !Array.isArray(scores.externalAudit)
+    ? scores.externalAudit as { reports?: unknown }
+    : {};
+  const previousReports = Array.isArray(previousAudit.reports)
+    ? previousAudit.reports.filter((candidate): candidate is Record<string, unknown> => (
+        Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate)
+      ))
+    : [];
+  const reports = [
+    ...previousReports.filter((candidate) => candidate.assetId !== assetId),
+    report
+  ];
+  const updated = runSql(
+    `UPDATE script_manga_tasks SET scores_json = ?, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND status = 'awaiting_review'`,
+    [JSON.stringify({
+      ...scores,
+      externalAudit: { state: "completed", reports, updatedAt: report.evaluatedAt }
+    }), task.id]
+  ) as { changes?: number };
+  if (updated.changes !== 1) throw new HttpError(409, "Task stopped accepting the external audit result");
+  return { report, run: runView(refreshRunStatus(task.run_id)) };
 }
 
 /** Explicitly queue/retry the VLM audit while retaining human review as the final gate. */

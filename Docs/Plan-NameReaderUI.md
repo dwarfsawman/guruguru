@@ -1,5 +1,10 @@
 # Plan: ネームリーダーUI — テキストネームの比較・選択・編集(人間参加ゲート)
 
+> **置換済み履歴文書**: 現行の候補採用・人間ゲート・エージェント運用契約は
+> [Reference-ScriptMangaAgentWorkflow.md](Reference-ScriptMangaAgentWorkflow.md) と
+> [Reference-AgentInstanceApi.md](Reference-AgentInstanceApi.md) を正とする。本文中の汎用run API＋
+> `planCandidateId`、常時人間専用の採用、attended gateでの定期pollは現在の挙動ではない。
+
 > 状態: **[Plan-NameStudioV5.md](Plan-NameStudioV5.md) に置換(2026-07-16)**。互換性を要求しない方針転換により、
 > 本計画のUI部(D1/D2/D3/D4/D5)はV5のD5〜D7へ吸収された。実装時の要注意点(既存panelBounds・座標系・
 > PATCH同期materialize・domMorph保護範囲・採用前提条件)はV5からも参照される。

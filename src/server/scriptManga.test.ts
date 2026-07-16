@@ -14,6 +14,7 @@ import {
   cancelScriptMangaRun,
   createScriptMangaRun,
   getScriptMangaRun,
+  recordExternalScriptMangaTaskAudit,
   resumeScriptMangaRun,
   selectScriptMangaTaskCandidate,
   startScriptMangaRun,
@@ -432,6 +433,100 @@ test("VLM audit scores generated candidates and still requires a human selection
     server.stop(true);
     setSetting("vlm_audit", defaultVlmAuditSettings);
   }
+});
+
+test("external manual audit records bounded metadata, blocks an explicit failure, and leaves other candidates selectable", async () => {
+  resetFakeProvider();
+  const png = Buffer.from(TINY_PNG_DATA_URL.split(",")[1]!, "base64");
+  programFakeOutcomes([{
+    status: "completed",
+    images: [
+      { bytes: png, filename: "external-audit-a.png", outputNodeId: "fake-node-a" },
+      { bytes: png, filename: "external-audit-b.png", outputNodeId: "fake-node-b" }
+    ]
+  }]);
+  const templateId = template();
+  const project = createProject({ name: `script-manga-external-audit-${createId("test")}`, mode: "book" });
+  const projectId = project!.id as string;
+  const imported = createScript(projectId, {
+    title: "External audit",
+    fountainSource: ["INT. ROOM - DAY", "", "A red door opens."].join("\n")
+  });
+  const run = await createScriptMangaRun(projectId, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    auditMode: "manual"
+  });
+  await collectRound(run.tasks[0]!.roundId!);
+  const review = getScriptMangaRun(run.id);
+  const task = review.tasks[0]!;
+  assert.equal(task.status, "awaiting_review");
+  assert.equal(task.candidateAssetIds.length, 2);
+  const failedAssetId = task.candidateAssetIds[0]!;
+  const otherAssetId = task.candidateAssetIds[1]!;
+  const secret = "must-not-persist-external-audit-secret";
+
+  const auditInput = {
+    assetId: failedAssetId,
+    passed: false,
+    score: 0.24,
+    checks: {
+      visualIdentity: "fail",
+      actionAlignment: "pass",
+      fakeText: "pass",
+      continuity: "pass"
+    },
+    violations: ["visual-identity: unexpected character"],
+    reviewer: "codex-reviewer",
+    model: "external-vision-model",
+    notes: "Unexpected character is visible.",
+    evaluatedAt: "1900-01-01T00:00:00.000Z",
+    apiKey: secret,
+    imageDataUrl: `${TINY_PNG_DATA_URL}:${secret}`,
+    rawPrompt: secret
+  };
+  recordExternalScriptMangaTaskAudit(task.id, auditInput);
+  const recorded = recordExternalScriptMangaTaskAudit(task.id, {
+    ...auditInput,
+    notes: "Rechecked: unexpected character is still visible."
+  });
+  assert.equal(recorded.report.assetId, failedAssetId);
+  assert.equal(recorded.report.passed, false);
+  const externalAudit = (recorded.run.tasks[0]!.scores as {
+    externalAudit?: { reports?: Array<Record<string, unknown>> };
+  }).externalAudit;
+  assert.equal(externalAudit?.reports?.length, 1);
+  const report = externalAudit?.reports?.[0];
+  assert.equal(report?.assetId, failedAssetId);
+  assert.equal(report?.passed, false);
+  assert.equal(report?.score, 0.24);
+  assert.deepEqual(report?.checks, {
+    visualIdentity: "fail",
+    actionAlignment: "pass",
+    fakeText: "pass",
+    continuity: "pass"
+  });
+  assert.deepEqual(report?.violations, ["visual-identity: unexpected character"]);
+  assert.equal(report?.reviewer, "codex-reviewer");
+  assert.equal(report?.model, "external-vision-model");
+  assert.equal(report?.notes, "Rechecked: unexpected character is still visible.");
+  assert.equal(typeof report?.evaluatedAt, "string");
+  assert.notEqual(report?.evaluatedAt, "1900-01-01T00:00:00.000Z");
+  assert.doesNotThrow(() => new Date(String(report?.evaluatedAt)).toISOString());
+  const persisted = getRow<{ scores_json: string }>(
+    "SELECT scores_json FROM script_manga_tasks WHERE id = ?",
+    [task.id]
+  )!.scores_json;
+  assert.doesNotMatch(persisted, /must-not-persist-external-audit-secret|data:image|rawPrompt|apiKey/);
+
+  await assert.rejects(
+    () => selectScriptMangaTaskCandidate(task.id, { assetId: failedAssetId }),
+    /failed external audit/
+  );
+  const completed = await selectScriptMangaTaskCandidate(task.id, { assetId: otherAssetId });
+  assert.equal(completed.status, "completed");
+  assert.equal(completed.tasks[0]!.selectedAssetId, otherAssetId);
 });
 
 test("candidate auto-selection policies are rejected", async () => {

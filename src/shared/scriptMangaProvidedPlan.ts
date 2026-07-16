@@ -46,6 +46,32 @@ function identityForPanel(plan: Record<string, unknown>, subject: string): strin
 
 const DIRECTION_KEYS = ["shot", "subject", "action", "emotion", "composition"] as const;
 
+function optionalDirectionStrings(value: unknown): string[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return null;
+  const values = value.map(text);
+  return values.every(Boolean) ? values : null;
+}
+
+function optionalDirectionSubjects(
+  value: unknown
+): ScriptMangaPanelDirection["subjects"] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return null;
+  const subjects: NonNullable<ScriptMangaPanelDirection["subjects"]> = [];
+  for (const raw of value) {
+    if (!isJsonObject(raw)) return null;
+    const ref = text(raw.ref);
+    const position = text(raw.position);
+    const action = text(raw.action);
+    const expression = text(raw.expression);
+    const gaze = raw.gaze === undefined ? undefined : text(raw.gaze);
+    if (!ref || !position || !action || !expression || (raw.gaze !== undefined && !gaze)) return null;
+    subjects.push({ ref, position, action, expression, ...(gaze ? { gaze } : {}) });
+  }
+  return subjects;
+}
+
 function panelDirection(panel: Record<string, unknown>): ScriptMangaPanelDirection | null | undefined {
   const hasNested = Object.hasOwn(panel, "direction");
   const source = hasNested ? panel.direction : panel;
@@ -53,7 +79,17 @@ function panelDirection(panel: Record<string, unknown>): ScriptMangaPanelDirecti
   if (!isJsonObject(source)) return null;
   if (!hasNested && !DIRECTION_KEYS.every((key) => Object.hasOwn(source, key))) return undefined;
   const values = Object.fromEntries(DIRECTION_KEYS.map((key) => [key, text(source[key])])) as unknown as ScriptMangaPanelDirection;
-  return DIRECTION_KEYS.every((key) => values[key]) ? values : null;
+  if (!DIRECTION_KEYS.every((key) => values[key])) return null;
+  const angle = source.angle === undefined ? undefined : text(source.angle);
+  const subjects = optionalDirectionSubjects(source.subjects);
+  const avoid = optionalDirectionStrings(source.avoid);
+  if ((source.angle !== undefined && !angle) || subjects === null || avoid === null) return null;
+  return {
+    ...values,
+    ...(angle ? { angle } : {}),
+    ...(subjects !== undefined ? { subjects } : {}),
+    ...(avoid !== undefined ? { avoid } : {})
+  };
 }
 
 function sourceElementIds(panel: Record<string, unknown>): string[] | null {

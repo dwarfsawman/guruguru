@@ -359,23 +359,36 @@ export async function directAdoptedCandidatePlan(
   candidatePlan: ScriptMangaPlan,
   options: ScriptMangaPlanOptions = {}
 ): Promise<ScriptMangaPlan> {
+  return (await directAdoptedCandidatePlanDetailed(doc, candidatePlan, options)).plan;
+}
+
+/** preflight uses fallback to avoid permanently freezing a candidate after an LLM outage. */
+export async function directAdoptedCandidatePlanDetailed(
+  doc: FountainDoc,
+  candidatePlan: ScriptMangaPlan,
+  options: ScriptMangaPlanOptions = {}
+): Promise<{ plan: ScriptMangaPlan; fallback: boolean }> {
   const settings = getLlmSettings();
   const directed = await directScriptMangaPages(doc, candidatePlan.pages, options);
   return {
-    ...candidatePlan,
-    pages: directed.pages,
-    plannerProvenance: {
-      kind: "llm-director",
-      model: settings.model,
-      batches: directed.batches,
-      pageNaming: candidatePlan.plannerProvenance?.pageNaming
-    }
+    plan: {
+      ...candidatePlan,
+      pages: directed.pages,
+      plannerProvenance: {
+        kind: "llm-director",
+        model: settings.model,
+        batches: directed.batches,
+        pageNaming: candidatePlan.plannerProvenance?.pageNaming
+      }
+    },
+    fallback: directed.fallback
   };
 }
 
 interface DirectedPagesResult {
   pages: ScriptMangaPagePlan[];
   batches: Array<{ rawOutput: string; messages: Array<{ role: string; content: string }> }>;
+  fallback: boolean;
 }
 
 /**
@@ -392,6 +405,7 @@ async function directScriptMangaPages(
   const sceneBibles = deriveSceneBibles(doc, "director-input").map((bible, sceneIndex) => ({ sceneIndex, set: bible.set, lighting: bible.lighting, palette: bible.palette }));
   const batches: ScriptMangaPagePlan[][] = [];
   const provenanceBatches: Array<{ rawOutput: string; messages: Array<{ role: string; content: string }> }> = [];
+  let fallback = false;
   for (let offset = 0; offset < basePages.length; offset += 4) batches.push(basePages.slice(offset, offset + 4));
 
   const directedPages: ScriptMangaPagePlan[] = [];
@@ -438,6 +452,7 @@ async function directScriptMangaPages(
       directedPages.push(...result.value);
     } catch (error) {
       // 監督のどこで失敗しても生成は止めない: このバッチは未演出(N1/候補のまま)で進める。
+      fallback = true;
       provenanceBatches.push({
         rawOutput: `[director-batch-fallback] ${error instanceof Error ? error.message : String(error)}`,
         messages: []
@@ -445,5 +460,5 @@ async function directScriptMangaPages(
       directedPages.push(...batch);
     }
   }
-  return { pages: directedPages, batches: provenanceBatches };
+  return { pages: directedPages, batches: provenanceBatches, fallback };
 }

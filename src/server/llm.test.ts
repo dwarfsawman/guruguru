@@ -1,7 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chatCompletion, LlmHttpError, toLlmSettingsView } from "./llm.ts";
+import {
+  chatCompletion,
+  getLlmStatus,
+  LlmHttpError,
+  testLlmConnection,
+  toLlmSettingsView
+} from "./llm.ts";
 import type { LlmSettings } from "../shared/types.ts";
+import { defaultLlmSettings, initializeDb, setSetting } from "./db.ts";
 
 type MockHandler = (req: Request) => Response | Promise<Response>;
 type MockServer = ReturnType<typeof Bun.serve>;
@@ -176,4 +183,41 @@ test("toLlmSettingsView: apiKey 本体を落とし hasApiKey フラグだけを�
 
   const withoutKey = toLlmSettingsView(baseSettings("http://example.invalid"));
   assert.equal(withoutKey.hasApiKey, false);
+});
+
+test("getLlmStatus reports a configured model that is absent from the server", async () => {
+  initializeDb();
+  const { server, baseUrl } = startMockLlmServer(() => Response.json({
+    data: [{ id: "another-model" }]
+  }));
+  setSetting("llm", baseSettings(baseUrl));
+  try {
+    const status = await getLlmStatus();
+    assert.equal(status.state, "connected");
+    assert.equal(status.ok, false);
+    assert.equal(status.model, "test-model");
+    assert.equal(status.modelListed, false);
+    assert.match(status.error ?? "", /not listed/i);
+    const connection = await testLlmConnection();
+    assert.equal(connection.ok, false);
+    assert.equal(connection.modelListed, false);
+  } finally {
+    server.stop(true);
+    setSetting("llm", defaultLlmSettings);
+  }
+});
+
+test("getLlmStatus treats an explicitly empty OpenAI model list as unavailable", async () => {
+  initializeDb();
+  const { server, baseUrl } = startMockLlmServer(() => Response.json({ data: [] }));
+  setSetting("llm", baseSettings(baseUrl));
+  try {
+    const status = await getLlmStatus();
+    assert.equal(status.state, "connected");
+    assert.equal(status.ok, false);
+    assert.equal(status.modelListed, false);
+  } finally {
+    server.stop(true);
+    setSetting("llm", defaultLlmSettings);
+  }
 });

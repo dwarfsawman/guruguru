@@ -66,6 +66,10 @@ export interface LlmStatus {
   ok: boolean;
   state: "connected" | "disconnected";
   baseUrl: string;
+  /** Configured model used by the embedded manga planner (never an API key). */
+  model: string;
+  /** null when the compatible server does not expose a useful model list. */
+  modelListed: boolean | null;
   checkedAt: string;
   error?: string;
 }

@@ -106,6 +106,7 @@ import {
   withScriptMangaRunExport,
   getScriptMangaPlan,
   getScriptMangaRun,
+  recordExternalScriptMangaTaskAudit,
   resumeScriptMangaRun,
   repairScriptMangaTask,
   retryScriptMangaTask,
@@ -117,10 +118,13 @@ import {
 import {
   archiveScriptMangaPlanCandidate,
   createScriptMangaPlanCandidates,
+  getScriptMangaPlanCandidate,
+  importScriptMangaPlanCandidate,
   listScriptMangaPlanCandidates,
-  revertPlanCandidateAdoption,
+  requirePlanCandidate,
   setCandidateLayoutOverride
 } from "./scriptMangaPlanCandidates";
+import { preflightScriptMangaCandidate } from "./scriptMangaCandidatePreflight";
 import { applySpeakerAnchors } from "./speakerAnchors";
 import { importProjectFromStream, withProjectExportArchive } from "./projectTransfer";
 import { fitPageBalloonText } from "./balloonTextFit";
@@ -197,7 +201,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
 
   if (method === "GET" && path === "/api/agent/capabilities") {
     sendJson(res, 200, {
-      apiVersion: 1,
+      apiVersion: 2,
       instanceMode,
       agentReady: instanceMode === "agent",
       endpoints: {
@@ -205,7 +209,13 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
         modelCheck: "GET /api/comfy/model-check?family=anima",
         importSourceAsset: "POST /api/projects/:projectId/source-assets",
         generate: "POST /api/projects/:projectId/rounds",
-        collect: "POST /api/rounds/:roundId/collect"
+        collect: "POST /api/rounds/:roundId/collect",
+        llmStatus: "GET /api/llm/status",
+        vlmAuditStatus: "GET /api/vlm-audit/status",
+        importScriptMangaCandidate: "POST /api/projects/:projectId/script-manga-plan-candidates/import",
+        preflightScriptMangaCandidate: "POST /api/script-manga-plan-candidates/:candidateId/preflight",
+        adoptScriptMangaCandidate: "POST /api/script-manga-plan-candidates/:candidateId/adopt",
+        recordScriptMangaAudit: "POST /api/script-manga-tasks/:taskId/audit-results"
       },
       anima: {
         baseModel: "animaInt8Mxfp8_aestheticV11Int8.safetensors",
@@ -633,17 +643,14 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   // Fountain → 自動コマ割り → コマ別画像生成 → 吹き出し完成の一括実行。
   const scriptMangaCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-runs$/);
   if (method === "POST" && scriptMangaCreateMatch) {
-    const runBody = await readJson(req);
-    const adoptionCandidateId = runBody && typeof runBody === "object" && typeof (runBody as { planCandidateId?: unknown }).planCandidateId === "string"
-      ? (runBody as { planCandidateId: string }).planCandidateId
-      : null;
-    try {
-      sendJson(res, 201, await createScriptMangaRun(scriptMangaCreateMatch[1]!, runBody));
-    } catch (error) {
-      // V5 D5: 採用失敗時は adopting → active へ巻き戻す(成立時は adopted なので no-op)。
-      if (adoptionCandidateId) revertPlanCandidateAdoption(adoptionCandidateId);
-      throw error;
+    const body = await readJson<Record<string, unknown>>(req);
+    if (body && typeof body === "object" && !Array.isArray(body) && typeof body.planCandidateId === "string") {
+      throw new HttpError(
+        400,
+        "Adopt plan candidates through POST /api/script-manga-plan-candidates/:candidateId/adopt so full preflight cannot be bypassed"
+      );
     }
+    sendJson(res, 201, await createScriptMangaRun(scriptMangaCreateMatch[1]!, body));
     return;
   }
   const scriptMangaRunMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)$/);
@@ -651,7 +658,7 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     sendJson(res, 200, getScriptMangaRun(scriptMangaRunMatch[1]!));
     return;
   }
-  // プラン候補(ネームv4 D3): 複数生成して見比べ、planCandidateId 付き run 作成で採用する。
+  // プラン候補(ネームv4 D3): 複数生成して見比べ、専用adopt APIでfull preflight後に採用する。
   const scriptMangaCandidatesMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-plan-candidates$/);
   if (method === "POST" && scriptMangaCandidatesMatch) {
     sendJson(res, 201, await createScriptMangaPlanCandidates(scriptMangaCandidatesMatch[1]!, await readJson(req)));
@@ -660,6 +667,90 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   if (method === "GET" && scriptMangaCandidatesMatch) {
     const scriptId = url.searchParams.get("scriptId") ?? "";
     sendJson(res, 200, listScriptMangaPlanCandidates(scriptMangaCandidatesMatch[1]!, scriptId));
+    return;
+  }
+  const scriptMangaCandidateImportMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-plan-candidates\/import$/);
+  if (method === "POST" && scriptMangaCandidateImportMatch) {
+    sendJson(res, 201, importScriptMangaPlanCandidate(scriptMangaCandidateImportMatch[1]!, await readJson(req)));
+    return;
+  }
+  const scriptMangaCandidateAdoptMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/adopt$/);
+  if (method === "POST" && scriptMangaCandidateAdoptMatch) {
+    const candidateId = scriptMangaCandidateAdoptMatch[1]!;
+    const adoptedReplay = () => {
+      const row = requirePlanCandidate(candidateId);
+      return row.status === "adopted" && row.adopted_run_id
+        ? { candidate: getScriptMangaPlanCandidate(candidateId), run: getScriptMangaRun(row.adopted_run_id) }
+        : null;
+    };
+    const candidateRow = requirePlanCandidate(candidateId);
+    const initialReplay = adoptedReplay();
+    if (initialReplay) {
+      sendJson(res, 200, initialReplay);
+      return;
+    }
+    const body = await readJson<Record<string, unknown>>(req);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new HttpError(400, "Request body must be an object");
+    }
+    if (body.predecessorRunId !== undefined || body.successorPlan !== undefined) {
+      throw new HttpError(400, "Candidate adoption cannot be combined with a successor run");
+    }
+    let preflight: Awaited<ReturnType<typeof preflightScriptMangaCandidate>>;
+    try {
+      preflight = await preflightScriptMangaCandidate(candidateRow.project_id, candidateId, body);
+    } catch (error) {
+      const concurrentReplay = adoptedReplay();
+      if (concurrentReplay) {
+        sendJson(res, 200, concurrentReplay);
+        return;
+      }
+      throw error;
+    }
+    if (!preflight.ok) {
+      sendJson(res, 422, {
+        error: "Candidate failed full preflight and was not adopted",
+        preflight
+      });
+      return;
+    }
+    const afterPreflightReplay = adoptedReplay();
+    if (afterPreflightReplay) {
+      sendJson(res, 200, afterPreflightReplay);
+      return;
+    }
+    let run;
+    try {
+      run = await createScriptMangaRun(candidateRow.project_id, {
+        ...body,
+        scriptId: candidateRow.script_id,
+        planCandidateId: candidateId,
+        expectedCandidateVersion: preflight.candidateEditVersion,
+        generateImages: false,
+        candidateSelectionPolicy: "review",
+        requireReferenceSets: true,
+        allowReferenceFallback: false
+      });
+    } catch (error) {
+      const concurrentReplay = adoptedReplay();
+      if (concurrentReplay) {
+        sendJson(res, 200, concurrentReplay);
+        return;
+      }
+      throw error;
+    }
+    sendJson(res, 201, { candidate: getScriptMangaPlanCandidate(candidateId), run, preflight });
+    return;
+  }
+  const scriptMangaCandidatePreflightMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/preflight$/);
+  if (method === "POST" && scriptMangaCandidatePreflightMatch) {
+    const candidateId = scriptMangaCandidatePreflightMatch[1]!;
+    const candidate = requirePlanCandidate(candidateId);
+    sendJson(
+      res,
+      200,
+      await preflightScriptMangaCandidate(candidate.project_id, candidateId, await readJson(req))
+    );
     return;
   }
   const scriptMangaCandidateArchiveMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/archive$/);
@@ -720,6 +811,15 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
           : scriptMangaTaskActionMatch[2] === "repair"
             ? await repairScriptMangaTask(scriptMangaTaskActionMatch[1]!, await readJson(req))
           : await selectScriptMangaTaskCandidate(scriptMangaTaskActionMatch[1]!, await readJson(req))
+    );
+    return;
+  }
+  const scriptMangaTaskExternalAuditMatch = path.match(/^\/api\/script-manga-tasks\/([^/]+)\/audit-results$/);
+  if (method === "POST" && scriptMangaTaskExternalAuditMatch) {
+    sendJson(
+      res,
+      200,
+      recordExternalScriptMangaTaskAudit(scriptMangaTaskExternalAuditMatch[1]!, await readJson(req))
     );
     return;
   }

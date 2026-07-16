@@ -107,6 +107,33 @@ export interface ScriptMangaPlan {
   };
 }
 
+/**
+ * Name Studio 候補の物語構造を比較する安定署名。
+ *
+ * 文言・prompt・演出 direction・既定 layout の差は同じネーム構造として扱い、ページ/コマ境界、
+ * source element/dialogue の割当、visualScale、めくり、人間の layout override が違う時だけ別案にする。
+ * sourceBeatIds は注釈器の有無で省略される補助情報なので、署名を環境依存にしないため含めない。
+ * panel id は外部 agent が案ごとに振り直せるため署名へ含めない。
+ */
+export function scriptMangaPlanStructureSignature(
+  plan: ScriptMangaPlan,
+  layoutOverrides: Readonly<Record<number, string>> = {}
+): string {
+  return JSON.stringify([
+    plan.pages.map((page) => [
+      page.index,
+      page.turnHook ?? "",
+      page.panels.map((panel) => [
+        panel.sceneIndex,
+        panel.sourceElementIds,
+        panel.dialogueOrderIndexes,
+        panel.visualScale ?? ""
+      ])
+    ]),
+    Object.entries(layoutOverrides).sort(([a], [b]) => Number(a) - Number(b))
+  ]);
+}
+
 export interface ScriptMangaPlanOptions {
   panelsPerPage?: number;
   maxElementsPerPanel?: number;

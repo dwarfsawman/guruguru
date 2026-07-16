@@ -1,13 +1,17 @@
 import type {
+  AdoptScriptMangaPlanCandidateFailure,
+  AdoptScriptMangaPlanCandidateRequest,
+  AdoptScriptMangaPlanCandidateResponse,
   CreateScriptMangaPlanCandidatesRequest,
   PrepareScriptMangaRunRequest,
+  ScriptMangaPlanCandidateView,
   ScriptMangaPlanCandidatesResponse,
   ScriptMangaRunView,
   ScriptMangaUiSettings,
   VlmAuditServiceStatus
 } from "../shared/scriptMangaApi";
 import type { ProjectDetail } from "../shared/apiTypes";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { DEFAULT_NAME_STUDIO_READER_OPTIONS } from "./nameStudioReader";
@@ -116,6 +120,21 @@ export function scriptMangaPrepareRequest(
     requireReferenceSets: true,
     allowReferenceFallback: false,
     ...(planCandidateId ? { planCandidateId } : {}),
+    ...(expectedCandidateVersion !== undefined ? { expectedCandidateVersion } : {})
+  };
+}
+
+/** Dedicated candidate endpoint takes identity from the URL and rejects successor fields. */
+export function scriptMangaCandidateAdoptRequest(
+  settings: ScriptMangaUiSettings,
+  expectedCandidateVersion?: number
+): AdoptScriptMangaPlanCandidateRequest {
+  return {
+    ...settings,
+    generateImages: false,
+    candidateSelectionPolicy: "review",
+    requireReferenceSets: true,
+    allowReferenceFallback: false,
     ...(expectedCandidateVersion !== undefined ? { expectedCandidateVersion } : {})
   };
 }
@@ -236,7 +255,7 @@ async function archiveCandidate(candidateId: string): Promise<void> {
   }
 }
 
-/** 候補採用: planCandidateId 付きで run を準備する(監督→V2→materialize は採用時の1回だけ)。 */
+/** 候補採用: 専用APIが候補statusと準備済みrunを同じ応答で確定する。 */
 async function adoptCandidate(candidateId: string): Promise<void> {
   const projectId = state.currentProjectId;
   const scriptId = state.activeScriptId;
@@ -251,19 +270,31 @@ async function adoptCandidate(candidateId: string): Promise<void> {
   // V5 D5: 採用にも楽観ロックを掛ける(採用開始直前のフリップとの競合を検出)。
   const expectedVersion = state.scriptMangaCandidates.find((candidate) => candidate.id === candidateId)?.editVersion;
   try {
-    const run = await api<ScriptMangaRunView>(`/api/projects/${projectId}/script-manga-runs`, {
+    const result = await api<AdoptScriptMangaPlanCandidateResponse>(
+      `/api/script-manga-plan-candidates/${encodeURIComponent(candidateId)}/adopt`, {
       method: "POST",
-      body: JSON.stringify(scriptMangaPrepareRequest(scriptId, settings, candidateId, expectedVersion))
+      body: JSON.stringify(scriptMangaCandidateAdoptRequest(settings, expectedVersion))
     });
+    const { run } = result;
     if (operationIsCurrent(serial) && state.scriptScreenOpen && state.activeScriptId === scriptId) {
       state.scriptMangaRun = run;
       state.scriptMangaCandidates = state.scriptMangaCandidates.map((candidate) =>
-        candidate.id === candidateId ? { ...candidate, status: "adopted", adoptedRunId: run.id } : candidate
+        candidate.id === candidateId ? result.candidate : candidate
       );
       pushToast("候補を採用してMangaPlanV2を準備しました。警告を確認して承認してください。", "info");
     }
   } catch (error) {
-    reportOperationError(serial, error);
+    if (error instanceof ApiError && error.status === 422) {
+      const failure = error.body as Partial<AdoptScriptMangaPlanCandidateFailure>;
+      const issues = failure.preflight?.issues ?? [];
+      const detail = issues.slice(0, 3).map((issue) => issue.message).join(" / ");
+      reportOperationError(
+        serial,
+        new Error(detail ? `候補プリフライト失敗: ${detail}` : error.message)
+      );
+    } else {
+      reportOperationError(serial, error);
+    }
     // 409(並行フリップ・採用中)は候補一覧を取り直して表示を合わせる。
     void refreshScriptMangaCandidates();
   } finally {

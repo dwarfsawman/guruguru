@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { inspectContext, normalizeBaseUrl, parseCliArgs } from "./guruguru-agent-cli.mjs";
+import {
+  buildCandidateAdoptionRequest,
+  confirmCandidateAdoption,
+  confirmExternalAuditRecord,
+  inspectContext,
+  normalizeExternalAuditRequest,
+  normalizeBaseUrl,
+  parseCliArgs,
+  resolveAgentRoute
+} from "./guruguru-agent-cli.mjs";
 import { parseScriptMangaDeepLink } from "../src/shared/scriptMangaDeepLink";
 
 test("agent CLI parses global options independently of command position", () => {
@@ -93,4 +102,112 @@ test("agent CLI context verifies the complete API identity and emits the matchin
   } finally {
     server.stop(true);
   }
+});
+
+test("agent CLI route selects embedded services only when their configured models are usable", async () => {
+  let llmStatus: Record<string, unknown> | null = {
+    ok: true,
+    state: "connected",
+    model: "director-model",
+    modelListed: true
+  };
+  let vlmStatus: Record<string, unknown> = {
+    ok: true,
+    state: "model-not-loaded",
+    model: "audit-model"
+  };
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/llm/status") {
+        return llmStatus ? Response.json(llmStatus) : Response.json({ error: "temporary" }, { status: 500 });
+      }
+      if (path === "/api/vlm-audit/status") return Response.json(vlmStatus);
+      return new Response("not found", { status: 404 });
+    }
+  });
+  try {
+    const baseUrl = `http://127.0.0.1:${server.port}`;
+    const embedded = await resolveAgentRoute(baseUrl);
+    assert.equal(embedded.planning.mode, "llm");
+    assert.equal(embedded.planning.strategy, "embedded-candidates");
+    assert.equal(embedded.audit.mode, "vlm", "on-demand VLM is a supported embedded route");
+
+    llmStatus = { ok: true, state: "connected", model: "missing-model", modelListed: false };
+    vlmStatus = { ok: false, state: "server-unreachable" };
+    const external = await resolveAgentRoute(baseUrl);
+    assert.equal(external.planning.mode, "provided");
+    assert.equal(external.planning.strategy, "external-plan-import");
+    assert.equal(external.audit.mode, "manual");
+    assert.equal(external.audit.strategy, "external-audit-results");
+
+    llmStatus = null;
+    vlmStatus = { ok: true, state: "ready", model: "audit-model" };
+    const partial = await resolveAgentRoute(baseUrl);
+    assert.equal(partial.planning.mode, "provided", "one failed status must fail closed only for that service");
+    assert.equal(partial.audit.mode, "vlm");
+  } finally {
+    server.stop(true);
+  }
+});
+
+test("agent CLI adoption request applies routed audit mode and strict preparation gates", () => {
+  assert.deepEqual(buildCandidateAdoptionRequest({ templateId: "template-1" }, "vlm"), {
+    templateId: "template-1",
+    auditMode: "vlm",
+    generateImages: false,
+    candidateSelectionPolicy: "review",
+    requireReferenceSets: true,
+    allowReferenceFallback: false
+  });
+  assert.equal(buildCandidateAdoptionRequest({ auditMode: "manual" }, "vlm").auditMode, "manual");
+});
+
+test("agent CLI accepts adoption only when candidate and run identities are atomically confirmed", () => {
+  const confirmed = {
+    candidate: { id: "candidate-1", status: "adopted", adoptedRunId: "run-1" },
+    run: { id: "run-1" }
+  };
+  assert.equal(confirmCandidateAdoption("candidate-1", confirmed), confirmed);
+  assert.throws(
+    () => confirmCandidateAdoption("candidate-1", {
+      candidate: { id: "candidate-1", status: "active", adoptedRunId: null },
+      run: { id: "run-1" }
+    }),
+    /did not confirm/
+  );
+  assert.throws(
+    () => confirmCandidateAdoption("candidate-1", {
+      candidate: { id: "candidate-1", status: "adopted", adoptedRunId: "run-other" },
+      run: { id: "run-1" }
+    }),
+    /did not confirm/
+  );
+});
+
+test("agent CLI accepts external audit only when the dedicated report is echoed", () => {
+  const request = {
+    assetId: " asset-1 ",
+    passed: true,
+    score: 0.9,
+    checks: { " anatomy ": "pass" },
+    violations: ["  stray text  ", "stray text"],
+    reviewer: " codex ",
+    model: " vision-1 ",
+    notes: " checked externally "
+  };
+  const normalized = normalizeExternalAuditRequest(request);
+  const response = {
+    report: { ...normalized, evaluatedAt: "2026-07-16T00:00:00.000Z" },
+    run: { id: "run-1", tasks: [{ id: "task-1" }] }
+  };
+  assert.equal(confirmExternalAuditRecord("task-1", request, response), response);
+  assert.throws(
+    () => confirmExternalAuditRecord("task-1", request, {
+      report: { ...normalized, passed: false, evaluatedAt: "2026-07-16T00:00:00.000Z" },
+      run: { id: "run-1", tasks: [{ id: "task-1" }] }
+    }),
+    /did not confirm/
+  );
 });

@@ -3,11 +3,16 @@
  * 「1呼び出しで複数案」はやらず、ビート注釈1回(キャッシュ共有)+N1をk回で候補を貯める。
  * 監督・画像生成は採用後に1回だけ(createScriptMangaRun の planCandidateId ルート)。
  */
+import { createHash } from "node:crypto";
 import type { FountainDoc } from "../shared/fountain";
 import { buildPanelDemand, rankLayouts } from "../shared/layoutMatcher";
 import { resolveScriptMangaLayout } from "../shared/layoutPresets";
 import type {
   CreateScriptMangaPlanCandidatesRequest,
+  ImportScriptMangaPlanCandidateRequest,
+  ImportScriptMangaPlanCandidateResponse,
+  ScriptMangaPlanCandidateDirectorMode,
+  ScriptMangaPlanCandidateOrigin,
   ScriptMangaPlanCandidatesResponse,
   ScriptMangaPlanCandidateView,
   SetCandidateLayoutResponse
@@ -15,15 +20,18 @@ import type {
 import {
   applyLayoutOverrides,
   normalizeScriptMangaPlanScales,
+  scriptMangaPlanStructureSignature,
   type ScriptMangaPlan,
   type ScriptMangaPlanOptions
 } from "../shared/scriptMangaPlan";
+import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
 import { createId, getRow, getRows, runSql } from "./db";
 import { HttpError } from "./http";
 import { objectBody, requiredString } from "./validate";
 import { readCachedBeatAnnotation } from "./scriptBeatAnnotator";
 import { generateScriptMangaN1Plan } from "./scriptMangaDirector";
+import { resolveLayoutTemplate } from "./layoutTemplates";
 
 export interface PlanCandidateRow {
   id: string;
@@ -40,6 +48,16 @@ export interface PlanCandidateRow {
   layout_overrides_json: string | null;
   edit_version: number;
   created_at: string;
+}
+
+interface PlanCandidateProvenance {
+  origin?: ScriptMangaPlanCandidateOrigin;
+  directorMode?: ScriptMangaPlanCandidateDirectorMode;
+  pageNaming?: { mode?: string; fallback?: boolean; beatAnnotatorFallback?: boolean };
+  profile?: string;
+  temperature?: number;
+  external?: { agent?: string; model?: string; notes?: string };
+  direction?: { inputHash: string; model: string | null };
 }
 
 /** 候補毎の演出プロファイル(D3.1)。システムプロンプトへ1行だけ足す。 */
@@ -97,11 +115,59 @@ function parseOverrides(row: PlanCandidateRow): Record<number, string> {
   return overrides;
 }
 
+function parseCandidateProvenance(row: Pick<PlanCandidateRow, "provenance_json">): PlanCandidateProvenance {
+  if (!row.provenance_json) return {};
+  const parsed = safeParse(row.provenance_json);
+  return parsed && typeof parsed === "object" ? parsed as PlanCandidateProvenance : {};
+}
+
+/** createScriptMangaRun側が組み込み監督LLMを省略できる、server-owned provenance判定。 */
+export function isExternallyDirectedPlanCandidate(
+  row: Pick<PlanCandidateRow, "provenance_json">
+): boolean {
+  const provenance = parseCandidateProvenance(row);
+  return provenance.origin === "external" && provenance.directorMode === "provided";
+}
+
+/** provided/fixed候補はoriginを問わず採用時に同じplanを使い、監督を再実行しない。 */
+export function isFixedDirectedPlanCandidate(
+  row: Pick<PlanCandidateRow, "provenance_json">
+): boolean {
+  return parseCandidateProvenance(row).directorMode === "provided";
+}
+
+/** Bind an embedded fixed plan to the direction-affecting settings that produced it. */
+export function fixedEmbeddedCandidateDirection(
+  row: Pick<PlanCandidateRow, "provenance_json">,
+  expectedInputHash: string
+): { inputHash: string; model: string | null } | null {
+  const provenance = parseCandidateProvenance(row);
+  if (provenance.origin !== "embedded" || provenance.directorMode !== "provided") return null;
+  if (!provenance.direction || provenance.direction.inputHash !== expectedInputHash) {
+    throw new HttpError(
+      409,
+      "Direction-affecting candidate settings differ from the successful preflight; use the same settings or regenerate the candidate"
+    );
+  }
+  return provenance.direction;
+}
+
+export function scriptMangaCandidateDirectionInputHash(options: ScriptMangaPlanOptions): string {
+  const canonical = {
+    scriptRevisionId: options.scriptRevisionId ?? null,
+    panelsPerPage: options.panelsPerPage ?? null,
+    maxElementsPerPanel: options.maxElementsPerPanel ?? null,
+    maxDialoguesPerPanel: options.maxDialoguesPerPanel ?? null,
+    targetPageCount: options.targetPageCount ?? null,
+    stylePrompt: options.stylePrompt ?? null,
+    characterBible: options.characterBible ?? null
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
+
 function candidateView(row: PlanCandidateRow): ScriptMangaPlanCandidateView {
-  const provenance = row.provenance_json ? safeParse(row.provenance_json) : null;
-  const pageNaming = provenance && typeof provenance === "object" && provenance !== null
-    ? (provenance as { pageNaming?: { mode?: string; fallback?: boolean; beatAnnotatorFallback?: boolean } }).pageNaming
-    : undefined;
+  const provenance = parseCandidateProvenance(row);
+  const pageNaming = provenance.pageNaming;
   // V5 D2: 旧値 "panels"(従来N1)は未知値としてnull化する(旧provenance行はバッジ無し表示)。
   const mode = pageNaming?.mode === "beats" || pageNaming?.mode === "deterministic"
     ? pageNaming.mode
@@ -114,6 +180,8 @@ function candidateView(row: PlanCandidateRow): ScriptMangaPlanCandidateView {
     groupId: row.group_id,
     profile: row.profile,
     temperature: row.temperature,
+    origin: provenance.origin === "external" ? "external" : "embedded",
+    directorMode: provenance.directorMode === "provided" ? "provided" : "embedded",
     status: row.status === "adopted" || row.status === "archived" || row.status === "adopting" ? row.status : "active",
     adoptedRunId: row.adopted_run_id,
     plan: parseCandidatePlan(row),
@@ -122,6 +190,59 @@ function candidateView(row: PlanCandidateRow): ScriptMangaPlanCandidateView {
     pageNaming: mode ? { mode, fallback: pageNaming?.fallback === true, ...(pageNaming?.beatAnnotatorFallback !== undefined ? { beatAnnotatorFallback: pageNaming.beatAnnotatorFallback } : {}) } : null,
     createdAt: row.created_at
   };
+}
+
+/** 専用adopt APIがstatus/run identityを同じ応答で返すための単体ビュー。 */
+export function getScriptMangaPlanCandidate(candidateId: string): ScriptMangaPlanCandidateView {
+  return candidateView(requirePlanCandidate(candidateId));
+}
+
+/**
+ * embedded候補を監督済みplanへ一度だけ固定する。full preflight成功時に本番候補へ反映し、
+ * 以後のadoptが同じ成果物を使う。ページ/コマ/source/dialogue構造の変更は拒否する。
+ */
+export function freezeEmbeddedDirectedPlanCandidate(
+  candidateId: string,
+  expectedVersion: number,
+  directedPlan: ScriptMangaPlan,
+  direction: { inputHash: string; model: string | null }
+): ScriptMangaPlanCandidateView {
+  const row = requirePlanCandidate(candidateId);
+  const provenance = parseCandidateProvenance(row);
+  if (row.status !== "active") throw new HttpError(409, "Only an active candidate can freeze directed output");
+  if (row.edit_version !== expectedVersion) {
+    throw new HttpError(409, "Plan candidate was modified while its directed preflight was running");
+  }
+  if (provenance.origin === "external" || provenance.directorMode === "provided") {
+    throw new HttpError(409, "Plan candidate direction is already fixed");
+  }
+  const effectivePlan = applyLayoutOverrides(parseCandidatePlan(row), parseOverrides(row));
+  if (scriptMangaPlanStructureSignature(effectivePlan) !== scriptMangaPlanStructureSignature(directedPlan)) {
+    throw new HttpError(422, "Directed candidate changed the fixed page/panel/source/dialogue structure");
+  }
+  const version = row.edit_version + 1;
+  const updated = runSql(
+    `UPDATE script_manga_plan_candidates
+        SET plan_json = ?, provenance_json = ?, layout_overrides_json = NULL, edit_version = ?
+      WHERE id = ? AND status = 'active' AND edit_version = ?`,
+    [
+      JSON.stringify(directedPlan),
+      JSON.stringify({
+        ...provenance,
+        origin: "embedded",
+        directorMode: "provided",
+        direction,
+        directionFrozenAt: new Date().toISOString()
+      }),
+      version,
+      row.id,
+      row.edit_version
+    ]
+  ) as { changes?: number };
+  if (updated.changes !== 1) {
+    throw new HttpError(409, "Plan candidate changed before directed output could be frozen");
+  }
+  return candidateView(requirePlanCandidate(candidateId));
 }
 
 function safeParse(raw: string): unknown {
@@ -153,6 +274,211 @@ function candidateEnvelope(
   return { candidates, beatKinds, dialogueCharsByOrderIndex: [...dialogueCharsByOrderIndex].map((chars) => chars ?? 0) };
 }
 
+interface CandidateStoreInput {
+  projectId: string;
+  scriptId: string;
+  scriptRevisionId: string;
+  groupId: string;
+  profile: string | null;
+  temperature: number | null;
+  plan: ScriptMangaPlan;
+  provenance: PlanCandidateProvenance;
+}
+
+interface CandidateStoreResult {
+  row: PlanCandidateRow;
+  imported: boolean;
+  duplicateOf: string | null;
+}
+
+function resolveCandidateGroupId(
+  projectId: string,
+  scriptId: string,
+  scriptRevisionId: string,
+  requestedGroupId: unknown
+): string {
+  const groupId = typeof requestedGroupId === "string" && requestedGroupId.trim()
+    ? requestedGroupId.trim()
+    : createId("cand_group");
+  if (groupId.length > 200) throw new HttpError(400, "groupId is too long");
+  const existing = getRows<{
+    project_id: string;
+    script_id: string;
+    script_revision_id: string;
+  }>(
+    `SELECT DISTINCT project_id, script_id, script_revision_id
+       FROM script_manga_plan_candidates WHERE group_id = ?`,
+    [groupId]
+  );
+  if (existing.some((row) =>
+    row.project_id !== projectId || row.script_id !== scriptId || row.script_revision_id !== scriptRevisionId
+  )) {
+    throw new HttpError(409, "groupId belongs to another project, script, or script revision");
+  }
+  return groupId;
+}
+
+function structurallyDuplicateCandidate(input: CandidateStoreInput): PlanCandidateRow | null {
+  const signature = scriptMangaPlanStructureSignature(input.plan);
+  const rows = getRows<PlanCandidateRow>(
+    `SELECT * FROM script_manga_plan_candidates
+      WHERE project_id = ? AND script_id = ? AND script_revision_id = ? AND group_id = ? AND status != 'archived'
+      ORDER BY created_at ASC, id ASC`,
+    [input.projectId, input.scriptId, input.scriptRevisionId, input.groupId]
+  );
+  return rows.find((row) =>
+    scriptMangaPlanStructureSignature(parseCandidatePlan(row), parseOverrides(row)) === signature
+  ) ?? null;
+}
+
+/**
+ * 全候補経路で使う構造dedup。embedded生成はduplicateを残さず、外部importは同じactive行を
+ * 演出済みplanへupsertしてcandidate id/deep linkを安定させる。
+ */
+function storeCandidate(input: CandidateStoreInput, duplicateMode: "skip" | "upsert"): CandidateStoreResult {
+  // embedded生成はLLM awaitを跨ぐため、caller指定groupのownerをINSERT直前にも再検証する。
+  resolveCandidateGroupId(input.projectId, input.scriptId, input.scriptRevisionId, input.groupId);
+  const duplicate = structurallyDuplicateCandidate(input);
+  if (duplicate) {
+    if (duplicateMode === "skip") {
+      return { row: duplicate, imported: false, duplicateOf: duplicate.id };
+    }
+    if (duplicate.status !== "active") {
+      throw new HttpError(409, "A structurally identical candidate is already being adopted or adopted");
+    }
+    const existingProvenance = parseCandidateProvenance(duplicate);
+    const existingOverrides = parseOverrides(duplicate);
+    const isIdenticalReplay =
+      duplicate.profile === input.profile &&
+      duplicate.temperature === input.temperature &&
+      JSON.stringify(parseCandidatePlan(duplicate)) === JSON.stringify(input.plan) &&
+      JSON.stringify(existingProvenance) === JSON.stringify(input.provenance) &&
+      Object.keys(existingOverrides).length === 0;
+    if (isIdenticalReplay) {
+      return { row: duplicate, imported: false, duplicateOf: duplicate.id };
+    }
+    runSql(
+      `UPDATE script_manga_plan_candidates
+          SET profile = ?, temperature = ?, plan_json = ?, provenance_json = ?,
+              layout_overrides_json = NULL, edit_version = edit_version + 1
+        WHERE id = ? AND status = 'active'`,
+      [
+        input.profile,
+        input.temperature,
+        JSON.stringify(input.plan),
+        JSON.stringify(input.provenance),
+        duplicate.id
+      ]
+    );
+    return { row: requirePlanCandidate(duplicate.id), imported: false, duplicateOf: duplicate.id };
+  }
+  const id = createId("plan_cand");
+  runSql(
+    `INSERT INTO script_manga_plan_candidates
+       (id, project_id, script_id, script_revision_id, group_id, profile, temperature, plan_json, provenance_json, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+    [
+      id,
+      input.projectId,
+      input.scriptId,
+      input.scriptRevisionId,
+      input.groupId,
+      input.profile,
+      input.temperature,
+      JSON.stringify(input.plan),
+      JSON.stringify(input.provenance)
+    ]
+  );
+  return { row: requirePlanCandidate(id), imported: true, duplicateOf: null };
+}
+
+function optionalMetadata(value: unknown, field: string, maxLength: number): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") throw new HttpError(400, `${field} must be a string`);
+  const normalized = value.trim();
+  if (normalized.length > maxLength) throw new HttpError(400, `${field} is too long`);
+  return normalized || null;
+}
+
+/** validateProvidedScriptMangaPlanが正規化したplanへ、任意の注釈beat idだけ安全に戻す。 */
+function preserveProvidedSourceBeatIds(plan: ScriptMangaPlan, raw: unknown): ScriptMangaPlan {
+  if (!raw || typeof raw !== "object" || !Array.isArray((raw as { pages?: unknown }).pages)) return plan;
+  const rawPages = (raw as { pages: unknown[] }).pages;
+  for (let pageIndex = 0; pageIndex < plan.pages.length; pageIndex += 1) {
+    const rawPage = rawPages[pageIndex];
+    if (!rawPage || typeof rawPage !== "object" || !Array.isArray((rawPage as { panels?: unknown }).panels)) continue;
+    const rawPanels = (rawPage as { panels: unknown[] }).panels;
+    for (let panelIndex = 0; panelIndex < plan.pages[pageIndex]!.panels.length; panelIndex += 1) {
+      const rawPanel = rawPanels[panelIndex];
+      if (!rawPanel || typeof rawPanel !== "object") continue;
+      const rawIds = (rawPanel as { sourceBeatIds?: unknown }).sourceBeatIds;
+      if (!Array.isArray(rawIds)) continue;
+      const ids = rawIds.map((value) => typeof value === "string" ? value.trim() : "");
+      if (ids.length > 0 && ids.every(Boolean) && new Set(ids).size === ids.length) {
+        plan.pages[pageIndex]!.panels[panelIndex]!.sourceBeatIds = ids;
+      }
+    }
+  }
+  return plan;
+}
+
+/** 外部agentの演出済みplanを、明示されたlatest revisionのName Studio groupへimportする。 */
+export function importScriptMangaPlanCandidate(
+  projectId: string,
+  body: unknown
+): ImportScriptMangaPlanCandidateResponse {
+  const input = objectBody(body) as Partial<ImportScriptMangaPlanCandidateRequest> & Record<string, unknown>;
+  const scriptId = requiredString(input.scriptId, "scriptId");
+  const scriptRevisionId = requiredString(input.scriptRevisionId, "scriptRevisionId");
+  requireScript(projectId, scriptId);
+  const revision = latestRevision(scriptId);
+  if (revision.id !== scriptRevisionId) {
+    throw new HttpError(409, "scriptRevisionId is not the script's latest fixed revision");
+  }
+  const groupId = resolveCandidateGroupId(projectId, scriptId, scriptRevisionId, input.groupId);
+  const validated = validateProvidedScriptMangaPlan(
+    revision.doc,
+    input.plan,
+    (layoutTemplateId) => resolveLayoutTemplate(layoutTemplateId)?.panels.length ?? null
+  );
+  if (!validated) {
+    throw new HttpError(422, "External plan is invalid or does not preserve every dialogue exactly once");
+  }
+  const plan = preserveProvidedSourceBeatIds(validated, input.plan);
+  if (!plan.pages.every((page) => page.panels.every((panel) => panel.direction))) {
+    throw new HttpError(422, "External directed candidates must provide structured direction for every panel");
+  }
+  const profile = optionalMetadata(input.profile, "profile", 80);
+  const agent = optionalMetadata(input.agent, "agent", 160);
+  const model = optionalMetadata(input.model, "model", 240);
+  const notes = optionalMetadata(input.notes, "notes", 2000);
+  const external = {
+    ...(agent ? { agent } : {}),
+    ...(model ? { model } : {}),
+    ...(notes ? { notes } : {})
+  };
+  const stored = storeCandidate({
+    projectId,
+    scriptId,
+    scriptRevisionId,
+    groupId,
+    profile,
+    temperature: null,
+    plan,
+    provenance: {
+      origin: "external",
+      directorMode: "provided",
+      ...(profile ? { profile } : {}),
+      ...(Object.keys(external).length > 0 ? { external } : {})
+    }
+  }, "upsert");
+  return {
+    candidate: candidateView(stored.row),
+    imported: stored.imported,
+    duplicateOf: stored.duplicateOf
+  };
+}
+
 /** 候補一覧(最新 revision かつ非 archived のみ。stale 候補は採用できないため出さない)。 */
 export function listScriptMangaPlanCandidates(projectId: string, scriptId: string): ScriptMangaPlanCandidatesResponse {
   requireScript(projectId, scriptId);
@@ -176,16 +502,7 @@ export async function createScriptMangaPlanCandidates(
   requireScript(projectId, scriptId);
   const revision = latestRevision(scriptId);
   const count = Math.max(1, Math.min(6, Math.trunc(typeof input.count === "number" ? input.count : 3)));
-  let groupId = typeof input.groupId === "string" && input.groupId.trim() ? input.groupId.trim() : null;
-  if (groupId) {
-    const existing = getRow<{ script_id: string }>(
-      "SELECT script_id FROM script_manga_plan_candidates WHERE group_id = ? LIMIT 1",
-      [groupId]
-    );
-    if (existing && existing.script_id !== scriptId) throw new HttpError(400, "groupId belongs to another script");
-  } else {
-    groupId = createId("cand_group");
-  }
+  const groupId = resolveCandidateGroupId(projectId, scriptId, revision.id, input.groupId);
   const profiles = Array.isArray(input.profiles)
     ? input.profiles.filter((profile): profile is string => typeof profile === "string" && profile in PROFILE_INSTRUCTIONS)
     : [];
@@ -206,12 +523,6 @@ export async function createScriptMangaPlanCandidates(
     [groupId]
   )?.count ?? 0;
   const created: ScriptMangaPlanCandidateView[] = [];
-  let deterministicStored = existingCount > 0
-    ? Boolean(getRow(
-        "SELECT id FROM script_manga_plan_candidates WHERE group_id = ? AND json_extract(provenance_json, '$.pageNaming.mode') = 'deterministic'",
-        [groupId]
-      ))
-    : false;
   for (let index = 0; index < count; index += 1) {
     const serial = existingCount + index;
     const profile = profiles.length > 0 ? profiles[index % profiles.length]! : DEFAULT_PROFILE_CYCLE[serial % DEFAULT_PROFILE_CYCLE.length]!;
@@ -220,24 +531,26 @@ export async function createScriptMangaPlanCandidates(
       temperature,
       profileInstruction: PROFILE_INSTRUCTIONS[profile]
     });
-    if (n1.pageNaming.mode === "deterministic") {
-      // LLM全滅時は全候補が同一の決定的プランになる。グループに1つだけ残す。
-      if (deterministicStored) continue;
-      deterministicStored = true;
+    if (latestRevision(scriptId).id !== revision.id) {
+      throw new HttpError(409, "Script revision changed while plan candidates were being generated; retry on the latest revision");
     }
-    const id = createId("plan_cand");
-    runSql(
-      `INSERT INTO script_manga_plan_candidates
-         (id, project_id, script_id, script_revision_id, group_id, profile, temperature, plan_json, provenance_json, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
-      [
-        id, projectId, scriptId, revision.id, groupId,
-        profile, temperature,
-        JSON.stringify(n1.plan),
-        JSON.stringify({ pageNaming: n1.pageNaming, profile, temperature })
-      ]
-    );
-    created.push(candidateView(requirePlanCandidate(id)));
+    const stored = storeCandidate({
+      projectId,
+      scriptId,
+      scriptRevisionId: revision.id,
+      groupId,
+      profile,
+      temperature,
+      plan: n1.plan,
+      provenance: {
+        origin: "embedded",
+        directorMode: "embedded",
+        pageNaming: n1.pageNaming,
+        profile,
+        temperature
+      }
+    }, "skip");
+    if (stored.imported) created.push(candidateView(stored.row));
   }
   return candidateEnvelope(created, revision.id, revision.doc);
 }
@@ -245,6 +558,9 @@ export async function createScriptMangaPlanCandidates(
 /** 候補の破棄(archive)。採用済みは破棄できるが履歴(adopted_run_id)は残る。 */
 export function archiveScriptMangaPlanCandidate(candidateId: string): { archived: true; id: string } {
   const row = requirePlanCandidate(candidateId);
+  if (row.status === "adopting") {
+    throw new HttpError(409, "Candidate is currently being adopted and cannot be archived");
+  }
   runSql("UPDATE script_manga_plan_candidates SET status = 'archived' WHERE id = ?", [row.id]);
   return { archived: true, id: row.id };
 }
@@ -280,7 +596,13 @@ export function adoptablePlanCandidate(
  * set-layout を 409 にして「受理されたように見えて run に反映されない」lost update を防ぐ。
  */
 export function beginPlanCandidateAdoption(candidateId: string): void {
-  runSql("UPDATE script_manga_plan_candidates SET status = 'adopting' WHERE id = ?", [candidateId]);
+  const claimed = runSql(
+    "UPDATE script_manga_plan_candidates SET status = 'adopting' WHERE id = ? AND status = 'active'",
+    [candidateId]
+  ) as { changes?: number };
+  if (claimed.changes !== 1) {
+    throw new HttpError(409, "Plan candidate is no longer active for adoption");
+  }
 }
 
 /** 採用失敗時の巻き戻し(adopting → active)。 */
@@ -290,10 +612,14 @@ export function revertPlanCandidateAdoption(candidateId: string): void {
 
 /** 採用成立の記録(run 作成成功後に呼ぶ)。 */
 export function markPlanCandidateAdopted(candidateId: string, runId: string): void {
-  runSql(
-    "UPDATE script_manga_plan_candidates SET status = 'adopted', adopted_run_id = ? WHERE id = ?",
+  const completed = runSql(
+    `UPDATE script_manga_plan_candidates SET status = 'adopted', adopted_run_id = ?
+      WHERE id = ? AND status = 'adopting'`,
     [runId, candidateId]
-  );
+  ) as { changes?: number };
+  if (completed.changes !== 1) {
+    throw new HttpError(409, "Plan candidate adoption claim was lost before completion");
+  }
 }
 
 /**

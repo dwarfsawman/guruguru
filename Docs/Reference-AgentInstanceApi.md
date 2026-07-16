@@ -26,6 +26,19 @@ bun run agent:cli -- --base-url http://127.0.0.1:5199 context --project-id <proj
 # 任意のGURUGURU APIを操作する。大きいrequestはrepository外のJSONファイルを使う
 bun run agent:cli -- --base-url http://127.0.0.1:5199 api POST /api/projects/<project-id>/script-manga-plan-candidates --json-file <request.json>
 
+# 組み込みLLM/VLMの実可用性から、組み込み／外部エージェント経路を選ぶ
+bun run agent:cli -- --base-url http://127.0.0.1:5199 route
+
+# 外部planを固定revisionのName Studio候補へ取り込み、隔離snapshotで実materialize相当を検査する
+bun run agent:cli -- --base-url http://127.0.0.1:5199 candidate import --project-id <project-id> --script-id <script-id> --revision-id <revision-id> --plan-file <plan.json> --group-id <group-id>
+bun run agent:cli -- --base-url http://127.0.0.1:5199 candidate preflight --candidate-id <candidate-id> --template-id <template-id> --json-file <run-settings.json>
+
+# 人間専用ゲートでない場合はGUIボタンを介さず採用し、candidateとrunを同じ応答で受け取る
+bun run agent:cli -- --base-url http://127.0.0.1:5199 candidate adopt --candidate-id <candidate-id> --template-id <template-id> --json-file <run-settings.json>
+
+# 外部visionエージェントの正式な候補監査結果を登録する
+bun run agent:cli -- --base-url http://127.0.0.1:5199 audit record --task-id <task-id> --json-file <audit-result.json>
+
 # 無人運転または明示的な監視依頼でだけ待つ(attended人間ゲートでは使わない)
 bun run agent:cli -- --base-url http://127.0.0.1:5199 wait candidates --project-id <project-id> --script-id <script-id> --status adopted --interval 15 --timeout 0
 bun run agent:cli -- --base-url http://127.0.0.1:5199 wait run --run-id <run-id> --field approvalStatus --equals approved --interval 15 --timeout 0
@@ -50,6 +63,38 @@ bareなインスタンスURLを人間が開いた場合も、Project一覧は`GE
 「ネーム選択待ち」「演出ネーム・参照承認待ち」「漫画生成中」「画像候補の確認待ち」「完了」等で表示する。
 「進捗を開く」は同じproject/script/revision/candidateまたはrun/planを含む正規URLへ移動する。
 これはDBへ保存済みのGURUGURU状態を示すもので、まだ応答が完了していない単発CLIプロセス自体の標準出力ではない。
+
+### 漫画エージェント専用API
+
+| Method / path | 用途 |
+| --- | --- |
+| `GET /api/llm/status` | `/models`疎通に加えて設定modelの列挙有無を`modelListed`で返す。`ok:false`なら外部plan経路 |
+| `GET /api/vlm-audit/status` | 組み込みVLMのready/on-demand/unavailable判定。`ok:false`なら外部監査経路 |
+| `POST /api/projects/:projectId/script-manga-plan-candidates/import` | `{scriptId,scriptRevisionId,plan,groupId?,profile?,agent?,model?,notes?}`を固定revision候補へimport。構造重複は既存候補へupsert |
+| `POST /api/script-manga-plan-candidates/:candidateId/preflight` | 隔離DBで実レタリングと全panel preflightを検査。成功した組み込み候補だけ検査済み演出planへ固定する |
+| `POST /api/script-manga-plan-candidates/:candidateId/adopt` | full preflightを自動再実行して全ページを採用。初回`{candidate,run,preflight}`、再送`{candidate,run}`。外部／固定済み候補は組み込みLLMを呼ばない |
+| `POST /api/script-manga-tasks/:taskId/audit-results` | manual runの候補assetへ外部監査reportをupsertし`{report,run}`を返す。明示FAIL assetはselect拒否 |
+
+`preflight`はmaterialize失敗もHTTP 200で`ok:false`と`issues`を返す。CLIはこれをexit code 2へ変換するため、エージェントはHTTP例外の文字列解析ではなく構造化issueを修復ループへ渡せる。reportの`materializationIdsEphemeral:true`が示すtask/page/panel IDは破棄済みsnapshot内の一時IDで、後続audit/selectには使わない。`skippedChecks`のReference Set・画像生成・画像監査は採用後の各gateで行う。
+
+成功した組み込み候補は検査した演出planへ固定され、`candidateDirectionFrozen:true`、新しい`candidateEditVersion`、演出条件hash/modelが返る。失敗時はcandidate不変である。監督LLMのbatch fallbackは成功扱いにせず503となる。固定済み組み込み候補へ別のcharacter bible、style、密度条件を渡すと409になり、検査時と同じ条件を使う必要がある。
+
+`adopt`は同じ設定でpreflightを必ず再実行し、失敗時はHTTP 422の`{error,preflight}`を返す。CLIはこのresponse全体を構造化JSONでstderrへ出しexit code 2にする。成功時の正は同じ応答内の`candidate.status:"adopted"`と`candidate.adoptedRunId === run.id`であり、GUIクリックや後続pollから成立を推測しない。汎用run作成APIは`planCandidateId`を拒否し、候補採用をこのgateへ集約する。
+
+外部監査のrequestは次の形に限定され、raw prompt・画像data・API keyなどの余剰項目は保存しない。同じ`assetId`の再登録はreportを置換する。
+
+```json
+{
+  "assetId": "asset_...",
+  "passed": false,
+  "score": 0.35,
+  "checks": { "visualIdentity": "fail", "actionAlignment": "pass", "fakeText": "pass" },
+  "violations": ["planned character identity does not match"],
+  "reviewer": "codex",
+  "model": "external-vision-model",
+  "notes": "regenerate this candidate"
+}
+```
 
 ### ページ共有(ネームスタジオの人間ゲート)
 

@@ -24,6 +24,40 @@ export interface ScriptMangaVlmAuditView {
   error: string | null;
 }
 
+export interface RecordExternalScriptMangaTaskAuditRequest {
+  assetId: string;
+  passed: boolean;
+  score?: number;
+  checks?: Record<string, "pass" | "fail">;
+  violations?: string[];
+  reviewer: string;
+  model: string;
+  notes?: string;
+}
+
+export interface ScriptMangaExternalAuditReport {
+  assetId: string;
+  passed: boolean;
+  score?: number;
+  checks: Record<string, "pass" | "fail">;
+  violations: string[];
+  reviewer: string;
+  model: string;
+  notes: string;
+  evaluatedAt: string;
+}
+
+export interface ScriptMangaExternalAuditView {
+  state: "completed";
+  reports: ScriptMangaExternalAuditReport[];
+  updatedAt: string;
+}
+
+export interface RecordExternalScriptMangaTaskAuditResponse {
+  report: ScriptMangaExternalAuditReport;
+  run: ScriptMangaRunView;
+}
+
 export interface ScriptMangaUiSettings {
   templateId: string;
   planningMode: ScriptMangaPlanningMode;
@@ -60,6 +94,8 @@ export interface PrepareScriptMangaRunRequest extends ScriptMangaUiSettings {
 
 /** adopting = 採用処理中(監督LLM実行を挟むため数分かかる)。この間の set-layout は 409。 */
 export type ScriptMangaPlanCandidateStatus = "active" | "adopting" | "adopted" | "archived";
+export type ScriptMangaPlanCandidateOrigin = "embedded" | "external";
+export type ScriptMangaPlanCandidateDirectorMode = "embedded" | "provided";
 
 /** 候補一覧・生成応答で返す軽量ビュー(rawOutput 等の重い provenance は含めない)。 */
 export interface ScriptMangaPlanCandidateView {
@@ -70,6 +106,10 @@ export interface ScriptMangaPlanCandidateView {
   groupId: string;
   profile: string | null;
   temperature: number | null;
+  /** 旧server応答には無いためoptional。現行serverは常に embedded / external を返す。 */
+  origin?: ScriptMangaPlanCandidateOrigin;
+  /** provided は演出を固定済みで、originを問わず採用時に組み込み監督LLMを再実行しない候補。 */
+  directorMode?: ScriptMangaPlanCandidateDirectorMode;
   status: ScriptMangaPlanCandidateStatus;
   adoptedRunId: string | null;
   /** 不変の基礎プラン(LLM/パッカーの生成結果)。表示は applyLayoutOverrides(plan, layoutOverrides) を使う。 */
@@ -135,6 +175,88 @@ export interface CreateScriptMangaPlanCandidatesRequest {
   targetPageCount?: number;
   panelsPerPage?: number;
   maxDialoguesPerPanel?: number;
+}
+
+export interface ImportScriptMangaPlanCandidateRequest {
+  scriptId: string;
+  /** raceを避けるため必須。latest revisionと一致しないimportは409。 */
+  scriptRevisionId: string;
+  /** 外部agentが固定revisionに対して作った、全コマ演出済みのplan。 */
+  plan: ScriptMangaPlan;
+  /** 既存比較groupへupsertする。省略時は新しいgroupを作る。 */
+  groupId?: string;
+  /** Name Studio上の案名/方針(readability / cinematic / tempo等)。 */
+  profile?: string;
+  /** provenance表示・監査用。候補plan本体へは混ぜない。 */
+  agent?: string;
+  model?: string;
+  notes?: string;
+}
+
+export interface ImportScriptMangaPlanCandidateResponse {
+  candidate: ScriptMangaPlanCandidateView;
+  /** true=新規INSERT、false=同一groupの構造重複行を更新したupsert。 */
+  imported: boolean;
+  /** 構造重複をupsertした既存candidate id。新規INSERT時はnull。 */
+  duplicateOf: string | null;
+}
+
+export type ScriptMangaCandidatePreflightRequest = Pick<PrepareScriptMangaRunRequest, "templateId"> &
+  Partial<Omit<
+    PrepareScriptMangaRunRequest,
+    "scriptId" | "planCandidateId" | "templateId" | "predecessorRunId" | "successorPlan"
+  >> & {
+    providerId?: string;
+    characterBible?: string;
+    stylePrompt?: string;
+    maxElementsPerPanel?: number;
+  };
+
+export interface ScriptMangaCandidatePreflightIssueView {
+  stage: string;
+  code: string;
+  severity: "error" | "warning";
+  message: string;
+  taskId?: string;
+  pageId?: string;
+  pageIndex?: number;
+  panelId?: string;
+  dialogueLineId?: string;
+  characterCount?: number;
+}
+
+export interface ScriptMangaCandidatePreflightReportView {
+  ok: boolean;
+  candidateId: string;
+  projectId: string;
+  scriptId: string;
+  scriptRevisionId: string;
+  candidateEditVersion: number;
+  candidateDirectionFixed: boolean;
+  candidateDirectionFrozen: boolean;
+  candidateDirectionInputHash: string | null;
+  candidateDirectionModel: string | null;
+  skippedChecks: Array<"reference-sets" | "image-generation" | "image-audit">;
+  materializationIdsEphemeral: true;
+  checkedPanelTaskCount: number;
+  failedPanelTaskCount: number;
+  panelReports: unknown[];
+  issues: ScriptMangaCandidatePreflightIssueView[];
+  failure: { kind: string; code: string; message: string; statusCode: number | null } | null;
+}
+
+export type AdoptScriptMangaPlanCandidateRequest = ScriptMangaCandidatePreflightRequest;
+
+export interface AdoptScriptMangaPlanCandidateResponse {
+  candidate: ScriptMangaPlanCandidateView;
+  run: ScriptMangaRunView;
+  /** Present on a fresh adoption; omitted on an idempotent replay. */
+  preflight?: ScriptMangaCandidatePreflightReportView;
+}
+
+export interface AdoptScriptMangaPlanCandidateFailure {
+  error: string;
+  preflight: ScriptMangaCandidatePreflightReportView;
 }
 
 export interface ScriptMangaTaskView {

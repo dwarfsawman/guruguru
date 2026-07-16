@@ -1,5 +1,10 @@
 # Plan: ネームスタジオV5 — パイプライン一本化と、ネームを主役にしたUI
 
+> **履歴文書**: 現行の候補採用・人間ゲート・エージェント運用契約は
+> [Reference-ScriptMangaAgentWorkflow.md](Reference-ScriptMangaAgentWorkflow.md) と
+> [Reference-AgentInstanceApi.md](Reference-AgentInstanceApi.md) を正とする。本文中の汎用run API＋
+> `planCandidateId`、常時人間専用の採用、attended gateでの定期pollは現在の挙動ではない。
+
 > 状態: **全フェーズ実装完了(2026-07-16、feature/name-studio-v5 → main)**。
 > 実装コミット: P1a `c01eedf` / P1b `61e616f` / P1c `62d436e` / P2 (P2コミット) / P4 server `d870703` /
 > P4 client / P3a `f60cba2` / P5 `05ae2b2`。テスト1083件+check緑。

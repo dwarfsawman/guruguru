@@ -1,5 +1,10 @@
 # Plan: ネームV4 — LLMコマ割りの強化(ビート層・複数候補比較・棒人間ControlNet)
 
+> **履歴文書**: 現行の候補採用・人間ゲート・エージェント運用契約は
+> [Reference-ScriptMangaAgentWorkflow.md](Reference-ScriptMangaAgentWorkflow.md) と
+> [Reference-AgentInstanceApi.md](Reference-AgentInstanceApi.md) を正とする。本文中の汎用run API＋
+> `planCandidateId`、常時人間専用の採用、attended gateでの定期pollは現在の挙動ではない。
+
 > 状態: **P1〜P4・P6 実装完了(2026-07-14)**。P5(数理エンジン)は計画どおり保留。
 > 実装コミット: P1 `c623f6a` / P2 `714245e` / P3 `ba1e7b1` / P4 `3d66290` / P6 `9cd870e`(feature/manga-name-v4)。
 > 前提仕様: [Plan-MangaQualityV3.md](Plan-MangaQualityV3.md)(ネーム規格v3、実装済み)、[Feature-MangaPlanV2.md](Feature-MangaPlanV2.md)、[Reference-MangaCompositions.md](Reference-MangaCompositions.md)。

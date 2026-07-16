@@ -22,7 +22,10 @@ import type {
   ScriptMangaVlmAuditView,
   VlmAuditServiceStatus
 } from "../../shared/scriptMangaApi";
-import type { ScriptMangaPagePlan } from "../../shared/scriptMangaPlan";
+import {
+  scriptMangaPlanStructureSignature as sharedPlanStructureSignature,
+  type ScriptMangaPagePlan
+} from "../../shared/scriptMangaPlan";
 import { resolveScriptMangaLayout } from "../../shared/layoutPresets";
 import { renderPageWireframeSvg, type WireframePanelInfo } from "../../shared/pageLayoutSvg";
 import { escapeAttr, escapeHtml } from "../format";
@@ -192,6 +195,52 @@ export function scriptMangaVlmAuditFromScores(scores: unknown): ScriptMangaVlmAu
   return { state, reports, error };
 }
 
+interface ScriptMangaExternalAuditReportView {
+  assetId: string;
+  passed: boolean;
+  score: number | null;
+  checks: Record<string, "pass" | "fail">;
+  violations: string[];
+  reviewer: string;
+  model: string;
+  notes: string;
+  evaluatedAt: string;
+}
+
+/** DB由来のunknown scoresから、外部エージェント監査の表示に必要な項目だけを取り出す。 */
+export function scriptMangaExternalAuditFromScores(scores: unknown): ScriptMangaExternalAuditReportView[] {
+  const scoreObject = jsonRecord(scores);
+  const audit = jsonRecord(scoreObject?.externalAudit);
+  if (!audit || audit.state !== "completed" || !Array.isArray(audit.reports)) return [];
+  return audit.reports.slice(0, 20).flatMap((rawReport) => {
+    const report = jsonRecord(rawReport);
+    if (!report || typeof report.assetId !== "string" || !report.assetId.trim() || typeof report.passed !== "boolean") {
+      return [];
+    }
+    const checks: Record<string, "pass" | "fail"> = {};
+    for (const [name, result] of Object.entries(jsonRecord(report.checks) ?? {}).slice(0, 16)) {
+      if ((result === "pass" || result === "fail") && name.trim()) checks[name.trim().slice(0, 80)] = result;
+    }
+    const violations = Array.isArray(report.violations)
+      ? report.violations.flatMap((value) => typeof value === "string" && value.trim() ? [value.trim().slice(0, 300)] : []).slice(0, 32)
+      : [];
+    const score = typeof report.score === "number" && Number.isFinite(report.score)
+      ? Math.min(1, Math.max(0, report.score))
+      : null;
+    return [{
+      assetId: report.assetId.trim(),
+      passed: report.passed,
+      score,
+      checks,
+      violations,
+      reviewer: typeof report.reviewer === "string" ? report.reviewer.trim().slice(0, 160) : "",
+      model: typeof report.model === "string" ? report.model.trim().slice(0, 160) : "",
+      notes: typeof report.notes === "string" ? report.notes.trim().slice(0, 2_000) : "",
+      evaluatedAt: typeof report.evaluatedAt === "string" ? report.evaluatedAt.trim().slice(0, 80) : ""
+    }];
+  });
+}
+
 function renderVlmServiceStatus(status: VlmAuditServiceStatus | null, auditMode: ScriptMangaAuditMode): string {
   if (auditMode === "manual") {
     return `<span class="script-manga-vlm-service is-manual">内蔵VLM OFF · 外部/手動レビュー</span>`;
@@ -217,7 +266,31 @@ function renderVlmServiceStatus(status: VlmAuditServiceStatus | null, auditMode:
 
 function renderCandidateVlmAudit(task: ScriptMangaTaskView, assetId: string, auditMode: ScriptMangaAuditMode): string {
   if (auditMode === "manual") {
-    return `<div class="script-manga-vlm-result is-manual"><strong>外部エージェント / 人間レビュー</strong><span>内蔵VLM監査なし</span></div>`;
+    const report = scriptMangaExternalAuditFromScores(task.scores).find((item) => item.assetId === assetId);
+    if (!report) {
+      return `<div class="script-manga-vlm-result is-manual"><strong>外部エージェント / 人間レビュー</strong><span>監査結果は未登録</span></div>`;
+    }
+    const checkEntries = Object.entries(report.checks);
+    const scoreLabel = report.score === null ? "" : ` ${Math.round(report.score * 100)}%`;
+    const attribution = [report.reviewer, report.model].filter(Boolean).join(" · ");
+    return `
+      <div class="script-manga-vlm-result ${report.passed ? "is-pass" : "is-fail"}">
+        <div class="script-manga-vlm-score">
+          <strong>外部監査${scoreLabel}</strong>
+          <span>${report.passed ? "PASS" : "FAIL"}</span>
+        </div>
+        ${checkEntries.length > 0 ? `
+          <div class="script-manga-vlm-checks">
+            ${checkEntries.map(([name, result]) => `<span class="is-${result}">${escapeHtml(name)}: ${result.toUpperCase()}</span>`).join("")}
+          </div>
+        ` : ""}
+        ${report.violations.length > 0
+          ? `<ul class="script-manga-vlm-violations">${report.violations.map((violation) => `<li>${escapeHtml(violation)}</li>`).join("")}</ul>`
+          : `<p class="script-manga-vlm-clean">${report.passed ? "違反なし" : "違反詳細は未登録"}</p>`}
+        ${report.notes ? `<p class="script-manga-vlm-clean">${escapeHtml(report.notes)}</p>` : ""}
+        ${attribution ? `<span class="script-manga-vlm-model" title="${escapeAttr(attribution)}">${escapeHtml(attribution)}</span>` : ""}
+      </div>
+    `;
   }
   const audit = scriptMangaVlmAuditFromScores(task.scores);
   if (!audit) {
@@ -385,7 +458,7 @@ export type PlanCandidatesViewProps = Pick<
 /**
  * ページの構造署名(候補間diffの対応付け)。ページ位置・コマ境界・スケール・レイアウトを
  * 保つため、同じbeat列でもsplit/mergeや別ページへの移動を同一扱いしない。
- * sourceBeatIds を持たない候補(旧形式)は source element 列で代用する。
+ * optional sourceBeatIds は注釈器の有無で変わるため使わず、source/dialogue割当を正とする。
  */
 export function candidatePageSignature(page: ScriptMangaPagePlan): string {
   return JSON.stringify([
@@ -394,7 +467,9 @@ export function candidatePageSignature(page: ScriptMangaPagePlan): string {
     page.turnHook ?? "",
     page.pageIntent?.trim() ?? "",
     page.panels.map((panel) => [
-      panel.sourceBeatIds?.length ? ["b", ...panel.sourceBeatIds] : ["e", ...panel.sourceElementIds],
+      panel.sceneIndex,
+      panel.sourceElementIds,
+      panel.dialogueOrderIndexes,
       panel.visualScale ?? ""
     ])
   ]);
@@ -402,22 +477,11 @@ export function candidatePageSignature(page: ScriptMangaPagePlan): string {
 
 /**
  * 候補全体の物語構造signature。pageIntentの言い換えや既定layoutは比較案を増やさず、
- * ページ/コマ境界・beat/element割当・スケール・めくり、または人間のlayout overrideが
+ * ページ/コマ境界・source/dialogue割当・スケール・めくり、または人間のlayout overrideが
  * 違う時だけ別案とする。
  */
 export function candidatePlanStructureSignature(candidate: ScriptMangaPlanCandidateView): string {
-  return JSON.stringify([
-    candidate.plan.pages.map((page) => [
-      page.index,
-      page.turnHook ?? "",
-      page.panels.map((panel) => [
-        panel.sourceBeatIds?.length ? ["b", ...panel.sourceBeatIds] : ["e", ...panel.sourceElementIds],
-        panel.visualScale ?? ""
-      ])
-    ]),
-    // 人間がフリップした別レイアウトは制作上の選択なので、同じ構造でも隠さない。
-    Object.entries(candidate.layoutOverrides).sort(([a], [b]) => Number(a) - Number(b))
-  ]);
+  return sharedPlanStructureSignature(candidate.plan, candidate.layoutOverrides);
 }
 
 /** 候補間で「全候補に存在するページ署名」を除いた差分ページ署名集合を返す。候補1件なら空。 */

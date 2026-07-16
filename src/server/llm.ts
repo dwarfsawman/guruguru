@@ -38,45 +38,72 @@ export async function getLlmStatus(): Promise<LlmStatus> {
       ok: false,
       state: "disconnected",
       baseUrl: settings.baseUrl,
+      model: settings.model,
+      modelListed: null,
       checkedAt: new Date().toISOString(),
       error: "未設定"
     };
   }
   try {
-    await llmFetchJson(settings, "/models", {}, 1500);
+    const models = await llmFetchJson(settings, "/models", {}, 1500);
+    const modelListed = configuredModelListed(models, settings.model);
     return {
-      ok: true,
+      ok: modelListed !== false,
       state: "connected",
       baseUrl: settings.baseUrl,
-      checkedAt: new Date().toISOString()
+      model: settings.model,
+      modelListed,
+      checkedAt: new Date().toISOString(),
+      ...(modelListed === false ? { error: `Configured model is not listed by the server: ${settings.model}` } : {})
     };
   } catch (error) {
     return {
       ok: false,
       state: "disconnected",
       baseUrl: settings.baseUrl,
+      model: settings.model,
+      modelListed: null,
       checkedAt: new Date().toISOString(),
       error: errorMessage(error)
     };
   }
 }
 
-export async function testLlmConnection() {
+export async function testLlmConnection(): Promise<{
+  ok: boolean;
+  baseUrl: string;
+  model: string;
+  modelListed: boolean | null;
+  error?: string;
+}> {
   const settings = getLlmSettings();
   if (!isLlmConfigured(settings)) {
-    return { ok: false, baseUrl: settings.baseUrl, error: "Base URLとModelを入力してください。" };
+    return {
+      ok: false,
+      baseUrl: settings.baseUrl,
+      model: settings.model,
+      modelListed: null,
+      error: "Base URLとModelを入力してください。"
+    };
   }
   try {
     const models = await llmFetchJson(settings, "/models", {}, 8000);
-    const modelIds = extractModelIds(models);
+    const modelListed = configuredModelListed(models, settings.model);
     return {
-      ok: true,
+      ok: modelListed !== false,
       baseUrl: settings.baseUrl,
       model: settings.model,
-      modelListed: modelIds.length === 0 ? null : modelIds.includes(settings.model)
+      modelListed,
+      ...(modelListed === false ? { error: `Configured model is not listed by the server: ${settings.model}` } : {})
     };
   } catch (error) {
-    return { ok: false, baseUrl: settings.baseUrl, error: errorMessage(error) };
+    return {
+      ok: false,
+      baseUrl: settings.baseUrl,
+      model: settings.model,
+      modelListed: null,
+      error: errorMessage(error)
+    };
   }
 }
 
@@ -183,6 +210,13 @@ function extractModelIds(response: unknown): string[] {
   return data
     .map((item) => (item && typeof item === "object" ? (item as { id?: unknown }).id : undefined))
     .filter((id): id is string => typeof id === "string");
+}
+
+function configuredModelListed(response: unknown, configuredModel: string): boolean | null {
+  const data = (response as { data?: unknown })?.data;
+  // OpenAI互換のdata配列を明示したserverは、空配列も「利用可能modelなし」という確定情報。
+  if (!Array.isArray(data)) return null;
+  return extractModelIds(response).includes(configuredModel);
 }
 
 /** エラーボディを API/ログへ載せても問題ない長さへ切り詰める(丸ごと保存すると巨大化するため)。 */

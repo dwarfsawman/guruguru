@@ -1,5 +1,10 @@
 # Plan: 漫画品質V3 — Fountain→商業品質漫画の強化計画
 
+> **履歴文書**: 現行の候補採用・人間ゲート・エージェント運用契約は
+> [Reference-ScriptMangaAgentWorkflow.md](Reference-ScriptMangaAgentWorkflow.md) と
+> [Reference-AgentInstanceApi.md](Reference-AgentInstanceApi.md) を正とする。本文中の常時人間専用の採用は
+> 現在の挙動ではなく、明示委任された外部エージェントは専用adopt APIを使用できる。
+
 > 状態: P1〜P5実装・sandbox実機検証済み(2026-07-12)。結果は [ExperimentLog-AutoManga-2026-07-12.md](ExperimentLog-AutoManga-2026-07-12.md) を参照。
 
 ## 目的
