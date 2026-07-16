@@ -1,4 +1,4 @@
-import type { DialoguePolicy, MangaPlanV2, MangaPlanValidationReport } from "./mangaPlanV2";
+import type { DialoguePolicy, MangaPlanV2, MangaPlanValidationReport, MangaShotSize } from "./mangaPlanV2";
 import type { ScriptMangaReferenceSnapshot } from "./referenceSets";
 import type { ScriptMangaPlan } from "./scriptMangaPlan";
 import type { InpaintArea, MaskedContent } from "./types";
@@ -48,15 +48,18 @@ export interface PrepareScriptMangaRunRequest extends ScriptMangaUiSettings {
   allowReferenceFallback: false;
   /** ネームv4 D3: 採用するプラン候補。指定時は planningMode を無視して候補プランで run を作る。 */
   planCandidateId?: string;
+  /** V5 D5: 採用時の楽観ロック(候補の editVersion)。フリップとの競合を採用開始時に検出する。 */
+  expectedCandidateVersion?: number;
   /** 変更前の採用済みコマを完全一致時だけ再利用する predecessor run。 */
   predecessorRunId?: string;
   /** predecessor の固定revisionを引き継いで編集した完全な MangaPlanV2。 */
   successorPlan?: MangaPlanV2;
 }
 
-// --- プラン候補(ネームv4 D3) ---
+// --- プラン候補(ネームv4 D3 / V5 D5) ---
 
-export type ScriptMangaPlanCandidateStatus = "active" | "adopted" | "archived";
+/** adopting = 採用処理中(監督LLM実行を挟むため数分かかる)。この間の set-layout は 409。 */
+export type ScriptMangaPlanCandidateStatus = "active" | "adopting" | "adopted" | "archived";
 
 /** 候補一覧・生成応答で返す軽量ビュー(rawOutput 等の重い provenance は含めない)。 */
 export interface ScriptMangaPlanCandidateView {
@@ -69,13 +72,48 @@ export interface ScriptMangaPlanCandidateView {
   temperature: number | null;
   status: ScriptMangaPlanCandidateStatus;
   adoptedRunId: string | null;
+  /** 不変の基礎プラン(LLM/パッカーの生成結果)。表示は applyLayoutOverrides(plan, layoutOverrides) を使う。 */
   plan: ScriptMangaPlan;
+  /** 人間のページ別レイアウト選択(pageIndex → layoutTemplateId)。基礎プランは書き換えない。 */
+  layoutOverrides: Record<number, string>;
+  /** 楽観的ロック用。set-layout/採用の expectedVersion に渡す。 */
+  editVersion: number;
   pageNaming: {
-    mode: "beats" | "panels" | "deterministic";
+    mode: "beats" | "deterministic";
     fallback: boolean;
     beatAnnotatorFallback?: boolean;
   } | null;
   createdAt: string;
+}
+
+/** V5 D5: ページ別レイアウトフリップ(本計画唯一の新エンドポイント)。 */
+export interface SetCandidateLayoutRequest {
+  pageIndex: number;
+  layoutTemplateId: string;
+  expectedVersion: number;
+}
+
+export interface SetCandidateLayoutResponse {
+  version: number;
+  candidate: ScriptMangaPlanCandidateView;
+}
+
+// --- 演出ネームの差分編集(V5 D6) ---
+
+/**
+ * スタジオ用のホワイトリスト差分編集。完全なV2を送り返さない(ライブ更新+エージェント併走で
+ * dialogueSnapshots/provenance まで lost update するため)。完全V2の PATCH は successor/provided
+ * 系ツール向けにそのまま残る。
+ */
+export type NamePlanEdit =
+  | { kind: "page"; pageIndex: number; pageIntent: string }
+  | { kind: "panel"; panelId: string; shotSize?: MangaShotSize; shotAngle?: string; compositionIntent?: string; promptBase?: string }
+  | { kind: "cast"; panelId: string; characterId: string; expression?: string; action?: string };
+
+export interface NamePlanEditRequest {
+  /** 楽観ロック(plan の editVersion。plan_json への全書き込みで加算される内容バージョン)。 */
+  expectedVersion: number;
+  edits: NamePlanEdit[];
 }
 
 export interface ScriptMangaPlanCandidatesResponse {
@@ -154,6 +192,8 @@ export interface ScriptMangaRunView {
   auditMode: ScriptMangaAuditMode;
   lastError: unknown;
   plan: MangaPlanV2 | null;
+  /** V5 D6: plan の editVersion(差分編集の expectedVersion に渡す)。 */
+  planEditVersion: number | null;
   validation: MangaPlanValidationReport | null;
   tasks: ScriptMangaTaskView[];
   createdAt: string;
@@ -179,6 +219,8 @@ export interface ScriptMangaPlanView {
   status: string;
   plan: MangaPlanV2;
   validation: MangaPlanValidationReport;
+  /** V5 D6: 差分編集の楽観ロック用(plan_json への全書き込みで加算)。 */
+  editVersion: number;
   createdAt: string;
   updatedAt: string;
   approvedAt: string | null;

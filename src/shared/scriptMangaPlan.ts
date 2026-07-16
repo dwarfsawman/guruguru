@@ -1,6 +1,41 @@
 import type { FountainDoc, FountainElement } from "./fountain";
 import { scriptMangaLayoutCandidates } from "./layoutPresets";
-import type { MangaPageTurnHook, MangaPanelImportance } from "./mangaPlanV2";
+import { type MangaPageTurnHook, type MangaVisualScale, normalizeLegacyVisualScale } from "./mangaPlanV2";
+
+/**
+ * 人間のページ別レイアウト選択(V5 D5)を不変の基礎プランへ適用した「実効プラン」を返す。
+ * 基礎プランは書き換えない(undo/リセット・生成案と人間修正の区別のため)。
+ */
+export function applyLayoutOverrides(
+  plan: ScriptMangaPlan,
+  overrides: Record<number, string> | undefined
+): ScriptMangaPlan {
+  if (!overrides || Object.keys(overrides).length === 0) return plan;
+  return {
+    ...plan,
+    pages: plan.pages.map((page) => {
+      const override = overrides[page.index];
+      return override && override !== page.layoutTemplateId ? { ...page, layoutTemplateId: override } : page;
+    })
+  };
+}
+
+/**
+ * 永続 candidate plan のparse直後に呼ぶ入力adapter(V5 D1)。旧語彙(importance)しか持たない
+ * コマへ visualScale を補完する(in-place)。
+ */
+export function normalizeScriptMangaPlanScales(plan: ScriptMangaPlan): ScriptMangaPlan {
+  for (const page of plan.pages) {
+    for (const panel of page.panels) {
+      if (!panel.visualScale) {
+        // 旧語彙の importance は型からは削除済みだが、永続JSONには残っている。
+        const scale = normalizeLegacyVisualScale({ importance: (panel as { importance?: unknown }).importance });
+        if (scale) panel.visualScale = scale;
+      }
+    }
+  }
+  return plan;
+}
 
 export interface ScriptMangaPanelDirection {
   shot: string;
@@ -28,8 +63,8 @@ export interface ScriptMangaPanelPlan {
   sourceText: string;
   dialogueOrderIndexes: number[];
   direction?: ScriptMangaPanelDirection;
-  /** N1ページネームのコマ重み(ネームv4 D1)。決定的プランナーでは未設定。 */
-  importance?: MangaPanelImportance;
+  /** 解決済みコマスケール(ネームスタジオV5 D1)。旧 importance enum の後継。旧経路では未設定。 */
+  visualScale?: MangaVisualScale;
   /** ビート化N1(ネームv4 D2)がこのコマへ割り当てた注釈ビート id。従来経路では未設定。 */
   sourceBeatIds?: string[];
 }
@@ -61,8 +96,11 @@ export interface ScriptMangaPlan {
       rawOutput: string;
       messages: Array<{ role: string; content: string }>;
       fallback: boolean;
-      /** ネームv4 D2: どの N1 経路が成立したか(beats=ビート化N1 / panels=従来N1 / deterministic=決定的)。 */
-      mode?: "beats" | "panels" | "deterministic";
+      /**
+       * どの N1 経路が成立したか(V5 D2: beats=ビート化N1 / deterministic=決定的ビートパッカー)。
+       * 保存済みprovenanceには旧値 "panels"(従来N1、V5で削除)が残り得るが、読み手は未知値として扱う。
+       */
+      mode?: "beats" | "deterministic";
       /** ビート注釈が決定的フォールバック(1要素=1ビート)だったか。 */
       beatAnnotatorFallback?: boolean;
     };

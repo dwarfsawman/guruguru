@@ -1,10 +1,6 @@
 import type { FountainDoc } from "../shared/fountain";
 import { deriveSceneBibles } from "./storyGraphBuilder";
-import {
-  describeScriptMangaLayouts,
-  scriptMangaLayoutAlignsImportance,
-  scriptMangaLayoutCandidates
-} from "../shared/layoutPresets";
+import { describeScriptMangaLayouts } from "../shared/layoutPresets";
 import {
   planScriptManga,
   type ScriptMangaPagePlan,
@@ -16,9 +12,8 @@ import { generateStructuredJson } from "./llmStructured";
 import { getLlmSettings } from "./llm";
 import {
   applyBeatPageNaming,
-  applyPageNaming,
   createBeatPageNamingSchema,
-  createPageNamingSchema
+  packAnnotatedBeatsDeterministically
 } from "./scriptMangaPageNaming";
 import { annotateScriptBeats, type BeatAnnotationResult } from "./scriptBeatAnnotator";
 
@@ -34,9 +29,9 @@ interface DirectedPanel {
   avoid?: string[];
 }
 
+/** V5 X3: レイアウトは監督の出力から削除(人間/rankLayoutsが決めた値を監督は変更できない)。 */
 interface DirectedPage {
   index: number;
-  layoutTemplateId: string;
   pageIntent: string;
   panels: DirectedPanel[];
 }
@@ -53,10 +48,9 @@ const schema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["index", "layoutTemplateId", "pageIntent", "panels"],
+        required: ["index", "pageIntent", "panels"],
         properties: {
           index: { type: "integer" },
-          layoutTemplateId: { type: "string" },
           pageIntent: { type: "string" },
           panels: {
             type: "array",
@@ -106,18 +100,11 @@ const ANGLES = new Set(["eye-level", "low", "high", "overhead", "dutch", "pov"])
 const POSITIONS = new Set(["upper-left", "upper-center", "upper-right", "middle-left", "middle-center", "middle-right", "lower-left", "lower-center", "lower-right"]);
 const NON_ENGLISH_OR_NEGATION = /[\u3040-\u30ff\u3400-\u9fff]|\b(?:no|not|without|never)\b/iu;
 
-export interface DirectedBatchValidationOptions {
-  /** ネームv4 D3: 採用候補のレイアウトを固定(監督はレイアウト変更不可)。 */
-  lockLayouts?: boolean;
-}
-
 export function validateDirectedMangaBatch(
   raw: unknown,
   sourcePages: ScriptMangaPagePlan[],
-  entityNames: string[] = [],
-  validationOptions: DirectedBatchValidationOptions = {}
+  entityNames: string[] = []
 ): DirectedBatch | null {
-
   if (!raw || typeof raw !== "object" || !Array.isArray((raw as DirectedBatch).pages)) return null;
   const pages = (raw as DirectedBatch).pages;
   if (pages.length !== sourcePages.length) return null;
@@ -132,20 +119,6 @@ export function validateDirectedMangaBatch(
       !Array.isArray(page.panels) ||
       page.panels.length !== source.panels.length
     ) return null;
-    if (validationOptions.lockLayouts) {
-      // 採用候補のレイアウトは人間が見比べて選んだもの。監督には変更させない。
-      if (page.layoutTemplateId !== source.layoutTemplateId) return null;
-    } else {
-      if (!scriptMangaLayoutCandidates(source.panels.length).includes(page.layoutTemplateId)) return null;
-      // ネームv4 D1: 監督がレイアウトを差し替える場合も hero×強調スロット整合を守らせる。
-      // 整合可能な候補が1つも無い importance 構成では強制しない(判定はどの候補でも false になるため)。
-      const importances = source.panels.map((panel) => panel.importance ?? "normal");
-      if (!scriptMangaLayoutAlignsImportance(page.layoutTemplateId, importances)) {
-        const anyAligned = scriptMangaLayoutCandidates(source.panels.length)
-          .some((candidateId) => scriptMangaLayoutAlignsImportance(candidateId, importances));
-        if (anyAligned) return null;
-      }
-    }
     for (let p = 0; p < page.panels.length; p += 1) {
       const panel = page.panels[p];
       if (
@@ -174,16 +147,15 @@ export function validateDirectedMangaBatch(
 export function applyScriptMangaDirectorBatch(
   raw: unknown,
   sourcePages: ScriptMangaPagePlan[],
-  stylePrompt?: string,
-  validationOptions: DirectedBatchValidationOptions = {}
+  stylePrompt?: string
 ): ScriptMangaPagePlan[] | null {
-  const directed = validateDirectedMangaBatch(raw, sourcePages, [], validationOptions);
+  const directed = validateDirectedMangaBatch(raw, sourcePages, []);
   if (!directed) return null;
   return sourcePages.map((source, pageIndex) => {
     const directedPage = directed.pages[pageIndex]!;
     return {
       ...source,
-      layoutTemplateId: directedPage.layoutTemplateId,
+      // V5 X3: layoutTemplateId は source(人間/rankLayoutsの選択)のまま。監督は演出のみ。
       pageIntent: directedPage.pageIntent.trim(),
       panels: source.panels.map((panel, panelIndex) => {
         const directedPanel = directedPage.panels[panelIndex]!;
@@ -212,10 +184,11 @@ export interface ScriptMangaN1Options {
 
 export interface ScriptMangaN1Result {
   plan: ScriptMangaPlan;
-  /** ビート注釈(ビート化N1が成立した場合のみ非null。V2 の beats 引き継ぎに使う)。 */
+  /** ビート注釈(V5では空脚本の縮退を除き常に非null。V2 の beats 引き継ぎに使う)。 */
   beatAnnotation: BeatAnnotationResult | null;
   pageNaming: {
-    mode: "beats" | "panels" | "deterministic";
+    /** V5 D2: beats=ビート化N1 / deterministic=決定的ビートパッカー(または空脚本の縮退)。 */
+    mode: "beats" | "deterministic";
     rawOutput: string;
     messages: Array<{ role: string; content: string }>;
     fallback: boolean;
@@ -252,101 +225,94 @@ function beatCompact(annotation: BeatAnnotationResult): Array<Record<string, unk
 }
 
 /**
- * N1 ページネーム(ネームv4 D2)。ビート注釈(キャッシュ付き)→ ビート化 N1 →
- * 失敗時は従来のコマ束ね N1 → それも失敗なら決定的プラン、の三段フォールバック。
- * どの経路でも「全台詞一度ずつ」契約と ScriptMangaPlan の形は不変。
+ * N1 ページネーム(V5 D2)。ビート注釈(キャッシュ付き)→ ビート化 N1 →
+ * 失敗時は決定的ビートパッカー、の二段フォールバック。パッカーもビートを入力にするため、
+ * どの経路でもビート情報(preferredScale/keepAlone)とシーン純度が保たれ、
+ * 「全台詞一度ずつ」契約と ScriptMangaPlan の形は不変。
  */
 export async function generateScriptMangaN1Plan(
   doc: FountainDoc,
   options: ScriptMangaPlanOptions = {},
   n1Options: ScriptMangaN1Options = {}
 ): Promise<ScriptMangaN1Result> {
-  const deterministicBase = planScriptManga(doc, options);
   const settings = getLlmSettings();
-  const targetPageCount = Math.max(1, Math.trunc(options.targetPageCount ?? Math.max(deterministicBase.pages.length, deterministicBase.dialogueCount / 5)));
   const maxPanelsPerPage = Math.max(1, Math.min(6, Math.trunc(options.panelsPerPage ?? 4)));
   const maxDialoguesPerPanel = Math.max(1, Math.min(8, Math.trunc(options.maxDialoguesPerPanel ?? 4)));
   const temperature = n1Options.temperature ?? 0.3;
   const profileLines = n1Options.profileInstruction?.trim() ? [n1Options.profileInstruction.trim()] : [];
 
-  // 1) ビート化 N1: 物語ビートを入力に、コマ=ビート束としてページを設計する。
   const annotation = await annotateScriptBeats(doc, options.scriptRevisionId);
-  if (annotation.beats.length > 0) {
-    try {
-      const named = await generateStructuredJson<ScriptMangaPlan>({
-        settings,
-        systemPrompt: [
-          "You are the N1 manga page-naming editor. Build pages and panels from the annotated story beats.",
-          "Cover every beat id exactly once and in order via panels[].sourceBeatIds. A panel usually bundles 1-3 consecutive beats; never mix scenes in one panel.",
-          `Use 1-${maxPanelsPerPage} panels per page; this is a hard maximum. Splash means exactly one panel on its page.`,
-          "Respect the annotations: give keepAlone beats their own panel; map desiredScale hero/splash to panel importance; put beats with high pageTurnAffinity at a page's final panel (tease) or a page's first panel (payoff).",
-          `No panel may contain more than ${maxDialoguesPerPanel} scripted dialogue elements; this is not a rendered-balloon target.`,
-          `Keep each panel's total dialogue below ${Math.max(40, Math.trunc(options.maxSourceCharactersPerPanel ?? 260))} characters.`,
-          ...N1_COMMON_PROMPT_LINES,
-          ...profileLines
-        ].join("\n"),
-        userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Story beats (in order): ${JSON.stringify(beatCompact(annotation))}`,
-        schema: createBeatPageNamingSchema(maxPanelsPerPage),
-        validate: (raw) => applyBeatPageNaming(raw, {
-          title: deterministicBase.title,
-          units: annotation.units,
-          beats: annotation.beats,
-          targetPageCount,
-          stylePrompt: options.stylePrompt,
-          maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel,
-          maxDialoguesPerPanel,
-          maxPanelsPerPage
-        }),
-        temperature,
-        timeoutMs: 180000
-      });
-      return {
-        plan: named.value,
-        beatAnnotation: annotation,
-        pageNaming: {
-          mode: "beats", rawOutput: named.rawOutput, messages: named.messages,
-          fallback: false, beatAnnotatorFallback: annotation.fallback
-        }
-      };
-    } catch {
-      // ビート化 N1 が通らない場合は従来のコマ束ね N1 へ(生成は止めない)。
-    }
+  // 可視要素ゼロの縮退(units空 → beats空)。パッカーは空入力を扱わないので、
+  // 旧決定的プランナーの空プラン挙動へそのまま倒す。
+  if (annotation.beats.length === 0) {
+    return {
+      plan: planScriptManga(doc, options),
+      beatAnnotation: null,
+      pageNaming: { mode: "deterministic", rawOutput: "[empty-units]", messages: [], fallback: true }
+    };
   }
 
-  // 2) 従来 N1: 決定的束ねのコマを統合のみ許可する再ページ割り。
+  // V5 D2: ビート経路の既定値も units 由来にし、旧プランナーへの依存を断つ。
+  const title = doc.titlePage.Title || "Manga";
+  const packed = packAnnotatedBeatsDeterministically({
+    units: annotation.units,
+    beats: annotation.beats,
+    title,
+    stylePrompt: options.stylePrompt,
+    targetPageCount: options.targetPageCount,
+    maxPanelsPerPage,
+    maxDialoguesPerPanel,
+    maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel
+  });
+  const targetPageCount = Math.max(1, Math.trunc(options.targetPageCount ?? Math.max(packed.pages.length, packed.dialogueCount / 5)));
+
   try {
-    const sourcePanels = deterministicBase.pages.flatMap((page) => page.panels).map((panel) => ({
-      id: panel.id, sceneIndex: panel.sceneIndex, sourceElementIds: panel.sourceElementIds,
-      dialogueOrderIndexes: panel.dialogueOrderIndexes, source: panel.sourceText
-    }));
     const named = await generateStructuredJson<ScriptMangaPlan>({
       settings,
       systemPrompt: [
-        `You are the N1 manga page-naming editor. Preserve every sourcePanelId exactly once and in order. Never combine scenes. Use 1-${maxPanelsPerPage} panels per page; this is a hard maximum. Splash means one panel on its page. Design page turns and hero beats.`,
+        "You are the N1 manga page-naming editor. Build pages and panels from the annotated story beats.",
+        "Cover every beat id exactly once and in order via panels[].sourceBeatIds. A panel usually bundles 1-3 consecutive beats; never mix scenes in one panel.",
+        `Use 1-${maxPanelsPerPage} panels per page; this is a hard maximum. Splash means exactly one panel on its page.`,
+        "Respect the annotations: give keepAlone beats their own panel; map preferredScale large/splash to panel importance hero/splash; put beats with high pageTurnAffinity at a page's final panel (tease) or a page's first panel (payoff).",
         `No panel may contain more than ${maxDialoguesPerPanel} scripted dialogue elements; this is not a rendered-balloon target.`,
+        `Keep each panel's total dialogue below ${Math.max(40, Math.trunc(options.maxSourceCharactersPerPanel ?? 260))} characters.`,
         ...N1_COMMON_PROMPT_LINES,
         ...profileLines
       ].join("\n"),
-      userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Source panels: ${JSON.stringify(sourcePanels)}`,
-      schema: createPageNamingSchema(maxPanelsPerPage),
-      validate: (raw) => applyPageNaming(raw, deterministicBase, targetPageCount, maxDialoguesPerPanel, maxPanelsPerPage),
+      userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Story beats (in order): ${JSON.stringify(beatCompact(annotation))}`,
+      schema: createBeatPageNamingSchema(maxPanelsPerPage),
+      validate: (raw) => applyBeatPageNaming(raw, {
+        title,
+        units: annotation.units,
+        beats: annotation.beats,
+        targetPageCount,
+        stylePrompt: options.stylePrompt,
+        maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel,
+        maxDialoguesPerPanel,
+        maxPanelsPerPage
+      }),
       temperature,
       timeoutMs: 180000
     });
     return {
       plan: named.value,
-      beatAnnotation: null,
-      pageNaming: { mode: "panels", rawOutput: named.rawOutput, messages: named.messages, fallback: false }
+      beatAnnotation: annotation,
+      pageNaming: {
+        mode: "beats", rawOutput: named.rawOutput, messages: named.messages,
+        fallback: false, beatAnnotatorFallback: annotation.fallback
+      }
     };
   } catch (error) {
+    // V5 D2: 最終フォールバックはビート入力の決定的パッカー(ビート情報を捨てない)。
     return {
-      plan: deterministicBase,
-      beatAnnotation: null,
+      plan: packed,
+      beatAnnotation: annotation,
       pageNaming: {
         mode: "deterministic",
         rawOutput: error instanceof Error ? error.message : String(error),
         messages: [],
-        fallback: true
+        fallback: true,
+        beatAnnotatorFallback: annotation.fallback
       }
     };
   }
@@ -385,8 +351,8 @@ export async function planScriptMangaWithDirectorDetailed(
 }
 
 /**
- * 採用済みプラン候補(ネームv4 D3)へ監督を適用する。候補のページ割り・レイアウトは
- * 人間が選んだものなので監督は変更できない(lockLayouts)。
+ * 採用済みプラン候補へ監督を適用する。V5 X3: 監督スキーマにレイアウトが無いので、
+ * 「採用後レイアウト不変」は構造的に保証される(旧 lockLayouts は不要になった)。
  */
 export async function directAdoptedCandidatePlan(
   doc: FountainDoc,
@@ -394,7 +360,7 @@ export async function directAdoptedCandidatePlan(
   options: ScriptMangaPlanOptions = {}
 ): Promise<ScriptMangaPlan> {
   const settings = getLlmSettings();
-  const directed = await directScriptMangaPages(doc, candidatePlan.pages, options, { lockLayouts: true });
+  const directed = await directScriptMangaPages(doc, candidatePlan.pages, options);
   return {
     ...candidatePlan,
     pages: directed.pages,
@@ -419,8 +385,7 @@ interface DirectedPagesResult {
 async function directScriptMangaPages(
   doc: FountainDoc,
   basePages: ScriptMangaPagePlan[],
-  options: ScriptMangaPlanOptions = {},
-  validationOptions: DirectedBatchValidationOptions = {}
+  options: ScriptMangaPlanOptions = {}
 ): Promise<DirectedPagesResult> {
   const settings = getLlmSettings();
   const fixedIdentity = options.characterBible?.trim() ?? "";
@@ -431,23 +396,20 @@ async function directScriptMangaPages(
 
   const directedPages: ScriptMangaPagePlan[] = [];
   for (const batch of batches) {
-    const pageAllowedLayouts = (page: ScriptMangaPagePlan): string[] =>
-      validationOptions.lockLayouts ? [page.layoutTemplateId] : scriptMangaLayoutCandidates(page.panels.length);
     const compact = batch.map((page) => ({
       index: page.index,
       title: page.title,
-      // ネームv4 D1: N1 の意図(pageIntent/turnHook/importance)と事前選択レイアウトを監督にも渡す。
+      // V5 X3: レイアウトは確定済みの読み取り専用コンテキスト。監督には選択権が無い。
       pageIntent: page.pageIntent,
       turnHook: page.turnHook,
-      preselectedLayout: page.layoutTemplateId,
-      allowedLayouts: pageAllowedLayouts(page),
+      layout: page.layoutTemplateId,
       panels: page.panels.map((panel) => ({
-        id: panel.id, scene: panel.sceneHeading, importance: panel.importance, source: panel.sourceText
+        id: panel.id, scene: panel.sceneHeading, visualScale: panel.visualScale, source: panel.sourceText
       }))
     }));
-    // バッチ内で許可されている全レイアウトの説明(bleed/figure スロットの意味と読み順位置を含む)。
+    // 確定済みレイアウトの説明(bleed/figure スロットの意味と読み順位置)を読み取り専用情報として渡す。
     const layoutGuide = describeScriptMangaLayouts([
-      ...new Set(batch.flatMap((page) => pageAllowedLayouts(page)))
+      ...new Set(batch.map((page) => page.layoutTemplateId))
     ]);
     try {
       const result = await generateStructuredJson<ScriptMangaPagePlan[]>({
@@ -461,14 +423,14 @@ async function directScriptMangaPages(
         "Write prompt in English with panel-specific visual facts only. Never include appearance/style attributes, dialogue, non-English text, or the words no/not/without/never. Put exclusions in avoid as English noun phrases.",
         "Layout ids containing 'bleed' extend panels past the page edge (borderless art) — pick them for climactic, atmospheric, or montage pages instead of always using framed grids.",
         "Layouts with a figureSlot render that reading position as a borderless full-body character cut-out standing over the page (punch-out). Panels are mapped to layout slots in reading order, so the panel at that position becomes the figure: give it a single character-defining beat, set its subject to full body, and keep its dialogue minimal.",
-        "Panels marked importance=hero must land on the layout's largest slot (panels map to slots in reading order). Keep preselectedLayout unless another allowedLayout also keeps every hero on an emphasized slot.",
+        "Each page's layout is already decided and read-only (see the layout guide). Panels map to layout slots in reading order — direct each panel to fit its slot: visualScale=large panels sit on the biggest slots, so stage them as the page's visual peak.",
         "On pages with turnHook=reveal, stage the final panel as a tease and leave the disclosure to the next page's first panel. On turnHook=cliffhanger pages, end at peak tension mid-action.",
         fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
         `登場話者: ${speakerNames(doc).join(", ")}`
       ].join("\n"),
-      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. ${validationOptions.lockLayouts ? "The layoutTemplateId of every page is locked — echo it back unchanged. " : ""}Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Layout guide: ${JSON.stringify(layoutGuide)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
+      userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Layout guide (read-only): ${JSON.stringify(layoutGuide)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
       schema,
-      validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt, validationOptions),
+      validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt),
       temperature: 0.35,
       timeoutMs: 180000
       });

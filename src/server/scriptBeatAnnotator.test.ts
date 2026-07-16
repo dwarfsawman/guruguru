@@ -22,6 +22,7 @@ function spanBeats(units: ReturnType<typeof buildPreLayoutUnits>): AnnotatedBeat
     id: `b${index + 1}`,
     unitIds: [unit.id],
     kind: index === units.length - 1 ? "reveal" : "action",
+    preferredScale: index === units.length - 1 ? "large" : "medium",
     importance: index === units.length - 1 ? 0.9 : 0.4,
     pageTurnAffinity: 0.2,
     keepAlone: false,
@@ -78,8 +79,8 @@ test("buildMangaPlanV2: ビート注釈があれば beats を引き継ぎ、pane
   const units = buildPreLayoutUnits(doc);
   const beats = spanBeats(units);
   const legacy = applyBeatPageNaming({ pages: [{ index: 0, pageIntent: "reveal the photo", turnHook: "reveal", panels: [
-    { id: "p1", importance: "normal", sourceBeatIds: [beats[0]!.id] },
-    { id: "p2", importance: "hero", sourceBeatIds: beats.slice(1).map((beat) => beat.id) }
+    { id: "p1", sourceBeatIds: [beats[0]!.id] },
+    { id: "p2", sourceBeatIds: beats.slice(1).map((beat) => beat.id) }
   ] }] }, { title: "Beats", units, beats, targetPageCount: 1 });
   assert.ok(legacy);
   const dialogues = [{
@@ -101,7 +102,7 @@ test("buildMangaPlanV2: ビート注釈があれば beats を引き継ぎ、pane
   const panels = withBeats.pages[0]!.panels;
   assert.deepEqual(panels[0]!.beatIds, ["beat:planA:b1"]);
   assert.deepEqual(panels[1]!.beatIds, ["beat:planA:b2", "beat:planA:b3"]);
-  assert.equal(panels[1]!.importance, "hero");
+  assert.equal(panels[1]!.visualScale, "large", "V5: ビートのpreferredScaleから導出");
   assert.equal(withBeats.pages[0]!.turnHook, "reveal");
   assert.ok(validateMangaPlanV2(withBeats).ok, JSON.stringify(validateMangaPlanV2(withBeats).issues));
   // 注釈なし(従来経路): コマ毎の後付けビート。

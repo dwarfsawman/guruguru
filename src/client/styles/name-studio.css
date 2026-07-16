@@ -1,0 +1,412 @@
+/* ネームスタジオ(V5 D5)。book.css の .panel/design token を再利用し、色は var() のみ。 */
+
+.name-studio-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.name-studio-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.name-studio-heading h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.name-studio-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.studio-count-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+/* --- テイクバー --- */
+
+.name-studio-takes {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.studio-take {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  cursor: pointer;
+  text-align: left;
+}
+
+.studio-take.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.studio-take.is-adopted {
+  opacity: 0.75;
+}
+
+.studio-take-label {
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.studio-take-badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.studio-take-summary {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.plan-candidate-badge.is-flipped {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* --- 本体: 中央リーダー + 右インスペクタ(page-panel-editor-body と同じ比率の先例) --- */
+
+.name-studio-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .name-studio-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.studio-reader {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.studio-page-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.studio-page-counter {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.studio-diff-note {
+  color: var(--wire-diff, rgba(220, 38, 38, 0.9));
+  font-size: 0.76rem;
+}
+
+/* リーダー本体: SVG背景 + HTMLオーバーレイ(コマのbboxへ%配置)。 */
+.studio-page {
+  position: relative;
+  width: min(560px, 100%);
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-raised);
+}
+
+.studio-page-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.studio-overlays {
+  position: absolute;
+  inset: 0;
+}
+
+.studio-panel {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 4px 6px;
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text, inherit);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+}
+
+.studio-panel:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+.studio-panel.is-selected {
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+
+.studio-panel-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.studio-panel-order {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text, #111);
+  color: var(--surface, #fff);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.studio-panel-scale {
+  font-weight: 700;
+  font-size: 0.74rem;
+}
+
+.studio-panel.is-small .studio-panel-scale {
+  color: var(--text-muted);
+}
+
+.studio-beat-chip {
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.64rem;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.studio-panel-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.studio-panel.is-small .studio-panel-text {
+  -webkit-line-clamp: 2;
+}
+
+.studio-panel-dialogue {
+  margin-top: auto;
+  align-self: flex-end;
+  padding: 1px 6px;
+  border: 1px solid var(--text, #111);
+  border-radius: 4px;
+  background: var(--surface, #fff);
+  font-size: 0.66rem;
+}
+
+/* --- レイアウトフリップ --- */
+
+.studio-flips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+}
+
+.studio-flips-label {
+  color: var(--text-muted);
+}
+
+.studio-flip-chip {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+
+.studio-flip-chip.is-current {
+  border-color: var(--accent);
+  font-weight: 700;
+  cursor: default;
+}
+
+.studio-flip-chip.is-reset {
+  border-style: dashed;
+}
+
+.studio-flip-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.studio-flip-reasons {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+/* --- フッター・アクション・インスペクタ --- */
+
+.studio-page-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.studio-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.name-studio-inspector {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  padding: 12px;
+  position: sticky;
+  top: 8px;
+}
+
+.name-studio-inspector h3 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+}
+
+.studio-inspector-hint {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin: 4px 0;
+}
+
+.studio-inspector-list {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.studio-inspector-list dt {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.studio-inspector-list dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.studio-inspector-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* --- 演出ネーム(V5 D6) --- */
+
+.studio-take.is-directed-take {
+  border-style: double;
+}
+
+.studio-panel.is-directed .studio-panel-text {
+  white-space: pre-wrap;
+}
+
+.studio-panel.is-undirected {
+  opacity: 0.85;
+}
+
+.studio-beat-chip[class*="is-source-"] {
+  border-color: var(--accent);
+}
+
+.studio-beat-chip.is-source-fallback {
+  border-color: var(--wire-diff, rgba(220, 38, 38, 0.9));
+  color: var(--wire-diff, rgba(220, 38, 38, 0.9));
+}
+
+.studio-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.studio-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.78rem;
+}
+
+.studio-edit-field > span {
+  color: var(--text-muted);
+}
+
+.studio-edit-field input,
+.studio-edit-field select,
+.studio-edit-field textarea {
+  width: 100%;
+  font-size: 0.82rem;
+}
+
+.studio-edit-cast-row {
+  display: grid;
+  grid-template-columns: minmax(60px, auto) 1fr 1fr;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.studio-edit-cast-name {
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

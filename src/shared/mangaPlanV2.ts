@@ -12,10 +12,47 @@ export type DialoguePolicy = "preserve" | "adapt" | "fill" | "generate";
 export type NarrativeEntityKind = "character" | "setting" | "prop" | "vehicle" | "unknown";
 export type MangaShotSize = "extreme-wide" | "wide" | "medium" | "close-up" | "insert";
 export type MangaReferenceRole = "identity" | "outfit" | "pose" | "background" | "prop" | "style";
-/** N1ページネームが付けるコマの物語的な重み(ネームv4 D1)。省略 = normal 相当。 */
-export type MangaPanelImportance = "splash" | "hero" | "normal";
 /** ページめくり演出(reveal=次ページ冒頭で開示 / cliffhanger=緊張の頂点で切る)。省略 = none 相当。 */
 export type MangaPageTurnHook = "reveal" | "cliffhanger" | "none";
+
+/**
+ * ネームスタジオV5 D1: 統一スケール語彙。ビート側は preferredScale(演出上の希望)、
+ * コマ側は visualScale(ページ全体を踏まえて解決された値)としてフィールド名を分ける。
+ * 旧語彙 MangaPanelImportance("splash"|"hero"|"normal")はP1cで削除済み — 永続データ・
+ * API入力に残る旧値は normalizeLegacyVisualScale が写像する。
+ */
+export const MANGA_VISUAL_SCALES = ["small", "medium", "large", "splash"] as const;
+export type MangaVisualScale = (typeof MANGA_VISUAL_SCALES)[number];
+
+/** 演出の出所(V5 D6)。boolean では区別できない4状態をUIバッジ・選好ログに使う。 */
+export type MangaDirectionSource = "llm" | "fallback" | "human" | "provided";
+
+/**
+ * 旧語彙(コマ importance enum / ビート desiredScale)が混在する永続データ・API入力を
+ * visualScale へ正規化する入力adapter。適用箇所は3境界のみ: 永続 plan/candidate のparse直後、
+ * provided directorPlan 入力、successorPlan 入力。旧設計の温存ではない。
+ */
+export function normalizeLegacyVisualScale(input: {
+  importance?: unknown;
+  desiredScale?: unknown;
+  visualScale?: unknown;
+}): MangaVisualScale | undefined {
+  if (typeof input.visualScale === "string" && (MANGA_VISUAL_SCALES as readonly string[]).includes(input.visualScale)) {
+    return input.visualScale as MangaVisualScale;
+  }
+  if (typeof input.importance === "string") {
+    if (input.importance === "splash") return "splash";
+    if (input.importance === "hero") return "large";
+    if (input.importance === "normal") return "medium";
+  }
+  if (typeof input.desiredScale === "string") {
+    if (input.desiredScale === "small") return "small";
+    if (input.desiredScale === "normal") return "medium";
+    if (input.desiredScale === "hero") return "large";
+    if (input.desiredScale === "splash") return "splash";
+  }
+  return undefined;
+}
 
 /** Panel-local normalized coordinates. All values are in the inclusive 0..1 range. */
 export interface NormalizedBox {
@@ -106,6 +143,8 @@ export interface MangaBeat {
   kind?: string;
   /** ビート注釈由来の重要度 0..1(ネームv4 D2)。additive。 */
   importance?: number;
+  /** ビート注釈由来の希望スケール(ネームスタジオV5 D1)。additive。 */
+  preferredScale?: MangaVisualScale;
 }
 
 export interface MangaConstraint {
@@ -162,8 +201,14 @@ export interface PanelSpec {
    * 実行時の正はあくまで layout snapshot 側で、materialize がここへ写す。
    */
   role?: "figure";
-  /** N1由来のコマの重み(ネームv4 D1)。レイアウト事前選択・候補比較UIが使う。additive。 */
-  importance?: MangaPanelImportance;
+  /** 解決済みコマスケール(ネームスタジオV5 D1)。旧 importance enum の後継。additive。 */
+  visualScale?: MangaVisualScale;
+  /**
+   * 演出の出所(V5 D6)。V2は未演出コマにも既定値を埋めるためフィールド欠落では検知できない。
+   * llm=監督LLM / fallback=監督バッチ失敗(未演出) / human=差分編集で人間が修正 / provided=外部プラン。
+   * 旧plan(フィールド無し)は演出済み相当として扱う。additive。
+   */
+  directionSource?: MangaDirectionSource;
   sourceElementIds: string[];
   beatIds: string[];
   preStateId: string;
@@ -254,6 +299,23 @@ export interface MangaPlanV2 {
   panelCount: number;
   dialogueCount: number;
   createdAt: string;
+}
+
+/**
+ * 永続 MangaPlanV2 のparse直後に呼ぶ入力adapter(V5 D1)。旧語彙(importance)しか持たない
+ * コマへ visualScale を補完する(in-place)。旧planの読み込み・resume・repairを無傷に保つ。
+ */
+export function normalizeMangaPlanV2Scales<T extends { pages?: Array<{ panels?: PanelSpec[] }> }>(plan: T): T {
+  for (const page of plan.pages ?? []) {
+    for (const panel of page.panels ?? []) {
+      if (!panel.visualScale) {
+        // 旧語彙の importance は型からは削除済みだが、永続JSONには残っている。
+        const scale = normalizeLegacyVisualScale({ importance: (panel as { importance?: unknown }).importance });
+        if (scale) panel.visualScale = scale;
+      }
+    }
+  }
+  return plan;
 }
 
 export interface MangaPlanValidationIssue {

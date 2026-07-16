@@ -188,7 +188,8 @@ export function matchScriptMangaReuseCandidatesWithReservations<TPredecessor, TS
 function panelSemantics(panel: PanelSpec) {
   return {
     role: panel.role ?? null,
-    importance: panel.importance ?? null,
+    // V5 D1: 旧importanceからの置換。旧plan相手のsuccessorはfingerprint不一致→全再生成(計画で許容済み)。
+    visualScale: panel.visualScale ?? null,
     sourceElementIds: panel.sourceElementIds,
     postStateDelta: panel.postStateDelta,
     settingId: panel.settingId,

@@ -11,7 +11,7 @@
  */
 import type { LayoutPanel, PageLayout, PanelShape } from "./pageLayout";
 import { DEFAULT_PANEL_FRAME, panelBounds } from "./pageLayout";
-import type { MangaPageTurnHook, MangaPanelImportance } from "./mangaPlanV2";
+import type { MangaPageTurnHook, MangaVisualScale } from "./mangaPlanV2";
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
 import { escapeAttr } from "./htmlEscape";
 
@@ -148,7 +148,8 @@ export function renderPageLayoutSvg(layout: PageLayout, options: PageLayoutSvgOp
 
 /** reading-order で layout スロットと対応する、コマ1つ分の注釈情報。 */
 export interface WireframePanelInfo {
-  importance?: MangaPanelImportance;
+  /** 解決済みコマスケール(V5 D1)。large/splash は強調塗り、small は減光。旧planはparse境界で正規化済み。 */
+  visualScale?: MangaVisualScale;
   /** コマ内台詞の合計文字数(台詞量バー)。 */
   dialogueCharacters?: number;
   /** コマに割り当てたビートの kind 列(アイコン表示)。 */
@@ -196,10 +197,13 @@ export function renderPageWireframeSvg(layout: PageLayout, options: PageWirefram
     if (!info) return;
     const [x1, y1, x2, y2] = panelBounds(panel.shape);
     const panelWidth = Math.max(0, x2 - x1);
-    if (info.importance === "hero") {
+    const scale = info.visualScale;
+    if (scale === "large") {
       overlays.push(shapeGeometryElement(panel.shape, `fill="var(--wire-hero, rgba(217,119,6,0.30))" stroke="var(--wire-hero-stroke, rgba(217,119,6,0.9))" stroke-width="0.008"`));
-    } else if (info.importance === "splash") {
+    } else if (scale === "splash") {
       overlays.push(shapeGeometryElement(panel.shape, `fill="var(--wire-splash, rgba(190,24,93,0.26))" stroke="var(--wire-splash-stroke, rgba(190,24,93,0.9))" stroke-width="0.009"`));
+    } else if (scale === "small") {
+      overlays.push(shapeGeometryElement(panel.shape, `fill="var(--wire-small, rgba(100,116,139,0.16))"`));
     }
     if (info.dialogueCharacters && info.dialogueCharacters > 0) {
       const ratio = Math.min(1, info.dialogueCharacters / DIALOGUE_BAR_FULL_CHARACTERS);

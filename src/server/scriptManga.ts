@@ -5,6 +5,7 @@ import {
   type MangaPlanV2,
   type MangaPlanValidationReport,
   type NormalizedBox,
+  normalizeMangaPlanV2Scales,
   type PanelSpec,
   validateMangaPlanV2
 } from "../shared/mangaPlanV2";
@@ -59,7 +60,7 @@ import { reconstructPanelPoses, type PoseControlMode } from "./panelPoseReconstr
 import { directAdoptedCandidatePlan, planScriptMangaWithDirectorDetailed } from "./scriptMangaDirector";
 import { readCachedBeatAnnotation, type BeatAnnotationResult } from "./scriptBeatAnnotator";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
-import { adoptablePlanCandidate, markPlanCandidateAdopted } from "./scriptMangaPlanCandidates";
+import { adoptablePlanCandidate, beginPlanCandidateAdoption, markPlanCandidateAdopted } from "./scriptMangaPlanCandidates";
 import { buildMangaPlanV2 } from "./scriptMangaPlanV2";
 import {
   computeScriptMangaReuseFingerprint,
@@ -146,6 +147,7 @@ interface PlanRow {
   status: string;
   plan_json: string;
   validation_json: string;
+  edit_version: number;
   created_at: string;
   updated_at: string;
   approved_at: string | null;
@@ -313,7 +315,9 @@ function requireTask(taskId: string): TaskRow {
 }
 
 function planFromRow(row: PlanRow): MangaPlanV2 {
-  return parseJson<MangaPlanV2>(row.plan_json, null as unknown as MangaPlanV2);
+  const plan = parseJson<MangaPlanV2>(row.plan_json, null as unknown as MangaPlanV2);
+  // V5 D1: 旧語彙(importance)だけの旧planへ visualScale を補完する入力adapter。
+  return plan ? normalizeMangaPlanV2Scales(plan) : plan;
 }
 
 function planView(row: PlanRow): ScriptMangaPlanView {
@@ -325,6 +329,7 @@ function planView(row: PlanRow): ScriptMangaPlanView {
     status: row.status,
     plan: planFromRow(row),
     validation: parseJson<MangaPlanValidationReport>(row.validation_json, { ok: false, issues: [] }),
+    editVersion: row.edit_version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     approvedAt: row.approved_at
@@ -375,6 +380,7 @@ function runView(row: RunRow): ScriptMangaRunView {
     auditMode: parseConfig(row).auditMode,
     lastError: parseJson<unknown>(row.last_error_json, null),
     plan: planRow ? planFromRow(planRow) : null,
+    planEditVersion: planRow ? planRow.edit_version : null,
     validation: planRow ? parseJson<MangaPlanValidationReport>(planRow.validation_json, { ok: false, issues: [] }) : null,
     tasks: tasks.map(taskView),
     createdAt: row.created_at,
@@ -787,6 +793,8 @@ function completeSuccessorPlan(raw: unknown, original: MangaPlanV2, planId: stri
   if (candidate.version !== 2 || !Array.isArray(candidate.pages) || !candidate.narrativeGraph) {
     throw new HttpError(400, "successorPlan must be a complete MangaPlanV2 object");
   }
+  // V5 D1: successorPlan はDB非経由の生API入力 = 旧語彙adapterの適用境界(3箇所のうちの1つ)。
+  normalizeMangaPlanV2Scales(candidate);
   const originalPages = new Map(original.pages.map((page) => [page.index, page]));
   try {
     candidate.pages = candidate.pages.map((page) => {
@@ -1378,7 +1386,8 @@ function materializeRun(runId: string): void {
   }
   const validation = validatePlan(plan);
   runSql(
-    `UPDATE script_manga_plans SET plan_json = ?, validation_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    `UPDATE script_manga_plans SET plan_json = ?, validation_json = ?, edit_version = edit_version + 1,
+       updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [JSON.stringify(plan), JSON.stringify(validation), plan.id]
   );
   if (!validation.ok) throw new HttpError(422, "Materialized MangaPlanV2 failed validation");
@@ -3060,8 +3069,14 @@ export async function createScriptMangaRun(projectId: string, body: unknown): Pr
     let beatAnnotation: BeatAnnotationResult | null = null;
     let fullPlan: ScriptMangaPlan | null;
     if (planCandidateId) {
-      // ネームv4 D3: 採用候補のページ割り・レイアウトは監督が変更できない(lockLayouts)。
-      const adoptable = adoptablePlanCandidate(planCandidateId, projectId, scriptId, revision.id);
+      // V5 D5: 実効プラン(基礎プラン+人間のフリップ)を採用する。監督スキーマにレイアウトは
+      // 無いので「採用後レイアウト不変」は構造的に保証される。採用は数分かかるため adopting 状態で
+      // フリップを凍結し、失敗時はルート側(index.ts)が active へ巻き戻す。
+      const expectedCandidateVersion = typeof input.expectedCandidateVersion === "number" && Number.isInteger(input.expectedCandidateVersion)
+        ? input.expectedCandidateVersion
+        : undefined;
+      const adoptable = adoptablePlanCandidate(planCandidateId, projectId, scriptId, revision.id, expectedCandidateVersion);
+      beginPlanCandidateAdoption(planCandidateId);
       fullPlan = await directAdoptedCandidatePlan(revision.doc, adoptable.plan, {
         ...planOptions,
         scriptRevisionId: revision.id,
@@ -3204,6 +3219,71 @@ export function getScriptMangaPlan(planId: string): ScriptMangaPlanView {
   return planView(requirePlan(planId));
 }
 
+/**
+ * V5 D6: スタジオ用のホワイトリスト差分編集(POST /api/script-manga-plans/:id/edits)。
+ * クライアント保持のV2全体を送り返させない(ライブ更新+エージェント併走で dialogueSnapshots/
+ * provenance まで lost update するため)。サーバー保存済みplanへ差分を適用し、既存の完全更新
+ * フロー(凍結復元・決定的再検証・run巻き戻し・同期materialize・edit_version加算)へ委譲する。
+ */
+export function applyNamePlanEdits(planId: string, body: unknown): ScriptMangaPlanView {
+  const input = objectBody(body);
+  const row = requirePlan(planId);
+  if (typeof input.expectedVersion !== "number" || !Number.isInteger(input.expectedVersion)) {
+    throw new HttpError(400, "expectedVersion is required (optimistic lock)");
+  }
+  if (input.expectedVersion !== row.edit_version) {
+    throw new HttpError(409, "Plan was modified concurrently; reload and retry");
+  }
+  if (!Array.isArray(input.edits) || input.edits.length === 0) {
+    throw new HttpError(400, "edits must be a non-empty array");
+  }
+  const plan = planFromRow(row);
+  if (!plan) throw new HttpError(500, "Stored plan is invalid JSON");
+  const pageByIndex = new Map(plan.pages.map((page) => [page.index, page]));
+  const panelById = new Map(plan.pages.flatMap((page) => page.panels.map((panel) => [panel.id, panel] as const)));
+  const shotSizes = new Set(["extreme-wide", "wide", "medium", "close-up", "insert"]);
+  const editedText = (value: unknown, field: string): string => {
+    if (typeof value !== "string" || !value.trim()) throw new HttpError(400, `${field} must be a non-empty string`);
+    return value.trim();
+  };
+  for (const rawEdit of input.edits as unknown[]) {
+    if (!rawEdit || typeof rawEdit !== "object") throw new HttpError(400, "edits contains a malformed entry");
+    const edit = rawEdit as Record<string, unknown>;
+    if (edit.kind === "page") {
+      const page = typeof edit.pageIndex === "number" ? pageByIndex.get(edit.pageIndex) : undefined;
+      if (!page) throw new HttpError(400, `page ${String(edit.pageIndex)} was not found`);
+      page.pageIntent = editedText(edit.pageIntent, "pageIntent");
+      continue;
+    }
+    if (edit.kind === "panel" || edit.kind === "cast") {
+      const panel = typeof edit.panelId === "string" ? panelById.get(edit.panelId) : undefined;
+      if (!panel) throw new HttpError(400, `panel ${String(edit.panelId)} was not found`);
+      if (edit.kind === "panel") {
+        if (edit.shotSize !== undefined) {
+          if (typeof edit.shotSize !== "string" || !shotSizes.has(edit.shotSize)) {
+            throw new HttpError(400, "shotSize must be one of extreme-wide/wide/medium/close-up/insert");
+          }
+          panel.shot.size = edit.shotSize as PanelSpec["shot"]["size"];
+        }
+        if (edit.shotAngle !== undefined) panel.shot.angle = editedText(edit.shotAngle, "shotAngle");
+        if (edit.compositionIntent !== undefined) panel.shot.compositionIntent = editedText(edit.compositionIntent, "compositionIntent");
+        if (edit.promptBase !== undefined) panel.promptBase = editedText(edit.promptBase, "promptBase");
+      } else {
+        const member = typeof edit.characterId === "string"
+          ? panel.cast.find((candidateMember) => candidateMember.characterId === edit.characterId)
+          : undefined;
+        if (!member) throw new HttpError(400, `cast member ${String(edit.characterId)} was not found on panel ${panel.id}`);
+        if (edit.expression !== undefined) member.expression = editedText(edit.expression, "expression");
+        if (edit.action !== undefined) member.action = editedText(edit.action, "action");
+      }
+      panel.directionSource = "human";
+      continue;
+    }
+    throw new HttpError(400, 'edit.kind must be "page", "panel", or "cast"');
+  }
+  return updateScriptMangaPlan(planId, { plan });
+}
+
 export function updateScriptMangaPlan(planId: string, body: unknown): ScriptMangaPlanView {
   const row = requirePlan(planId);
   const input = objectBody(body);
@@ -3215,6 +3295,8 @@ export function updateScriptMangaPlan(planId: string, body: unknown): ScriptMang
   if (runRows.some((run) => run.approval_status === "approved" || run.status === "running" || run.status === "awaiting_review")) {
     throw new HttpError(409, "Approved or running plans cannot be edited; create a new run or cancel it first");
   }
+  // V5 D1: 完全V2 PATCH もDB非経由の生API入力 = 旧語彙adapterの適用境界。
+  normalizeMangaPlanV2Scales(candidate);
   candidate.id = row.id;
   candidate.scriptId = row.script_id;
   candidate.scriptRevisionId = row.script_revision_id;
@@ -3248,7 +3330,7 @@ export function updateScriptMangaPlan(planId: string, body: unknown): ScriptMang
   try {
     runSql(
       `UPDATE script_manga_plans SET plan_json = ?, validation_json = ?, dialogue_policy = ?, status = 'draft',
-         approved_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+         approved_at = NULL, edit_version = edit_version + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [JSON.stringify(candidate), JSON.stringify(validation), candidate.dialoguePolicy, planId]
     );
     for (const run of runRows) {

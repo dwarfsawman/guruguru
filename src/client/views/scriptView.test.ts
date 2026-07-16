@@ -4,12 +4,11 @@ import type { ScriptRevision, WorkflowTemplate } from "../../shared/apiTypes.ts"
 import { setExternalScriptMangaLayouts } from "../../shared/layoutPresets.ts";
 import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../shared/scriptMangaApi.ts";
 import {
-  renderPlanCandidatesCard,
   renderScriptMangaControlCard,
   scriptMangaVlmAuditFromScores,
-  type PlanCandidatesViewProps,
   type ScriptMangaControlViewProps
 } from "./scriptView.ts";
+import { renderNameStudio, type NameStudioViewProps } from "./nameStudioView.ts";
 
 const revision: ScriptRevision = {
   id: "revision-1",
@@ -55,6 +54,7 @@ function run(): ScriptMangaRunView {
     auditMode: "vlm",
     lastError: null,
     plan: null,
+    planEditVersion: null,
     validation: {
       ok: true,
       issues: [{ severity: "warning", code: "test-warning", message: "Review <risk>" }]
@@ -111,7 +111,8 @@ function props(currentRun: ScriptMangaRunView | null = null): ScriptMangaControl
 test("script manga card renders supported controls and keeps only generate unavailable", () => {
   const html = renderScriptMangaControlCard(props());
   assert.match(html, /data-script-manga-setting="templateId"/);
-  assert.match(html, /data-script-manga-setting="planningMode"/);
+  // V5 X5: planningMode select はUIから削除(既定はビート化N1、API値は残置)。
+  assert.doesNotMatch(html, /data-script-manga-setting="planningMode"/);
   assert.match(html, /data-script-manga-setting="panelsPerPage"/);
   assert.match(html, /value="6" selected/);
   assert.match(html, /data-script-manga-setting="maxDialoguesPerPanel"/);
@@ -289,7 +290,7 @@ test("script manga UI shows auditing panel count and VRAM swap status", () => {
   assert.match(html, /1 panelは監査再開待ち（VRAM入替待機中）/);
 });
 
-test("plan candidate card renders an imported autoManga layout wireframe", () => {
+test("name studio renders an imported autoManga layout wireframe with panel overlays", () => {
   const layoutId = "layout-imported-candidate";
   setExternalScriptMangaLayouts([{
     id: layoutId,
@@ -311,6 +312,8 @@ test("plan candidate card renders an imported autoManga layout wireframe", () =>
     temperature: null,
     status: "active",
     adoptedRunId: null,
+    layoutOverrides: {},
+    editVersion: 0,
     plan: {
       title: "Imported layout plan",
       panelCount: 1,
@@ -333,23 +336,168 @@ test("plan candidate card renders an imported autoManga layout wireframe", () =>
     pageNaming: { mode: "deterministic", fallback: true },
     createdAt: "2026-07-14T00:00:00.000Z"
   };
-  const controlProps = props();
-  const candidateProps: PlanCandidatesViewProps = {
-    activeScriptId: controlProps.activeScriptId,
-    activeScriptRevision: controlProps.activeScriptRevision,
-    scriptMangaSettings: controlProps.scriptMangaSettings,
-    scriptMangaBusy: false,
-    scriptMangaCandidates: [candidate],
-    scriptMangaCandidateBeatKinds: {},
-    scriptMangaCandidateDialogueChars: [],
-    scriptMangaCandidatesBusy: false,
-    scriptMangaCandidateCount: 3
+  const studioProps: NameStudioViewProps = {
+    activeScriptId: "script-1",
+    candidates: [candidate],
+    beatKinds: {},
+    dialogueChars: [],
+    candidatesBusy: false,
+    runBusy: false,
+    candidateCount: 3,
+    templateSelected: true,
+    nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: null },
+    run: null,
+    draft: null
   };
   try {
-    const html = renderPlanCandidatesCard(candidateProps);
-    assert.match(html, /plan-candidate-page-svg/);
-    assert.doesNotMatch(html, /plan-candidate-page is-unknown/);
+    const html = renderNameStudio(studioProps);
+    assert.match(html, /studio-page-svg/, "ワイヤーフレームSVG");
+    assert.match(html, /studio-panel/, "コマのHTMLオーバーレイ");
+    assert.match(html, /A quiet room\./, "sourceTextの表示");
+    assert.match(html, /テイクA/, "テイクタブ");
+    assert.match(html, /data-action="adopt-script-manga-plan-candidate"/);
+    assert.doesNotMatch(html, /レイアウト.*を解決できません/);
   } finally {
     setExternalScriptMangaLayouts([]);
   }
+});
+
+test("name studio directed mode: 採用後は演出ネーム(カメラ/人物/台詞本文/未演出バッジ/編集フォーム)を表示する", async () => {
+  const { findLayoutPreset } = await import("../../shared/layoutPresets.ts");
+  const layout = findLayoutPreset("builtin:two-horizontal")!.layout;
+  const directedRun = {
+    ...run(),
+    status: "prepared",
+    approvalStatus: "pending",
+    planEditVersion: 3,
+    plan: {
+      version: 2,
+      pages: [{
+        index: 0,
+        title: "Page 1",
+        layoutTemplateId: "builtin:two-horizontal",
+        layoutSnapshot: layout,
+        pageIntent: "reveal the photo",
+        turnHook: "reveal",
+        panels: [
+          {
+            id: "v2-p1",
+            visualScale: "large",
+            directionSource: "llm",
+            shot: { size: "close-up", angle: "low", focalSubjectId: "ent-alice", compositionIntent: "face lit by the phone" },
+            cast: [{ characterId: "ent-alice", expression: "startled", action: "opens the box" }],
+            dialogueLineIds: ["line-1"],
+            promptBase: "a girl opens a box"
+          },
+          {
+            id: "v2-p2",
+            visualScale: "medium",
+            directionSource: "fallback",
+            shot: { size: "medium", angle: "eye-level", focalSubjectId: "", compositionIntent: "single clear action" },
+            cast: [],
+            dialogueLineIds: [],
+            promptBase: "a quiet room"
+          }
+        ]
+      }],
+      dialogueSnapshots: [{ id: "line-1", orderIndex: 0, text: "これは……私?" }],
+      narrativeGraph: { entities: [{ id: "ent-alice", name: "アリス" }] }
+    }
+  } as unknown as ScriptMangaRunView;
+  const base: NameStudioViewProps = {
+    activeScriptId: "script-1",
+    candidates: [],
+    beatKinds: {},
+    dialogueChars: [],
+    candidatesBusy: false,
+    runBusy: false,
+    candidateCount: 3,
+    templateSelected: true,
+    nameStudio: { takeId: "__directed__", pageIndex: 0, selectedPanelId: "v2-p1" },
+    run: directedRun,
+    draft: null
+  };
+  const html = renderNameStudio(base);
+  assert.match(html, /演出ネーム/, "演出テイクチップ");
+  assert.match(html, /カメラ: 寄り \/ low/, "shotの日本語ラベル");
+  assert.match(html, /アリス\(startled\)/, "entities名前解決");
+  assert.match(html, /これは……私\?/, "dialogueLineIds→台詞本文");
+  assert.match(html, /未演出/, "directionSource=fallbackのバッジ");
+  assert.match(html, /data-action="studio-edit-panel"/, "編集導線(承認前は編集可)");
+  // ドラフトありならフォーム(値はドラフトからレンダー)。
+  const editing = renderNameStudio({
+    ...base,
+    draft: {
+      panelId: "v2-p1",
+      pageIndex: 0,
+      shotSize: "close-up",
+      shotAngle: "bust shot tilt",
+      compositionIntent: "face lit by the phone",
+      promptBase: "a girl opens a box",
+      pageIntent: "reveal the photo",
+      cast: [{ characterId: "ent-alice", name: "アリス", expression: "startled", action: "opens the box" }]
+    }
+  });
+  assert.match(editing, /data-studio-edit="promptBase"/, "編集フォーム");
+  assert.match(editing, /その他\(bust shot tilt\)/, "未知angleは現値温存オプション");
+  assert.match(editing, /data-action="studio-save-edits"/);
+});
+
+test("name studio flip chips: activeな候補にfeasibleな代替とリセット導線を出す", () => {
+  const candidate: ScriptMangaPlanCandidateView = {
+    id: "candidate-flip",
+    projectId: "project-1",
+    scriptId: "script-1",
+    scriptRevisionId: revision.id,
+    groupId: "group-1",
+    profile: "cinematic",
+    temperature: 0.35,
+    status: "active",
+    adoptedRunId: null,
+    layoutOverrides: { 0: "builtin:three-hero-top" },
+    editVersion: 2,
+    plan: {
+      title: "Flip plan",
+      panelCount: 3,
+      dialogueCount: 0,
+      pages: [{
+        index: 0,
+        title: "Page 1",
+        layoutTemplateId: "builtin:three-horizontal",
+        panels: [1, 2, 3].map((n) => ({
+          id: `p${n}`,
+          sceneIndex: 0,
+          sceneHeading: "INT. ROOM - DAY",
+          sourceElementIds: [`element-${n}`],
+          prompt: `beat ${n}`,
+          sourceText: `Beat ${n}.`,
+          dialogueOrderIndexes: [],
+          visualScale: n === 1 ? "large" as const : "medium" as const,
+          sourceBeatIds: [`b${n}`]
+        }))
+      }]
+    },
+    pageNaming: { mode: "beats", fallback: false },
+    createdAt: "2026-07-14T00:00:00.000Z"
+  };
+  const html = renderNameStudio({
+    activeScriptId: "script-1",
+    candidates: [candidate],
+    beatKinds: { b1: "reveal", b2: "action", b3: "pause" },
+    dialogueChars: [],
+    candidatesBusy: false,
+    runBusy: false,
+    candidateCount: 3,
+    templateSelected: true,
+    nameStudio: { takeId: "candidate-flip", pageIndex: 0, selectedPanelId: "p1" },
+    run: null,
+    draft: null
+  });
+  assert.match(html, /data-action="studio-flip-layout"/, "フリップチップ");
+  assert.match(html, /元の案に戻す/, "override時のリセット導線");
+  assert.match(html, /フリップ済み/, "overrideバッジ");
+  assert.match(html, /◆ three-hero-top/, "現在案(override適用後)が先頭");
+  assert.match(html, /studio-panel is-large is-selected/, "選択中コマ+largeスケール");
+  assert.match(html, /reveal/, "ビートkindチップ");
+  assert.match(html, /コマ詳細/, "インスペクタ");
 });

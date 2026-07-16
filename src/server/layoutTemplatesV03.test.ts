@@ -13,11 +13,11 @@ import {
   LAYOUT_PRESETS,
   describeScriptMangaLayouts,
   findLayoutPreset,
-  scriptMangaLayoutAlignsImportance,
   scriptMangaLayoutCandidates,
-  selectScriptMangaLayoutId,
   setExternalScriptMangaLayouts
 } from "../shared/layoutPresets.ts";
+import { extractLayoutFeatures } from "../shared/layoutFeatures.ts";
+import { buildPanelDemand, feasibleLayouts } from "../shared/layoutMatcher.ts";
 import { normalizeGuruguruLayout, normalizeGuruguruLayoutPages } from "../shared/pageLayout.ts";
 import { HttpError } from "./http.ts";
 
@@ -145,11 +145,18 @@ test("候補プール参加: candidate:true の取り込みテンプレが候補
     assert.equal(described.length, 1);
     assert.ok(described[0]!.description.includes("borderless hero panel"), "autoManga.description を使う");
     assert.equal(described[0]!.figureSlot, 3, "figureスロット位置(reading order)");
-    // emphasisPanelIds=['hero'] → hero は reading order 先頭スロット。
-    assert.equal(scriptMangaLayoutAlignsImportance(imported.template.id, ["hero", "normal", "normal"]), true);
-    assert.equal(scriptMangaLayoutAlignsImportance(imported.template.id, ["normal", "normal", "hero"]), false);
-    // 事前選択は figure スロット付きを避ける(既存方針のまま)。
-    assert.equal(selectScriptMangaLayoutId(["hero", "normal", "normal"]), "builtin:three-hero-top");
+    // emphasisPanelIds の強調スロット上書き(SPEC v0.3 §23.1)は特徴量抽出で尊重される。
+    const features = extractLayoutFeatures(imported.template.id, imported.template.layout);
+    assert.equal(features.emphasizedSlotIndex, 0, "emphasisPanelIds=['hero'] → 読み順先頭スロット");
+    // 検索は figure スロット付きを避ける(figure-slot-unwanted、既存方針のまま)。
+    const feasible = feasibleLayouts(
+      (["large", "medium", "medium"] as const).map((visualScale: "large" | "medium") =>
+        buildPanelDemand({ visualScale, totalCharacters: 0, balloonCount: 0 })
+      )
+    );
+    assert.equal(feasible[0]!.layoutId, "builtin:three-hero-top");
+    assert.ok(!feasible.some((entry: { layoutId: string }) => entry.layoutId === imported.template.id),
+      "figureスロット付き取り込みテンプレは要求なしでは実現可能集合に入らない");
   } finally {
     deleteLayoutTemplate(imported.template.id);
   }

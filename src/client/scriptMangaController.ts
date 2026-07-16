@@ -26,7 +26,8 @@ type ScriptMangaExportFormat = "png" | "jpeg" | "pptx" | "ora";
 
 const DEFAULT_SETTINGS: ScriptMangaUiSettings = {
   templateId: "",
-  planningMode: "heuristic",
+  // V5 X5: planningMode select はUIから削除。既定はビート化N1(llm)。API値は残置。
+  planningMode: "llm",
   panelsPerPage: 4,
   maxDialoguesPerPanel: 4,
   targetPageCount: 0,
@@ -67,9 +68,6 @@ export function nextScriptMangaSettings(
   rawValue: string
 ): ScriptMangaUiSettings {
   if (field === "templateId") return { ...current, templateId: rawValue };
-  if (field === "planningMode" && (rawValue === "heuristic" || rawValue === "llm")) {
-    return { ...current, planningMode: rawValue };
-  }
   if (field === "panelsPerPage") {
     const parsed = Number(rawValue);
     if (!Number.isFinite(parsed)) return current;
@@ -106,7 +104,8 @@ export function nextScriptMangaSettings(
 export function scriptMangaPrepareRequest(
   scriptId: string,
   settings: ScriptMangaUiSettings,
-  planCandidateId?: string
+  planCandidateId?: string,
+  expectedCandidateVersion?: number
 ): PrepareScriptMangaRunRequest {
   return {
     scriptId,
@@ -115,7 +114,8 @@ export function scriptMangaPrepareRequest(
     candidateSelectionPolicy: "review",
     requireReferenceSets: true,
     allowReferenceFallback: false,
-    ...(planCandidateId ? { planCandidateId } : {})
+    ...(planCandidateId ? { planCandidateId } : {}),
+    ...(expectedCandidateVersion !== undefined ? { expectedCandidateVersion } : {})
   };
 }
 
@@ -247,10 +247,12 @@ async function adoptCandidate(candidateId: string): Promise<void> {
   }
   const serial = beginOperation();
   if (serial === null) return;
+  // V5 D5: 採用にも楽観ロックを掛ける(採用開始直前のフリップとの競合を検出)。
+  const expectedVersion = state.scriptMangaCandidates.find((candidate) => candidate.id === candidateId)?.editVersion;
   try {
     const run = await api<ScriptMangaRunView>(`/api/projects/${projectId}/script-manga-runs`, {
       method: "POST",
-      body: JSON.stringify(scriptMangaPrepareRequest(scriptId, settings, candidateId))
+      body: JSON.stringify(scriptMangaPrepareRequest(scriptId, settings, candidateId, expectedVersion))
     });
     if (operationIsCurrent(serial) && state.scriptScreenOpen && state.activeScriptId === scriptId) {
       state.scriptMangaRun = run;
@@ -261,9 +263,72 @@ async function adoptCandidate(candidateId: string): Promise<void> {
     }
   } catch (error) {
     reportOperationError(serial, error);
+    // 409(並行フリップ・採用中)は候補一覧を取り直して表示を合わせる。
+    void refreshScriptMangaCandidates();
   } finally {
     finishOperation(serial);
   }
+}
+
+// --- script画面ライブ更新(V5 D7): pollCollectRound と同型の delay-loop ---
+
+const SCRIPT_MANGA_POLL_INTERVAL_MS = 5000;
+let pollGeneration = 0;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** run を静かに(busy表示なしで)取り直す。ポーリング用。 */
+async function refreshRunQuietly(runId: string): Promise<void> {
+  // V5 D6: 編集ドラフト中は run の適用をskipする(ドラフトの根拠planが差し替わる巻き戻り防止)。
+  if (state.nameStudioDraft) return;
+  try {
+    const run = await api<ScriptMangaRunView>(`/api/script-manga-runs/${encodeURIComponent(runId)}`);
+    if (!state.scriptScreenOpen || state.scriptMangaBusy || state.nameStudioDraft) return;
+    if (state.scriptMangaRun && state.scriptMangaRun.id !== runId) return;
+    if (run.scriptId !== state.activeScriptId) return;
+    state.scriptMangaRun = run;
+    requestRender();
+  } catch {
+    // ポーリングは補助。失敗は次周期に任せる。
+  }
+}
+
+/**
+ * script画面が開いている間、候補と run を定期的に取り直す。エージェントがAPIで作った候補が
+ * 開きっぱなしのブラウザへ自動で現れ、別ブラウザ/エージェントの採用で run もブートストラップされる。
+ */
+export function startScriptMangaPolling(): void {
+  if (typeof window === "undefined") return;
+  const generation = ++pollGeneration;
+  void (async () => {
+    let cycle = 0;
+    while (generation === pollGeneration && state.scriptScreenOpen) {
+      await delay(SCRIPT_MANGA_POLL_INTERVAL_MS);
+      cycle += 1;
+      if (generation !== pollGeneration || !state.scriptScreenOpen) break;
+      // 共有ページは「バックグラウンドで開きっぱなし」が主用途なので、hidden でも
+      // 完全には止めず低頻度(4周期=20秒毎)で回す。
+      if (document.hidden && cycle % 4 !== 0) continue;
+      if (state.scriptMangaBusy || state.scriptMangaCandidatesBusy) continue;
+      await refreshScriptMangaCandidates();
+      if (generation !== pollGeneration || !state.scriptScreenOpen) break;
+      if (state.scriptMangaRun) {
+        await refreshRunQuietly(state.scriptMangaRun.id);
+      } else {
+        // 眺めているだけのブラウザでも、採用済み候補から run カードを立ち上げる。
+        const adopted = state.scriptMangaCandidates.find(
+          (candidate) => candidate.status === "adopted" && candidate.adoptedRunId
+        );
+        if (adopted?.adoptedRunId) await refreshRunQuietly(adopted.adoptedRunId);
+      }
+    }
+  })();
+}
+
+export function stopScriptMangaPolling(): void {
+  pollGeneration += 1;
 }
 
 /** 脚本画面を開いた時、利用可能テンプレートと既定選択を同期する。 */
@@ -287,9 +352,11 @@ export function initializeScriptMangaUiState(): void {
   state.scriptMangaCandidateBeatKinds = {};
   state.scriptMangaCandidateDialogueChars = [];
   state.scriptMangaCandidatesBusy = false;
+  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null };
   if (typeof window !== "undefined") {
     void refreshScriptMangaVlmStatus(statusRequestSerial);
     void refreshScriptMangaCandidates();
+    startScriptMangaPolling();
   }
 }
 
@@ -307,6 +374,7 @@ export function clearScriptMangaRunState(): void {
   state.scriptMangaCandidateBeatKinds = {};
   state.scriptMangaCandidateDialogueChars = [];
   state.scriptMangaCandidatesBusy = false;
+  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null };
 }
 
 /** 脚本画面を閉じる時はプロジェクト固有のテンプレートと設定も破棄する。 */
@@ -314,6 +382,8 @@ export function clearScriptMangaUiState(): void {
   operationSerial += 1;
   vlmStatusRequestSerial += 1;
   candidateOperationSerial += 1;
+  stopScriptMangaPolling();
+  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null };
   state.scriptMangaTemplates = [];
   state.scriptMangaSettings = { ...DEFAULT_SETTINGS };
   state.scriptMangaRun = null;

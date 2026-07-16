@@ -2,6 +2,44 @@
 
 FountainからMangaPlanV2を作り、画像生成・候補採用・書き出しまでを自動化する利用者／コーディングエージェント向けの現行手順である。個別作品の全文prompt、候補画像、制作ログはrepositoryへ保存しない。
 
+## 0. ネーム選択の人間ゲート(attended運用、ネームスタジオV5)
+
+エージェントが候補を作り、**人間が localhost のネームスタジオで読んで選ぶ**運用。無人運転
+(以降の節どおりエージェント自身が採用・承認する)も引き続き可で、依頼者が見ている場合はこちらを使う。
+
+```
+0. 前提チェック(URL案内より前に確認):
+     - workflow template が作成済み(スタジオの採用ボタンは templateId 未設定だと disabled)
+     - キャラの reference set が承認済み(採用POSTは requireReferenceSets:true 固定。
+       未整備だと materialize が blocked で 422 になり人間側の採用が成立しない)
+1. POST /api/projects/:id/script-manga-plan-candidates {scriptId, count:3, ...}   ← 候補提示
+2. 人間へ script 画面のURLを案内(以後エージェントはネームに触らない。ページは5秒毎に
+   ライブ更新され、追加候補・レイアウトフリップ・採用が自動で映る)
+3. GET 同エンドポイントを15〜30秒毎にポーリング:
+     - いずれかの candidate.status === "adopted" → adoptedRunId を「即座に」記録して次へ
+       (採用済み候補も人間が破棄でき、破棄されると一覧から消えて runId の再取得手段が無い)
+     - status === "adopting" は採用処理中(監督LLM実行中)。この間 set-layout は 409
+     - 人間がUIで追加生成した候補が増えても構わず待つ
+     - 空リスト化・既知候補idの消失(=人間が脚本を再importしてrevisionが進んだ)なら
+       候補を作り直して再提示。※一覧GETは409を返さない。409(stale candidate)は
+       採用APIを自分で叩くunattended経路でのみ起きる
+4. GET /api/script-manga-runs/:runId をポーリング:
+     - approvalStatus === "approved" になるまで待つ(この間、人間が演出ネームを確認し、
+       POST /api/script-manga-plans/:planId/edits 相当のスタジオ編集をしていることがある)
+5. POST /api/script-manga-runs/:runId/start → 以降は既存の生成・レビューフロー
+```
+
+採用runの生成設定(template等)は、採用ボタンを押すブラウザ側の script 画面設定が使われる
+(エージェントは手順2の案内時に必要な設定値を人間へ伝える)。候補のページ別レイアウトは
+`POST /api/script-manga-plan-candidates/:id/set-layout` (`{pageIndex, layoutTemplateId, expectedVersion}`)
+で人間・エージェントのどちらからでも変更でき、`expectedVersion`(候補の `editVersion`)の楽観ロックで
+競合を検出する。基礎プラン(`plan`)は不変で、選択は `layoutOverrides` に載る。
+
+V5の語彙変更: コマの重みは `visualScale`(`small/medium/large/splash`)。provided plan では旧
+`importance`(`splash/hero/normal`)も引き続き受理され `visualScale` へ写像されるが、新規は
+`visualScale` を使う。ネーム監督はレイアウトを選ばない(`layoutTemplateId` は監督schemaから削除済み。
+provided/候補のレイアウトがそのまま使われる)。
+
 ## 1. 生成より先にネームを確定する
 
 最初のrunは`generateImages:false`（prepare-only）で作る。ネーム（N1）は、利用可能なら画像評価とは分離した上位モデルまたは専任サブエージェントに担当させ、同じ脚本から複数候補を作って比較する。上位モデルは情報開示順、ページ送り、反応、見せ場の判断には有効だが、コマ数上限、台詞の一度だけの割当、visible cast、文字収容を自動的に保証するものではない。最終的にはMangaPlan validationと全panel preflightを通す。

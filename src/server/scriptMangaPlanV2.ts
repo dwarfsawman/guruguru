@@ -223,7 +223,8 @@ export function buildMangaPlanV2(input: {
         mustShow: [],
         dialogueOnly: [],
         kind: annotated.kind,
-        importance: annotated.importance
+        importance: annotated.importance,
+        preferredScale: annotated.preferredScale
       });
       previousAction = action;
     }
@@ -362,7 +363,11 @@ export function buildMangaPlanV2(input: {
       const provisional: PanelSpec = {
         id: legacyPanel.id,
         ...(layoutRole === "figure" ? { role: "figure" as const } : {}),
-        ...(legacyPanel.importance !== undefined ? { importance: legacyPanel.importance } : {}),
+        ...(legacyPanel.visualScale !== undefined ? { visualScale: legacyPanel.visualScale } : {}),
+        // V5 D6: V2は未演出コマにも既定値を埋めるため、演出の出所をここで記録する。
+        directionSource: legacyPanel.direction
+          ? (input.legacyPlan.plannerProvenance?.kind === "llm-director" ? "llm" : "provided")
+          : "fallback",
         sourceElementIds,
         beatIds: panelBeatIds,
         preStateId,

@@ -27,7 +27,8 @@ const settings: ScriptMangaUiSettings = {
 
 test("nextScriptMangaSettings applies supported template, planner and panel controls", () => {
   assert.equal(nextScriptMangaSettings(settings, "templateId", "template-2").templateId, "template-2");
-  assert.equal(nextScriptMangaSettings(settings, "planningMode", "llm").planningMode, "llm");
+  // V5 X5: planningMode select はUIから削除。reducerは未知フィールドとして無視する。
+  assert.equal(nextScriptMangaSettings(settings, "planningMode", "llm"), settings);
   assert.equal(nextScriptMangaSettings(settings, "panelsPerPage", "0").panelsPerPage, 1);
   assert.equal(nextScriptMangaSettings(settings, "panelsPerPage", "9").panelsPerPage, 6);
   assert.equal(nextScriptMangaSettings(settings, "panelsPerPage", "3.8").panelsPerPage, 3);
@@ -124,7 +125,7 @@ test("script manga UI lifecycle clears revision-pinned runs without leaking proj
   assert.deepEqual(state.scriptMangaTemplates, []);
   assert.deepEqual(state.scriptMangaSettings, {
     templateId: "",
-    planningMode: "heuristic",
+    planningMode: "llm",
     panelsPerPage: 4,
     maxDialoguesPerPanel: 4,
     targetPageCount: 0,
