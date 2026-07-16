@@ -6,6 +6,7 @@ import { parseScriptMangaDeepLink } from "../shared/scriptMangaDeepLink";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { openBook } from "./bookController";
+import { DEFAULT_NAME_STUDIO_READER_OPTIONS } from "./nameStudioReader";
 import { openScriptScreen, selectScript } from "./scriptController";
 import { DIRECTED_TAKE_ID } from "./views/nameStudioView";
 
@@ -72,7 +73,8 @@ export async function applyInitialScriptMangaDeepLink(href = window.location.hre
       takeId: candidate?.id ?? (run?.plan ? DIRECTED_TAKE_ID : null),
       pageIndex: 0,
       selectedPanelId: null,
-      fullscreen: false
+      fullscreen: false,
+      ...DEFAULT_NAME_STUDIO_READER_OPTIONS
     };
     state.nameStudioDraft = null;
     requestRender();

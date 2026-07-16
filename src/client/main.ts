@@ -91,7 +91,7 @@ import "./lazyImageController";
 import "./modelCheckController";
 import "./confirmDialogController";
 import "./scriptMangaController";
-import "./nameStudioController";
+import { handleNameStudioKeydown } from "./nameStudioController";
 import "./homeProgressController";
 import "./referenceSetController";
 import { importImagesAsPages } from "./bookController";
@@ -532,6 +532,9 @@ function bindEvents() {
 
     // Book Reader が開いている間はページ送り/閉じるを最優先で処理する（detail とは排他）。
     if (handleBookReaderKeydown(event)) {
+      return;
+    }
+    if (handleNameStudioKeydown(event)) {
       return;
     }
     // コマ選択 lightbox も detail とは排他(book grid の上に開く)なので同様に早期処理する。

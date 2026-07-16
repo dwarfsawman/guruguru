@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_BOOK_READER_SETTINGS,
   canonicalReaderIndex,
+  firstReaderIndex,
   getReaderStep,
   getVisibleReaderPages,
   goNextReaderIndex,
   goPrevReaderIndex,
+  lastReaderIndex,
   normalizeBookReaderSettings,
   readerPageLabel,
   type BookReaderSettings
@@ -199,4 +201,18 @@ test("canonical: 見開き領域内はペア先頭へ丸める", () => {
   assert.equal(canonicalReaderIndex(2, 10, config), 1, "2 は 1-2 ペアの先頭 1 へ");
   assert.equal(canonicalReaderIndex(3, 10, config), 3);
   assert.equal(canonicalReaderIndex(4, 10, config), 3, "4 は 3-4 ペアの先頭 3 へ");
+});
+
+test("Home / End: 単ページと見開きの先頭・末尾表示へジャンプする", () => {
+  const single = settings({ layout: "single" });
+  assert.equal(firstReaderIndex(6, single), 0);
+  assert.equal(lastReaderIndex(6, single), 5);
+
+  const evenSpread = settings({ layout: "spread", direction: "rtl", spreadStartIndex: 1 });
+  assert.equal(firstReaderIndex(6, evenSpread), 0);
+  assert.equal(lastReaderIndex(6, evenSpread), 4, "6ページ目を含む5-6の見開きへ移動");
+
+  const oddSpread = settings({ layout: "spread", direction: "rtl", spreadStartIndex: 1 });
+  assert.equal(lastReaderIndex(5, oddSpread), 4, "奇数末尾は単独5ページ目へ移動");
+  assert.equal(lastReaderIndex(0, oddSpread), 0, "0ページでも安全");
 });

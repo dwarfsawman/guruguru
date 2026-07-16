@@ -6,7 +6,17 @@ import type { NamePlanEdit, ScriptMangaPlanView, SetCandidateLayoutResponse } fr
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
+import {
+  canonicalReaderIndex,
+  firstReaderIndex,
+  goNextReaderIndex,
+  goPrevReaderIndex,
+  lastReaderIndex,
+  type BookReaderLayout
+} from "./bookReader";
+import { isTextEntryTarget } from "./clientUtils";
 import { mapNameStudioPage, type ComparableNameStudioPlan } from "./nameStudioPageMapping";
+import { nameStudioReaderSettings, type NameStudioFitMode } from "./nameStudioReader";
 import { refreshScriptMangaCandidates } from "./scriptMangaController";
 import { activeStudioTake, DIRECTED_TAKE_ID, directedPlanEditable, effectiveCandidatePlan } from "./views/nameStudioView";
 
@@ -25,6 +35,10 @@ function currentPlan(): ComparableNameStudioPlan | null {
   return take ? effectiveCandidatePlan(take) : null;
 }
 
+function canonicalStudioPageIndex(pageIndex: number, pageCount: number): number {
+  return canonicalReaderIndex(pageIndex, pageCount, nameStudioReaderSettings(state.nameStudio));
+}
+
 function selectTake(candidateId: string): void {
   if (!candidateId) return;
   const fromPlan = currentPlan();
@@ -32,10 +46,10 @@ function selectTake(candidateId: string): void {
     if (!state.scriptMangaRun?.plan) return;
     const mapping = mapNameStudioPage(fromPlan, state.scriptMangaRun.plan, state.nameStudio.pageIndex);
     state.nameStudio = {
+      ...state.nameStudio,
       takeId: DIRECTED_TAKE_ID,
-      pageIndex: mapping.pageIndex,
-      selectedPanelId: null,
-      fullscreen: state.nameStudio.fullscreen
+      pageIndex: canonicalStudioPageIndex(mapping.pageIndex, state.scriptMangaRun.plan.pages.length),
+      selectedPanelId: null
     };
     state.nameStudioDraft = null;
     requestRender();
@@ -46,26 +60,70 @@ function selectTake(candidateId: string): void {
   const targetPlan = effectiveCandidatePlan(candidate);
   const mapping = mapNameStudioPage(fromPlan, targetPlan, state.nameStudio.pageIndex);
   state.nameStudio = {
+    ...state.nameStudio,
     takeId: candidateId,
     // 同じ数値の頁ではなく、beat/source elementが一致する場面を優先して読み比べる。
-    pageIndex: mapping.pageIndex,
-    selectedPanelId: null,
-    fullscreen: state.nameStudio.fullscreen
+    pageIndex: canonicalStudioPageIndex(mapping.pageIndex, targetPlan.pages.length),
+    selectedPanelId: null
   };
   state.nameStudioDraft = null;
   requestRender();
 }
 
-function movePage(delta: number): void {
+function movePage(direction: "next" | "previous"): void {
   const takeId = state.nameStudio.takeId === DIRECTED_TAKE_ID
     ? DIRECTED_TAKE_ID
     : activeStudioTake(state.scriptMangaCandidates, state.nameStudio)?.id ?? null;
   if (!takeId) return;
   const pageCount = currentPageCount(takeId);
-  const next = Math.max(0, Math.min(pageCount - 1, state.nameStudio.pageIndex + delta));
+  const settings = nameStudioReaderSettings(state.nameStudio);
+  const next = direction === "next"
+    ? goNextReaderIndex(state.nameStudio.pageIndex, pageCount, settings)
+    : goPrevReaderIndex(state.nameStudio.pageIndex, pageCount, settings);
   if (next === state.nameStudio.pageIndex) return;
   state.nameStudio = { ...state.nameStudio, takeId, pageIndex: next, selectedPanelId: null };
   state.nameStudioDraft = null;
+  requestRender();
+}
+
+function jumpPage(edge: "first" | "last"): void {
+  const takeId = state.nameStudio.takeId === DIRECTED_TAKE_ID
+    ? DIRECTED_TAKE_ID
+    : activeStudioTake(state.scriptMangaCandidates, state.nameStudio)?.id ?? null;
+  if (!takeId) return;
+  const pageCount = currentPageCount(takeId);
+  const settings = nameStudioReaderSettings(state.nameStudio);
+  const next = edge === "first"
+    ? firstReaderIndex(pageCount, settings)
+    : lastReaderIndex(pageCount, settings);
+  if (next === state.nameStudio.pageIndex) return;
+  state.nameStudio = { ...state.nameStudio, takeId, pageIndex: next, selectedPanelId: null };
+  state.nameStudioDraft = null;
+  requestRender();
+}
+
+function setReaderLayout(layout: BookReaderLayout): void {
+  if (layout !== "single" && layout !== "spread") return;
+  const takeId = state.nameStudio.takeId === DIRECTED_TAKE_ID
+    ? DIRECTED_TAKE_ID
+    : activeStudioTake(state.scriptMangaCandidates, state.nameStudio)?.id ?? null;
+  const pageCount = takeId ? currentPageCount(takeId) : 0;
+  const nextState = { ...state.nameStudio, layout, selectedPanelId: null };
+  state.nameStudio = {
+    ...nextState,
+    pageIndex: canonicalReaderIndex(
+      nextState.pageIndex,
+      pageCount,
+      nameStudioReaderSettings(nextState)
+    )
+  };
+  state.nameStudioDraft = null;
+  requestRender();
+}
+
+function setFitMode(fitMode: NameStudioFitMode): void {
+  if (fitMode !== "fit-height" && fitMode !== "fit-width") return;
+  state.nameStudio = { ...state.nameStudio, fitMode };
   requestRender();
 }
 
@@ -248,23 +306,64 @@ function bindNameStudioEvents(app: HTMLElement): void {
       closePanelDialog();
     }
   });
-  app.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
+}
+
+/**
+ * Name Studioの閲覧キー。全画面ではbody focusでも動作し、通常表示ではStudio内に
+ * focusがある場合だけ処理する。他の編集UIやコマ詳細ダイアログからキーを奪わない。
+ */
+export function handleNameStudioKeydown(event: KeyboardEvent): boolean {
+  const card = document.querySelector<HTMLElement>("[data-key=\"name-studio\"]");
+  if (!card) return false;
+  const target = event.target instanceof Element ? event.target : null;
+  if (!state.nameStudio.fullscreen && !target?.closest("[data-key=\"name-studio\"]")) return false;
+
+  if (event.key === "Escape") {
     if (state.nameStudio.selectedPanelId) {
       closePanelDialog();
-      return;
+      return true;
     }
     if (state.nameStudio.fullscreen) {
       event.preventDefault();
       toggleFullscreen();
+      return true;
     }
-  });
+    return false;
+  }
+  if (state.nameStudio.selectedPanelId || isTextEntryTarget(event.target)) return false;
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+
+  if (event.key === "ArrowRight") {
+    event.preventDefault();
+    movePage("next");
+    return true;
+  }
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    movePage("previous");
+    return true;
+  }
+  if (event.key === "Home") {
+    event.preventDefault();
+    jumpPage("first");
+    return true;
+  }
+  if (event.key === "End") {
+    event.preventDefault();
+    jumpPage("last");
+    return true;
+  }
+  return false;
 }
 
 registerActions({
   "studio-select-take": (candidateId) => selectTake(candidateId),
-  "studio-prev-page": () => movePage(-1),
-  "studio-next-page": () => movePage(1),
+  "studio-prev-page": () => movePage("previous"),
+  "studio-next-page": () => movePage("next"),
+  "studio-first-page": () => jumpPage("first"),
+  "studio-last-page": () => jumpPage("last"),
+  "studio-set-layout": (id) => setReaderLayout(id as BookReaderLayout),
+  "studio-set-fit": (id) => setFitMode(id as NameStudioFitMode),
   "studio-toggle-fullscreen": () => toggleFullscreen(),
   "studio-select-panel": (panelId) => selectPanel(panelId),
   "studio-close-panel": () => closePanelDialog(),

@@ -47,8 +47,10 @@ export function renderBookReaderView(
           <span class="book-reader-title">${escapeHtml(book.project.name)}</span>
         </div>
         <div class="book-reader-topbar-group">
-          <button class="button-secondary compact" type="button" data-action="book-reader-prev" title="前へ">前へ</button>
-          <button class="button-secondary compact" type="button" data-action="book-reader-next" title="次へ">次へ</button>
+          <button class="button-secondary compact" type="button" data-action="book-reader-prev"
+            aria-keyshortcuts="ArrowLeft" title="前へ (←)">前へ</button>
+          <button class="button-secondary compact" type="button" data-action="book-reader-next"
+            aria-keyshortcuts="ArrowRight" title="次へ (→)">次へ</button>
           <button
             class="${settingsPanelOpen ? "button-primary" : "button-secondary"} compact"
             type="button"

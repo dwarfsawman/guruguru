@@ -388,7 +388,14 @@ test("name studio renders an imported autoManga layout wireframe with panel over
     runBusy: false,
     candidateCount: 3,
     templateSelected: true,
-    nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: "planned-panel-1", fullscreen: false },
+    nameStudio: {
+      takeId: null,
+      pageIndex: 0,
+      selectedPanelId: "planned-panel-1",
+      fullscreen: false,
+      layout: "single",
+      fitMode: "fit-height"
+    },
     run: null,
     draft: null
   };
@@ -406,6 +413,65 @@ test("name studio renders an imported autoManga layout wireframe with panel over
     assert.match(html, /data-action="adopt-script-manga-plan-candidate"/);
     assert.match(html, /data-action="studio-toggle-fullscreen"/, "全画面導線");
     assert.doesNotMatch(html, /レイアウト.*を解決できません/);
+
+    const spreadPages = [1, 2, 3].map((pageNumber) => {
+      const sourcePage = candidate.plan.pages[0]!;
+      return {
+        ...sourcePage,
+        index: pageNumber - 1,
+        title: `Page ${pageNumber}`,
+        panels: sourcePage.panels.map((panel) => ({
+          ...panel,
+          id: `spread-panel-${pageNumber}`,
+          sourceElementIds: [`element-${pageNumber}`],
+          sourceText: `Page ${pageNumber} source text.`,
+          direction: panel.direction
+            ? { ...panel.direction, action: `Page ${pageNumber} action.` }
+            : panel.direction
+        }))
+      };
+    });
+    const spreadCandidate: ScriptMangaPlanCandidateView = {
+      ...candidate,
+      id: "candidate-spread",
+      plan: { ...candidate.plan, panelCount: 3, pages: spreadPages }
+    };
+    const spreadHtml = renderNameStudio({
+      ...studioProps,
+      candidates: [spreadCandidate],
+      nameStudio: {
+        takeId: spreadCandidate.id,
+        pageIndex: 0,
+        selectedPanelId: "spread-panel-2",
+        fullscreen: true,
+        layout: "spread",
+        fitMode: "fit-height"
+      }
+    });
+    assert.match(spreadHtml, /studio-page-stage spread fit-height/, "2ページ・高さ合わせstage");
+    assert.match(spreadHtml, /p1-2 \/ 3/, "見開き範囲カウンター");
+    assert.match(
+      spreadHtml,
+      /data-page-number="2"[\s\S]*data-page-number="1"/,
+      "右綴じなので次ページを左、現在ページを右へ並べる"
+    );
+    assert.doesNotMatch(spreadHtml, /data-page-number="3"/, "現在の見開き外は描画しない");
+    assert.match(spreadHtml, /Page 2 source text\./, "左ページのコマを選んでも詳細を解決する");
+
+    const lastSpreadHtml = renderNameStudio({
+      ...studioProps,
+      candidates: [spreadCandidate],
+      nameStudio: {
+        takeId: spreadCandidate.id,
+        pageIndex: 2,
+        selectedPanelId: null,
+        fullscreen: true,
+        layout: "spread",
+        fitMode: "fit-width"
+      }
+    });
+    assert.match(lastSpreadHtml, /studio-page-stage spread fit-width is-unpaired/, "奇数末尾を右側の片ページとして表示");
+    assert.match(lastSpreadHtml, /data-page-number="3"/, "奇数末尾ページ");
 
     const candidateB: ScriptMangaPlanCandidateView = {
       ...candidate,
@@ -425,9 +491,19 @@ test("name studio renders an imported autoManga layout wireframe with panel over
     const fullscreenHtml = renderNameStudio({
       ...studioProps,
       candidates: [candidate, candidateB],
-      nameStudio: { takeId: candidateB.id, pageIndex: 0, selectedPanelId: null, fullscreen: true }
+      nameStudio: {
+        takeId: candidateB.id,
+        pageIndex: 0,
+        selectedPanelId: null,
+        fullscreen: true,
+        layout: "single",
+        fitMode: "fit-height"
+      }
     });
     assert.match(fullscreenHtml, /name-studio-card is-fullscreen/, "アプリ内全画面class");
+    assert.match(fullscreenHtml, /is-single is-fit-height/, "単ページ・高さ合わせclass");
+    assert.match(fullscreenHtml, /data-action="studio-set-layout" data-id="spread"/, "2ページ表示導線");
+    assert.match(fullscreenHtml, /data-action="studio-set-fit" data-id="fit-width"/, "横幅合わせ導線");
     assert.match(fullscreenHtml, /aria-pressed="true">元の表示へ/, "全画面解除導線");
     assert.equal((fullscreenHtml.match(/role="tab"/g) ?? []).length, 1, "同じ構造は別テイクとして表示しない");
     assert.doesNotMatch(fullscreenHtml, /テイクB|同じ構造/);
@@ -537,7 +613,14 @@ test("name studio keeps small panels concise and exposes hover/click detail", ()
       runBusy: false,
       candidateCount: 3,
       templateSelected: true,
-      nameStudio: { takeId: "candidate-compact", pageIndex: 0, selectedPanelId: "compact-panel", fullscreen: false },
+      nameStudio: {
+        takeId: "candidate-compact",
+        pageIndex: 0,
+        selectedPanelId: "compact-panel",
+        fullscreen: false,
+        layout: "single",
+        fitMode: "fit-height"
+      },
       run: null,
       draft: null
     });
@@ -604,7 +687,14 @@ test("name studio directed mode: 採用後は演出ネーム(カメラ/人物/�
     runBusy: false,
     candidateCount: 3,
     templateSelected: true,
-    nameStudio: { takeId: "__directed__", pageIndex: 0, selectedPanelId: "v2-p1", fullscreen: false },
+    nameStudio: {
+      takeId: "__directed__",
+      pageIndex: 0,
+      selectedPanelId: "v2-p1",
+      fullscreen: false,
+      layout: "single",
+      fitMode: "fit-height"
+    },
     run: directedRun,
     draft: null
   };
@@ -681,7 +771,14 @@ test("name studio flip chips: activeな候補にfeasibleな代替とリセット
     runBusy: false,
     candidateCount: 3,
     templateSelected: true,
-    nameStudio: { takeId: "candidate-flip", pageIndex: 0, selectedPanelId: "p1", fullscreen: false },
+    nameStudio: {
+      takeId: "candidate-flip",
+      pageIndex: 0,
+      selectedPanelId: "p1",
+      fullscreen: false,
+      layout: "single",
+      fitMode: "fit-height"
+    },
     run: null,
     draft: null
   });

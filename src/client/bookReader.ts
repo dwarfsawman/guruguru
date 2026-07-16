@@ -109,6 +109,16 @@ export function canonicalReaderIndex(index: number, pagesLength: number, setting
   return s + Math.floor(offset / 2) * 2;
 }
 
+/** Home キーなどで先頭の表示へ移動するための正規化済み index。 */
+export function firstReaderIndex(pagesLength: number, settings: BookReaderSettings): number {
+  return canonicalReaderIndex(0, pagesLength, settings);
+}
+
+/** End キーなどで末尾を含む表示へ移動するための正規化済み index。 */
+export function lastReaderIndex(pagesLength: number, settings: BookReaderSettings): number {
+  return canonicalReaderIndex(Math.max(0, pagesLength - 1), pagesLength, settings);
+}
+
 /** 現在の表示から次の表示へ進むときに動かす論理ページ数（1 または 2）。 */
 export function getReaderStep(currentIndex: number, pagesLength: number, settings: BookReaderSettings): number {
   if (settings.layout === "single") {

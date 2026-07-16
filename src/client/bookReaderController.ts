@@ -17,8 +17,10 @@ import { isTextEntryTarget } from "./clientUtils";
 import {
   DEFAULT_BOOK_READER_SETTINGS,
   canonicalReaderIndex,
+  firstReaderIndex,
   goNextReaderIndex,
   goPrevReaderIndex,
+  lastReaderIndex,
   normalizeBookReaderSettings,
   type BookReaderBackground,
   type BookReaderDirection,
@@ -87,6 +89,16 @@ function readerPrev() {
   requestRender();
 }
 
+function readerFirst() {
+  state.bookReaderPageIndex = firstReaderIndex(pagesLength(), state.bookReaderSettings);
+  requestRender();
+}
+
+function readerLast() {
+  state.bookReaderPageIndex = lastReaderIndex(pagesLength(), state.bookReaderSettings);
+  requestRender();
+}
+
 function toggleReaderSettingsPanel() {
   state.bookReaderSettingsOpen = !state.bookReaderSettingsOpen;
   requestRender();
@@ -122,6 +134,7 @@ function toggleReaderPageNumber() {
  * Reader が開いている間のキーボード操作。main.ts の window keydown から呼ぶ。
  * - Escape: 設定パネルが開いていれば閉じ、無ければ Reader を閉じる。
  * - Space / ArrowRight: 次へ、ArrowLeft: 前へ（画面右＝次で固定）。
+ * - Home / End: 先頭 / 末尾を含む表示へジャンプする。
  * text-entry（見開き開始の数値入力など）にフォーカス中はページ送りキーを奪わない。
  * 処理したら true を返す（呼び出し側はそこで return する）。
  */
@@ -151,6 +164,16 @@ export function handleBookReaderKeydown(event: KeyboardEvent): boolean {
     readerPrev();
     return true;
   }
+  if (event.key === "Home") {
+    event.preventDefault();
+    readerFirst();
+    return true;
+  }
+  if (event.key === "End") {
+    event.preventDefault();
+    readerLast();
+    return true;
+  }
   return false;
 }
 
@@ -159,6 +182,8 @@ registerActions({
   "close-book-reader": () => closeBookReader(),
   "book-reader-next": () => readerNext(),
   "book-reader-prev": () => readerPrev(),
+  "book-reader-first": () => readerFirst(),
+  "book-reader-last": () => readerLast(),
   "book-reader-toggle-settings": () => toggleReaderSettingsPanel(),
   "book-reader-set-direction": (id) => updateReaderSettings({ direction: id as BookReaderDirection }),
   "book-reader-set-layout": (id) => updateReaderSettings({ layout: id as BookReaderLayout }),

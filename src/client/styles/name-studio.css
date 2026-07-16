@@ -16,9 +16,9 @@
   z-index: 70;
   width: 100vw;
   height: 100dvh;
-  overflow: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
-  padding: 18px clamp(18px, 3vw, 48px) 36px;
+  padding: 18px clamp(18px, 3vw, 48px);
   border: 0;
   border-radius: 0;
   isolation: isolate;
@@ -26,8 +26,7 @@
 }
 
 .name-studio-card.is-fullscreen .name-studio-heading {
-  position: sticky;
-  top: -18px;
+  position: relative;
   z-index: 12;
   margin: -18px calc(-1 * clamp(18px, 3vw, 48px)) 0;
   padding: 18px clamp(18px, 3vw, 48px) 12px;
@@ -53,6 +52,20 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.studio-reader-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-raised);
+}
+
+.studio-reader-options > button {
+  min-width: 62px;
 }
 
 .studio-count-label {
@@ -135,6 +148,17 @@
   align-items: start;
 }
 
+.name-studio-card.is-fullscreen .name-studio-takes {
+  flex: 0 0 auto;
+  max-height: 92px;
+}
+
+.name-studio-card.is-fullscreen .name-studio-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: stretch;
+}
+
 @media (max-width: 1100px) {
   .name-studio-body {
     grid-template-columns: 1fr;
@@ -146,6 +170,11 @@
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+  min-height: 0;
+}
+
+.name-studio-card.is-fullscreen .studio-reader {
+  height: 100%;
 }
 
 .studio-page-nav {
@@ -168,8 +197,122 @@
   font-size: 0.76rem;
 }
 
-.name-studio-card.is-fullscreen .studio-page {
-  width: min(820px, 100%);
+
+/* --- ページstage: 単ページ/右綴じ2ページとfitを同じDOMで切り替える --- */
+
+.studio-page-stage {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.studio-page-strip {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.studio-page-sheet {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.studio-page-stage.single .studio-page-sheet {
+  width: min(680px, 100%);
+}
+
+.studio-page-stage.spread .studio-page-sheet {
+  flex: 0 1 calc(50% - 4px);
+  max-width: calc(50% - 4px);
+}
+
+.studio-page-stage.spread.is-unpaired .studio-page-strip {
+  justify-content: flex-end;
+}
+
+.studio-page-gutter {
+  align-self: stretch;
+  flex: 0 0 1px;
+  background: var(--border);
+}
+
+.studio-page-sheet-number {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  z-index: 4;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(29, 27, 24, 0.86);
+  color: #fffdf8;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  pointer-events: none;
+}
+
+.studio-page-sheet > .studio-page {
+  width: 100%;
+  margin: 0;
+}
+
+.name-studio-card.is-fullscreen .studio-page-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.name-studio-card.is-fullscreen.is-fit-height .studio-page-stage {
+  overflow: hidden;
+}
+
+.name-studio-card.is-fullscreen.is-fit-height .studio-page-strip,
+.name-studio-card.is-fullscreen.is-fit-height .studio-page-sheet {
+  height: 100%;
+}
+
+.name-studio-card.is-fullscreen.is-fit-height .studio-page-strip {
+  align-items: stretch;
+}
+
+.name-studio-card.is-fullscreen.is-fit-height .studio-page-sheet {
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 100%;
+  justify-content: center;
+}
+
+.name-studio-card.is-fullscreen.is-fit-height.is-spread .studio-page-sheet {
+  max-width: calc(50% - 4px);
+}
+
+.name-studio-card.is-fullscreen.is-fit-height .studio-page-sheet > .studio-page {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.name-studio-card.is-fullscreen.is-fit-width .studio-page-stage {
+  overflow-x: hidden;
+  overflow-y: auto;
+  align-items: flex-start;
+}
+
+.name-studio-card.is-fullscreen.is-fit-width .studio-page-strip {
+  align-items: flex-start;
+}
+
+.name-studio-card.is-fullscreen.is-fit-width .studio-page-stage.single .studio-page-sheet {
+  width: 100%;
+  max-width: none;
+}
+
+.name-studio-card.is-fullscreen.is-fit-width .studio-page-sheet > .studio-page {
+  width: 100%;
+  height: auto;
 }
 
 /* リーダー本体: SVG背景 + HTMLオーバーレイ(コマのbboxへ%配置)。 */
@@ -460,6 +603,27 @@
   color: var(--text-muted);
 }
 
+.studio-visible-page-meta {
+  display: grid;
+  gap: 7px;
+}
+
+.studio-page-tools {
+  display: grid;
+  gap: 5px;
+}
+
+.studio-page-footer > strong {
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+.name-studio-card.is-fullscreen .studio-visible-page-meta {
+  flex: 0 1 auto;
+  max-height: 126px;
+  overflow-y: auto;
+}
+
 .studio-actions {
   display: flex;
   align-items: center;
@@ -474,6 +638,14 @@
   padding: 12px;
   position: sticky;
   top: 8px;
+}
+
+.name-studio-card.is-fullscreen .name-studio-inspector {
+  position: relative;
+  top: auto;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .name-studio-inspector h3 {

@@ -10,6 +10,7 @@ import type { ProjectDetail } from "../shared/apiTypes";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
+import { DEFAULT_NAME_STUDIO_READER_OPTIONS } from "./nameStudioReader";
 import { downloadBlob, filenameFromContentDisposition, responseErrorMessage } from "./downloadUtils";
 import { refreshLayoutTemplates } from "./layoutTemplateController";
 import { closeAssetDetail, openAssetDetail } from "./assetDetailController";
@@ -352,7 +353,13 @@ export function initializeScriptMangaUiState(): void {
   state.scriptMangaCandidateBeatKinds = {};
   state.scriptMangaCandidateDialogueChars = [];
   state.scriptMangaCandidatesBusy = false;
-  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null, fullscreen: false };
+  state.nameStudio = {
+    takeId: null,
+    pageIndex: 0,
+    selectedPanelId: null,
+    fullscreen: false,
+    ...DEFAULT_NAME_STUDIO_READER_OPTIONS
+  };
   if (typeof window !== "undefined") {
     void refreshScriptMangaVlmStatus(statusRequestSerial);
     void refreshScriptMangaCandidates();
@@ -374,7 +381,13 @@ export function clearScriptMangaRunState(): void {
   state.scriptMangaCandidateBeatKinds = {};
   state.scriptMangaCandidateDialogueChars = [];
   state.scriptMangaCandidatesBusy = false;
-  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null, fullscreen: false };
+  state.nameStudio = {
+    takeId: null,
+    pageIndex: 0,
+    selectedPanelId: null,
+    fullscreen: false,
+    ...DEFAULT_NAME_STUDIO_READER_OPTIONS
+  };
 }
 
 /** 脚本画面を閉じる時はプロジェクト固有のテンプレートと設定も破棄する。 */
@@ -383,7 +396,13 @@ export function clearScriptMangaUiState(): void {
   vlmStatusRequestSerial += 1;
   candidateOperationSerial += 1;
   stopScriptMangaPolling();
-  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null, fullscreen: false };
+  state.nameStudio = {
+    takeId: null,
+    pageIndex: 0,
+    selectedPanelId: null,
+    fullscreen: false,
+    ...DEFAULT_NAME_STUDIO_READER_OPTIONS
+  };
   state.scriptMangaTemplates = [];
   state.scriptMangaSettings = { ...DEFAULT_SETTINGS };
   state.scriptMangaRun = null;

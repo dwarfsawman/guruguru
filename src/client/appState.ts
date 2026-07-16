@@ -36,6 +36,11 @@ import type { PoseDraft } from "./poseTypes";
 import type { StyleLoraSelection } from "../shared/types";
 import type { BookReaderSettings } from "./bookReader";
 import { DEFAULT_BOOK_READER_SETTINGS } from "./bookReader";
+import {
+  DEFAULT_NAME_STUDIO_READER_OPTIONS,
+  type NameStudioFitMode
+} from "./nameStudioReader";
+import type { BookReaderLayout } from "./bookReader";
 import type {
   ScriptMangaPlanCandidateView,
   ScriptMangaRunView,
@@ -133,6 +138,10 @@ export interface NameStudioState {
   selectedPanelId: string | null;
   /** ネームスタジオだけをviewport全面へ広げるアプリ内全画面。 */
   fullscreen: boolean;
+  /** 1ページまたは右綴じ2ページ表示。 */
+  layout: BookReaderLayout;
+  /** 全画面で紙面を高さまたは横幅へ合わせる。 */
+  fitMode: NameStudioFitMode;
 }
 
 /** 演出ネームの編集ドラフト(V5 D6)。フォームの値は常にここからレンダーする(morph保護は1要素のみ)。 */
@@ -757,7 +766,13 @@ export const state: AppState = {
   scriptMangaCandidateDialogueChars: [],
   scriptMangaCandidatesBusy: false,
   scriptMangaCandidateCount: 3,
-  nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: null, fullscreen: false },
+  nameStudio: {
+    takeId: null,
+    pageIndex: 0,
+    selectedPanelId: null,
+    fullscreen: false,
+    ...DEFAULT_NAME_STUDIO_READER_OPTIONS
+  },
   nameStudioDraft: null,
   characters: [],
   selectedCharacterId: null,

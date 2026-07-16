@@ -28,7 +28,16 @@ import type { MangaPageSpec, MangaPlanV2, PanelSpec } from "../../shared/mangaPl
 import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../shared/scriptMangaApi";
 import type { DialogueLine } from "../../shared/apiTypes";
 import type { NameStudioDraft, NameStudioState } from "../appState";
+import {
+  canonicalReaderIndex,
+  getVisibleReaderPages,
+  goNextReaderIndex,
+  goPrevReaderIndex,
+  readerPageLabel,
+  type VisibleReaderPage
+} from "../bookReader";
 import { escapeAttr, escapeHtml } from "../format";
+import { nameStudioReaderSettings } from "../nameStudioReader";
 import { candidateDiffSignatures, candidatePageSignature, candidatePlanStructureSignature } from "./scriptView";
 
 export const DIRECTED_TAKE_ID = "__directed__";
@@ -574,13 +583,41 @@ function directedPanelDialog(page: MangaPageSpec, plan: MangaPlanV2, props: Name
   );
 }
 
-function renderDirectedReader(props: NameStudioViewProps): string {
-  const run = props.run!;
-  const plan = run.plan!;
-  const pageCount = plan.pages.length;
-  const pageIndex = Math.max(0, Math.min(pageCount - 1, props.nameStudio.pageIndex));
-  const page = plan.pages[pageIndex];
-  if (!page) return `<p class="studio-inspector-hint">プランにページがありません。</p>`;
+function studioReaderState<T>(pages: T[], studio: NameStudioState) {
+  const settings = nameStudioReaderSettings(studio);
+  const pageIndex = canonicalReaderIndex(studio.pageIndex, pages.length, settings);
+  const visible = getVisibleReaderPages(pages, pageIndex, settings);
+  return {
+    pageIndex,
+    visible,
+    label: readerPageLabel(visible, pages.length),
+    canGoPrevious: goPrevReaderIndex(pageIndex, pages.length, settings) !== pageIndex,
+    canGoNext: goNextReaderIndex(pageIndex, pages.length, settings) !== pageIndex
+  };
+}
+
+function renderStudioPageStage<T>(
+  visible: VisibleReaderPage<T>[],
+  studio: NameStudioState,
+  renderPage: (entry: VisibleReaderPage<T>) => string
+): string {
+  const unpaired = studio.layout === "spread" && visible.length === 1;
+  return `
+    <div class="studio-page-stage ${studio.layout} ${studio.fitMode} ${unpaired ? "is-unpaired" : ""}">
+      <div class="studio-page-strip">
+        ${visible.map((entry) => renderPage(entry)).join(visible.length === 2
+          ? `<div class="studio-page-gutter" aria-hidden="true"></div>`
+          : "")}
+      </div>
+    </div>`;
+}
+
+function renderDirectedPage(
+  entry: VisibleReaderPage<MangaPageSpec>,
+  plan: MangaPlanV2,
+  props: NameStudioViewProps
+): string {
+  const page = entry.page;
   const wireframePanels: WireframePanelInfo[] = page.panels.map((panel) => ({ visualScale: panel.visualScale }));
   const svg = renderPageWireframeSvg(page.layoutSnapshot, {
     className: "studio-page-svg",
@@ -590,34 +627,52 @@ function renderDirectedReader(props: NameStudioViewProps): string {
   const overlays = page.panels
     .map((panel, slotIndex) => directedPanelOverlay(panel, slotIndex, page, plan, props))
     .join("");
-  const turnHookLabel = page.turnHook === "reveal" ? "▼reveal" : page.turnHook === "cliffhanger" ? "▼cliffhanger" : "なし";
   return `
-    <div class="studio-reader">
-      <div class="studio-page-nav">
-        <button type="button" class="button-secondary compact" data-action="studio-prev-page" ${pageIndex <= 0 ? "disabled" : ""}>◀ 前ページ</button>
-        <span class="studio-page-counter">p${pageIndex + 1} / ${pageCount} <span class="studio-diff-note">演出ネーム(${escapeHtml(run.approvalStatus)})</span></span>
-        <button type="button" class="button-secondary compact" data-action="studio-next-page" ${pageIndex >= pageCount - 1 ? "disabled" : ""}>次ページ ▶</button>
-      </div>
+    <div class="studio-page-sheet" data-page-number="${entry.pageNumber}">
+      <span class="studio-page-sheet-number">p${entry.pageNumber}</span>
       <div class="studio-page" style="aspect-ratio: 1 / ${page.layoutSnapshot.page.height.toFixed(6)};">
         ${svg}
         <div class="studio-overlays">${overlays}</div>
       </div>
-      <div class="studio-page-footer">
-        <span class="studio-page-intent">ページ意図: ${escapeHtml(page.pageIntent?.trim() || "—")}</span>
-        <span class="studio-page-hook">めくり: ${turnHookLabel}</span>
+    </div>`;
+}
+
+function renderDirectedReader(props: NameStudioViewProps): string {
+  const run = props.run!;
+  const plan = run.plan!;
+  const pageCount = plan.pages.length;
+  const reader = studioReaderState(plan.pages, props.nameStudio);
+  if (reader.visible.length === 0) return `<p class="studio-inspector-hint">プランにページがありません。</p>`;
+  return `
+    <div class="studio-reader">
+      <div class="studio-page-nav">
+        <button type="button" class="button-secondary compact" data-action="studio-prev-page"
+          aria-keyshortcuts="ArrowLeft" title="前へ (←)" ${reader.canGoPrevious ? "" : "disabled"}>◀ 前ページ</button>
+        <span class="studio-page-counter">p${reader.label} <span class="studio-diff-note">演出ネーム(${escapeHtml(run.approvalStatus)})</span></span>
+        <button type="button" class="button-secondary compact" data-action="studio-next-page"
+          aria-keyshortcuts="ArrowRight" title="次へ (→)" ${reader.canGoNext ? "" : "disabled"}>次ページ ▶</button>
+      </div>
+      ${renderStudioPageStage(reader.visible, props.nameStudio, (entry) => renderDirectedPage(entry, plan, props))}
+      <div class="studio-visible-page-meta">
+        ${reader.visible.map(({ page, pageNumber }) => {
+          const turnHookLabel = page.turnHook === "reveal" ? "▼reveal" : page.turnHook === "cliffhanger" ? "▼cliffhanger" : "なし";
+          return `<div class="studio-page-footer"><strong>p${pageNumber}</strong>
+            <span class="studio-page-intent">ページ意図: ${escapeHtml(page.pageIntent?.trim() || "—")}</span>
+            <span class="studio-page-hook">めくり: ${turnHookLabel}</span></div>`;
+        }).join("")}
       </div>
     </div>`;
 }
 
-function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudioViewProps): string {
-  const plan = effectiveCandidatePlan(candidate);
-  const pageCount = plan.pages.length;
-  const pageIndex = Math.max(0, Math.min(pageCount - 1, props.nameStudio.pageIndex));
-  const page = plan.pages[pageIndex];
-  if (!page) return `<p class="studio-inspector-hint">この候補にはページがありません。</p>`;
+function renderCandidatePage(
+  entry: VisibleReaderPage<ScriptMangaPagePlan>,
+  props: NameStudioViewProps
+): string {
+  const page = entry.page;
   const layout = resolveScriptMangaLayout(page.layoutTemplateId);
   if (!layout) {
-    return `<p class="studio-inspector-hint">レイアウト ${escapeHtml(page.layoutTemplateId)} を解決できません。</p>`;
+    return `<div class="studio-page-sheet is-error" data-page-number="${entry.pageNumber}">
+      <p class="studio-inspector-hint">レイアウト ${escapeHtml(page.layoutTemplateId)} を解決できません。</p></div>`;
   }
   const wireframePanels: WireframePanelInfo[] = page.panels.map((panel) => ({
     visualScale: panel.visualScale,
@@ -631,13 +686,27 @@ function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudio
     panels: wireframePanels,
     turnHook: page.turnHook
   });
-  // diff署名はビート/element基準なのでフリップでは変化しない(基礎プランで判定してよい)。
-  const diff = candidateDiffSignatures(props.candidates);
-  const isDiffPage = diff.has(candidatePageSignature(page));
   const overlays = page.panels
     .map((panel, slotIndex) => panelOverlay(panel, slotIndex, layout, props))
     .join("");
-  const turnHookLabel = page.turnHook === "reveal" ? "▼reveal" : page.turnHook === "cliffhanger" ? "▼cliffhanger" : "なし";
+  return `
+    <div class="studio-page-sheet" data-page-number="${entry.pageNumber}">
+      <span class="studio-page-sheet-number">p${entry.pageNumber}</span>
+      <div class="studio-page" style="aspect-ratio: 1 / ${layout.page.height.toFixed(6)};">
+        ${svg}
+        <div class="studio-overlays">${overlays}</div>
+      </div>
+    </div>`;
+}
+
+function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudioViewProps): string {
+  const plan = effectiveCandidatePlan(candidate);
+  const pageCount = plan.pages.length;
+  const reader = studioReaderState(plan.pages, props.nameStudio);
+  if (reader.visible.length === 0) return `<p class="studio-inspector-hint">この候補にはページがありません。</p>`;
+  // diff署名はビート/element基準なのでフリップでは変化しない(基礎プランで判定してよい)。
+  const diff = candidateDiffSignatures(props.candidates);
+  const isDiffPage = reader.visible.some(({ page }) => diff.has(candidatePageSignature(page)));
   const adoptDisabled = props.runBusy || !props.templateSelected || candidate.status !== "active";
   const takeIndex = Math.max(0, props.candidates.findIndex((entry) => entry.id === candidate.id));
   const comparisonNote = props.candidates.length >= 2 && isDiffPage
@@ -646,18 +715,21 @@ function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudio
   return `
     <div class="studio-reader">
       <div class="studio-page-nav">
-        <button type="button" class="button-secondary compact" data-action="studio-prev-page" ${pageIndex <= 0 ? "disabled" : ""}>◀ 前ページ</button>
-        <span class="studio-page-counter"><strong>${takeLabel(takeIndex)}</strong> · p${pageIndex + 1} / ${pageCount}${comparisonNote}</span>
-        <button type="button" class="button-secondary compact" data-action="studio-next-page" ${pageIndex >= pageCount - 1 ? "disabled" : ""}>次ページ ▶</button>
+        <button type="button" class="button-secondary compact" data-action="studio-prev-page"
+          aria-keyshortcuts="ArrowLeft" title="前へ (←)" ${reader.canGoPrevious ? "" : "disabled"}>◀ 前ページ</button>
+        <span class="studio-page-counter"><strong>${takeLabel(takeIndex)}</strong> · p${reader.label}${comparisonNote}</span>
+        <button type="button" class="button-secondary compact" data-action="studio-next-page"
+          aria-keyshortcuts="ArrowRight" title="次へ (→)" ${reader.canGoNext ? "" : "disabled"}>次ページ ▶</button>
       </div>
-      <div class="studio-page" style="aspect-ratio: 1 / ${layout.page.height.toFixed(6)};">
-        ${svg}
-        <div class="studio-overlays">${overlays}</div>
-      </div>
-      ${flipChips(candidate, plan, page, props)}
-      <div class="studio-page-footer">
-        <span class="studio-page-intent">ページ意図: ${escapeHtml(page.pageIntent?.trim() || "—")}</span>
-        <span class="studio-page-hook">めくり: ${turnHookLabel}</span>
+      ${renderStudioPageStage(reader.visible, props.nameStudio, (entry) => renderCandidatePage(entry, props))}
+      <div class="studio-visible-page-meta">
+        ${reader.visible.map(({ page, pageNumber }) => {
+          const turnHookLabel = page.turnHook === "reveal" ? "▼reveal" : page.turnHook === "cliffhanger" ? "▼cliffhanger" : "なし";
+          return `<div class="studio-page-tools"><div class="studio-page-footer"><strong>p${pageNumber}</strong>
+            <span class="studio-page-intent">ページ意図: ${escapeHtml(page.pageIntent?.trim() || "—")}</span>
+            <span class="studio-page-hook">めくり: ${turnHookLabel}</span></div>
+            ${flipChips(candidate, plan, page, props)}</div>`;
+        }).join("")}
       </div>
       <div class="studio-actions">
         <button type="button" class="button-primary" data-action="adopt-script-manga-plan-candidate"
@@ -679,16 +751,33 @@ export function renderNameStudio(props: NameStudioViewProps): string {
   const hiddenDuplicateCount = props.candidates.length - visibleCandidates.length;
   const visibleProps: NameStudioViewProps = { ...props, candidates: visibleCandidates };
   const active = isDirected ? null : activeStudioTake(visibleCandidates, props.nameStudio);
-  const directedPage = isDirected
-    ? props.run!.plan!.pages[Math.max(0, Math.min(props.run!.plan!.pages.length - 1, props.nameStudio.pageIndex))]
+  const directedPlan = isDirected ? props.run!.plan! : null;
+  const directedPrimaryPage = directedPlan
+    ? directedPlan.pages[canonicalReaderIndex(
+        props.nameStudio.pageIndex,
+        directedPlan.pages.length,
+        nameStudioReaderSettings(props.nameStudio)
+      )]
     : null;
+  const directedDetailPage = directedPlan && props.nameStudio.selectedPanelId
+    ? directedPlan.pages.find((page) => page.panels.some((panel) => panel.id === props.nameStudio.selectedPanelId))
+        ?? directedPrimaryPage
+    : directedPrimaryPage;
   const activePlan = active ? effectiveCandidatePlan(active) : null;
-  const activePage = activePlan
-    ? activePlan.pages[Math.max(0, Math.min(activePlan.pages.length - 1, props.nameStudio.pageIndex))] ?? activePlan.pages[0]
+  const activePrimaryPage = activePlan
+    ? activePlan.pages[canonicalReaderIndex(
+        props.nameStudio.pageIndex,
+        activePlan.pages.length,
+        nameStudioReaderSettings(props.nameStudio)
+      )] ?? activePlan.pages[0]
     : null;
-  const panelDialog = directedPage
-    ? directedPanelDialog(directedPage, props.run!.plan!, props)
-    : activePage ? candidatePanelDialog(activePage, props) : "";
+  const activeDetailPage = activePlan && props.nameStudio.selectedPanelId
+    ? activePlan.pages.find((page) => page.panels.some((panel) => panel.id === props.nameStudio.selectedPanelId))
+        ?? activePrimaryPage
+    : activePrimaryPage;
+  const panelDialog = directedDetailPage
+    ? directedPanelDialog(directedDetailPage, props.run!.plan!, props)
+    : activeDetailPage ? candidatePanelDialog(activeDetailPage, props) : "";
   const directedChip = directedAvailable ? `
     <button type="button" class="studio-take is-directed-take ${isDirected ? "is-active" : ""}"
       role="tab" aria-selected="${isDirected ? "true" : "false"}"
@@ -706,7 +795,8 @@ export function renderNameStudio(props: NameStudioViewProps): string {
       <span class="studio-take-summary">${escapeHtml(takeSummary(candidate))}</span>
     </button>`).join("");
   return `
-    <section class="name-studio-card ${props.nameStudio.fullscreen ? "is-fullscreen" : ""}" data-key="name-studio" aria-labelledby="name-studio-heading">
+    <section class="name-studio-card ${props.nameStudio.fullscreen ? "is-fullscreen" : ""} is-${props.nameStudio.layout} is-${props.nameStudio.fitMode}"
+      data-key="name-studio" aria-labelledby="name-studio-heading" aria-keyshortcuts="ArrowLeft ArrowRight Home End">
       <div class="name-studio-heading">
         <h2 id="name-studio-heading">ネームスタジオ<span class="tag">name studio</span></h2>
         <div class="name-studio-controls">
@@ -717,6 +807,18 @@ export function renderNameStudio(props: NameStudioViewProps): string {
             ${props.candidatesBusy || !props.activeScriptId ? "disabled" : ""}>${props.candidatesBusy ? "生成中…" : "候補を生成"}</button>
           ${active ? `<button type="button" class="button-secondary compact" data-action="extend-script-manga-plan-candidates"
             data-group-id="${escapeAttr(active.groupId)}" ${props.candidatesBusy ? "disabled" : ""}>追加生成</button>` : ""}
+          <div class="studio-reader-options" role="group" aria-label="ページ表示">
+            <button type="button" class="${props.nameStudio.layout === "single" ? "button-primary" : "button-secondary"} compact"
+              data-action="studio-set-layout" data-id="single" aria-pressed="${props.nameStudio.layout === "single"}">1ページ</button>
+            <button type="button" class="${props.nameStudio.layout === "spread" ? "button-primary" : "button-secondary"} compact"
+              data-action="studio-set-layout" data-id="spread" aria-pressed="${props.nameStudio.layout === "spread"}">2ページ</button>
+          </div>
+          <div class="studio-reader-options" role="group" aria-label="ページのフィット方法">
+            <button type="button" class="${props.nameStudio.fitMode === "fit-height" ? "button-primary" : "button-secondary"} compact"
+              data-action="studio-set-fit" data-id="fit-height" aria-pressed="${props.nameStudio.fitMode === "fit-height"}">高さ合わせ</button>
+            <button type="button" class="${props.nameStudio.fitMode === "fit-width" ? "button-primary" : "button-secondary"} compact"
+              data-action="studio-set-fit" data-id="fit-width" aria-pressed="${props.nameStudio.fitMode === "fit-width"}">横幅合わせ</button>
+          </div>
           <button type="button" class="button-secondary compact" data-action="studio-toggle-fullscreen"
             aria-pressed="${props.nameStudio.fullscreen ? "true" : "false"}">${props.nameStudio.fullscreen ? "元の表示へ" : "⛶ 全画面"}</button>
         </div>
@@ -734,13 +836,13 @@ export function renderNameStudio(props: NameStudioViewProps): string {
         <aside class="name-studio-inspector">
           <h3>コマ詳細</h3>
           ${isDirected
-            ? directedInspector(
-                directedPage!,
+            ? directedDetailPage ? directedInspector(
+                directedDetailPage,
                 props.run!.plan!,
                 props
-              )
-            : active
-              ? inspectorPanel(activePage!, props)
+              ) : `<p class="studio-inspector-hint">表示できるページがありません。</p>`
+            : active && activeDetailPage
+              ? inspectorPanel(activeDetailPage, props)
               : ""}
         </aside>
       </div>`}
