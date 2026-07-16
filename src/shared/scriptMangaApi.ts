@@ -71,7 +71,7 @@ export interface ScriptMangaPlanCandidateView {
   adoptedRunId: string | null;
   plan: ScriptMangaPlan;
   pageNaming: {
-    mode: "beats" | "panels" | "deterministic";
+    mode: "beats" | "deterministic";
     fallback: boolean;
     beatAnnotatorFallback?: boolean;
   } | null;

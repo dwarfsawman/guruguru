@@ -79,8 +79,11 @@ export interface ScriptMangaPlan {
       rawOutput: string;
       messages: Array<{ role: string; content: string }>;
       fallback: boolean;
-      /** ネームv4 D2: どの N1 経路が成立したか(beats=ビート化N1 / panels=従来N1 / deterministic=決定的)。 */
-      mode?: "beats" | "panels" | "deterministic";
+      /**
+       * どの N1 経路が成立したか(V5 D2: beats=ビート化N1 / deterministic=決定的ビートパッカー)。
+       * 保存済みprovenanceには旧値 "panels"(従来N1、V5で削除)が残り得るが、読み手は未知値として扱う。
+       */
+      mode?: "beats" | "deterministic";
       /** ビート注釈が決定的フォールバック(1要素=1ビート)だったか。 */
       beatAnnotatorFallback?: boolean;
     };

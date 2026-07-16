@@ -16,9 +16,8 @@ import { generateStructuredJson } from "./llmStructured";
 import { getLlmSettings } from "./llm";
 import {
   applyBeatPageNaming,
-  applyPageNaming,
   createBeatPageNamingSchema,
-  createPageNamingSchema
+  packAnnotatedBeatsDeterministically
 } from "./scriptMangaPageNaming";
 import { annotateScriptBeats, type BeatAnnotationResult } from "./scriptBeatAnnotator";
 
@@ -212,10 +211,11 @@ export interface ScriptMangaN1Options {
 
 export interface ScriptMangaN1Result {
   plan: ScriptMangaPlan;
-  /** ビート注釈(ビート化N1が成立した場合のみ非null。V2 の beats 引き継ぎに使う)。 */
+  /** ビート注釈(V5では空脚本の縮退を除き常に非null。V2 の beats 引き継ぎに使う)。 */
   beatAnnotation: BeatAnnotationResult | null;
   pageNaming: {
-    mode: "beats" | "panels" | "deterministic";
+    /** V5 D2: beats=ビート化N1 / deterministic=決定的ビートパッカー(または空脚本の縮退)。 */
+    mode: "beats" | "deterministic";
     rawOutput: string;
     messages: Array<{ role: string; content: string }>;
     fallback: boolean;
@@ -252,101 +252,94 @@ function beatCompact(annotation: BeatAnnotationResult): Array<Record<string, unk
 }
 
 /**
- * N1 ページネーム(ネームv4 D2)。ビート注釈(キャッシュ付き)→ ビート化 N1 →
- * 失敗時は従来のコマ束ね N1 → それも失敗なら決定的プラン、の三段フォールバック。
- * どの経路でも「全台詞一度ずつ」契約と ScriptMangaPlan の形は不変。
+ * N1 ページネーム(V5 D2)。ビート注釈(キャッシュ付き)→ ビート化 N1 →
+ * 失敗時は決定的ビートパッカー、の二段フォールバック。パッカーもビートを入力にするため、
+ * どの経路でもビート情報(preferredScale/keepAlone)とシーン純度が保たれ、
+ * 「全台詞一度ずつ」契約と ScriptMangaPlan の形は不変。
  */
 export async function generateScriptMangaN1Plan(
   doc: FountainDoc,
   options: ScriptMangaPlanOptions = {},
   n1Options: ScriptMangaN1Options = {}
 ): Promise<ScriptMangaN1Result> {
-  const deterministicBase = planScriptManga(doc, options);
   const settings = getLlmSettings();
-  const targetPageCount = Math.max(1, Math.trunc(options.targetPageCount ?? Math.max(deterministicBase.pages.length, deterministicBase.dialogueCount / 5)));
   const maxPanelsPerPage = Math.max(1, Math.min(6, Math.trunc(options.panelsPerPage ?? 4)));
   const maxDialoguesPerPanel = Math.max(1, Math.min(8, Math.trunc(options.maxDialoguesPerPanel ?? 4)));
   const temperature = n1Options.temperature ?? 0.3;
   const profileLines = n1Options.profileInstruction?.trim() ? [n1Options.profileInstruction.trim()] : [];
 
-  // 1) ビート化 N1: 物語ビートを入力に、コマ=ビート束としてページを設計する。
   const annotation = await annotateScriptBeats(doc, options.scriptRevisionId);
-  if (annotation.beats.length > 0) {
-    try {
-      const named = await generateStructuredJson<ScriptMangaPlan>({
-        settings,
-        systemPrompt: [
-          "You are the N1 manga page-naming editor. Build pages and panels from the annotated story beats.",
-          "Cover every beat id exactly once and in order via panels[].sourceBeatIds. A panel usually bundles 1-3 consecutive beats; never mix scenes in one panel.",
-          `Use 1-${maxPanelsPerPage} panels per page; this is a hard maximum. Splash means exactly one panel on its page.`,
-          "Respect the annotations: give keepAlone beats their own panel; map desiredScale hero/splash to panel importance; put beats with high pageTurnAffinity at a page's final panel (tease) or a page's first panel (payoff).",
-          `No panel may contain more than ${maxDialoguesPerPanel} scripted dialogue elements; this is not a rendered-balloon target.`,
-          `Keep each panel's total dialogue below ${Math.max(40, Math.trunc(options.maxSourceCharactersPerPanel ?? 260))} characters.`,
-          ...N1_COMMON_PROMPT_LINES,
-          ...profileLines
-        ].join("\n"),
-        userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Story beats (in order): ${JSON.stringify(beatCompact(annotation))}`,
-        schema: createBeatPageNamingSchema(maxPanelsPerPage),
-        validate: (raw) => applyBeatPageNaming(raw, {
-          title: deterministicBase.title,
-          units: annotation.units,
-          beats: annotation.beats,
-          targetPageCount,
-          stylePrompt: options.stylePrompt,
-          maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel,
-          maxDialoguesPerPanel,
-          maxPanelsPerPage
-        }),
-        temperature,
-        timeoutMs: 180000
-      });
-      return {
-        plan: named.value,
-        beatAnnotation: annotation,
-        pageNaming: {
-          mode: "beats", rawOutput: named.rawOutput, messages: named.messages,
-          fallback: false, beatAnnotatorFallback: annotation.fallback
-        }
-      };
-    } catch {
-      // ビート化 N1 が通らない場合は従来のコマ束ね N1 へ(生成は止めない)。
-    }
+  // 可視要素ゼロの縮退(units空 → beats空)。パッカーは空入力を扱わないので、
+  // 旧決定的プランナーの空プラン挙動へそのまま倒す。
+  if (annotation.beats.length === 0) {
+    return {
+      plan: planScriptManga(doc, options),
+      beatAnnotation: null,
+      pageNaming: { mode: "deterministic", rawOutput: "[empty-units]", messages: [], fallback: true }
+    };
   }
 
-  // 2) 従来 N1: 決定的束ねのコマを統合のみ許可する再ページ割り。
+  // V5 D2: ビート経路の既定値も units 由来にし、旧プランナーへの依存を断つ。
+  const title = doc.titlePage.Title || "Manga";
+  const packed = packAnnotatedBeatsDeterministically({
+    units: annotation.units,
+    beats: annotation.beats,
+    title,
+    stylePrompt: options.stylePrompt,
+    targetPageCount: options.targetPageCount,
+    maxPanelsPerPage,
+    maxDialoguesPerPanel,
+    maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel
+  });
+  const targetPageCount = Math.max(1, Math.trunc(options.targetPageCount ?? Math.max(packed.pages.length, packed.dialogueCount / 5)));
+
   try {
-    const sourcePanels = deterministicBase.pages.flatMap((page) => page.panels).map((panel) => ({
-      id: panel.id, sceneIndex: panel.sceneIndex, sourceElementIds: panel.sourceElementIds,
-      dialogueOrderIndexes: panel.dialogueOrderIndexes, source: panel.sourceText
-    }));
     const named = await generateStructuredJson<ScriptMangaPlan>({
       settings,
       systemPrompt: [
-        `You are the N1 manga page-naming editor. Preserve every sourcePanelId exactly once and in order. Never combine scenes. Use 1-${maxPanelsPerPage} panels per page; this is a hard maximum. Splash means one panel on its page. Design page turns and hero beats.`,
+        "You are the N1 manga page-naming editor. Build pages and panels from the annotated story beats.",
+        "Cover every beat id exactly once and in order via panels[].sourceBeatIds. A panel usually bundles 1-3 consecutive beats; never mix scenes in one panel.",
+        `Use 1-${maxPanelsPerPage} panels per page; this is a hard maximum. Splash means exactly one panel on its page.`,
+        "Respect the annotations: give keepAlone beats their own panel; map preferredScale large/splash to panel importance hero/splash; put beats with high pageTurnAffinity at a page's final panel (tease) or a page's first panel (payoff).",
         `No panel may contain more than ${maxDialoguesPerPanel} scripted dialogue elements; this is not a rendered-balloon target.`,
+        `Keep each panel's total dialogue below ${Math.max(40, Math.trunc(options.maxSourceCharactersPerPanel ?? 260))} characters.`,
         ...N1_COMMON_PROMPT_LINES,
         ...profileLines
       ].join("\n"),
-      userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Source panels: ${JSON.stringify(sourcePanels)}`,
-      schema: createPageNamingSchema(maxPanelsPerPage),
-      validate: (raw) => applyPageNaming(raw, deterministicBase, targetPageCount, maxDialoguesPerPanel, maxPanelsPerPage),
+      userPrompt: `Target page count: ${targetPageCount} (accepted range ±20%). Story beats (in order): ${JSON.stringify(beatCompact(annotation))}`,
+      schema: createBeatPageNamingSchema(maxPanelsPerPage),
+      validate: (raw) => applyBeatPageNaming(raw, {
+        title,
+        units: annotation.units,
+        beats: annotation.beats,
+        targetPageCount,
+        stylePrompt: options.stylePrompt,
+        maxDialogueCharactersPerPanel: options.maxSourceCharactersPerPanel,
+        maxDialoguesPerPanel,
+        maxPanelsPerPage
+      }),
       temperature,
       timeoutMs: 180000
     });
     return {
       plan: named.value,
-      beatAnnotation: null,
-      pageNaming: { mode: "panels", rawOutput: named.rawOutput, messages: named.messages, fallback: false }
+      beatAnnotation: annotation,
+      pageNaming: {
+        mode: "beats", rawOutput: named.rawOutput, messages: named.messages,
+        fallback: false, beatAnnotatorFallback: annotation.fallback
+      }
     };
   } catch (error) {
+    // V5 D2: 最終フォールバックはビート入力の決定的パッカー(ビート情報を捨てない)。
     return {
-      plan: deterministicBase,
-      beatAnnotation: null,
+      plan: packed,
+      beatAnnotation: annotation,
       pageNaming: {
         mode: "deterministic",
         rawOutput: error instanceof Error ? error.message : String(error),
         messages: [],
-        fallback: true
+        fallback: true,
+        beatAnnotatorFallback: annotation.fallback
       }
     };
   }

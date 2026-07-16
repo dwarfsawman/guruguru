@@ -368,7 +368,7 @@ export type PlanCandidatesViewProps = Pick<
 /**
  * ページのビート署名(候補間diffの対応付け)。同一 beatId 列を持つページ同士を対応させ、
  * どの候補にも同じ署名がある = 共通、どこかに無い = ページ割りが異なる箇所として強調する。
- * ビート化N1でない候補(従来N1/決定的)は source element 列で代用する。
+ * sourceBeatIds を持たない候補(旧形式)は source element 列で代用する。
  */
 export function candidatePageSignature(page: ScriptMangaPagePlan): string {
   const beatIds = page.panels.flatMap((panel) => panel.sourceBeatIds ?? []);
@@ -438,7 +438,6 @@ function candidateModeBadge(candidate: ScriptMangaPlanCandidateView): string {
     const annotatorNote = candidate.pageNaming?.beatAnnotatorFallback ? " (注釈fallback)" : "";
     return `<span class="plan-candidate-badge is-beats">ビート化N1${annotatorNote}</span>`;
   }
-  if (mode === "panels") return `<span class="plan-candidate-badge is-panels">従来N1</span>`;
   if (mode === "deterministic") return `<span class="plan-candidate-badge is-deterministic">決定的</span>`;
   return "";
 }

@@ -79,7 +79,8 @@ function candidateView(row: PlanCandidateRow): ScriptMangaPlanCandidateView {
   const pageNaming = provenance && typeof provenance === "object" && provenance !== null
     ? (provenance as { pageNaming?: { mode?: string; fallback?: boolean; beatAnnotatorFallback?: boolean } }).pageNaming
     : undefined;
-  const mode = pageNaming?.mode === "beats" || pageNaming?.mode === "panels" || pageNaming?.mode === "deterministic"
+  // V5 D2: 旧値 "panels"(従来N1)は未知値としてnull化する(旧provenance行はバッジ無し表示)。
+  const mode = pageNaming?.mode === "beats" || pageNaming?.mode === "deterministic"
     ? pageNaming.mode
     : null;
   return {
