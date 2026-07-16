@@ -251,8 +251,10 @@ top-kを計算できるので、フリップUIがゼロレイテンシになる)
 1. **テイクバー** — 候補グループをテイクA/B/…として表示(バッジ: ビート化N1/決定的、profile、T)。追加生成・破棄。
    テイク間diffは既存 `candidatePageSignature` を流用してページ枠色で表示(ビート基準なのでフリップでは変化しない)。
 2. **リーダー** — [Plan-NameReaderUI.md](Plan-NameReaderUI.md) D1をそのまま吸収: SVGワイヤーフレーム背景+コマbboxへの
-   HTMLオーバーレイ(読み順番号・visualScale・ビートkindチップ・`sourceText`要約・台詞件数/字数)、ページ送り、
-   pageIntent/turnHookフッター。幾何は既存 `panelBounds`(pageLayout.ts:217)流用+`top=y/page.height` 変換+bleedクランプ。
+   HTMLオーバーレイ(読み順番号・visualScale・ビートkindチップ・カメラ・見せる内容・固定revisionの話者/台詞本文)、ページ送り、
+   pageIntent/turnHookフッター。紙面内はアプリのdark themeから独立した濃いink色にする。小さいbboxは本文を隠してhover/focus時に
+   詳細カードを出し、全コマともクリックで同内容の読取専用ポップアップを開く。幾何は既存 `panelBounds`(pageLayout.ts:217)流用+
+   `top=y/page.height` 変換+bleedクランプ。
 3. **レイアウトフリップ(基礎プランは不変)** — LLMが生成した `plan_json` は**書き換えない**。人間の選択は別レイヤーに持つ:
    ```
    script_manga_plan_candidates に追加:
@@ -316,6 +318,8 @@ Plan-NameReaderUI.md の D4/D5 を吸収し、レビュー指摘の2点を変更
 
 - script画面ポーリング(既定5秒、`document.hidden` skip、serialガード、busy中の応答破棄、run未保持なら adopted 候補の
   `adoptedRunId` からブートストラップ)。
+- Project一覧も5秒(バックグラウンド20秒)で最新のactive候補／run状態だけを軽量更新し、カードの
+  「進捗を開く」からproject/script/revision/candidateまたはrun/planを固定したScript URLへ移動する。
 - 共有手順(5177は既定で全interface bind済み / 5199は `HOST=` 指定)と、エージェントの待ち合わせプロトコル
   (前提チェック: template作成済み+reference set承認済み → 候補POST → URL案内 → 一覧GETポーリングで
   `status==="adopted"` 検知・adoptedRunId即記録 → run GETで `approved` 待ち → start)を
@@ -405,6 +409,7 @@ Plan-NameReaderUI.md の D4/D5 を吸収し、レビュー指摘の2点を変更
 
 ## 変更履歴
 
+- 2026-07-16: 人間ゲートの可読性を実装仕様へ反映。コマ内にカメラ・見せる内容・台詞本文を濃色で表示し、小コマはhover/focus詳細、クリックは読取専用ポップアップとした。制作エージェントの通常操作はCLI、GUIは人間ゲートに分離し、Project一覧にも最新候補/run状態と固定コンテキスト導線を追加した。
 - 2026-07-16: コード突き合わせ検証(2並列)の指摘を反映。**blocker**: 最終フォールバックのパッカーが充足不能になる
   入力(単独で文字cap超の台詞unit / capを超えるunit数のビート / cap可変×注釈キャッシュ)が存在した → D2に充足保証
   (単独超過unit例外・ビート連続分割・ページ数バンド適用除外・units由来既定値)を明文化。**major**: provided入力境界の

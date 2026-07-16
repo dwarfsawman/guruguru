@@ -20,6 +20,99 @@ export interface ConnectionSummary {
 
 const unknownConnectionSummary: ConnectionSummary = { state: "unknown", text: "未確認" };
 
+interface ProjectMangaProgress {
+  kind: "candidate" | "run";
+  tone: "waiting" | "active" | "review" | "done" | "error" | "idle";
+  label: string;
+  detail: string;
+  projectId: string;
+  scriptId: string;
+  revisionId: string;
+  candidateId?: string;
+  runId?: string;
+  planId?: string;
+}
+
+function runProgressLabel(project: ProjectSummary): Pick<ProjectMangaProgress, "tone" | "label" | "detail"> {
+  const status = project.latestScriptMangaRunStatus ?? "";
+  const phase = project.latestScriptMangaRunPhase ?? "";
+  const approval = project.latestScriptMangaRunApprovalStatus ?? "pending";
+  const completed = project.latestScriptMangaRunCompletedCount ?? 0;
+  const total = project.latestScriptMangaRunPanelCount ?? 0;
+  const failed = project.latestScriptMangaRunFailedCount ?? 0;
+  const counts = total > 0 ? `${completed}/${total}コマ${failed > 0 ? `・失敗${failed}` : ""}` : "";
+  if (status === "completed") return { tone: "done", label: "漫画完成", detail: counts };
+  if (status === "failed") return { tone: "error", label: "漫画runエラー", detail: counts };
+  if (status === "canceled") return { tone: "idle", label: "漫画run中止", detail: counts };
+  if (status === "awaiting_review") return { tone: "review", label: "画像候補の確認待ち", detail: counts };
+  if (status === "auditing" || phase === "auditing") return { tone: "active", label: "画像監査中", detail: counts };
+  if (status === "running" || ["rendering", "repairing", "selecting"].includes(phase)) {
+    return { tone: "active", label: "漫画生成中", detail: counts };
+  }
+  if (status === "preparing" || ["parsing", "planning", "materializing"].includes(phase)) {
+    return { tone: "active", label: "演出ネーム準備中", detail: phase };
+  }
+  if (approval !== "approved" || phase === "awaiting_approval") {
+    return { tone: "waiting", label: "演出ネーム・参照承認待ち", detail: counts || "人間ゲート" };
+  }
+  if (status === "approved" || phase === "preparing_references") {
+    return { tone: "active", label: "生成開始待ち", detail: counts };
+  }
+  return { tone: "active", label: "漫画を準備中", detail: phase || status };
+}
+
+/** Project一覧に出す最新の漫画活動。active候補がrunより新しければ次の人間ゲートを優先する。 */
+export function projectMangaProgress(project: ProjectSummary): ProjectMangaProgress | null {
+  const candidateCount = project.scriptMangaCandidateCount ?? 0;
+  const candidateIsLatest = candidateCount > 0
+    && Boolean(project.latestScriptMangaCandidateId)
+    && (!project.latestScriptMangaRunId
+      || (project.latestScriptMangaCandidateCreatedAt ?? "") >= (project.latestScriptMangaRunCreatedAt ?? ""));
+  if (candidateIsLatest
+    && project.latestScriptMangaCandidateScriptId
+    && project.latestScriptMangaCandidateRevisionId
+    && project.latestScriptMangaCandidateId) {
+    return {
+      kind: "candidate",
+      tone: "waiting",
+      label: "ネーム選択待ち",
+      detail: `${candidateCount}案・人間ゲート`,
+      projectId: project.id,
+      scriptId: project.latestScriptMangaCandidateScriptId,
+      revisionId: project.latestScriptMangaCandidateRevisionId,
+      candidateId: project.latestScriptMangaCandidateId
+    };
+  }
+  if (!project.latestScriptMangaRunId
+    || !project.latestScriptMangaRunScriptId
+    || !project.latestScriptMangaRunRevisionId) return null;
+  return {
+    kind: "run",
+    ...runProgressLabel(project),
+    projectId: project.id,
+    scriptId: project.latestScriptMangaRunScriptId,
+    revisionId: project.latestScriptMangaRunRevisionId,
+    runId: project.latestScriptMangaRunId,
+    ...(project.latestScriptMangaRunPlanId ? { planId: project.latestScriptMangaRunPlanId } : {})
+  };
+}
+
+function renderProjectMangaProgress(project: ProjectSummary): string {
+  const progress = projectMangaProgress(project);
+  if (!progress) return "";
+  return `
+    <div class="project-manga-progress is-${progress.tone}">
+      <span class="project-manga-live-dot" aria-hidden="true"></span>
+      <span><strong>${escapeHtml(progress.label)}</strong>${progress.detail ? ` <small>${escapeHtml(progress.detail)}</small>` : ""}</span>
+      <button type="button" class="button-secondary compact" data-action="open-script-manga-progress"
+        data-project-id="${escapeAttr(progress.projectId)}" data-script-id="${escapeAttr(progress.scriptId)}"
+        data-revision-id="${escapeAttr(progress.revisionId)}"
+        ${progress.candidateId ? `data-candidate-id="${escapeAttr(progress.candidateId)}"` : ""}
+        ${progress.runId ? `data-run-id="${escapeAttr(progress.runId)}"` : ""}
+        ${progress.planId ? `data-plan-id="${escapeAttr(progress.planId)}"` : ""}>進捗を開く</button>
+    </div>`;
+}
+
 export function renderHome(
   projects: ProjectSummary[],
   settings: ComfySettings | null,
@@ -100,6 +193,7 @@ export function renderProjectCard(project: ProjectSummary) {
       <div class="project-copy">
         <h2>${escapeHtml(project.name)}${project.mode === "book" ? ` <span class="tag project-mode-tag">BOOK</span>` : ""}</h2>
         <p class="${project.description ? "" : "desc-empty"}">${escapeHtml(project.description || "説明なし")}</p>
+        ${renderProjectMangaProgress(project)}
         <div class="meta-line">${project.mode === "book" ? `Pages <b>${project.pageCount ?? 0}</b>` : `Rounds <b>${project.roundCount ?? 0}</b>`} · Assets <b>${project.assetCount ?? 0}</b> · Updated <b>${formatDate(project.updatedAt)}</b></div>
       </div>
       <div class="project-actions">

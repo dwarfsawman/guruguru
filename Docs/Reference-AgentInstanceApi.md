@@ -14,9 +14,40 @@
 
 `GET /api/health` の `instanceMode` は `agent`、`GET /api/agent/capabilities` の `agentReady` は `true` になる。
 
+### エージェントCLIと同一コンテキストURL
+
+外部エージェントの漫画制作はGUI操作ではなく、同梱CLIからGURUGURU HTTP APIを使う。CLIはruntime DBや
+ComfyUIの生成内容へ迂回せず、GUIと同じサーバー・同じ保存／検証経路を通る。
+
+```powershell
+# 実インスタンス、project、script、最新の固定revisionと任意のcandidate/run/taskの所属を検査する
+bun run agent:cli -- --base-url http://127.0.0.1:5199 context --project-id <project-id> --script-id <script-id> --candidate-id <candidate-id>
+
+# 任意のGURUGURU APIを操作する。大きいrequestはrepository外のJSONファイルを使う
+bun run agent:cli -- --base-url http://127.0.0.1:5199 api POST /api/projects/<project-id>/script-manga-plan-candidates --json-file <request.json>
+
+# 人間の採用とrun承認を15秒間隔で待つ
+bun run agent:cli -- --base-url http://127.0.0.1:5199 wait candidates --project-id <project-id> --script-id <script-id> --status adopted --interval 15 --timeout 0
+bun run agent:cli -- --base-url http://127.0.0.1:5199 wait run --run-id <run-id> --field approvalStatus --equals approved --interval 15 --timeout 0
+
+# 候補画像やexportなどbinary応答をAPIから取得する
+bun run agent:cli -- --base-url http://127.0.0.1:5199 api GET /api/assets/<asset-id>/image --output <outside-repository-path>
+```
+
+`context`のJSONに含まれる`guiUrl`が人間ゲート用の正規URLである。これはbare URLではなく
+`projectId`、`scriptId`、`revisionId`と、指定時の`candidateId`、`runId`、`planId`、`taskId`を含む。
+Script画面は起動時にそれぞれの所属をAPIで再検証し、CLIと異なるコンテキストを暗黙選択しない。
+エージェントはこのURLを開かず、人間へ提示する。URLを推測したり、GUIスクリーンショットからIDを読み取ったりしない。
+
+bareなインスタンスURLを人間が開いた場合も、Project一覧は`GET /api/projects`を5秒ごと
+(バックグラウンド時は20秒ごと)に更新する。Bookカードには最新のactiveネーム候補または最新runを
+「ネーム選択待ち」「演出ネーム・参照承認待ち」「漫画生成中」「画像候補の確認待ち」「完了」等で表示する。
+「進捗を開く」は同じproject/script/revision/candidateまたはrun/planを含む正規URLへ移動する。
+これはDBへ保存済みのGURUGURU状態を示すもので、まだ応答が完了していない単発CLIプロセス自体の標準出力ではない。
+
 ### ページ共有(ネームスタジオの人間ゲート)
 
-UIとAPIは同一サーバー・同一ポートなので、ブラウザで同じURLを開けばネームスタジオを共有できる。
+UIとAPIは同一サーバー・同一ポートなので、人間が`context`の返した`guiUrl`を開けばネームスタジオを共有できる。
 
 - ユーザーインスタンス(5177)は `HOST` 未指定なら全インターフェースへbindするため、
   LAN/Tailscale の IP で `http://<host>:5177` を開くだけでよい(起動ログの 127.0.0.1 表記は飾り)。

@@ -88,8 +88,8 @@ export interface ProjectRow {
 }
 
 /**
- * `listProjects()` の一覧行。`ProjectRow` に加えて round_count / asset_count
- * サブクエリで実際に付与される集計フィールドを持つ。`createProject()` /
+ * `listProjects()` の一覧行。`ProjectRow` に加えて生成集計と最新script-manga活動を
+ * サブクエリで実際に付与する。`createProject()` /
  * `getProjectDetail()` が返す行にはこれらのフィールドは存在しない
  * (`ProjectRow` を使うこと)。`pageCount` は book のみ意味を持つ。
  */
@@ -97,6 +97,24 @@ export interface ProjectSummary extends ProjectRow {
   roundCount: number;
   assetCount: number;
   pageCount?: number;
+  /** 最新revisionに残るactive/adoptingネーム候補。run作成前の人間ゲートを一覧へ出す。 */
+  scriptMangaCandidateCount?: number;
+  latestScriptMangaCandidateId?: string | null;
+  latestScriptMangaCandidateScriptId?: string | null;
+  latestScriptMangaCandidateRevisionId?: string | null;
+  latestScriptMangaCandidateCreatedAt?: string | null;
+  /** projectの最新Manga run。Project一覧のCLI/GUI進捗同期用の軽量フィールド。 */
+  latestScriptMangaRunId?: string | null;
+  latestScriptMangaRunScriptId?: string | null;
+  latestScriptMangaRunRevisionId?: string | null;
+  latestScriptMangaRunPlanId?: string | null;
+  latestScriptMangaRunStatus?: string | null;
+  latestScriptMangaRunPhase?: string | null;
+  latestScriptMangaRunApprovalStatus?: string | null;
+  latestScriptMangaRunPanelCount?: number | null;
+  latestScriptMangaRunCompletedCount?: number | null;
+  latestScriptMangaRunFailedCount?: number | null;
+  latestScriptMangaRunCreatedAt?: string | null;
 }
 
 /** Book のページ1件。`page_index` の昇順が読書順。 */

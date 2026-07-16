@@ -12,6 +12,7 @@
     "benchmark:websam": "bun scripts/benchmark-websam-postprocess.mjs",
     "start": "bun ./dist/server/index.js",
     "start:agent": "bun run build && bun scripts/start-agent.mjs",
+    "agent:cli": "bun scripts/guruguru-agent-cli.mjs",
     "start:test": "bun run build && bun scripts/start-test.mjs",
     "dev": "bun scripts/dev-hot.mjs",
     "dev:once": "bun run build && bun run start",

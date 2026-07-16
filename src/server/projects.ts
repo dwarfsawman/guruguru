@@ -27,8 +27,44 @@ export function listProjects(): ProjectSummary[] {
        (SELECT COUNT(*) FROM generation_rounds r WHERE r.project_id = p.id) AS round_count,
        (SELECT COUNT(*) FROM assets a WHERE a.project_id = p.id) AS asset_count,
        (SELECT COUNT(*) FROM pages pg WHERE pg.project_id = p.id) AS page_count,
-       (SELECT a.id FROM assets a WHERE a.project_id = p.id AND a.status IN ('selected', 'favorite') ORDER BY a.created_at DESC LIMIT 1) AS representative_asset_id
+       (SELECT a.id FROM assets a WHERE a.project_id = p.id AND a.status IN ('selected', 'favorite') ORDER BY a.created_at DESC LIMIT 1) AS representative_asset_id,
+       (SELECT COUNT(*)
+          FROM script_manga_plan_candidates c
+         WHERE c.project_id = p.id
+           AND c.status IN ('active', 'adopting')
+           AND c.script_revision_id = (
+             SELECT sr.id FROM script_revisions sr
+              WHERE sr.script_id = c.script_id ORDER BY sr.revision DESC LIMIT 1
+           )) AS script_manga_candidate_count,
+       smc.id AS latest_script_manga_candidate_id,
+       smc.script_id AS latest_script_manga_candidate_script_id,
+       smc.script_revision_id AS latest_script_manga_candidate_revision_id,
+       smc.created_at AS latest_script_manga_candidate_created_at,
+       smr.id AS latest_script_manga_run_id,
+       smr.script_id AS latest_script_manga_run_script_id,
+       smr.script_revision_id AS latest_script_manga_run_revision_id,
+       smr.plan_id AS latest_script_manga_run_plan_id,
+       smr.status AS latest_script_manga_run_status,
+       smr.phase AS latest_script_manga_run_phase,
+       smr.approval_status AS latest_script_manga_run_approval_status,
+       smr.panel_count AS latest_script_manga_run_panel_count,
+       smr.completed_count AS latest_script_manga_run_completed_count,
+       smr.failed_count AS latest_script_manga_run_failed_count,
+       smr.created_at AS latest_script_manga_run_created_at
      FROM projects p
+     LEFT JOIN script_manga_plan_candidates smc ON smc.id = (
+       SELECT c.id FROM script_manga_plan_candidates c
+        WHERE c.project_id = p.id AND c.status IN ('active', 'adopting')
+          AND c.script_revision_id = (
+            SELECT sr.id FROM script_revisions sr
+             WHERE sr.script_id = c.script_id ORDER BY sr.revision DESC LIMIT 1
+          )
+        ORDER BY c.created_at DESC LIMIT 1
+     )
+     LEFT JOIN script_manga_runs smr ON smr.id = (
+       SELECT r.id FROM script_manga_runs r
+        WHERE r.project_id = p.id ORDER BY r.created_at DESC LIMIT 1
+     )
      ORDER BY p.updated_at DESC`
   );
 

@@ -94,7 +94,7 @@
 
 .name-studio-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
   gap: 14px;
   align-items: start;
 }
@@ -134,13 +134,24 @@
 
 /* リーダー本体: SVG背景 + HTMLオーバーレイ(コマのbboxへ%配置)。 */
 .studio-page {
+  --studio-paper: #f7f4ed;
+  --studio-paper-raised: #fffdf8;
+  --studio-ink: #1d1b18;
+  --studio-muted-ink: #625d55;
   position: relative;
-  width: min(560px, 100%);
+  width: min(680px, 100%);
   margin: 0 auto;
-  border: 1px solid var(--border);
+  border: 1px solid #3b3731;
   border-radius: 8px;
-  overflow: hidden;
-  background: var(--surface-raised);
+  overflow: visible;
+  background: var(--studio-paper);
+  color: var(--studio-ink);
+  /* pageLayoutSvg also uses these tokens; keep the paper readable in a dark application theme. */
+  --surface: var(--studio-paper-raised);
+  --surface-raised: var(--studio-paper-raised);
+  --text: var(--studio-ink);
+  --text-muted: var(--studio-muted-ink);
+  --border: #3b3731;
 }
 
 .studio-page-svg {
@@ -154,6 +165,7 @@
 .studio-overlays {
   position: absolute;
   inset: 0;
+  z-index: 2;
 }
 
 .studio-panel {
@@ -163,11 +175,11 @@
   align-items: flex-start;
   gap: 2px;
   padding: 4px 6px;
-  border: 1px dashed transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text, inherit);
-  font-size: 0.72rem;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: rgba(255, 253, 248, 0.72);
+  color: var(--studio-ink, #1d1b18);
+  font-size: 0.74rem;
   line-height: 1.35;
   overflow: hidden;
   cursor: pointer;
@@ -175,13 +187,13 @@
 }
 
 .studio-panel:hover {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  border-color: #b86f2b;
+  background: rgba(255, 253, 248, 0.96);
 }
 
 .studio-panel.is-selected {
   border: 2px solid var(--accent);
-  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  background: rgba(255, 253, 248, 0.98);
 }
 
 .studio-panel-head {
@@ -218,8 +230,31 @@
   border-radius: 999px;
   border: 1px solid var(--border);
   font-size: 0.64rem;
-  color: var(--text-muted);
-  background: var(--surface);
+  color: var(--studio-muted-ink, #625d55);
+  background: var(--studio-paper-raised, #fffdf8);
+}
+
+.studio-panel-inline {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  text-align: left;
+}
+
+.studio-panel-camera,
+.studio-panel-composition,
+.studio-panel-cast {
+  display: block;
+  width: 100%;
+  color: var(--studio-muted-ink, #625d55);
+  font-size: 0.68rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .studio-panel-text {
@@ -228,20 +263,108 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .studio-panel.is-small .studio-panel-text {
   -webkit-line-clamp: 2;
 }
 
-.studio-panel-dialogue {
+.studio-panel-dialogues {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  width: 100%;
+  margin-top: auto;
+}
+
+.studio-panel-dialog-line {
+  display: flex;
+  flex-direction: column;
+  max-width: 94%;
+  padding: 2px 7px;
+  border: 1px solid var(--studio-ink, #1d1b18);
+  border-radius: 4px;
+  background: var(--studio-paper-raised, #fffdf8);
+  color: var(--studio-ink, #1d1b18);
+  font-size: 0.66rem;
+  line-height: 1.25;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.studio-panel-dialog-line strong {
+  font-size: 0.58rem;
+  color: var(--studio-muted-ink, #625d55);
+}
+
+.studio-panel-dialogue-count,
+.studio-panel-compact-label {
   margin-top: auto;
   align-self: flex-end;
   padding: 1px 6px;
-  border: 1px solid var(--text, #111);
+  border: 1px solid var(--studio-ink, #1d1b18);
   border-radius: 4px;
-  background: var(--surface, #fff);
-  font-size: 0.66rem;
+  background: var(--studio-paper-raised, #fffdf8);
+  color: var(--studio-ink, #1d1b18);
+  font-size: 0.64rem;
+}
+
+.studio-panel-compact-label,
+.studio-panel-hover-card {
+  display: none;
+}
+
+.studio-panel.is-compact-panel .studio-panel-inline,
+.studio-panel.is-compact-panel .studio-panel-dialogue-count {
+  display: none;
+}
+
+.studio-panel.is-compact-panel .studio-panel-compact-label {
+  display: inline-flex;
+}
+
+.studio-panel.is-compact-panel:hover,
+.studio-panel.is-compact-panel:focus-visible {
+  z-index: 20;
+  overflow: visible;
+}
+
+.studio-panel.is-compact-panel:hover .studio-panel-hover-card,
+.studio-panel.is-compact-panel:focus-visible .studio-panel-hover-card {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  width: min(320px, 72vw);
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid #3b3731;
+  border-radius: 7px;
+  background: var(--studio-paper-raised, #fffdf8);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+  color: var(--studio-ink, #1d1b18);
+  text-align: left;
+}
+
+.studio-panel.is-compact-panel.opens-left .studio-panel-hover-card {
+  right: 0;
+  left: auto;
+}
+
+.studio-panel.is-compact-panel.opens-up .studio-panel-hover-card {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
+.studio-panel-hover-card .studio-panel-text {
+  display: block;
+  overflow: visible;
 }
 
 /* --- レイアウトフリップ --- */
@@ -409,4 +532,157 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* --- コマ詳細ポップアップ: 小コマも同じ情報密度で人間が確認できる --- */
+
+.studio-panel-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 5, 7, 0.76);
+}
+
+.studio-panel-dialog {
+  --studio-paper: #f7f4ed;
+  --studio-paper-raised: #fffdf8;
+  --studio-ink: #1d1b18;
+  --studio-muted-ink: #625d55;
+  width: min(760px, 100%);
+  max-height: min(820px, calc(100vh - 48px));
+  overflow-y: auto;
+  border: 1px solid #3b3731;
+  border-radius: 12px;
+  background: var(--studio-paper);
+  color: var(--studio-ink);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5);
+}
+
+.studio-panel-dialog-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid #aaa398;
+  background: rgba(247, 244, 237, 0.96);
+  backdrop-filter: blur(8px);
+}
+
+.studio-panel-dialog-header h3 {
+  margin: 2px 0 0;
+  font-size: 1.2rem;
+}
+
+.studio-panel-dialog-kicker {
+  color: var(--studio-muted-ink);
+  font-size: 0.74rem;
+}
+
+.studio-panel-dialog-close {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  flex: 0 0 auto;
+  border: 1px solid #3b3731;
+  border-radius: 50%;
+  background: var(--studio-paper-raised);
+  color: var(--studio-ink);
+  font-size: 1.35rem;
+  cursor: pointer;
+}
+
+.studio-panel-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+}
+
+.studio-panel-dialog-storyboard {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  min-height: 220px;
+  padding: 18px;
+  border: 2px solid var(--studio-ink);
+  background: var(--studio-paper-raised);
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.studio-panel-dialog-storyboard .studio-panel-camera,
+.studio-panel-dialog-storyboard .studio-panel-composition,
+.studio-panel-dialog-storyboard .studio-panel-cast {
+  font-size: 0.84rem;
+}
+
+.studio-panel-dialog-storyboard .studio-panel-text {
+  display: block;
+  overflow: visible;
+  font-size: 1rem;
+  -webkit-line-clamp: unset;
+}
+
+.studio-panel-dialog-storyboard .studio-panel-dialog-line {
+  max-width: min(90%, 620px);
+  padding: 5px 12px;
+  font-size: 0.92rem;
+}
+
+.studio-panel-dialog-storyboard .studio-panel-dialog-line strong {
+  font-size: 0.72rem;
+}
+
+.studio-panel-dialog-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 7px 14px;
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.studio-panel-dialog-meta dt {
+  color: var(--studio-muted-ink);
+  white-space: nowrap;
+}
+
+.studio-panel-dialog-meta dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.studio-panel-dialog-prompt {
+  border-top: 1px solid #aaa398;
+  padding-top: 10px;
+  font-size: 0.82rem;
+}
+
+.studio-panel-dialog-prompt p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 720px) {
+  .studio-panel-dialog-backdrop {
+    padding: 10px;
+  }
+
+  .studio-panel-dialog {
+    max-height: calc(100vh - 20px);
+  }
+
+  .studio-panel-dialog-body,
+  .studio-panel-dialog-storyboard {
+    padding: 12px;
+  }
 }

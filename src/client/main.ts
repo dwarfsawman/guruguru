@@ -92,6 +92,7 @@ import "./modelCheckController";
 import "./confirmDialogController";
 import "./scriptMangaController";
 import "./nameStudioController";
+import "./homeProgressController";
 import "./referenceSetController";
 import { importImagesAsPages } from "./bookController";
 import { closeLayoutPicker, importLayoutFile } from "./layoutTemplateController";
@@ -192,6 +193,7 @@ import {
   loadHome,
   uploadSourceAsset
 } from "./projectController";
+import { applyInitialScriptMangaDeepLink } from "./scriptMangaDeepLinkController";
 import { referenceFeatureAvailability, uploadReferenceImage } from "./referenceController";
 import {
   handleSidebarResizePointerCancel,
@@ -217,6 +219,7 @@ void boot();
 
 async function boot() {
   await loadHome();
+  await applyInitialScriptMangaDeepLink();
   bindEvents();
 }
 

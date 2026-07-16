@@ -67,6 +67,13 @@ function selectPanel(panelId: string): void {
   requestRender();
 }
 
+function closePanelDialog(): void {
+  if (!state.nameStudio.selectedPanelId) return;
+  state.nameStudio = { ...state.nameStudio, selectedPanelId: null };
+  state.nameStudioDraft = null;
+  requestRender();
+}
+
 async function flipLayout(candidateId: string, target: HTMLElement): Promise<void> {
   const layoutTemplateId = target.dataset.layoutId;
   const pageIndex = Number(target.dataset.pageIndex);
@@ -220,6 +227,14 @@ function bindNameStudioEvents(app: HTMLElement): void {
   // ドラフトへの書き込みだけなので再レンダー不要(値はドラフトからレンダーされる)。
   app.addEventListener("input", (event) => applyEdit(event.target));
   app.addEventListener("change", (event) => applyEdit(event.target));
+  app.addEventListener("click", (event) => {
+    if (event.target instanceof HTMLElement && event.target.classList.contains("studio-panel-dialog-backdrop")) {
+      closePanelDialog();
+    }
+  });
+  app.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.nameStudio.selectedPanelId) closePanelDialog();
+  });
 }
 
 registerActions({
@@ -227,6 +242,7 @@ registerActions({
   "studio-prev-page": () => movePage(-1),
   "studio-next-page": () => movePage(1),
   "studio-select-panel": (panelId) => selectPanel(panelId),
+  "studio-close-panel": () => closePanelDialog(),
   "studio-flip-layout": (candidateId, target) => void flipLayout(candidateId, target),
   "studio-edit-panel": (panelId) => beginPanelEdit(panelId),
   "studio-save-edits": () => void saveEdits(),

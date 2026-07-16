@@ -26,6 +26,7 @@ import {
 } from "../../shared/scriptMangaPlan";
 import type { MangaPageSpec, MangaPlanV2, PanelSpec } from "../../shared/mangaPlanV2";
 import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../shared/scriptMangaApi";
+import type { DialogueLine } from "../../shared/apiTypes";
 import type { NameStudioDraft, NameStudioState } from "../appState";
 import { escapeAttr, escapeHtml } from "../format";
 import { candidateDiffSignatures, candidatePageSignature } from "./scriptView";
@@ -37,6 +38,8 @@ export interface NameStudioViewProps {
   candidates: ScriptMangaPlanCandidateView[];
   beatKinds: Record<string, string>;
   dialogueChars: number[];
+  /** Fixed-revision dialogue text used by the human-gate storyboard. */
+  dialogueLines?: readonly DialogueLine[];
   candidatesBusy: boolean;
   runBusy: boolean;
   candidateCount: number;
@@ -173,8 +176,15 @@ function takeSummary(candidate: ScriptMangaPlanCandidateView): string {
   return `${plan.pages.length}p / 平均${avg}コマ / 大 ${larges} / splash ${splashes} / hook ${hooks}`;
 }
 
-/** コマオーバーレイの配置スタイル(bboxを%へ。yはpage.heightで割る。bleedはページ矩形へクランプ)。 */
-function overlayStyle(layout: PageLayout, slotIndex: number): string | null {
+interface OverlayPlacement {
+  style: string;
+  compact: boolean;
+  opensLeft: boolean;
+  opensUp: boolean;
+}
+
+/** コマオーバーレイの配置と、小コマ用hover詳細の開く向きを同じbboxから決める。 */
+function overlayPlacement(layout: PageLayout, slotIndex: number): OverlayPlacement | null {
   const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
   const slot = ordered[slotIndex];
   if (!slot) return null;
@@ -187,7 +197,52 @@ function overlayStyle(layout: PageLayout, slotIndex: number): string | null {
   const width = Math.max(0, right - left);
   const height = Math.max(0, bottom - top);
   if (width <= 0 || height <= 0) return null;
-  return `left:${(left * 100).toFixed(2)}%;top:${(top / pageHeight * 100).toFixed(2)}%;width:${(width * 100).toFixed(2)}%;height:${(height / pageHeight * 100).toFixed(2)}%;`;
+  const relativeHeight = height / pageHeight;
+  const relativeArea = width * relativeHeight;
+  return {
+    style: `left:${(left * 100).toFixed(2)}%;top:${(top / pageHeight * 100).toFixed(2)}%;width:${(width * 100).toFixed(2)}%;height:${(relativeHeight * 100).toFixed(2)}%;`,
+    compact: width < 0.34 || relativeHeight < 0.2 || relativeArea < 0.11,
+    opensLeft: left + width / 2 > 0.58,
+    opensUp: top / pageHeight + relativeHeight / 2 > 0.68
+  };
+}
+
+function candidateDialogueLines(panel: ScriptMangaPanelPlan, props: NameStudioViewProps): DialogueLine[] {
+  const byOrder = new Map((props.dialogueLines ?? []).map((line) => [line.orderIndex, line]));
+  return panel.dialogueOrderIndexes
+    .map((orderIndex) => byOrder.get(orderIndex))
+    .filter((line): line is DialogueLine => Boolean(line));
+}
+
+function dialogueBoxes(lines: readonly { speakerLabel?: string; text: string }[]): string {
+  return lines.map((line) => `
+    <span class="studio-panel-dialog-line">
+      ${line.speakerLabel ? `<strong>${escapeHtml(line.speakerLabel)}</strong>` : ""}
+      <span>${escapeHtml(line.text)}</span>
+    </span>`).join("");
+}
+
+function candidateCamera(panel: ScriptMangaPanelPlan): string {
+  if (!panel.direction) return "演出前";
+  return [panel.direction.shot, panel.direction.angle].filter(Boolean).join(" / ");
+}
+
+function candidateContent(panel: ScriptMangaPanelPlan): string {
+  return panel.direction?.action?.trim() || panel.sourceText;
+}
+
+function candidatePanelSummary(panel: ScriptMangaPanelPlan, lines: readonly DialogueLine[], clamp: boolean): string {
+  const source = candidateContent(panel);
+  const text = clamp && source.length > SOURCE_TEXT_CLAMP
+    ? `${source.slice(0, SOURCE_TEXT_CLAMP)}…`
+    : source;
+  return `
+    <span class="studio-panel-camera">カメラ: ${escapeHtml(candidateCamera(panel))}</span>
+    <span class="studio-panel-text"><strong>見せる:</strong> ${escapeHtml(text)}</span>
+    ${panel.direction?.composition
+      ? `<span class="studio-panel-composition"><strong>構図:</strong> ${escapeHtml(panel.direction.composition)}</span>`
+      : ""}
+    ${lines.length > 0 ? `<span class="studio-panel-dialogues">${dialogueBoxes(lines)}</span>` : ""}`;
 }
 
 function panelOverlay(
@@ -196,8 +251,8 @@ function panelOverlay(
   layout: PageLayout,
   props: NameStudioViewProps
 ): string {
-  const style = overlayStyle(layout, slotIndex);
-  if (!style) return "";
+  const placement = overlayPlacement(layout, slotIndex);
+  if (!placement) return "";
   const scale = panel.visualScale ?? "medium";
   const stats = panelDialogueStats(panel, props.dialogueChars);
   const kinds = (panel.sourceBeatIds ?? [])
@@ -207,19 +262,27 @@ function panelOverlay(
     .map((kind) => `<span class="studio-beat-chip is-${escapeAttr(kind)}">${escapeHtml(BEAT_KIND_LABELS[kind] ?? kind)}</span>`)
     .join("");
   const selected = props.nameStudio.selectedPanelId === panel.id;
-  const text = panel.sourceText.length > SOURCE_TEXT_CLAMP
-    ? `${panel.sourceText.slice(0, SOURCE_TEXT_CLAMP)}…`
-    : panel.sourceText;
+  const lines = candidateDialogueLines(panel, props);
+  const placementClasses = [
+    placement.compact ? "is-compact-panel" : "",
+    placement.opensLeft ? "opens-left" : "",
+    placement.opensUp ? "opens-up" : ""
+  ].filter(Boolean).join(" ");
   return `
-    <button type="button" class="studio-panel is-${scale} ${selected ? "is-selected" : ""}"
-      style="${style}" data-action="studio-select-panel" data-id="${escapeAttr(panel.id)}">
+    <button type="button" class="studio-panel is-${scale} ${selected ? "is-selected" : ""} ${placementClasses}"
+      style="${placement.style}" data-action="studio-select-panel" data-id="${escapeAttr(panel.id)}"
+      aria-haspopup="dialog" aria-label="コマ${slotIndex + 1}の詳細を開く">
       <span class="studio-panel-head">
         <span class="studio-panel-order">${slotIndex + 1}</span>
         <span class="studio-panel-scale">${SCALE_LABELS[scale]}${scale === "large" ? " ★" : ""}</span>
         ${kindChips}
       </span>
-      <span class="studio-panel-text">${escapeHtml(text)}</span>
-      ${stats.count > 0 ? `<span class="studio-panel-dialogue">台詞 ${stats.count}件 / ${stats.chars}字</span>` : ""}
+      <span class="studio-panel-inline">${candidatePanelSummary(panel, lines, true)}</span>
+      ${lines.length === 0 && stats.count > 0 ? `<span class="studio-panel-dialogue-count">台詞 ${stats.count}件 / ${stats.chars}字</span>` : ""}
+      ${placement.compact ? `<span class="studio-panel-compact-label">内容を見る</span>
+        <span class="studio-panel-hover-card" aria-hidden="true">
+          <strong>コマ${slotIndex + 1}</strong>${candidatePanelSummary(panel, lines, false)}
+        </span>` : ""}
     </button>`;
 }
 
@@ -270,6 +333,7 @@ function inspectorPanel(page: ScriptMangaPagePlan, props: NameStudioViewProps): 
   }
   const scale = panel.visualScale ?? "medium";
   const stats = panelDialogueStats(panel, props.dialogueChars);
+  const lines = candidateDialogueLines(panel, props);
   const kinds = (panel.sourceBeatIds ?? [])
     .map((beatId) => props.beatKinds[beatId])
     .filter((kind): kind is string => Boolean(kind));
@@ -278,21 +342,48 @@ function inspectorPanel(page: ScriptMangaPagePlan, props: NameStudioViewProps): 
       <dt>サイズ</dt><dd>${SCALE_LABELS[scale]}</dd>
       <dt>ビート</dt><dd>${kinds.length > 0 ? escapeHtml([...new Set(kinds)].map((kind) => BEAT_KIND_LABELS[kind] ?? kind).join(" / ")) : "—"}</dd>
       <dt>シーン</dt><dd>${escapeHtml(panel.sceneHeading || "—")}</dd>
+      <dt>カメラ</dt><dd>${escapeHtml(candidateCamera(panel))}</dd>
       <dt>内容</dt><dd class="studio-inspector-text">${escapeHtml(panel.sourceText)}</dd>
-      <dt>台詞</dt><dd>${stats.count > 0 ? `${stats.count}件 / ${stats.chars}字` : "なし"}</dd>
+      <dt>台詞</dt><dd class="studio-inspector-text">${lines.length > 0
+        ? dialogueBoxes(lines)
+        : stats.count > 0 ? `${stats.count}件 / ${stats.chars}字` : "なし"}</dd>
     </dl>`;
 }
 
 // --- 演出ネーム(V5 D6): 採用後は run.plan(MangaPlanV2)を同じリーダーで表示・編集する ---
 
 function dialogueTexts(panel: PanelSpec, plan: MangaPlanV2): string[] {
-  const byId = new Map(plan.dialogueSnapshots.map((line) => [line.id, line.text]));
+  return dialogueSnapshotsForPanel(panel, plan).map((line) => line.text);
+}
+
+function dialogueSnapshotsForPanel(panel: PanelSpec, plan: MangaPlanV2): MangaPlanV2["dialogueSnapshots"] {
+  const byId = new Map(plan.dialogueSnapshots.map((line) => [line.id, line]));
   // 正は dialogueLineIds(orderIndexes は互換フィールド)。
-  return panel.dialogueLineIds.map((lineId) => byId.get(lineId)).filter((text): text is string => Boolean(text));
+  return panel.dialogueLineIds
+    .map((lineId) => byId.get(lineId))
+    .filter((line): line is MangaPlanV2["dialogueSnapshots"][number] => Boolean(line));
 }
 
 function entityName(plan: MangaPlanV2, entityId: string): string {
   return plan.narrativeGraph.entities.find((entity) => entity.id === entityId)?.name ?? entityId;
+}
+
+function directedPanelSummary(panel: PanelSpec, plan: MangaPlanV2, clamp: boolean): string {
+  const camera = `${SHOT_SIZE_LABELS[panel.shot.size] ?? panel.shot.size} / ${panel.shot.angle}`;
+  const composition = clamp && panel.shot.compositionIntent.length > SOURCE_TEXT_CLAMP
+    ? `${panel.shot.compositionIntent.slice(0, SOURCE_TEXT_CLAMP)}…`
+    : panel.shot.compositionIntent;
+  const cast = panel.cast.map((member) =>
+    `${entityName(plan, member.characterId)}: ${member.action} / ${member.expression}`
+  );
+  const lines = dialogueSnapshotsForPanel(panel, plan);
+  return `
+    <span class="studio-panel-camera">カメラ: ${escapeHtml(camera)}</span>
+    <span class="studio-panel-text"><strong>見せる:</strong> ${escapeHtml(composition)}</span>
+    ${cast.length > 0
+      ? `<span class="studio-panel-cast"><strong>人物:</strong> ${escapeHtml(cast.join("\n"))}</span>`
+      : ""}
+    ${lines.length > 0 ? `<span class="studio-panel-dialogues">${dialogueBoxes(lines)}</span>` : ""}`;
 }
 
 function directedPanelOverlay(
@@ -302,30 +393,30 @@ function directedPanelOverlay(
   plan: MangaPlanV2,
   props: NameStudioViewProps
 ): string {
-  const style = overlayStyle(page.layoutSnapshot, slotIndex);
-  if (!style) return "";
+  const placement = overlayPlacement(page.layoutSnapshot, slotIndex);
+  if (!placement) return "";
   const scale = panel.visualScale ?? "medium";
   const selected = props.nameStudio.selectedPanelId === panel.id;
   const source = panel.directionSource ?? "llm";
-  const camera = `${SHOT_SIZE_LABELS[panel.shot.size] ?? panel.shot.size} / ${panel.shot.angle}`;
-  const cast = panel.cast
-    .map((member) => `${entityName(plan, member.characterId)}(${member.expression})`)
-    .join("、");
-  const dialogues = dialogueTexts(panel, plan);
+  const placementClasses = [
+    placement.compact ? "is-compact-panel" : "",
+    placement.opensLeft ? "opens-left" : "",
+    placement.opensUp ? "opens-up" : ""
+  ].filter(Boolean).join(" ");
   return `
-    <button type="button" class="studio-panel is-directed is-${scale} ${selected ? "is-selected" : ""} ${source === "fallback" ? "is-undirected" : ""}"
-      style="${style}" data-action="studio-select-panel" data-id="${escapeAttr(panel.id)}">
+    <button type="button" class="studio-panel is-directed is-${scale} ${selected ? "is-selected" : ""} ${placementClasses} ${source === "fallback" ? "is-undirected" : ""}"
+      style="${placement.style}" data-action="studio-select-panel" data-id="${escapeAttr(panel.id)}"
+      aria-haspopup="dialog" aria-label="コマ${slotIndex + 1}の詳細を開く">
       <span class="studio-panel-head">
         <span class="studio-panel-order">${slotIndex + 1}</span>
         <span class="studio-panel-scale">${SCALE_LABELS[scale]}</span>
         <span class="studio-beat-chip is-source-${escapeAttr(source)}">${escapeHtml(DIRECTION_SOURCE_LABELS[source] ?? source)}</span>
       </span>
-      <span class="studio-panel-text">カメラ: ${escapeHtml(camera)}
-構図: ${escapeHtml(panel.shot.compositionIntent)}${cast ? `
-人物: ${escapeHtml(cast)}` : ""}</span>
-      ${dialogues.length > 0
-        ? `<span class="studio-panel-dialogue">${escapeHtml(dialogues[0]!.length > 24 ? `${dialogues[0]!.slice(0, 24)}…` : dialogues[0]!)}${dialogues.length > 1 ? ` (+${dialogues.length - 1})` : ""}</span>`
-        : ""}
+      <span class="studio-panel-inline">${directedPanelSummary(panel, plan, true)}</span>
+      ${placement.compact ? `<span class="studio-panel-compact-label">内容を見る</span>
+        <span class="studio-panel-hover-card" aria-hidden="true">
+          <strong>コマ${slotIndex + 1}</strong>${directedPanelSummary(panel, plan, false)}
+        </span>` : ""}
     </button>`;
 }
 
@@ -394,6 +485,69 @@ function directedInspector(page: MangaPageSpec, plan: MangaPlanV2, props: NameSt
       </div>
       <p class="studio-inspector-hint">保存すると監督済みプランへ差分適用され、runは再承認待ちへ戻ります。</p>
     </div>`;
+}
+
+function panelDialogShell(panelId: string, title: string, subtitle: string, body: string): string {
+  return `
+    <div class="studio-panel-dialog-backdrop">
+      <section class="studio-panel-dialog" role="dialog" aria-modal="true" aria-labelledby="studio-panel-dialog-title">
+        <header class="studio-panel-dialog-header">
+          <div>
+            <span class="studio-panel-dialog-kicker">${escapeHtml(subtitle)}</span>
+            <h3 id="studio-panel-dialog-title">${escapeHtml(title)}</h3>
+          </div>
+          <button type="button" class="studio-panel-dialog-close" data-action="studio-close-panel"
+            data-id="${escapeAttr(panelId)}" aria-label="コマ詳細を閉じる">×</button>
+        </header>
+        <div class="studio-panel-dialog-body">${body}</div>
+      </section>
+    </div>`;
+}
+
+function candidatePanelDialog(page: ScriptMangaPagePlan, props: NameStudioViewProps): string {
+  const panelIndex = page.panels.findIndex((panel) => panel.id === props.nameStudio.selectedPanelId);
+  const panel = page.panels[panelIndex];
+  if (!panel) return "";
+  const lines = candidateDialogueLines(panel, props);
+  const kinds = (panel.sourceBeatIds ?? [])
+    .map((beatId) => props.beatKinds[beatId])
+    .filter((kind): kind is string => Boolean(kind));
+  return panelDialogShell(
+    panel.id,
+    `コマ ${panelIndex + 1}`,
+    `${panel.sceneHeading || "シーン未設定"} / ${SCALE_LABELS[panel.visualScale ?? "medium"]}`,
+    `<div class="studio-panel-dialog-storyboard">
+      ${candidatePanelSummary(panel, lines, false)}
+    </div>
+    <dl class="studio-panel-dialog-meta">
+      <dt>ビート</dt><dd>${kinds.length > 0
+        ? escapeHtml([...new Set(kinds)].map((kind) => BEAT_KIND_LABELS[kind] ?? kind).join(" / "))
+        : "—"}</dd>
+      <dt>脚本要素</dt><dd>${escapeHtml(panel.sourceText)}</dd>
+      <dt>台詞順</dt><dd>${panel.dialogueOrderIndexes.length > 0
+        ? panel.dialogueOrderIndexes.join(" → ")
+        : "なし"}</dd>
+    </dl>`
+  );
+}
+
+function directedPanelDialog(page: MangaPageSpec, plan: MangaPlanV2, props: NameStudioViewProps): string {
+  const panelIndex = page.panels.findIndex((panel) => panel.id === props.nameStudio.selectedPanelId);
+  const panel = page.panels[panelIndex];
+  if (!panel) return "";
+  const source = panel.directionSource ?? "llm";
+  return panelDialogShell(
+    panel.id,
+    `コマ ${panelIndex + 1}`,
+    `${DIRECTION_SOURCE_LABELS[source] ?? source} / ${SCALE_LABELS[panel.visualScale ?? "medium"]}`,
+    `<div class="studio-panel-dialog-storyboard">
+      ${directedPanelSummary(panel, plan, false)}
+    </div>
+    <details class="studio-panel-dialog-prompt">
+      <summary>画像promptを確認</summary>
+      <p>${escapeHtml(panel.promptBase)}</p>
+    </details>`
+  );
 }
 
 function renderDirectedReader(props: NameStudioViewProps): string {
@@ -494,6 +648,16 @@ export function renderNameStudio(props: NameStudioViewProps): string {
   const directedAvailable = Boolean(props.run?.plan);
   const isDirected = directedAvailable && props.nameStudio.takeId === DIRECTED_TAKE_ID;
   const active = isDirected ? null : activeStudioTake(props.candidates, props.nameStudio);
+  const directedPage = isDirected
+    ? props.run!.plan!.pages[Math.max(0, Math.min(props.run!.plan!.pages.length - 1, props.nameStudio.pageIndex))]
+    : null;
+  const activePlan = active ? effectiveCandidatePlan(active) : null;
+  const activePage = activePlan
+    ? activePlan.pages[Math.max(0, Math.min(activePlan.pages.length - 1, props.nameStudio.pageIndex))] ?? activePlan.pages[0]
+    : null;
+  const panelDialog = directedPage
+    ? directedPanelDialog(directedPage, props.run!.plan!, props)
+    : activePage ? candidatePanelDialog(activePage, props) : "";
   const directedChip = directedAvailable ? `
     <button type="button" class="studio-take is-directed-take ${isDirected ? "is-active" : ""}"
       data-action="studio-select-take" data-id="${DIRECTED_TAKE_ID}">
@@ -534,14 +698,15 @@ export function renderNameStudio(props: NameStudioViewProps): string {
           <h3>コマ詳細</h3>
           ${isDirected
             ? directedInspector(
-                props.run!.plan!.pages[Math.max(0, Math.min(props.run!.plan!.pages.length - 1, props.nameStudio.pageIndex))]!,
+                directedPage!,
                 props.run!.plan!,
                 props
               )
             : active
-              ? inspectorPanel(effectiveCandidatePlan(active).pages[Math.max(0, Math.min(effectiveCandidatePlan(active).pages.length - 1, props.nameStudio.pageIndex))] ?? effectiveCandidatePlan(active).pages[0]!, props)
+              ? inspectorPanel(activePage!, props)
               : ""}
         </aside>
       </div>`}
+      ${panelDialog}
     </section>`;
 }

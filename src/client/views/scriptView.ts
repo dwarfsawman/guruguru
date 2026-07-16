@@ -101,6 +101,7 @@ export function renderScriptView(props: ScriptViewProps): string {
             candidates: props.scriptMangaCandidates,
             beatKinds: props.scriptMangaCandidateBeatKinds,
             dialogueChars: props.scriptMangaCandidateDialogueChars,
+            dialogueLines: props.dialogueLines,
             candidatesBusy: props.scriptMangaCandidatesBusy,
             runBusy: props.scriptMangaBusy,
             candidateCount: props.scriptMangaCandidateCount,

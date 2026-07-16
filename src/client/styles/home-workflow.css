@@ -258,6 +258,82 @@
   }
 }
 
+.project-manga-progress {
+  display: flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 6px;
+  padding: 4px 5px 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent-line) 58%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+  color: var(--text);
+  font-size: 10.5px;
+
+  > span:nth-child(2) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--muted);
+    font-size: 9.5px;
+  }
+
+  .button-secondary {
+    min-height: 24px;
+    margin-left: 3px;
+    padding: 2px 7px;
+    font-size: 9.5px;
+  }
+
+  &.is-error {
+    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+  }
+
+  &.is-done,
+  &.is-idle {
+    border-color: var(--line-strong);
+    background: var(--panel-soft);
+  }
+}
+
+.project-manga-live-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.project-manga-progress.is-active .project-manga-live-dot {
+  animation: project-manga-pulse 1.6s ease-in-out infinite;
+}
+
+.project-manga-progress.is-error .project-manga-live-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+.project-manga-progress.is-done .project-manga-live-dot,
+.project-manga-progress.is-idle .project-manga-live-dot {
+  background: var(--muted);
+  box-shadow: none;
+}
+
+@keyframes project-manga-pulse {
+  50% {
+    opacity: 0.45;
+    transform: scale(0.78);
+  }
+}
+
 .project-copy p.desc-empty {
   color: var(--faint);
   font-style: italic;
