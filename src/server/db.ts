@@ -655,6 +655,8 @@ export function initializeDb() {
   // ネームスタジオV5 D5: 基礎プランを不変に保ち、人間のレイアウト選択と楽観ロックを別カラムで持つ。
   ensureColumn("script_manga_plan_candidates", "layout_overrides_json", "TEXT");
   ensureColumn("script_manga_plan_candidates", "edit_version", "INTEGER NOT NULL DEFAULT 0");
+  // V5 D6: plan_json への全書き込みで加算する内容バージョン(差分編集の楽観ロック)。
+  ensureColumn("script_manga_plans", "edit_version", "INTEGER NOT NULL DEFAULT 0");
   db.exec("CREATE INDEX IF NOT EXISTS idx_rounds_project_page ON generation_rounds(project_id, page_id)");
   ensureColumn("asset_paste_attachments", "enabled", "INTEGER NOT NULL DEFAULT 1");
   // Book モード: 'single'（既定・従来の1枚生成）/ 'book'（複数ページ）。

@@ -859,7 +859,8 @@ function render(_options: RenderOptions = {}) {
             scriptMangaCandidateDialogueChars: state.scriptMangaCandidateDialogueChars,
             scriptMangaCandidatesBusy: state.scriptMangaCandidatesBusy,
             scriptMangaCandidateCount: state.scriptMangaCandidateCount,
-            nameStudio: state.nameStudio
+            nameStudio: state.nameStudio,
+            nameStudioDraft: state.nameStudioDraft
           })
         : state.book
           ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds, {

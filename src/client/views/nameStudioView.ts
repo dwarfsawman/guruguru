@@ -24,10 +24,13 @@ import {
   type ScriptMangaPanelPlan,
   type ScriptMangaPlan
 } from "../../shared/scriptMangaPlan";
-import type { ScriptMangaPlanCandidateView } from "../../shared/scriptMangaApi";
-import type { NameStudioState } from "../appState";
+import type { MangaPageSpec, MangaPlanV2, PanelSpec } from "../../shared/mangaPlanV2";
+import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../shared/scriptMangaApi";
+import type { NameStudioDraft, NameStudioState } from "../appState";
 import { escapeAttr, escapeHtml } from "../format";
 import { candidateDiffSignatures, candidatePageSignature } from "./scriptView";
+
+export const DIRECTED_TAKE_ID = "__directed__";
 
 export interface NameStudioViewProps {
   activeScriptId: string | null;
@@ -39,6 +42,9 @@ export interface NameStudioViewProps {
   candidateCount: number;
   templateSelected: boolean;
   nameStudio: NameStudioState;
+  /** 採用後の演出ネーム表示・編集(V5 D6)。 */
+  run: ScriptMangaRunView | null;
+  draft: NameStudioDraft | null;
 }
 
 const SCALE_LABELS: Record<MangaVisualScale, string> = {
@@ -69,6 +75,26 @@ const REASON_LABELS: Record<LayoutReason["code"], string> = {
 
 const SOURCE_TEXT_CLAMP = 120;
 const FLIP_CHOICES = 3;
+
+const SHOT_SIZE_LABELS: Record<string, string> = {
+  "extreme-wide": "大引き",
+  wide: "引き",
+  medium: "ミディアム",
+  "close-up": "寄り",
+  insert: "インサート"
+};
+
+const DIRECTION_SOURCE_LABELS: Record<string, string> = {
+  llm: "LLM演出",
+  fallback: "未演出",
+  human: "人間修正",
+  provided: "provided"
+};
+
+/** 演出ネーム(run.plan)が編集可能か(承認済み/実行中/候補レビュー中は409になるため読み取り専用)。 */
+export function directedPlanEditable(run: ScriptMangaRunView): boolean {
+  return run.approvalStatus !== "approved" && !["running", "awaiting_review"].includes(run.status);
+}
 
 export function takeLabel(index: number): string {
   return `テイク${String.fromCharCode(65 + (index % 26))}`;
@@ -257,6 +283,154 @@ function inspectorPanel(page: ScriptMangaPagePlan, props: NameStudioViewProps): 
     </dl>`;
 }
 
+// --- 演出ネーム(V5 D6): 採用後は run.plan(MangaPlanV2)を同じリーダーで表示・編集する ---
+
+function dialogueTexts(panel: PanelSpec, plan: MangaPlanV2): string[] {
+  const byId = new Map(plan.dialogueSnapshots.map((line) => [line.id, line.text]));
+  // 正は dialogueLineIds(orderIndexes は互換フィールド)。
+  return panel.dialogueLineIds.map((lineId) => byId.get(lineId)).filter((text): text is string => Boolean(text));
+}
+
+function entityName(plan: MangaPlanV2, entityId: string): string {
+  return plan.narrativeGraph.entities.find((entity) => entity.id === entityId)?.name ?? entityId;
+}
+
+function directedPanelOverlay(
+  panel: PanelSpec,
+  slotIndex: number,
+  page: MangaPageSpec,
+  plan: MangaPlanV2,
+  props: NameStudioViewProps
+): string {
+  const style = overlayStyle(page.layoutSnapshot, slotIndex);
+  if (!style) return "";
+  const scale = panel.visualScale ?? "medium";
+  const selected = props.nameStudio.selectedPanelId === panel.id;
+  const source = panel.directionSource ?? "llm";
+  const camera = `${SHOT_SIZE_LABELS[panel.shot.size] ?? panel.shot.size} / ${panel.shot.angle}`;
+  const cast = panel.cast
+    .map((member) => `${entityName(plan, member.characterId)}(${member.expression})`)
+    .join("、");
+  const dialogues = dialogueTexts(panel, plan);
+  return `
+    <button type="button" class="studio-panel is-directed is-${scale} ${selected ? "is-selected" : ""} ${source === "fallback" ? "is-undirected" : ""}"
+      style="${style}" data-action="studio-select-panel" data-id="${escapeAttr(panel.id)}">
+      <span class="studio-panel-head">
+        <span class="studio-panel-order">${slotIndex + 1}</span>
+        <span class="studio-panel-scale">${SCALE_LABELS[scale]}</span>
+        <span class="studio-beat-chip is-source-${escapeAttr(source)}">${escapeHtml(DIRECTION_SOURCE_LABELS[source] ?? source)}</span>
+      </span>
+      <span class="studio-panel-text">カメラ: ${escapeHtml(camera)}
+構図: ${escapeHtml(panel.shot.compositionIntent)}${cast ? `
+人物: ${escapeHtml(cast)}` : ""}</span>
+      ${dialogues.length > 0
+        ? `<span class="studio-panel-dialogue">${escapeHtml(dialogues[0]!.length > 24 ? `${dialogues[0]!.slice(0, 24)}…` : dialogues[0]!)}${dialogues.length > 1 ? ` (+${dialogues.length - 1})` : ""}</span>`
+        : ""}
+    </button>`;
+}
+
+function directedInspector(page: MangaPageSpec, plan: MangaPlanV2, props: NameStudioViewProps): string {
+  const run = props.run!;
+  const panel = page.panels.find((candidatePanel) => candidatePanel.id === props.nameStudio.selectedPanelId);
+  if (!panel) {
+    return `<p class="studio-inspector-hint">コマをクリックすると演出の詳細と編集フォームを表示します。</p>`;
+  }
+  const editable = directedPlanEditable(run);
+  const draft = props.draft?.panelId === panel.id ? props.draft : null;
+  if (!draft) {
+    const dialogues = dialogueTexts(panel, plan);
+    const source = panel.directionSource ?? "llm";
+    return `
+      <dl class="studio-inspector-list">
+        <dt>演出</dt><dd>${escapeHtml(DIRECTION_SOURCE_LABELS[source] ?? source)}</dd>
+        <dt>カメラ</dt><dd>${escapeHtml(`${SHOT_SIZE_LABELS[panel.shot.size] ?? panel.shot.size} / ${panel.shot.angle}`)}</dd>
+        <dt>構図</dt><dd>${escapeHtml(panel.shot.compositionIntent)}</dd>
+        <dt>人物</dt><dd>${panel.cast.length > 0
+          ? escapeHtml(panel.cast.map((member) => `${entityName(plan, member.characterId)}: ${member.expression} / ${member.action}`).join("\n"))
+          : "—"}</dd>
+        <dt>台詞</dt><dd class="studio-inspector-text">${dialogues.length > 0 ? escapeHtml(dialogues.join("\n")) : "なし"}</dd>
+        <dt>prompt</dt><dd class="studio-inspector-text">${escapeHtml(panel.promptBase)}</dd>
+      </dl>
+      ${editable
+        ? `<button type="button" class="button-secondary compact" data-action="studio-edit-panel" data-id="${escapeAttr(panel.id)}">このコマを編集</button>`
+        : `<p class="studio-inspector-hint">承認済み/実行中のプランは編集できません。</p>`}`;
+  }
+  // 編集フォーム: 値は常にドラフトからレンダーする(V5 D6、morphのフォーカス保護は1要素のみ)。
+  const sizeOptions = Object.entries(SHOT_SIZE_LABELS)
+    .map(([value, label]) => `<option value="${value}" ${draft.shotSize === value ? "selected" : ""}>${label}</option>`)
+    .join("");
+  const knownAngles = ["eye-level", "low", "high", "overhead", "dutch", "pov"];
+  const angleOptions = [
+    ...knownAngles.map((angle) => `<option value="${angle}" ${draft.shotAngle === angle ? "selected" : ""}>${angle}</option>`),
+    // V2のangleは自由string: 既知6値以外の現値は「その他(現値保持)」として温存する。
+    ...(knownAngles.includes(draft.shotAngle)
+      ? []
+      : [`<option value="${escapeAttr(draft.shotAngle)}" selected>その他(${escapeHtml(draft.shotAngle)})</option>`])
+  ].join("");
+  const castRows = draft.cast.map((member) => `
+    <div class="studio-edit-cast-row" data-character-id="${escapeAttr(member.characterId)}">
+      <span class="studio-edit-cast-name">${escapeHtml(member.name)}</span>
+      <input type="text" data-studio-edit="cast-expression" data-character-id="${escapeAttr(member.characterId)}"
+        value="${escapeAttr(member.expression)}" placeholder="表情" />
+      <input type="text" data-studio-edit="cast-action" data-character-id="${escapeAttr(member.characterId)}"
+        value="${escapeAttr(member.action)}" placeholder="行動" />
+    </div>`).join("");
+  return `
+    <div class="studio-edit-form">
+      <label class="studio-edit-field"><span>カメラ(size)</span>
+        <select data-studio-edit="shotSize">${sizeOptions}</select></label>
+      <label class="studio-edit-field"><span>カメラ(angle)</span>
+        <select data-studio-edit="shotAngle">${angleOptions}</select></label>
+      <label class="studio-edit-field"><span>構図</span>
+        <input type="text" data-studio-edit="compositionIntent" value="${escapeAttr(draft.compositionIntent)}" /></label>
+      <label class="studio-edit-field"><span>prompt(英語の視覚事実)</span>
+        <textarea data-studio-edit="promptBase" rows="4">${escapeHtml(draft.promptBase)}</textarea></label>
+      ${castRows ? `<div class="studio-edit-field"><span>人物(表情 / 行動)</span>${castRows}</div>` : ""}
+      <label class="studio-edit-field"><span>ページ意図</span>
+        <input type="text" data-studio-edit="pageIntent" value="${escapeAttr(draft.pageIntent)}" /></label>
+      <div class="studio-actions">
+        <button type="button" class="button-primary compact" data-action="studio-save-edits" ${props.runBusy ? "disabled" : ""}>保存(再構成)</button>
+        <button type="button" class="button-secondary compact" data-action="studio-cancel-edits">取消</button>
+      </div>
+      <p class="studio-inspector-hint">保存すると監督済みプランへ差分適用され、runは再承認待ちへ戻ります。</p>
+    </div>`;
+}
+
+function renderDirectedReader(props: NameStudioViewProps): string {
+  const run = props.run!;
+  const plan = run.plan!;
+  const pageCount = plan.pages.length;
+  const pageIndex = Math.max(0, Math.min(pageCount - 1, props.nameStudio.pageIndex));
+  const page = plan.pages[pageIndex];
+  if (!page) return `<p class="studio-inspector-hint">プランにページがありません。</p>`;
+  const wireframePanels: WireframePanelInfo[] = page.panels.map((panel) => ({ visualScale: panel.visualScale }));
+  const svg = renderPageWireframeSvg(page.layoutSnapshot, {
+    className: "studio-page-svg",
+    panels: wireframePanels,
+    turnHook: page.turnHook
+  });
+  const overlays = page.panels
+    .map((panel, slotIndex) => directedPanelOverlay(panel, slotIndex, page, plan, props))
+    .join("");
+  const turnHookLabel = page.turnHook === "reveal" ? "▼reveal" : page.turnHook === "cliffhanger" ? "▼cliffhanger" : "なし";
+  return `
+    <div class="studio-reader">
+      <div class="studio-page-nav">
+        <button type="button" class="button-secondary compact" data-action="studio-prev-page" ${pageIndex <= 0 ? "disabled" : ""}>◀ 前ページ</button>
+        <span class="studio-page-counter">p${pageIndex + 1} / ${pageCount} <span class="studio-diff-note">演出ネーム(${escapeHtml(run.approvalStatus)})</span></span>
+        <button type="button" class="button-secondary compact" data-action="studio-next-page" ${pageIndex >= pageCount - 1 ? "disabled" : ""}>次ページ ▶</button>
+      </div>
+      <div class="studio-page" style="aspect-ratio: 1 / ${page.layoutSnapshot.page.height.toFixed(6)};">
+        ${svg}
+        <div class="studio-overlays">${overlays}</div>
+      </div>
+      <div class="studio-page-footer">
+        <span class="studio-page-intent">ページ意図: ${escapeHtml(page.pageIntent?.trim() || "—")}</span>
+        <span class="studio-page-hook">めくり: ${turnHookLabel}</span>
+      </div>
+    </div>`;
+}
+
 function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudioViewProps): string {
   const plan = effectiveCandidatePlan(candidate);
   const pageCount = plan.pages.length;
@@ -317,8 +491,17 @@ export function renderNameStudio(props: NameStudioViewProps): string {
   const countOptions = [1, 2, 3, 4, 5, 6]
     .map((count) => `<option value="${count}" ${count === props.candidateCount ? "selected" : ""}>${count}</option>`)
     .join("");
-  const active = activeStudioTake(props.candidates, props.nameStudio);
-  const takes = props.candidates.map((candidate, index) => `
+  const directedAvailable = Boolean(props.run?.plan);
+  const isDirected = directedAvailable && props.nameStudio.takeId === DIRECTED_TAKE_ID;
+  const active = isDirected ? null : activeStudioTake(props.candidates, props.nameStudio);
+  const directedChip = directedAvailable ? `
+    <button type="button" class="studio-take is-directed-take ${isDirected ? "is-active" : ""}"
+      data-action="studio-select-take" data-id="${DIRECTED_TAKE_ID}">
+      <span class="studio-take-label">演出ネーム</span>
+      <span class="studio-take-badges"><span class="plan-candidate-badge is-beats">採用済みプラン</span></span>
+      <span class="studio-take-summary">${props.run!.plan!.pages.length}p / カメラ・人物・台詞本文${directedPlanEditable(props.run!) ? " / 編集可" : ""}</span>
+    </button>` : "";
+  const takes = directedChip + props.candidates.map((candidate, index) => `
     <button type="button" class="studio-take ${candidate.id === active?.id ? "is-active" : ""} ${candidate.status === "adopted" ? "is-adopted" : ""}"
       data-action="studio-select-take" data-id="${escapeAttr(candidate.id)}">
       <span class="studio-take-label">${takeLabel(index)}</span>
@@ -339,17 +522,25 @@ export function renderNameStudio(props: NameStudioViewProps): string {
             data-group-id="${escapeAttr(active.groupId)}" ${props.candidatesBusy ? "disabled" : ""}>追加生成</button>` : ""}
         </div>
       </div>
-      ${props.candidates.length === 0
+      ${props.candidates.length === 0 && !directedAvailable
         ? `<p class="studio-inspector-hint">${props.candidatesBusy
             ? "候補を生成しています…(ビート注釈は revision 単位でキャッシュされます)"
             : "「候補を生成」でコマ割り候補(テイク)を作り、ネームとして読み比べて採用します。エージェントがAPIで作った候補もここへ自動で現れます。"}</p>`
         : `
       <div class="name-studio-takes" role="tablist">${takes}</div>
       <div class="name-studio-body">
-        ${active ? renderReader(active, props) : ""}
+        ${isDirected ? renderDirectedReader(props) : active ? renderReader(active, props) : ""}
         <aside class="name-studio-inspector">
           <h3>コマ詳細</h3>
-          ${active ? inspectorPanel(effectiveCandidatePlan(active).pages[Math.max(0, Math.min(effectiveCandidatePlan(active).pages.length - 1, props.nameStudio.pageIndex))] ?? effectiveCandidatePlan(active).pages[0]!, props) : ""}
+          ${isDirected
+            ? directedInspector(
+                props.run!.plan!.pages[Math.max(0, Math.min(props.run!.plan!.pages.length - 1, props.nameStudio.pageIndex))]!,
+                props.run!.plan!,
+                props
+              )
+            : active
+              ? inspectorPanel(effectiveCandidatePlan(active).pages[Math.max(0, Math.min(effectiveCandidatePlan(active).pages.length - 1, props.nameStudio.pageIndex))] ?? effectiveCandidatePlan(active).pages[0]!, props)
+              : ""}
         </aside>
       </div>`}
     </section>`;

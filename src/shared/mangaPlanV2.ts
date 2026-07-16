@@ -24,6 +24,9 @@ export type MangaPageTurnHook = "reveal" | "cliffhanger" | "none";
 export const MANGA_VISUAL_SCALES = ["small", "medium", "large", "splash"] as const;
 export type MangaVisualScale = (typeof MANGA_VISUAL_SCALES)[number];
 
+/** 演出の出所(V5 D6)。boolean では区別できない4状態をUIバッジ・選好ログに使う。 */
+export type MangaDirectionSource = "llm" | "fallback" | "human" | "provided";
+
 /**
  * 旧語彙(コマ importance enum / ビート desiredScale)が混在する永続データ・API入力を
  * visualScale へ正規化する入力adapter。適用箇所は3境界のみ: 永続 plan/candidate のparse直後、
@@ -200,6 +203,12 @@ export interface PanelSpec {
   role?: "figure";
   /** 解決済みコマスケール(ネームスタジオV5 D1)。旧 importance enum の後継。additive。 */
   visualScale?: MangaVisualScale;
+  /**
+   * 演出の出所(V5 D6)。V2は未演出コマにも既定値を埋めるためフィールド欠落では検知できない。
+   * llm=監督LLM / fallback=監督バッチ失敗(未演出) / human=差分編集で人間が修正 / provided=外部プラン。
+   * 旧plan(フィールド無し)は演出済み相当として扱う。additive。
+   */
+  directionSource?: MangaDirectionSource;
   sourceElementIds: string[];
   beatIds: string[];
   preStateId: string;

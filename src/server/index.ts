@@ -110,6 +110,7 @@ import {
   repairScriptMangaTask,
   retryScriptMangaTask,
   selectScriptMangaTaskCandidate,
+  applyNamePlanEdits,
   startScriptMangaRun,
   updateScriptMangaPlan
 } from "./scriptManga";
@@ -675,6 +676,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const scriptMangaPlanMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)$/);
   if (method === "GET" && scriptMangaPlanMatch) {
     sendJson(res, 200, getScriptMangaPlan(scriptMangaPlanMatch[1]!));
+    return;
+  }
+  // V5 D6: スタジオ用ホワイトリスト差分編集(完全V2のPATCHは successor/provided 系ツール向けに残置)。
+  const scriptMangaPlanEditsMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)\/edits$/);
+  if (method === "POST" && scriptMangaPlanEditsMatch) {
+    sendJson(res, 200, applyNamePlanEdits(scriptMangaPlanEditsMatch[1]!, await readJson(req)));
     return;
   }
   if (method === "PATCH" && scriptMangaPlanMatch) {

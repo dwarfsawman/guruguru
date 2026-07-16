@@ -123,11 +123,26 @@ export interface ChronicleUiState {
   allocationPolicy: ExistingPlacementPolicy;
 }
 
-/** ネームスタジオ(V5 D5)の表示状態。takeId=選択中候補(null=先頭)、pageIndex=表示ページ。 */
+/**
+ * ネームスタジオ(V5 D5)の表示状態。takeId=選択中候補(null=先頭、"__directed__"=採用後の
+ * 演出ネーム)、pageIndex=表示ページ。
+ */
 export interface NameStudioState {
   takeId: string | null;
   pageIndex: number;
   selectedPanelId: string | null;
+}
+
+/** 演出ネームの編集ドラフト(V5 D6)。フォームの値は常にここからレンダーする(morph保護は1要素のみ)。 */
+export interface NameStudioDraft {
+  panelId: string;
+  pageIndex: number;
+  shotSize: string;
+  shotAngle: string;
+  compositionIntent: string;
+  promptBase: string;
+  pageIntent: string;
+  cast: Array<{ characterId: string; name: string; expression: string; action: string }>;
 }
 
 export interface ConfirmDialogState {
@@ -568,6 +583,8 @@ export interface AppState {
   scriptMangaCandidateCount: number;
   /** ネームスタジオ(V5 D5)の表示状態: 選択中テイク・ページ・コマ。 */
   nameStudio: NameStudioState;
+  /** 演出ネームの編集ドラフト(V5 D6)。非null中はポーリングの run 適用をskipする。 */
+  nameStudioDraft: NameStudioDraft | null;
   /** そのプロジェクトのキャラクタ一覧。脚本画面を開いた時に取得する。 */
   characters: Character[];
   /** キャラクタ一覧で選択中(編集対象)の id。null=未選択。 */
@@ -739,6 +756,7 @@ export const state: AppState = {
   scriptMangaCandidatesBusy: false,
   scriptMangaCandidateCount: 3,
   nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: null },
+  nameStudioDraft: null,
   characters: [],
   selectedCharacterId: null,
   selectedCharacterBinding: null,

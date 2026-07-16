@@ -364,6 +364,10 @@ export function buildMangaPlanV2(input: {
         id: legacyPanel.id,
         ...(layoutRole === "figure" ? { role: "figure" as const } : {}),
         ...(legacyPanel.visualScale !== undefined ? { visualScale: legacyPanel.visualScale } : {}),
+        // V5 D6: V2は未演出コマにも既定値を埋めるため、演出の出所をここで記録する。
+        directionSource: legacyPanel.direction
+          ? (input.legacyPlan.plannerProvenance?.kind === "llm-director" ? "llm" : "provided")
+          : "fallback",
         sourceElementIds,
         beatIds: panelBeatIds,
         preStateId,

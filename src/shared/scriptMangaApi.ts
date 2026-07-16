@@ -1,4 +1,4 @@
-import type { DialoguePolicy, MangaPlanV2, MangaPlanValidationReport } from "./mangaPlanV2";
+import type { DialoguePolicy, MangaPlanV2, MangaPlanValidationReport, MangaShotSize } from "./mangaPlanV2";
 import type { ScriptMangaReferenceSnapshot } from "./referenceSets";
 import type { ScriptMangaPlan } from "./scriptMangaPlan";
 import type { InpaintArea, MaskedContent } from "./types";
@@ -98,6 +98,24 @@ export interface SetCandidateLayoutResponse {
   candidate: ScriptMangaPlanCandidateView;
 }
 
+// --- 演出ネームの差分編集(V5 D6) ---
+
+/**
+ * スタジオ用のホワイトリスト差分編集。完全なV2を送り返さない(ライブ更新+エージェント併走で
+ * dialogueSnapshots/provenance まで lost update するため)。完全V2の PATCH は successor/provided
+ * 系ツール向けにそのまま残る。
+ */
+export type NamePlanEdit =
+  | { kind: "page"; pageIndex: number; pageIntent: string }
+  | { kind: "panel"; panelId: string; shotSize?: MangaShotSize; shotAngle?: string; compositionIntent?: string; promptBase?: string }
+  | { kind: "cast"; panelId: string; characterId: string; expression?: string; action?: string };
+
+export interface NamePlanEditRequest {
+  /** 楽観ロック(plan の editVersion。plan_json への全書き込みで加算される内容バージョン)。 */
+  expectedVersion: number;
+  edits: NamePlanEdit[];
+}
+
 export interface ScriptMangaPlanCandidatesResponse {
   candidates: ScriptMangaPlanCandidateView[];
   /** 注釈ビート id → kind(キャッシュ済み注釈がある場合のみ)。ワイヤーフレームのアイコン用。 */
@@ -174,6 +192,8 @@ export interface ScriptMangaRunView {
   auditMode: ScriptMangaAuditMode;
   lastError: unknown;
   plan: MangaPlanV2 | null;
+  /** V5 D6: plan の editVersion(差分編集の expectedVersion に渡す)。 */
+  planEditVersion: number | null;
   validation: MangaPlanValidationReport | null;
   tasks: ScriptMangaTaskView[];
   createdAt: string;
@@ -199,6 +219,8 @@ export interface ScriptMangaPlanView {
   status: string;
   plan: MangaPlanV2;
   validation: MangaPlanValidationReport;
+  /** V5 D6: 差分編集の楽観ロック用(plan_json への全書き込みで加算)。 */
+  editVersion: number;
   createdAt: string;
   updatedAt: string;
   approvedAt: string | null;

@@ -348,3 +348,65 @@
   max-height: 240px;
   overflow-y: auto;
 }
+
+/* --- 演出ネーム(V5 D6) --- */
+
+.studio-take.is-directed-take {
+  border-style: double;
+}
+
+.studio-panel.is-directed .studio-panel-text {
+  white-space: pre-wrap;
+}
+
+.studio-panel.is-undirected {
+  opacity: 0.85;
+}
+
+.studio-beat-chip[class*="is-source-"] {
+  border-color: var(--accent);
+}
+
+.studio-beat-chip.is-source-fallback {
+  border-color: var(--wire-diff, rgba(220, 38, 38, 0.9));
+  color: var(--wire-diff, rgba(220, 38, 38, 0.9));
+}
+
+.studio-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.studio-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.78rem;
+}
+
+.studio-edit-field > span {
+  color: var(--text-muted);
+}
+
+.studio-edit-field input,
+.studio-edit-field select,
+.studio-edit-field textarea {
+  width: 100%;
+  font-size: 0.82rem;
+}
+
+.studio-edit-cast-row {
+  display: grid;
+  grid-template-columns: minmax(60px, auto) 1fr 1fr;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.studio-edit-cast-name {
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

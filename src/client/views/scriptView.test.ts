@@ -54,6 +54,7 @@ function run(): ScriptMangaRunView {
     auditMode: "vlm",
     lastError: null,
     plan: null,
+    planEditVersion: null,
     validation: {
       ok: true,
       issues: [{ severity: "warning", code: "test-warning", message: "Review <risk>" }]
@@ -344,7 +345,9 @@ test("name studio renders an imported autoManga layout wireframe with panel over
     runBusy: false,
     candidateCount: 3,
     templateSelected: true,
-    nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: null }
+    nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: null },
+    run: null,
+    draft: null
   };
   try {
     const html = renderNameStudio(studioProps);
@@ -357,6 +360,87 @@ test("name studio renders an imported autoManga layout wireframe with panel over
   } finally {
     setExternalScriptMangaLayouts([]);
   }
+});
+
+test("name studio directed mode: 採用後は演出ネーム(カメラ/人物/台詞本文/未演出バッジ/編集フォーム)を表示する", async () => {
+  const { findLayoutPreset } = await import("../../shared/layoutPresets.ts");
+  const layout = findLayoutPreset("builtin:two-horizontal")!.layout;
+  const directedRun = {
+    ...run(),
+    status: "prepared",
+    approvalStatus: "pending",
+    planEditVersion: 3,
+    plan: {
+      version: 2,
+      pages: [{
+        index: 0,
+        title: "Page 1",
+        layoutTemplateId: "builtin:two-horizontal",
+        layoutSnapshot: layout,
+        pageIntent: "reveal the photo",
+        turnHook: "reveal",
+        panels: [
+          {
+            id: "v2-p1",
+            visualScale: "large",
+            directionSource: "llm",
+            shot: { size: "close-up", angle: "low", focalSubjectId: "ent-alice", compositionIntent: "face lit by the phone" },
+            cast: [{ characterId: "ent-alice", expression: "startled", action: "opens the box" }],
+            dialogueLineIds: ["line-1"],
+            promptBase: "a girl opens a box"
+          },
+          {
+            id: "v2-p2",
+            visualScale: "medium",
+            directionSource: "fallback",
+            shot: { size: "medium", angle: "eye-level", focalSubjectId: "", compositionIntent: "single clear action" },
+            cast: [],
+            dialogueLineIds: [],
+            promptBase: "a quiet room"
+          }
+        ]
+      }],
+      dialogueSnapshots: [{ id: "line-1", orderIndex: 0, text: "これは……私?" }],
+      narrativeGraph: { entities: [{ id: "ent-alice", name: "アリス" }] }
+    }
+  } as unknown as ScriptMangaRunView;
+  const base: NameStudioViewProps = {
+    activeScriptId: "script-1",
+    candidates: [],
+    beatKinds: {},
+    dialogueChars: [],
+    candidatesBusy: false,
+    runBusy: false,
+    candidateCount: 3,
+    templateSelected: true,
+    nameStudio: { takeId: "__directed__", pageIndex: 0, selectedPanelId: "v2-p1" },
+    run: directedRun,
+    draft: null
+  };
+  const html = renderNameStudio(base);
+  assert.match(html, /演出ネーム/, "演出テイクチップ");
+  assert.match(html, /カメラ: 寄り \/ low/, "shotの日本語ラベル");
+  assert.match(html, /アリス\(startled\)/, "entities名前解決");
+  assert.match(html, /これは……私\?/, "dialogueLineIds→台詞本文");
+  assert.match(html, /未演出/, "directionSource=fallbackのバッジ");
+  assert.match(html, /data-action="studio-edit-panel"/, "編集導線(承認前は編集可)");
+  // ドラフトありならフォーム(値はドラフトからレンダー)。
+  const editing = renderNameStudio({
+    ...base,
+    draft: {
+      panelId: "v2-p1",
+      pageIndex: 0,
+      shotSize: "close-up",
+      shotAngle: "bust shot tilt",
+      compositionIntent: "face lit by the phone",
+      promptBase: "a girl opens a box",
+      pageIntent: "reveal the photo",
+      cast: [{ characterId: "ent-alice", name: "アリス", expression: "startled", action: "opens the box" }]
+    }
+  });
+  assert.match(editing, /data-studio-edit="promptBase"/, "編集フォーム");
+  assert.match(editing, /その他\(bust shot tilt\)/, "未知angleは現値温存オプション");
+  assert.match(editing, /data-action="studio-save-edits"/);
 });
 
 test("name studio flip chips: activeな候補にfeasibleな代替とリセット導線を出す", () => {
@@ -405,7 +489,9 @@ test("name studio flip chips: activeな候補にfeasibleな代替とリセット
     runBusy: false,
     candidateCount: 3,
     templateSelected: true,
-    nameStudio: { takeId: "candidate-flip", pageIndex: 0, selectedPanelId: "p1" }
+    nameStudio: { takeId: "candidate-flip", pageIndex: 0, selectedPanelId: "p1" },
+    run: null,
+    draft: null
   });
   assert.match(html, /data-action="studio-flip-layout"/, "フリップチップ");
   assert.match(html, /元の案に戻す/, "override時のリセット導線");
