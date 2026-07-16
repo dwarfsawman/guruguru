@@ -13,6 +13,18 @@
 - 既定ComfyUIは隔離インスタンス `http://127.0.0.1:8288`。永続DBですでに設定を保存済みなら、その保存値を優先する。
 
 `GET /api/health` の `instanceMode` は `agent`、`GET /api/agent/capabilities` の `agentReady` は `true` になる。
+
+### ページ共有(ネームスタジオの人間ゲート)
+
+UIとAPIは同一サーバー・同一ポートなので、ブラウザで同じURLを開けばネームスタジオを共有できる。
+
+- ユーザーインスタンス(5177)は `HOST` 未指定なら全インターフェースへbindするため、
+  LAN/Tailscale の IP で `http://<host>:5177` を開くだけでよい(起動ログの 127.0.0.1 表記は飾り)。
+- エージェントインスタンス(5199)は既定 loopback。共有時は `HOST=0.0.0.0`(または Tailscale IP)を
+  付けて `bun run start:agent` を起動する。
+- 注意: `dev-hot.mjs` のライブリロードsnippetは 127.0.0.1 固定なので、リモート閲覧者には
+  自動リロードが効かない(本番build を使うエージェントインスタンスには無関係)。script 画面自体は
+  5秒毎(バックグラウンドタブは20秒毎)のポーリングでライブ更新される。
 自動テストや使い捨てsmokeは引き続き `GURUGURU_TEST_DB=1` / `bun run start:test` を使い、エージェント用永続DBをテストfixtureにしない。
 
 ## Anima APIフロー
