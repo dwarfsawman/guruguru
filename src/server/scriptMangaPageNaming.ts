@@ -1,4 +1,5 @@
-import { scriptMangaLayoutCandidates, selectScriptMangaLayoutId } from "../shared/layoutPresets";
+import { buildPanelDemand, feasibleLayouts, type PanelDemand } from "../shared/layoutMatcher";
+import { scriptMangaLayoutCandidates } from "../shared/layoutPresets";
 import type { MangaPageTurnHook, MangaVisualScale } from "../shared/mangaPlanV2";
 import { type AnnotatedBeat, derivePanelVisualScale, type PreLayoutUnit } from "../shared/preLayoutBeat";
 import {
@@ -92,8 +93,8 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
     const page = named.pages[pageIndex];
     if (!page || page.index !== pageIndex || !page.pageIntent?.trim() || !Array.isArray(page.panels) || page.panels.length < 1 || page.panels.length > panelLimit) return null;
     if (page.turnHook !== undefined && !["reveal", "cliffhanger", "none"].includes(page.turnHook)) return null;
-    if (!scriptMangaLayoutCandidates(page.panels.length).length) return null;
     const panels: ScriptMangaPanelPlan[] = [];
+    const demands: PanelDemand[] = [];
     for (const namedPanel of page.panels) {
       if (!namedPanel?.id || panelIds.has(namedPanel.id)) return null;
       if (!Array.isArray(namedPanel.sourceBeatIds) || namedPanel.sourceBeatIds.length === 0) return null;
@@ -119,23 +120,32 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
       observedBeatIds.push(...namedPanel.sourceBeatIds);
       panelIds.add(namedPanel.id);
       dialogueCount += dialogueUnits.length;
+      // V5 D1: コマの解決スケールは含有ビートから決定的に導出(N1は再出力しない)。
+      const visualScale = derivePanelVisualScale(concreteBeats, {
+        turnHook: page.turnHook,
+        panelIndex: panels.length,
+        panelCount: page.panels.length
+      });
       panels.push(panelFromUnits({
         id: namedPanel.id,
         unitsOfPanel,
         sourceBeatIds: namedPanel.sourceBeatIds,
         stylePrompt,
-        // V5 D1: コマの解決スケールは含有ビートから決定的に導出(N1は再出力しない)。
-        visualScale: derivePanelVisualScale(concreteBeats, {
-          turnHook: page.turnHook,
-          panelIndex: panels.length,
-          panelCount: page.panels.length
-        })
+        visualScale
+      }));
+      demands.push(buildPanelDemand({
+        visualScale,
+        totalCharacters: dialogueCharacters,
+        balloonCount: dialogueUnits.length
       }));
     }
     // V5 D1 hard規則: 1ページの large コマは2つまで(プロンプトの "one or two" を決定的に固定)。
     if (panels.filter((panel) => panel.visualScale === "large").length > 2) return null;
-    const layoutTemplateId = selectScriptMangaLayoutId(panels.map((panel) => panel.visualScale ?? "medium"))
-      ?? scriptMangaLayoutCandidates(panels.length)[0]!;
+    // V5 D3 実現可能性ゲート: hard constraint を全て満たすレイアウトが1件も無いページ構成は
+    // 受理しない(rankerの「違反最小」採用で preflight 落ちする候補を作らないため)。
+    const feasible = feasibleLayouts(demands, { previousLayoutId: pages[pages.length - 1]?.layoutTemplateId });
+    if (feasible.length === 0) return null;
+    const layoutTemplateId = feasible[0]!.layoutId;
     pages.push({
       index: pageIndex,
       title: panels[0]!.sceneHeading || `Page ${pageIndex + 1}`,
@@ -276,21 +286,46 @@ export function packAnnotatedBeatsDeterministically(input: BeatPackerInput): Scr
   const target = input.targetPageCount && input.targetPageCount > 0 ? Math.trunc(input.targetPageCount) : undefined;
   const fillLimit = target ? Math.max(1, Math.min(panelLimit, Math.ceil(drafts.length / target))) : panelLimit;
   const pages: ScriptMangaPagePlan[] = [];
-  let pagePanels: ScriptMangaPanelPlan[] = [];
+  interface PendingPanel { panel: ScriptMangaPanelPlan; demand: PanelDemand }
+  let pagePanels: PendingPanel[] = [];
   let pageLargeCount = 0;
   let panelSerial = 0;
+  // V5 D3: ページ確定は実現可能性ゲート込み。実現可能なレイアウトが無ければ末尾コマを
+  // 次ページへ送って縮めていく(1コマページは minArea cap 0.8 < splash面積1.0 で常に実現可能
+  // = パッカーの充足保証)。
   const closePage = () => {
-    if (pagePanels.length === 0) return;
-    const layoutTemplateId = selectScriptMangaLayoutId(pagePanels.map((panel) => panel.visualScale ?? "medium"))
-      ?? scriptMangaLayoutCandidates(pagePanels.length)[0]!;
-    pages.push({
-      index: pages.length,
-      title: pagePanels[0]!.sceneHeading || `Page ${pages.length + 1}`,
-      layoutTemplateId,
-      panels: pagePanels
-    });
+    let pending = pagePanels;
     pagePanels = [];
     pageLargeCount = 0;
+    while (pending.length > 0) {
+      let take = pending.length;
+      let layoutTemplateId: string | null = null;
+      while (take >= 1) {
+        const slice = pending.slice(0, take);
+        const feasible = feasibleLayouts(
+          slice.map((entry) => entry.demand),
+          { previousLayoutId: pages[pages.length - 1]?.layoutTemplateId }
+        );
+        if (feasible.length > 0) {
+          layoutTemplateId = feasible[0]!.layoutId;
+          break;
+        }
+        take -= 1;
+      }
+      if (layoutTemplateId === null) {
+        // 理論上到達しない安全網(1コマページは常に実現可能)。候補先頭で前進する。
+        take = 1;
+        layoutTemplateId = scriptMangaLayoutCandidates(1)[0]!;
+      }
+      const slicePanels = pending.slice(0, take).map((entry) => entry.panel);
+      pages.push({
+        index: pages.length,
+        title: slicePanels[0]!.sceneHeading || `Page ${pages.length + 1}`,
+        layoutTemplateId,
+        panels: slicePanels
+      });
+      pending = pending.slice(take);
+    }
   };
   for (const draft of drafts) {
     const visualScale = derivePanelVisualScale(draft.beats, { panelIndex: pagePanels.length, panelCount: fillLimit });
@@ -298,13 +333,17 @@ export function packAnnotatedBeatsDeterministically(input: BeatPackerInput): Scr
     if (pagePanels.length >= fillLimit) closePage();
     if (visualScale === "large" && pageLargeCount >= 2) closePage();
     panelSerial += 1;
-    pagePanels.push(panelFromUnits({
-      id: `packed-${panelSerial}`,
-      unitsOfPanel: draft.units,
-      sourceBeatIds: draft.beatIds,
-      stylePrompt,
-      visualScale
-    }));
+    const stats = dialogueStats(draft.units);
+    pagePanels.push({
+      panel: panelFromUnits({
+        id: `packed-${panelSerial}`,
+        unitsOfPanel: draft.units,
+        sourceBeatIds: draft.beatIds,
+        stylePrompt,
+        visualScale
+      }),
+      demand: buildPanelDemand({ visualScale, totalCharacters: stats.chars, balloonCount: stats.count })
+    });
     if (visualScale === "large") pageLargeCount += 1;
     if (visualScale === "splash") closePage();
   }

@@ -517,20 +517,11 @@ export type ScriptMangaLayoutResolver = (id: string) => PageLayout | null;
 export const resolveScriptMangaLayout: ScriptMangaLayoutResolver = (id) =>
   findLayoutPreset(id)?.layout ?? findExternalScriptMangaLayout(id)?.layout ?? null;
 
-function largeSlotIndexes(scales: readonly MangaVisualScale[]): number[] {
-  return scales.flatMap((value, index) => (value === "large" || value === "splash" ? [index] : []));
-}
-
-/** visualScale → 目標面積の重み(V5 D1: small 0.6 / medium 1.0 / large 2.0)。 */
-function scaleTargetWeight(scale: MangaVisualScale): number {
-  return scale === "large" || scale === "splash" ? 2 : scale === "small" ? 0.6 : 1;
-}
-
 /**
  * レイアウトの強調スロット(reading-order index)。取り込みテンプレの
  * `autoManga.emphasisPanelIds` があれば面積最大より優先する(SPEC v0.3 §23.1)。
  */
-function emphasizedSlotForLayout(id: string, layout: PageLayout): number | null {
+export function emphasizedSlotForLayout(id: string, layout: PageLayout): number | null {
   const external = findExternalScriptMangaLayout(id);
   if (external?.emphasisPanelIds?.length) {
     const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
@@ -540,50 +531,8 @@ function emphasizedSlotForLayout(id: string, layout: PageLayout): number | null 
   return emphasizedSlotIndex(pageLayoutAreaProfile(layout));
 }
 
-/**
- * コマの visualScale 構成からレイアウトを決定的に事前選択する(V5 D1で語彙のみ更新)。
- * - splash(単コマページ)→ 全面裁ち切り(bleed 候補)を優先。
- * - large あり → large×強調スロット一致を最優先。次点は「large=2 / medium=1 / small=0.6」の
- *   目標面積比との L1 距離が小さい候補。figure スロット付きは単独人物切り抜きへ
- *   意味が変わるため事前選択では避ける。
- * - 全 medium/small → 従来どおり候補先頭(既定構図の互換維持)。
- * P2 で rankLayouts(top-k・実現可能性ゲート)へ置換予定。
- */
-export function selectScriptMangaLayoutId(
-  scales: readonly MangaVisualScale[],
-  resolveLayout: ScriptMangaLayoutResolver = resolveScriptMangaLayout
-): string | null {
-  const candidates = scriptMangaLayoutCandidates(scales.length);
-  if (candidates.length === 0) return null;
-  if (scales.length === 1) {
-    if (scales[0] !== "splash") return candidates[0]!;
-    return candidates.find((id) => id.includes("bleed")) ?? candidates[0]!;
-  }
-  const larges = largeSlotIndexes(scales);
-  if (larges.length === 0) return candidates[0]!;
-  const targetWeights = scales.map(scaleTargetWeight);
-  const targetTotal = targetWeights.reduce((sum, weight) => sum + weight, 0);
-  let best: { id: string; aligns: boolean; fit: number } | null = null;
-  for (const id of candidates) {
-    const layout = resolveLayout(id);
-    if (!layout || layout.panels.length !== scales.length) continue;
-    const ordered = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);
-    if (ordered.some((panel) => panel.role === "figure")) continue;
-    const areas = pageLayoutAreaProfile(layout);
-    const slot = emphasizedSlotForLayout(id, layout);
-    const aligns = slot !== null && larges.includes(slot);
-    const fit = -scales.reduce(
-      (sum, _, position) => sum + Math.abs(targetWeights[position]! / targetTotal - (areas[position] ?? 0)),
-      0
-    );
-    // 候補順の走査なので、同点は常に先勝ち(既存並びの互換維持)。
-    if (!best || (aligns && !best.aligns) || (aligns === best.aligns && fit > best.fit + 1e-9)) {
-      best = { id, aligns, fit };
-    }
-  }
-  return best?.id ?? candidates[0]!;
-}
-
+// V5 P2: 旧 selectScriptMangaLayoutId(単一選択)は src/shared/layoutMatcher.ts の
+// rankLayouts / feasibleLayouts(top-k・実現可能性ゲート付き)へ置換された。
 export interface ScriptMangaLayoutDescriptor {
   id: string;
   panelCount: number;
