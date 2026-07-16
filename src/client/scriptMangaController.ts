@@ -352,7 +352,7 @@ export function initializeScriptMangaUiState(): void {
   state.scriptMangaCandidateBeatKinds = {};
   state.scriptMangaCandidateDialogueChars = [];
   state.scriptMangaCandidatesBusy = false;
-  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null };
+  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null, fullscreen: false };
   if (typeof window !== "undefined") {
     void refreshScriptMangaVlmStatus(statusRequestSerial);
     void refreshScriptMangaCandidates();
@@ -374,7 +374,7 @@ export function clearScriptMangaRunState(): void {
   state.scriptMangaCandidateBeatKinds = {};
   state.scriptMangaCandidateDialogueChars = [];
   state.scriptMangaCandidatesBusy = false;
-  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null };
+  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null, fullscreen: false };
 }
 
 /** 脚本画面を閉じる時はプロジェクト固有のテンプレートと設定も破棄する。 */
@@ -383,7 +383,7 @@ export function clearScriptMangaUiState(): void {
   vlmStatusRequestSerial += 1;
   candidateOperationSerial += 1;
   stopScriptMangaPolling();
-  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null };
+  state.nameStudio = { takeId: null, pageIndex: 0, selectedPanelId: null, fullscreen: false };
   state.scriptMangaTemplates = [];
   state.scriptMangaSettings = { ...DEFAULT_SETTINGS };
   state.scriptMangaRun = null;

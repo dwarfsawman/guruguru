@@ -6,6 +6,7 @@ import type { NamePlanEdit, ScriptMangaPlanView, SetCandidateLayoutResponse } fr
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
+import { mapNameStudioPage, type ComparableNameStudioPlan } from "./nameStudioPageMapping";
 import { refreshScriptMangaCandidates } from "./scriptMangaController";
 import { activeStudioTake, DIRECTED_TAKE_ID, directedPlanEditable, effectiveCandidatePlan } from "./views/nameStudioView";
 
@@ -18,15 +19,23 @@ function currentPageCount(takeId: string | null): number {
   return take ? effectiveCandidatePlan(take).pages.length : 0;
 }
 
+function currentPlan(): ComparableNameStudioPlan | null {
+  if (state.nameStudio.takeId === DIRECTED_TAKE_ID) return state.scriptMangaRun?.plan ?? null;
+  const take = activeStudioTake(state.scriptMangaCandidates, state.nameStudio);
+  return take ? effectiveCandidatePlan(take) : null;
+}
+
 function selectTake(candidateId: string): void {
   if (!candidateId) return;
+  const fromPlan = currentPlan();
   if (candidateId === DIRECTED_TAKE_ID) {
     if (!state.scriptMangaRun?.plan) return;
-    const pageCount = state.scriptMangaRun.plan.pages.length;
+    const mapping = mapNameStudioPage(fromPlan, state.scriptMangaRun.plan, state.nameStudio.pageIndex);
     state.nameStudio = {
       takeId: DIRECTED_TAKE_ID,
-      pageIndex: Math.max(0, Math.min(pageCount - 1, state.nameStudio.pageIndex)),
-      selectedPanelId: null
+      pageIndex: mapping.pageIndex,
+      selectedPanelId: null,
+      fullscreen: state.nameStudio.fullscreen
     };
     state.nameStudioDraft = null;
     requestRender();
@@ -34,12 +43,14 @@ function selectTake(candidateId: string): void {
   }
   const candidate = state.scriptMangaCandidates.find((entry) => entry.id === candidateId);
   if (!candidate) return;
-  const pageCount = effectiveCandidatePlan(candidate).pages.length;
+  const targetPlan = effectiveCandidatePlan(candidate);
+  const mapping = mapNameStudioPage(fromPlan, targetPlan, state.nameStudio.pageIndex);
   state.nameStudio = {
     takeId: candidateId,
-    // 同ページ番号を保って読み比べる(ページ数差はクランプ)。
-    pageIndex: Math.max(0, Math.min(pageCount - 1, state.nameStudio.pageIndex)),
-    selectedPanelId: null
+    // 同じ数値の頁ではなく、beat/source elementが一致する場面を優先して読み比べる。
+    pageIndex: mapping.pageIndex,
+    selectedPanelId: null,
+    fullscreen: state.nameStudio.fullscreen
   };
   state.nameStudioDraft = null;
   requestRender();
@@ -53,7 +64,7 @@ function movePage(delta: number): void {
   const pageCount = currentPageCount(takeId);
   const next = Math.max(0, Math.min(pageCount - 1, state.nameStudio.pageIndex + delta));
   if (next === state.nameStudio.pageIndex) return;
-  state.nameStudio = { takeId, pageIndex: next, selectedPanelId: null };
+  state.nameStudio = { ...state.nameStudio, takeId, pageIndex: next, selectedPanelId: null };
   state.nameStudioDraft = null;
   requestRender();
 }
@@ -71,6 +82,11 @@ function closePanelDialog(): void {
   if (!state.nameStudio.selectedPanelId) return;
   state.nameStudio = { ...state.nameStudio, selectedPanelId: null };
   state.nameStudioDraft = null;
+  requestRender();
+}
+
+function toggleFullscreen(): void {
+  state.nameStudio = { ...state.nameStudio, fullscreen: !state.nameStudio.fullscreen };
   requestRender();
 }
 
@@ -233,7 +249,15 @@ function bindNameStudioEvents(app: HTMLElement): void {
     }
   });
   app.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && state.nameStudio.selectedPanelId) closePanelDialog();
+    if (event.key !== "Escape") return;
+    if (state.nameStudio.selectedPanelId) {
+      closePanelDialog();
+      return;
+    }
+    if (state.nameStudio.fullscreen) {
+      event.preventDefault();
+      toggleFullscreen();
+    }
   });
 }
 
@@ -241,6 +265,7 @@ registerActions({
   "studio-select-take": (candidateId) => selectTake(candidateId),
   "studio-prev-page": () => movePage(-1),
   "studio-next-page": () => movePage(1),
+  "studio-toggle-fullscreen": () => toggleFullscreen(),
   "studio-select-panel": (panelId) => selectPanel(panelId),
   "studio-close-panel": () => closePanelDialog(),
   "studio-flip-layout": (candidateId, target) => void flipLayout(candidateId, target),

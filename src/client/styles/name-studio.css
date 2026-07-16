@@ -10,6 +10,31 @@
   background: var(--surface);
 }
 
+.name-studio-card.is-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  width: 100vw;
+  height: 100dvh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 18px clamp(18px, 3vw, 48px) 36px;
+  border: 0;
+  border-radius: 0;
+  isolation: isolate;
+  background: var(--panel, #0a0a0c);
+}
+
+.name-studio-card.is-fullscreen .name-studio-heading {
+  position: sticky;
+  top: -18px;
+  z-index: 12;
+  margin: -18px calc(-1 * clamp(18px, 3vw, 48px)) 0;
+  padding: 18px clamp(18px, 3vw, 48px) 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel, #0a0a0c);
+}
+
 .name-studio-heading {
   display: flex;
   align-items: center;
@@ -90,6 +115,17 @@
   background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+.studio-take-legend,
+.studio-duplicate-summary {
+  margin: -6px 0 0;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+}
+
+.studio-duplicate-summary {
+  color: var(--wire-diff, rgba(220, 38, 38, 0.9));
+}
+
 /* --- 本体: 中央リーダー + 右インスペクタ(page-panel-editor-body と同じ比率の先例) --- */
 
 .name-studio-body {
@@ -130,6 +166,10 @@
 .studio-diff-note {
   color: var(--wire-diff, rgba(220, 38, 38, 0.9));
   font-size: 0.76rem;
+}
+
+.name-studio-card.is-fullscreen .studio-page {
+  width: min(820px, 100%);
 }
 
 /* リーダー本体: SVG背景 + HTMLオーバーレイ(コマのbboxへ%配置)。 */

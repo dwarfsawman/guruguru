@@ -71,7 +71,8 @@ export async function applyInitialScriptMangaDeepLink(href = window.location.hre
     state.nameStudio = {
       takeId: candidate?.id ?? (run?.plan ? DIRECTED_TAKE_ID : null),
       pageIndex: 0,
-      selectedPanelId: null
+      selectedPanelId: null,
+      fullscreen: false
     };
     state.nameStudioDraft = null;
     requestRender();

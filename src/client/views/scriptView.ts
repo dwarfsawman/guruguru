@@ -383,14 +383,41 @@ export type PlanCandidatesViewProps = Pick<
 >;
 
 /**
- * ページのビート署名(候補間diffの対応付け)。同一 beatId 列を持つページ同士を対応させ、
- * どの候補にも同じ署名がある = 共通、どこかに無い = ページ割りが異なる箇所として強調する。
+ * ページの構造署名(候補間diffの対応付け)。ページ位置・コマ境界・スケール・レイアウトを
+ * 保つため、同じbeat列でもsplit/mergeや別ページへの移動を同一扱いしない。
  * sourceBeatIds を持たない候補(旧形式)は source element 列で代用する。
  */
 export function candidatePageSignature(page: ScriptMangaPagePlan): string {
-  const beatIds = page.panels.flatMap((panel) => panel.sourceBeatIds ?? []);
-  if (beatIds.length > 0) return `b:${beatIds.join(",")}`;
-  return `e:${page.panels.map((panel) => panel.sourceElementIds.join("+")).join(",")}`;
+  return JSON.stringify([
+    page.index,
+    page.layoutTemplateId,
+    page.turnHook ?? "",
+    page.pageIntent?.trim() ?? "",
+    page.panels.map((panel) => [
+      panel.sourceBeatIds?.length ? ["b", ...panel.sourceBeatIds] : ["e", ...panel.sourceElementIds],
+      panel.visualScale ?? ""
+    ])
+  ]);
+}
+
+/**
+ * 候補全体の物語構造signature。pageIntentの言い換えや既定layoutは比較案を増やさず、
+ * ページ/コマ境界・beat/element割当・スケール・めくり、または人間のlayout overrideが
+ * 違う時だけ別案とする。
+ */
+export function candidatePlanStructureSignature(candidate: ScriptMangaPlanCandidateView): string {
+  return JSON.stringify([
+    candidate.plan.pages.map((page) => [
+      page.index,
+      page.turnHook ?? "",
+      page.panels.map((panel) => [
+        panel.sourceBeatIds?.length ? ["b", ...panel.sourceBeatIds] : ["e", ...panel.sourceElementIds],
+        panel.visualScale ?? ""
+      ])
+    ]),
+    // 人間がフリップした別レイアウトは制作上の選択なので、同じ構造でも隠さない。
+    Object.entries(candidate.layoutOverrides).sort(([a], [b]) => Number(a) - Number(b))
+  ]);
 }
 
 /** 候補間で「全候補に存在するページ署名」を除いた差分ページ署名集合を返す。候補1件なら空。 */

@@ -26,7 +26,7 @@ bun run agent:cli -- --base-url http://127.0.0.1:5199 context --project-id <proj
 # 任意のGURUGURU APIを操作する。大きいrequestはrepository外のJSONファイルを使う
 bun run agent:cli -- --base-url http://127.0.0.1:5199 api POST /api/projects/<project-id>/script-manga-plan-candidates --json-file <request.json>
 
-# 人間の採用とrun承認を15秒間隔で待つ
+# 無人運転または明示的な監視依頼でだけ待つ(attended人間ゲートでは使わない)
 bun run agent:cli -- --base-url http://127.0.0.1:5199 wait candidates --project-id <project-id> --script-id <script-id> --status adopted --interval 15 --timeout 0
 bun run agent:cli -- --base-url http://127.0.0.1:5199 wait run --run-id <run-id> --field approvalStatus --equals approved --interval 15 --timeout 0
 
@@ -37,7 +37,13 @@ bun run agent:cli -- --base-url http://127.0.0.1:5199 api GET /api/assets/<asset
 `context`のJSONに含まれる`guiUrl`が人間ゲート用の正規URLである。これはbare URLではなく
 `projectId`、`scriptId`、`revisionId`と、指定時の`candidateId`、`runId`、`planId`、`taskId`を含む。
 Script画面は起動時にそれぞれの所属をAPIで再検証し、CLIと異なるコンテキストを暗黙選択しない。
-エージェントはこのURLを開かず、人間へ提示する。URLを推測したり、GUIスクリーンショットからIDを読み取ったりしない。
+エージェントはURLを推測したり、GUIスクリーンショットからIDを読み取ったりしない。人間への案内では、正規URLを
+コピーできるfenced code blockで必ず全文表示する。ユーザーがChromeを明示しChrome操作が使える場合は、同じURLを
+Chromeへnavigation-onlyで開いてよいが、その後のGUI操作は人間へ委ねる。Chromeを使えない場合もコピー用URLを案内できる。
+
+attendedな人間ゲートでは`agent:cli wait`を実行し続けない。URLを渡したらエージェント処理を終了し、ユーザーが
+選択・承認後にタスクを再開した時だけ、候補またはrunをAPIで一度取得する。期待状態でなければ定期pollへ移らず、
+その時点の状態を一度報告して再び終了する。`wait`コマンドは無人運転や明示的な監視依頼のために残す。
 
 bareなインスタンスURLを人間が開いた場合も、Project一覧は`GET /api/projects`を5秒ごと
 (バックグラウンド時は20秒ごと)に更新する。Bookカードには最新のactiveネーム候補または最新runを

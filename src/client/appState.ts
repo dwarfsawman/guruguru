@@ -131,6 +131,8 @@ export interface NameStudioState {
   takeId: string | null;
   pageIndex: number;
   selectedPanelId: string | null;
+  /** ネームスタジオだけをviewport全面へ広げるアプリ内全画面。 */
+  fullscreen: boolean;
 }
 
 /** 演出ネームの編集ドラフト(V5 D6)。フォームの値は常にここからレンダーする(morph保護は1要素のみ)。 */
@@ -755,7 +757,7 @@ export const state: AppState = {
   scriptMangaCandidateDialogueChars: [],
   scriptMangaCandidatesBusy: false,
   scriptMangaCandidateCount: 3,
-  nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: null },
+  nameStudio: { takeId: null, pageIndex: 0, selectedPanelId: null, fullscreen: false },
   nameStudioDraft: null,
   characters: [],
   selectedCharacterId: null,

@@ -29,7 +29,7 @@ import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../sha
 import type { DialogueLine } from "../../shared/apiTypes";
 import type { NameStudioDraft, NameStudioState } from "../appState";
 import { escapeAttr, escapeHtml } from "../format";
-import { candidateDiffSignatures, candidatePageSignature } from "./scriptView";
+import { candidateDiffSignatures, candidatePageSignature, candidatePlanStructureSignature } from "./scriptView";
 
 export const DIRECTED_TAKE_ID = "__directed__";
 
@@ -165,6 +165,30 @@ function candidateBadges(candidate: ScriptMangaPlanCandidateView): string {
     badges.push(`<span class="plan-candidate-badge is-flipped">フリップ済み</span>`);
   }
   return badges.join("");
+}
+
+/**
+ * 完全に同じ構造の候補は比較案として水増ししない。
+ * deep link等で重複側が選択済みなら、そのcandidateをgroupの代表として残す。
+ */
+export function distinctNameStudioCandidates(
+  candidates: readonly ScriptMangaPlanCandidateView[],
+  selectedId: string | null
+): ScriptMangaPlanCandidateView[] {
+  const groups = new Map<string, ScriptMangaPlanCandidateView>();
+  const priority = (candidate: ScriptMangaPlanCandidateView): number => {
+    if (candidate.status === "adopted") return 5;
+    if (candidate.status === "adopting") return 4;
+    if (candidate.id === selectedId) return 3;
+    if (Object.keys(candidate.layoutOverrides).length > 0) return 1;
+    return 0;
+  };
+  for (const candidate of candidates) {
+    const signature = candidatePlanStructureSignature(candidate);
+    const current = groups.get(signature);
+    if (!current || priority(candidate) > priority(current)) groups.set(signature, candidate);
+  }
+  return [...groups.values()];
 }
 
 function takeSummary(candidate: ScriptMangaPlanCandidateView): string {
@@ -615,11 +639,15 @@ function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudio
     .join("");
   const turnHookLabel = page.turnHook === "reveal" ? "▼reveal" : page.turnHook === "cliffhanger" ? "▼cliffhanger" : "なし";
   const adoptDisabled = props.runBusy || !props.templateSelected || candidate.status !== "active";
+  const takeIndex = Math.max(0, props.candidates.findIndex((entry) => entry.id === candidate.id));
+  const comparisonNote = props.candidates.length >= 2 && isDiffPage
+    ? `<span class="studio-diff-note">この頁は候補間で異なる</span>`
+    : "";
   return `
     <div class="studio-reader">
       <div class="studio-page-nav">
         <button type="button" class="button-secondary compact" data-action="studio-prev-page" ${pageIndex <= 0 ? "disabled" : ""}>◀ 前ページ</button>
-        <span class="studio-page-counter">p${pageIndex + 1} / ${pageCount}${isDiffPage ? `<span class="studio-diff-note">この頁は候補間で異なる</span>` : ""}</span>
+        <span class="studio-page-counter"><strong>${takeLabel(takeIndex)}</strong> · p${pageIndex + 1} / ${pageCount}${comparisonNote}</span>
         <button type="button" class="button-secondary compact" data-action="studio-next-page" ${pageIndex >= pageCount - 1 ? "disabled" : ""}>次ページ ▶</button>
       </div>
       <div class="studio-page" style="aspect-ratio: 1 / ${layout.page.height.toFixed(6)};">
@@ -647,7 +675,10 @@ export function renderNameStudio(props: NameStudioViewProps): string {
     .join("");
   const directedAvailable = Boolean(props.run?.plan);
   const isDirected = directedAvailable && props.nameStudio.takeId === DIRECTED_TAKE_ID;
-  const active = isDirected ? null : activeStudioTake(props.candidates, props.nameStudio);
+  const visibleCandidates = distinctNameStudioCandidates(props.candidates, props.nameStudio.takeId);
+  const hiddenDuplicateCount = props.candidates.length - visibleCandidates.length;
+  const visibleProps: NameStudioViewProps = { ...props, candidates: visibleCandidates };
+  const active = isDirected ? null : activeStudioTake(visibleCandidates, props.nameStudio);
   const directedPage = isDirected
     ? props.run!.plan!.pages[Math.max(0, Math.min(props.run!.plan!.pages.length - 1, props.nameStudio.pageIndex))]
     : null;
@@ -660,20 +691,22 @@ export function renderNameStudio(props: NameStudioViewProps): string {
     : activePage ? candidatePanelDialog(activePage, props) : "";
   const directedChip = directedAvailable ? `
     <button type="button" class="studio-take is-directed-take ${isDirected ? "is-active" : ""}"
+      role="tab" aria-selected="${isDirected ? "true" : "false"}"
       data-action="studio-select-take" data-id="${DIRECTED_TAKE_ID}">
       <span class="studio-take-label">演出ネーム</span>
       <span class="studio-take-badges"><span class="plan-candidate-badge is-beats">採用済みプラン</span></span>
       <span class="studio-take-summary">${props.run!.plan!.pages.length}p / カメラ・人物・台詞本文${directedPlanEditable(props.run!) ? " / 編集可" : ""}</span>
     </button>` : "";
-  const takes = directedChip + props.candidates.map((candidate, index) => `
+  const takes = directedChip + visibleCandidates.map((candidate, index) => `
     <button type="button" class="studio-take ${candidate.id === active?.id ? "is-active" : ""} ${candidate.status === "adopted" ? "is-adopted" : ""}"
+      role="tab" aria-selected="${candidate.id === active?.id ? "true" : "false"}"
       data-action="studio-select-take" data-id="${escapeAttr(candidate.id)}">
       <span class="studio-take-label">${takeLabel(index)}</span>
       <span class="studio-take-badges">${candidateBadges(candidate)}</span>
       <span class="studio-take-summary">${escapeHtml(takeSummary(candidate))}</span>
     </button>`).join("");
   return `
-    <section class="name-studio-card" aria-labelledby="name-studio-heading">
+    <section class="name-studio-card ${props.nameStudio.fullscreen ? "is-fullscreen" : ""}" data-key="name-studio" aria-labelledby="name-studio-heading">
       <div class="name-studio-heading">
         <h2 id="name-studio-heading">ネームスタジオ<span class="tag">name studio</span></h2>
         <div class="name-studio-controls">
@@ -684,6 +717,8 @@ export function renderNameStudio(props: NameStudioViewProps): string {
             ${props.candidatesBusy || !props.activeScriptId ? "disabled" : ""}>${props.candidatesBusy ? "生成中…" : "候補を生成"}</button>
           ${active ? `<button type="button" class="button-secondary compact" data-action="extend-script-manga-plan-candidates"
             data-group-id="${escapeAttr(active.groupId)}" ${props.candidatesBusy ? "disabled" : ""}>追加生成</button>` : ""}
+          <button type="button" class="button-secondary compact" data-action="studio-toggle-fullscreen"
+            aria-pressed="${props.nameStudio.fullscreen ? "true" : "false"}">${props.nameStudio.fullscreen ? "元の表示へ" : "⛶ 全画面"}</button>
         </div>
       </div>
       ${props.candidates.length === 0 && !directedAvailable
@@ -692,8 +727,10 @@ export function renderNameStudio(props: NameStudioViewProps): string {
             : "「候補を生成」でコマ割り候補(テイク)を作り、ネームとして読み比べて採用します。エージェントがAPIで作った候補もここへ自動で現れます。"}</p>`
         : `
       <div class="name-studio-takes" role="tablist">${takes}</div>
+      ${hiddenDuplicateCount > 0 ? `<p class="studio-duplicate-summary">重複する候補 ${hiddenDuplicateCount}件は比較案から省略しました。</p>` : ""}
+      <p class="studio-take-legend">テイクA/B/Cは話の区切り・ページ送り案です。ページ下の◆レイアウトは、同じページ内の構図案です。</p>
       <div class="name-studio-body">
-        ${isDirected ? renderDirectedReader(props) : active ? renderReader(active, props) : ""}
+        ${isDirected ? renderDirectedReader(visibleProps) : active ? renderReader(active, visibleProps) : ""}
         <aside class="name-studio-inspector">
           <h3>コマ詳細</h3>
           ${isDirected
