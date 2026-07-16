@@ -187,6 +187,63 @@ test("approved run freezes Reference Set version and hashes across resume after 
   assert.deepEqual(JSON.parse(roundRequest.request_json).reference.referenceSet, { setId: first.id, version: 1 });
 });
 
+test("prepared run allows Reference Sets to be created after naming adoption and requires them at approval", async () => {
+  resetFakeProvider();
+  const templateId = chromaTemplate();
+  const project = createProject({ name: `script-manga-reference-after-naming-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Reference after naming",
+    fountainSource: ["INT. ROOM - DAY", "", "@Alice", "待って。"].join("\n")
+  });
+  const alice = listCharacters(project.id).find((character) => character.name === "Alice");
+  assert.ok(alice);
+
+  const prepared = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    requireReferenceSets: true
+  });
+  assert.equal(prepared.status, "prepared");
+  assert.equal(prepared.approvalStatus, "pending");
+  assert.equal(prepared.referenceSnapshot, null);
+  assert.ok(prepared.tasks.every((task) => task.status !== "blocked"));
+
+  assert.throws(
+    () => approveScriptMangaRun(prepared.id),
+    /Approved chroma Reference Set is required/
+  );
+  const stillPrepared = getScriptMangaRun(prepared.id);
+  assert.equal(stillPrepared.status, "prepared");
+  assert.equal(stillPrepared.approvalStatus, "pending");
+  assert.equal(stillPrepared.referenceSnapshot, null);
+
+  const referenceSet = createReferenceSet(alice.id, {
+    modelFamily: "chroma",
+    variantId: `${alice.id}:default`,
+    appearanceJa: "短い銀髪、青い目、紺の上着",
+    appearancePromptEn: "short silver hair, blue eyes, navy jacket",
+    mustNotChange: ["silver hair"]
+  });
+  await uploadReferenceSetImage(referenceSet.id, "face", { imageDataUrl: TINY_PNG_DATA_URL });
+  await approveReferenceSet(referenceSet.id, {});
+
+  const approved = approveScriptMangaRun(prepared.id);
+  assert.equal(approved.status, "approved");
+  assert.equal(approved.approvalStatus, "approved");
+  assert.equal(approved.referenceSnapshot?.sets[0]?.setId, referenceSet.id);
+  assert.ok(approved.tasks.every((task) => task.status !== "blocked"));
+  assert.ok(
+    approved.plan?.pages.flatMap((page) => page.panels)
+      .some((panel) => panel.referenceManifest.some((reference) =>
+        reference.artifact.kind === "referenceSet" && reference.artifact.setId === referenceSet.id
+      )),
+    "approval re-materializes panel manifests from the frozen Reference Set"
+  );
+});
+
 test("createScriptMangaRun awaits candidate review before assigning batch-1 panel results", async () => {
   resetFakeProvider();
   const templateId = template();

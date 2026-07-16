@@ -1279,6 +1279,10 @@ function materializeRun(runId: string): void {
   const promptProfile = templatePromptProfile(config.templateId);
   const modelFamily = referenceModelFamily(config.templateId);
   const referenceSnapshot = frozenReferenceSnapshot(run);
+  // A prepared run must exist before Reference Sets can be created for the adopted plan's actual
+  // visible cast. Required-reference errors therefore become blocking only after run approval,
+  // when approveScriptMangaRun has frozen the approved sets into reference_snapshot_json.
+  const enforceRequiredReferences = config.requireReferenceSets && run.approval_status === "approved";
   removeUnusedStarterPage(run.project_id);
 
   for (const pageSpec of plan.pages) {
@@ -1372,7 +1376,7 @@ function materializeRun(runId: string): void {
         layout,
         layoutPanelId: layoutPanel.id,
         dialogueTexts: panel.dialogueLineIds.map((lineId) => dialogueById.get(lineId)?.text ?? ""),
-        requireReferences: config.requireReferenceSets && Boolean(modelFamily) && !config.allowReferenceFallback,
+        requireReferences: enforceRequiredReferences && Boolean(modelFamily) && !config.allowReferenceFallback,
         missingReferenceIds: references.missingReferenceIds,
         castNormalized: true,
         visibleSpeakerIds: panel.dialogueLineIds.flatMap((lineId) => {
@@ -3362,12 +3366,22 @@ export function approveScriptMangaRun(runId: string): ScriptMangaRunView {
   const mangaPlan = planFromRow(plan);
   requireRunPanelBudget(run, mangaPlan);
   const snapshot = collectReferenceSnapshot(run, mangaPlan, parseConfig(run));
-  runSql("UPDATE script_manga_plans SET status = 'approved', approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [plan.id]);
-  runSql(
-    `UPDATE script_manga_runs SET status = 'approved', phase = 'preparing_references', approval_status = 'approved',
-     reference_snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [snapshot ? JSON.stringify(snapshot) : null, run.id]
-  );
+  runSql("BEGIN");
+  try {
+    runSql("UPDATE script_manga_plans SET status = 'approved', approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [plan.id]);
+    runSql(
+      `UPDATE script_manga_runs SET status = 'approved', phase = 'preparing_references', approval_status = 'approved',
+       reference_snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [snapshot ? JSON.stringify(snapshot) : null, run.id]
+    );
+    // Re-materialize inside the approval transaction so every task is compiled and preflighted
+    // against the newly frozen Reference Set snapshot before approval becomes visible.
+    materializeRun(run.id);
+    runSql("COMMIT");
+  } catch (error) {
+    runSql("ROLLBACK");
+    throw error;
+  }
   return runView(requireRun(run.id));
 }
 

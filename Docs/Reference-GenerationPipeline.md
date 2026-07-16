@@ -15,6 +15,7 @@
 
 - Fountain一括漫画では、`script_revision_id`、LLM provenance、`dialogueSnapshots`、ページごとの`layoutSnapshot`を含む`script_manga_plans`を先に保存する。run所有ページとコマ単位の`script_manga_tasks`を準備してから、各taskをbatch 1の`generation_rounds`へ接続する。実行時に最新revision、最新台詞、mutableなlayout templateを再解決しない。
 - runの主要phaseは`planning → awaiting_approval → preparing_references → rendering → auditing(VLM時) → reviewing → completed`。`generateImages:false`は`awaiting_approval`で止まり、通常作成はapprove/startまで自動で進む。
+- prepare/adoption時は必須Reference Set不足だけをpreflightで遅延し、採用planの実際のvisible castが確定してからsetを作成できる。run承認時に承認済みsetのsnapshotを固定し、そのsnapshotで全taskをstrictに再materializeする。不足やpreflight errorがあれば承認transactionをrollbackし、runは`prepared` / `pending`のまま残る。
 - `resume`は`script_manga_run_pages`と既存taskを再利用し、running roundの監視を張り直して承認済みpending taskだけを投入する。ページ/taskのunique制約により再開時の重複を防ぐ。
 - round完了後は候補assetとメタデータscoreをtaskへ保存する。`auditMode:manual`はそのまま外部エージェント/人間review、`auditMode:vlm`は内蔵VLM補助監査後にreviewへ進み、いずれも`select`による明示採用後だけコマへ割り当てる。
 - run所有ページのlayout変更・直接削除と、script manga task履歴を含むround treeの削除は409で拒否する。未承認planのPATCHだけがownershipを保った再materializeを行える。
