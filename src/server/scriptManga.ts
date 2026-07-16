@@ -5,6 +5,7 @@ import {
   type MangaPlanV2,
   type MangaPlanValidationReport,
   type NormalizedBox,
+  normalizeMangaPlanV2Scales,
   type PanelSpec,
   validateMangaPlanV2
 } from "../shared/mangaPlanV2";
@@ -313,7 +314,9 @@ function requireTask(taskId: string): TaskRow {
 }
 
 function planFromRow(row: PlanRow): MangaPlanV2 {
-  return parseJson<MangaPlanV2>(row.plan_json, null as unknown as MangaPlanV2);
+  const plan = parseJson<MangaPlanV2>(row.plan_json, null as unknown as MangaPlanV2);
+  // V5 D1: 旧語彙(importance)だけの旧planへ visualScale を補完する入力adapter。
+  return plan ? normalizeMangaPlanV2Scales(plan) : plan;
 }
 
 function planView(row: PlanRow): ScriptMangaPlanView {
@@ -787,6 +790,8 @@ function completeSuccessorPlan(raw: unknown, original: MangaPlanV2, planId: stri
   if (candidate.version !== 2 || !Array.isArray(candidate.pages) || !candidate.narrativeGraph) {
     throw new HttpError(400, "successorPlan must be a complete MangaPlanV2 object");
   }
+  // V5 D1: successorPlan はDB非経由の生API入力 = 旧語彙adapterの適用境界(3箇所のうちの1つ)。
+  normalizeMangaPlanV2Scales(candidate);
   const originalPages = new Map(original.pages.map((page) => [page.index, page]));
   try {
     candidate.pages = candidate.pages.map((page) => {
@@ -3215,6 +3220,8 @@ export function updateScriptMangaPlan(planId: string, body: unknown): ScriptMang
   if (runRows.some((run) => run.approval_status === "approved" || run.status === "running" || run.status === "awaiting_review")) {
     throw new HttpError(409, "Approved or running plans cannot be edited; create a new run or cancel it first");
   }
+  // V5 D1: 完全V2 PATCH もDB非経由の生API入力 = 旧語彙adapterの適用境界。
+  normalizeMangaPlanV2Scales(candidate);
   candidate.id = row.id;
   candidate.scriptId = row.script_id;
   candidate.scriptRevisionId = row.script_revision_id;

@@ -1,6 +1,22 @@
 import type { FountainDoc, FountainElement } from "./fountain";
 import { scriptMangaLayoutCandidates } from "./layoutPresets";
-import type { MangaPageTurnHook, MangaPanelImportance } from "./mangaPlanV2";
+import { type MangaPageTurnHook, type MangaPanelImportance, type MangaVisualScale, normalizeLegacyVisualScale } from "./mangaPlanV2";
+
+/**
+ * 永続 candidate plan のparse直後に呼ぶ入力adapter(V5 D1)。旧語彙(importance)しか持たない
+ * コマへ visualScale を補完する(in-place)。
+ */
+export function normalizeScriptMangaPlanScales(plan: ScriptMangaPlan): ScriptMangaPlan {
+  for (const page of plan.pages) {
+    for (const panel of page.panels) {
+      if (!panel.visualScale) {
+        const scale = normalizeLegacyVisualScale({ importance: panel.importance });
+        if (scale) panel.visualScale = scale;
+      }
+    }
+  }
+  return plan;
+}
 
 export interface ScriptMangaPanelDirection {
   shot: string;
@@ -30,6 +46,8 @@ export interface ScriptMangaPanelPlan {
   direction?: ScriptMangaPanelDirection;
   /** N1ページネームのコマ重み(ネームv4 D1)。決定的プランナーでは未設定。 */
   importance?: MangaPanelImportance;
+  /** 解決済みコマスケール(ネームスタジオV5 D1)。importance の後継。additive。 */
+  visualScale?: MangaVisualScale;
   /** ビート化N1(ネームv4 D2)がこのコマへ割り当てた注釈ビート id。従来経路では未設定。 */
   sourceBeatIds?: string[];
 }

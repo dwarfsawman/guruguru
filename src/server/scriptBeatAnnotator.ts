@@ -1,6 +1,6 @@
 /**
  * LLM ビート注釈ステージ(ネームv4 D2)。N1 ページネームより前に走り、atomic unit 列を
- * 物語ビート(kind/importance/pageTurnAffinity/keepAlone/desiredScale)へ束ねる。
+ * 物語ビート(kind/preferredScale/pageTurnAffinity/keepAlone)へ束ねる。
  *
  * - 検証は決定的(`validateBeatAnnotation`: 全 unit 一度ずつ・順序保存・シーン純度・enum)。
  * - 成功結果は script revision 単位で `script_beat_annotations` へキャッシュする(D3 の
@@ -8,10 +8,10 @@
  * - LLM 失敗時は決定的フォールバックへ倒し、生成は止めない。
  */
 import type { FountainDoc } from "../shared/fountain";
+import { MANGA_VISUAL_SCALES } from "../shared/mangaPlanV2";
 import {
   type AnnotatedBeat,
   BEAT_KINDS,
-  BEAT_SCALES,
   buildPreLayoutUnits,
   fallbackBeatAnnotation,
   type PreLayoutUnit,
@@ -21,7 +21,8 @@ import { createId, getRow, runSql } from "./db";
 import { getLlmSettings } from "./llm";
 import { generateStructuredJson } from "./llmStructured";
 
-export const BEAT_ANNOTATOR_VERSION = "beat-annotator-v1";
+/** V5 D1: スキーマが preferredScale 一本になったため bump(v1キャッシュは自然に孤立する)。 */
+export const BEAT_ANNOTATOR_VERSION = "beat-annotator-v2";
 
 export interface BeatAnnotationResult {
   units: PreLayoutUnit[];
@@ -43,15 +44,14 @@ export const BEAT_ANNOTATION_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["id", "unitIds", "kind", "importance", "pageTurnAffinity", "keepAlone", "desiredScale"],
+        required: ["id", "unitIds", "kind", "preferredScale", "pageTurnAffinity", "keepAlone"],
         properties: {
           id: { type: "string" },
           unitIds: { type: "array", minItems: 1, items: { type: "string" } },
           kind: { type: "string", enum: [...BEAT_KINDS] },
-          importance: { type: "number", minimum: 0, maximum: 1 },
+          preferredScale: { type: "string", enum: [...MANGA_VISUAL_SCALES] },
           pageTurnAffinity: { type: "number", minimum: 0, maximum: 1 },
-          keepAlone: { type: "boolean" },
-          desiredScale: { type: "string", enum: [...BEAT_SCALES] }
+          keepAlone: { type: "boolean" }
         }
       }
     }
@@ -105,8 +105,8 @@ const ANNOTATOR_SYSTEM_PROMPT = [
   "You are a manga story-beat annotator. Group the given atomic units into narrative beats before any panel layout exists.",
   "Rules: cover every unitId exactly once, keep the original order, and never mix units from different scenes in one beat.",
   "kind: setup(context), action(someone does something), reaction(a character responds), reveal(new information lands), decision(a choice is made), transition(time/place shift), pause(a breath, mood).",
-  "importance: 0..1 story weight — be sparing above 0.7. pageTurnAffinity: 0..1 desire to sit right before/after a page turn (high for reveals and cliffhanger-worthy actions).",
-  "keepAlone: true when the beat deserves its own panel. desiredScale: small/normal/hero/splash — hero and splash are rare peaks.",
+  "pageTurnAffinity: 0..1 desire to sit right before/after a page turn (high for reveals and cliffhanger-worthy actions).",
+  "keepAlone: true when the beat deserves its own panel. preferredScale: small/medium/large/splash — the panel size this moment deserves; large and splash are rare peaks.",
   "Prefer beats of 1-3 units. A beat is one dramatic moment, not a summary."
 ].join("\n");
 

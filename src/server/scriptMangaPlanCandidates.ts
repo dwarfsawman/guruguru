@@ -9,7 +9,7 @@ import type {
   ScriptMangaPlanCandidatesResponse,
   ScriptMangaPlanCandidateView
 } from "../shared/scriptMangaApi";
-import type { ScriptMangaPlan, ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
+import { normalizeScriptMangaPlanScales, type ScriptMangaPlan, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
 import { createId, getRow, getRows, runSql } from "./db";
 import { HttpError } from "./http";
@@ -67,7 +67,8 @@ export function requirePlanCandidate(candidateId: string): PlanCandidateRow {
 
 function parseCandidatePlan(row: PlanCandidateRow): ScriptMangaPlan {
   try {
-    return JSON.parse(row.plan_json) as ScriptMangaPlan;
+    // V5 D1: 旧語彙(importance)だけの旧候補へ visualScale を補完する入力adapter。
+    return normalizeScriptMangaPlanScales(JSON.parse(row.plan_json) as ScriptMangaPlan);
   } catch {
     throw new HttpError(500, "Stored plan candidate is invalid JSON");
   }

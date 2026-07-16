@@ -11,6 +11,12 @@
  * 可視テキストが空の要素を飛ばす)で、既存の「全台詞一度ずつ」契約の基盤になる。
  */
 import type { FountainDoc, FountainElement } from "./fountain";
+import {
+  MANGA_VISUAL_SCALES,
+  type MangaPageTurnHook,
+  type MangaVisualScale,
+  normalizeLegacyVisualScale
+} from "./mangaPlanV2";
 import { elementVisibleText, elementVisualText } from "./scriptMangaPlan";
 
 export interface PreLayoutUnit {
@@ -152,13 +158,29 @@ export interface AnnotatedBeat {
   /** 連続 unit の束(全 unit を一度ずつ・順序保存・シーン境界を跨がない)。 */
   unitIds: string[];
   kind: BeatKind;
-  /** 0..1。物語上の重要度。 */
+  /**
+   * 演出上の希望スケール(ネームスタジオV5 D1)。LLMが判断するのはこのカテゴリだけで、
+   * コマ側の解決値は derivePanelVisualScale が決める。
+   */
+  preferredScale: MangaVisualScale;
+  /** 0..1。物語上の重要度。V5では preferredScale からの決定的導出値(旧consumers互換)。 */
   importance: number;
   /** 0..1。めくり直前(引き)・直後(開示)に置きたい度。 */
   pageTurnAffinity: number;
   /** 単独コマ推奨。 */
   keepAlone: boolean;
+  /** @deprecated 旧語彙のミラー(P1c で削除予定)。正は preferredScale。 */
   desiredScale: BeatScale;
+}
+
+/** preferredScale → 旧 importance 数値(0..1)の決定的導出(旧consumers互換用)。 */
+export function importanceWeightForScale(scale: MangaVisualScale): number {
+  return scale === "splash" ? 0.95 : scale === "large" ? 0.85 : scale === "small" ? 0.35 : 0.5;
+}
+
+/** preferredScale → 旧 desiredScale ミラー。 */
+function legacyDesiredScale(scale: MangaVisualScale): BeatScale {
+  return scale === "splash" ? "splash" : scale === "large" ? "hero" : scale === "small" ? "small" : "normal";
 }
 
 function clamp01(value: unknown): number | null {
@@ -190,21 +212,29 @@ export function validateBeatAnnotation(raw: unknown, units: readonly PreLayoutUn
     if (members.some((member) => !member)) return null;
     if (new Set(members.map((member) => member!.sceneIndex)).size !== 1) return null;
     if (typeof beat.kind !== "string" || !(BEAT_KINDS as readonly string[]).includes(beat.kind)) return null;
-    const importance = clamp01(beat.importance);
     const pageTurnAffinity = clamp01(beat.pageTurnAffinity);
-    if (importance === null || pageTurnAffinity === null) return null;
+    if (pageTurnAffinity === null) return null;
     if (typeof beat.keepAlone !== "boolean") return null;
-    if (typeof beat.desiredScale !== "string" || !(BEAT_SCALES as readonly string[]).includes(beat.desiredScale)) return null;
+    // V5 D1: 正は preferredScale。旧語彙(desiredScale)だけの入力も adapter で受理し、
+    // どちらも無い/不正なら reject。importance 数値は与えられなければ決定的に導出する。
+    if (beat.preferredScale !== undefined
+      && (typeof beat.preferredScale !== "string" || !(MANGA_VISUAL_SCALES as readonly string[]).includes(beat.preferredScale))) return null;
+    if (beat.desiredScale !== undefined
+      && (typeof beat.desiredScale !== "string" || !(BEAT_SCALES as readonly string[]).includes(beat.desiredScale))) return null;
+    const preferredScale = normalizeLegacyVisualScale({ desiredScale: beat.desiredScale, visualScale: beat.preferredScale });
+    if (!preferredScale) return null;
+    const importance = clamp01(beat.importance) ?? importanceWeightForScale(preferredScale);
     seenIds.add(id);
     observed.push(...unitIds);
     beats.push({
       id,
       unitIds,
       kind: beat.kind as BeatKind,
+      preferredScale,
       importance,
       pageTurnAffinity,
       keepAlone: beat.keepAlone,
-      desiredScale: beat.desiredScale as BeatScale
+      desiredScale: legacyDesiredScale(preferredScale)
     });
   }
   if (observed.length !== expectedOrder.length) return null;
@@ -227,9 +257,36 @@ export function fallbackBeatAnnotation(units: readonly PreLayoutUnit[]): Annotat
     id: `beat-${index + 1}`,
     unitIds: group.unitIds,
     kind: "action" as const,
+    preferredScale: "medium" as const,
     importance: 0.5,
     pageTurnAffinity: 0,
     keepAlone: false,
     desiredScale: "normal" as const
   }));
+}
+
+// --- コマスケールの決定的解決(ネームスタジオV5 D1) ---
+
+const VISUAL_SCALE_RANK: Record<MangaVisualScale, number> = { small: 0, medium: 1, large: 2, splash: 3 };
+
+/**
+ * コマへ束ねたビート列から、コマの解決スケール(visualScale)を決定的に導出する。
+ * 基本は含有ビートの preferredScale の最大値。空ビート(想定外)は medium。
+ * pageContext はソフト規則(turnHook=reveal の最終コマ引き上げ等、未決#3)用の予約で、
+ * 初期実装では未使用。
+ */
+export function derivePanelVisualScale(
+  beats: readonly AnnotatedBeat[],
+  _pageContext: { turnHook?: MangaPageTurnHook; panelIndex: number; panelCount: number }
+): MangaVisualScale {
+  let best: MangaVisualScale = "medium";
+  let bestRank = -1;
+  for (const beat of beats) {
+    const rank = VISUAL_SCALE_RANK[beat.preferredScale];
+    if (rank > bestRank) {
+      bestRank = rank;
+      best = beat.preferredScale;
+    }
+  }
+  return best;
 }

@@ -1,5 +1,5 @@
 import { scriptMangaLayoutCandidates, selectScriptMangaLayoutId } from "../shared/layoutPresets";
-import type { MangaPageTurnHook, MangaPanelImportance } from "../shared/mangaPlanV2";
+import { type MangaPageTurnHook, type MangaPanelImportance, visualScaleFromImportance } from "../shared/mangaPlanV2";
 import type { AnnotatedBeat, PreLayoutUnit } from "../shared/preLayoutBeat";
 import {
   DEFAULT_SCRIPT_MANGA_STYLE,
@@ -62,7 +62,9 @@ export function applyPageNaming(
         sourceText: concrete.map((panel) => panel.sourceText).join("\n"),
         prompt: concrete.map((panel) => panel.prompt).join(" "),
         dialogueOrderIndexes,
-        importance: namedPanel.importance
+        importance: namedPanel.importance,
+        // V5 D1 P1a: 旧N1が生きている間は LLM の importance 出力を新語彙へ写すシム。
+        visualScale: visualScaleFromImportance(namedPanel.importance)
       });
     }
     // ネームv4 D1: 候補先頭固定をやめ、importance 構成(hero×強調スロット/splash→裁ち切り)で事前選択する。
@@ -141,6 +143,12 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
       const dialogueCharacters = dialogueUnits.reduce((sum, unit) => sum + unit.dialogueCharacters, 0);
       if (dialogueUnits.length > maxDialogues) return null;
       if (dialogueCharacters > maxDialogueCharacters) return null;
+      // V5 D1 hard規則(ビート由来の決定的検査):
+      // keepAlone ビートは他ビートと同居不可 / large以上の希望ビートを1コマへ複数束ねない /
+      // splash希望ビートは単独コマ・単独ページ。
+      if (concreteBeats.length > 1 && concreteBeats.some((beat) => beat.keepAlone)) return null;
+      if (concreteBeats.filter((beat) => beat.preferredScale === "large" || beat.preferredScale === "splash").length > 1) return null;
+      if (concreteBeats.some((beat) => beat.preferredScale === "splash") && (concreteBeats.length > 1 || page.panels.length !== 1)) return null;
       observedBeatIds.push(...namedPanel.sourceBeatIds);
       panelIds.add(namedPanel.id);
       dialogueCount += dialogueUnits.length;
@@ -160,9 +168,14 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
         sourceText: unitsOfPanel.map((unit) => unit.text).join("\n"),
         dialogueOrderIndexes: dialogueUnits.map((unit) => unit.dialogueOrderIndex!),
         importance: namedPanel.importance,
+        // V5 D1 P1a: 旧N1スキーマが生きている間は importance 出力を新語彙へ写すシム
+        // (P1bでビート由来の derivePanelVisualScale へ置換する)。
+        visualScale: visualScaleFromImportance(namedPanel.importance),
         sourceBeatIds: [...namedPanel.sourceBeatIds]
       });
     }
+    // V5 D1 hard規則: 1ページの large(hero)コマは2つまで(プロンプトの "one or two" を決定的に固定)。
+    if (panels.filter((panel) => panel.importance === "hero").length > 2) return null;
     const layoutTemplateId = selectScriptMangaLayoutId(panels.map((panel) => panel.importance ?? "normal"))
       ?? scriptMangaLayoutCandidates(panels.length)[0]!;
     pages.push({

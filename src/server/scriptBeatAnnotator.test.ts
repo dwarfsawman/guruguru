@@ -22,6 +22,7 @@ function spanBeats(units: ReturnType<typeof buildPreLayoutUnits>): AnnotatedBeat
     id: `b${index + 1}`,
     unitIds: [unit.id],
     kind: index === units.length - 1 ? "reveal" : "action",
+    preferredScale: "medium",
     importance: index === units.length - 1 ? 0.9 : 0.4,
     pageTurnAffinity: 0.2,
     keepAlone: false,

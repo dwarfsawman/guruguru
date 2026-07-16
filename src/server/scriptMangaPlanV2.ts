@@ -223,7 +223,8 @@ export function buildMangaPlanV2(input: {
         mustShow: [],
         dialogueOnly: [],
         kind: annotated.kind,
-        importance: annotated.importance
+        importance: annotated.importance,
+        preferredScale: annotated.preferredScale
       });
       previousAction = action;
     }
@@ -363,6 +364,7 @@ export function buildMangaPlanV2(input: {
         id: legacyPanel.id,
         ...(layoutRole === "figure" ? { role: "figure" as const } : {}),
         ...(legacyPanel.importance !== undefined ? { importance: legacyPanel.importance } : {}),
+        ...(legacyPanel.visualScale !== undefined ? { visualScale: legacyPanel.visualScale } : {}),
         sourceElementIds,
         beatIds: panelBeatIds,
         preStateId,
