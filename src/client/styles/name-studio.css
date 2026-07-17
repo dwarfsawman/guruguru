@@ -898,3 +898,148 @@
     padding: 12px;
   }
 }
+
+/* --- 人間ゲートのコマ割り修正(nameLayoutEditView) --- */
+
+.studio-page-sheet.is-layout-edit {
+  outline: 2px solid #b8860b;
+  outline-offset: 2px;
+}
+
+.nle-stage {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+}
+
+.nle-paper {
+  fill: #ffffff;
+}
+
+.nle-margin-guide {
+  fill: none;
+  stroke: #c9c2b4;
+  stroke-width: 0.002;
+  stroke-dasharray: 0.012 0.008;
+  pointer-events: none;
+}
+
+.nle-panel-fill {
+  fill: rgba(240, 236, 226, 0.55);
+  stroke: none;
+}
+
+.nle-edge {
+  stroke: #1a1a1a;
+  stroke-width: 0.006;
+  stroke-linecap: square;
+  pointer-events: none;
+}
+
+/* 裁ち切り/ガター詰めプレビュー: 線を半透明にする */
+.nle-edge.is-preview {
+  stroke-opacity: 0.35;
+  stroke-dasharray: 0.02 0.01;
+}
+
+.nle-edge-hit {
+  stroke: transparent;
+  stroke-width: 0.028;
+  cursor: move;
+}
+
+.nle-insert-handle {
+  fill: #ffffff;
+  stroke: #6b675e;
+  stroke-width: 0.0025;
+  cursor: copy;
+}
+
+.nle-insert-handle:hover {
+  fill: #ffe9a8;
+}
+
+.nle-vertex-handle {
+  fill: #ffffff;
+  stroke: #1a1a1a;
+  stroke-width: 0.003;
+  cursor: grab;
+}
+
+.nle-vertex-handle:hover {
+  fill: #ffd27f;
+}
+
+.nle-boundary-line {
+  stroke: rgba(184, 134, 11, 0.35);
+  stroke-width: 0.004;
+  stroke-dasharray: 0.016 0.01;
+  pointer-events: none;
+}
+
+.nle-boundary-handle {
+  fill: rgba(184, 134, 11, 0.85);
+  stroke: #ffffff;
+  stroke-width: 0.004;
+  cursor: move;
+}
+
+.nle-gutter-handle {
+  fill: rgba(58, 110, 165, 0.85);
+  stroke: #ffffff;
+  stroke-width: 0.004;
+  cursor: ew-resize;
+}
+
+.nle-junction-handle {
+  fill: rgba(170, 60, 120, 0.85);
+  stroke: #ffffff;
+  stroke-width: 0.004;
+  cursor: move;
+}
+
+.nle-balloon ellipse {
+  fill: rgba(255, 255, 255, 0.9);
+  stroke: #3a6ea5;
+  stroke-width: 0.004;
+  cursor: grab;
+}
+
+.nle-balloon.is-hinted ellipse {
+  stroke: #b8452b;
+  stroke-width: 0.006;
+}
+
+.nle-balloon text {
+  font-size: 0.032px;
+  fill: #1a1a1a;
+  pointer-events: none;
+  font-family: inherit;
+}
+
+.nle-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 8px;
+}
+
+.nle-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.nle-issues {
+  margin: 0;
+  color: #ff9d9d;
+  font-size: 0.78rem;
+}
+
+.nle-actions {
+  margin-top: 0;
+}

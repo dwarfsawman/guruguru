@@ -368,6 +368,11 @@ export function setBoundaryGutter(layout: PageLayout, boundary: SharedBoundary, 
   return result;
 }
 
+/** 辺の外向き単位法線(UIがポインタ移動を法線方向オフセットへ射影するために使う)。 */
+export function edgeOutwardNormal(layout: PageLayout, ref: LayoutEdgeRef): [number, number] | null {
+  return edgeGeometry(layout, ref)?.outward ?? null;
+}
+
 /** 単一辺を法線方向へ offset だけ平行移動する(外向き正)。 */
 export function translateEdgeAlongNormal(layout: PageLayout, ref: LayoutEdgeRef, offset: number): PageLayout {
   const geometry = edgeGeometry(layout, ref);

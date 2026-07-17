@@ -420,6 +420,7 @@ export function clearScriptMangaRunState(): void {
     fullscreen: false,
     ...DEFAULT_NAME_STUDIO_READER_OPTIONS
   };
+  state.nameLayoutEdit = null;
 }
 
 /** 脚本画面を閉じる時はプロジェクト固有のテンプレートと設定も破棄する。 */
@@ -444,6 +445,7 @@ export function clearScriptMangaUiState(): void {
   state.scriptMangaCandidateBeatKinds = {};
   state.scriptMangaCandidateDialogueChars = [];
   state.scriptMangaCandidatesBusy = false;
+  state.nameLayoutEdit = null;
 }
 
 function beginOperation(): number | null {

@@ -19,15 +19,18 @@ import { orderPanelsByReadingDirection } from "../../shared/dialogueAutoLayout";
 import { type PageLayout, panelBounds } from "../../shared/pageLayout";
 import { renderPageWireframeSvg, type WireframePanelInfo } from "../../shared/pageLayoutSvg";
 import {
+  applyCustomNameLayouts,
   applyLayoutOverrides,
   type ScriptMangaPagePlan,
   type ScriptMangaPanelPlan,
   type ScriptMangaPlan
 } from "../../shared/scriptMangaPlan";
+import { LAYOUT_PAGE_MARGIN } from "../../shared/layoutPresets";
+import { renderNameLayoutEditSvg, renderNameLayoutEditToolbar } from "./nameLayoutEditView";
 import type { MangaPageSpec, MangaPlanV2, PanelSpec } from "../../shared/mangaPlanV2";
 import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../shared/scriptMangaApi";
 import type { DialogueLine } from "../../shared/apiTypes";
-import type { NameStudioDraft, NameStudioState } from "../appState";
+import type { NameLayoutEditState, NameStudioDraft, NameStudioState } from "../appState";
 import {
   canonicalReaderIndex,
   getVisibleReaderPages,
@@ -57,6 +60,8 @@ export interface NameStudioViewProps {
   /** 採用後の演出ネーム表示・編集(V5 D6)。 */
   run: ScriptMangaRunView | null;
   draft: NameStudioDraft | null;
+  /** 人間ゲートのコマ割り修正セッション(非null中は該当ページを編集ステージで表示)。 */
+  layoutEdit: NameLayoutEditState | null;
 }
 
 const SCALE_LABELS: Record<MangaVisualScale, string> = {
@@ -112,9 +117,12 @@ export function takeLabel(index: number): string {
   return `テイク${String.fromCharCode(65 + (index % 26))}`;
 }
 
-/** 表示・採用に使う実効プラン(基礎プラン+人間のフリップ)。 */
+/** 表示・採用に使う実効プラン(基礎プラン+人間のフリップ+コマ割り修正)。 */
 export function effectiveCandidatePlan(candidate: ScriptMangaPlanCandidateView): ScriptMangaPlan {
-  return applyLayoutOverrides(candidate.plan, candidate.layoutOverrides);
+  return applyCustomNameLayouts(
+    applyLayoutOverrides(candidate.plan, candidate.layoutOverrides),
+    candidate.customLayouts
+  );
 }
 
 export function activeStudioTake(
@@ -666,10 +674,23 @@ function renderDirectedReader(props: NameStudioViewProps): string {
 
 function renderCandidatePage(
   entry: VisibleReaderPage<ScriptMangaPagePlan>,
+  candidate: ScriptMangaPlanCandidateView,
   props: NameStudioViewProps
 ): string {
   const page = entry.page;
-  const layout = resolveScriptMangaLayout(page.layoutTemplateId);
+  const edit = props.layoutEdit;
+  if (edit && edit.candidateId === candidate.id && edit.pageIndex === page.index) {
+    return `
+    <div class="studio-page-sheet is-layout-edit" data-page-number="${entry.pageNumber}">
+      <span class="studio-page-sheet-number">p${entry.pageNumber}</span>
+      <div class="studio-page" style="aspect-ratio: 1 / ${edit.draftLayout.page.height.toFixed(6)};">
+        ${renderNameLayoutEditSvg(edit, page, props.dialogueLines, LAYOUT_PAGE_MARGIN)}
+      </div>
+      ${renderNameLayoutEditToolbar(edit)}
+    </div>`;
+  }
+  // 人間ゲートのコマ割り修正はテンプレ解決より優先(effectiveCandidatePlan が注釈済み)。
+  const layout = page.customLayout ?? resolveScriptMangaLayout(page.layoutTemplateId);
   if (!layout) {
     return `<div class="studio-page-sheet is-error" data-page-number="${entry.pageNumber}">
       <p class="studio-inspector-hint">レイアウト ${escapeHtml(page.layoutTemplateId)} を解決できません。</p></div>`;
@@ -721,19 +742,28 @@ function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudio
         <button type="button" class="button-secondary compact" data-action="studio-next-page"
           aria-keyshortcuts="ArrowRight" title="次へ (→)" ${reader.canGoNext ? "" : "disabled"}>次ページ ▶</button>
       </div>
-      ${renderStudioPageStage(reader.visible, props.nameStudio, (entry) => renderCandidatePage(entry, props))}
+      ${renderStudioPageStage(reader.visible, props.nameStudio, (entry) => renderCandidatePage(entry, candidate, props))}
       <div class="studio-visible-page-meta">
         ${reader.visible.map(({ page, pageNumber }) => {
           const turnHookLabel = page.turnHook === "reveal" ? "▼reveal" : page.turnHook === "cliffhanger" ? "▼cliffhanger" : "なし";
+          const customized = Boolean(candidate.customLayouts?.[page.index]) || Boolean(candidate.balloonHints?.[page.index]);
+          const editButton = candidate.status === "active"
+            ? `<button type="button" class="studio-flip-chip is-edit-layout" data-action="studio-edit-layout"
+                data-id="${escapeAttr(candidate.id)}" data-page-index="${page.index}"
+                title="辺・頂点・交差点・余白・裁ち切り・吹き出し位置をドラッグで修正">
+                ✎ コマ割りを修正${customized ? "(修正済み)" : ""}</button>`
+            : customized ? `<span class="plan-candidate-badge is-flipped">コマ割り修正済み</span>` : "";
           return `<div class="studio-page-tools"><div class="studio-page-footer"><strong>p${pageNumber}</strong>
             <span class="studio-page-intent">ページ意図: ${escapeHtml(page.pageIntent?.trim() || "—")}</span>
             <span class="studio-page-hook">めくり: ${turnHookLabel}</span></div>
-            ${flipChips(candidate, plan, page, props)}</div>`;
+            ${flipChips(candidate, plan, page, props)}
+            ${editButton}</div>`;
         }).join("")}
       </div>
       <div class="studio-actions">
         <button type="button" class="button-primary" data-action="adopt-script-manga-plan-candidate"
-          data-id="${escapeAttr(candidate.id)}" ${adoptDisabled ? "disabled" : ""}>この案で生成</button>
+          data-id="${escapeAttr(candidate.id)}" ${adoptDisabled ? "disabled" : ""}
+          title="修正済みコマ割りを含む実効プランで検査(full preflight)が走り、通過するとエージェントの生成フローへ進みます">このネームで生成</button>
         <button type="button" class="button-secondary" data-action="archive-script-manga-plan-candidate"
           data-id="${escapeAttr(candidate.id)}" ${props.candidatesBusy ? "disabled" : ""}>破棄</button>
         ${!props.templateSelected ? `<span class="studio-inspector-hint">採用には workflow template の選択が必要です。</span>` : ""}
