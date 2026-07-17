@@ -109,6 +109,14 @@ validation/preflight errorは従来どおり拒否する。run承認時は承認
 で人間・エージェントのどちらからでも変更でき、`expectedVersion`(候補の `editVersion`)の楽観ロックで
 競合を検出する。基礎プラン(`plan`)は不変で、選択は `layoutOverrides` に載る。
 
+人間はさらにスタジオの「✎ コマ割りを修正」で、辺・頂点・交差点・コマ間余白・裁ち切り・吹き出し位置を
+ドラッグ修正できる(Docs/Feature-NameGateLayoutEdit.md)。修正は
+`POST /api/script-manga-plan-candidates/:id/set-custom-layout`
+(`{pageIndex, layout|null, balloonHints|null, expectedVersion}`)で `customLayouts`/`balloonHints` レイヤーへ
+保存され、テンプレ選択より優先して採用時の `layoutSnapshot` へ固定される。同ページの set-layout フリップは
+修正を破棄する。「このネームで生成」(旧「この案で生成」)は修正込みの実効プランで full preflight を再実行し、
+通過した場合だけ run を作る。エージェントは人間の修正済み候補を通常どおり adopted 検知して続行すればよい。
+
 V5の語彙変更: コマの重みは `visualScale`(`small/medium/large/splash`)。provided plan では旧
 `importance`(`splash/hero/normal`)も引き続き受理され `visualScale` へ写像されるが、新規は
 `visualScale` を使う。ネーム監督はレイアウトを選ばない(`layoutTemplateId` は監督schemaから削除済み。
