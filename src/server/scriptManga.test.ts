@@ -1056,7 +1056,7 @@ test("a successor inherits only fingerprint-identical selected assets and genera
   await cancelScriptMangaRun(changed.id);
 });
 
-test("a successor regenerates a continuity-dependent panel when its upstream selected asset cannot be inherited", async () => {
+test("a successor inherits a reviewed continuity-dependent panel when its upstream was never selected", async () => {
   resetFakeProvider();
   const templateId = template();
   const project = createProject({ name: `script-manga-continuity-${createId("test")}`, mode: "book" });
@@ -1103,12 +1103,148 @@ test("a successor regenerates a continuity-dependent panel when its upstream sel
   });
   approveScriptMangaRun(successor.id);
   const result = await startScriptMangaRun(successor.id);
-  assert.deepEqual(result.tasks.map((task) => task.inheritedFromTaskId), [null, null]);
-  assert.ok(result.tasks.every((task) => task.roundId), "both the unavailable root and its dependent panel must regenerate");
-  const inheritance = (result.evaluation as { inheritance?: { continuitySkipped?: number; eligiblePredecessorTasks?: number } } | null)?.inheritance;
+  // The upstream was canceled before any selection, so the dependent's review was never
+  // contingent on a settled upstream image: reuse it and regenerate only the upstream.
+  const inheritedTask = result.tasks.find((task) => task.inheritedFromTaskId !== null);
+  const regeneratedTask = result.tasks.find((task) => task.inheritedFromTaskId === null);
+  assert.ok(inheritedTask && regeneratedTask);
+  assert.equal(inheritedTask.inheritedFromTaskId, canceled.tasks[1]!.id);
+  assert.equal(inheritedTask.selectedAssetId, canceled.tasks[1]!.selectedAssetId);
+  assert.equal(inheritedTask.roundId, null);
+  assert.ok(regeneratedTask.roundId, "the never-selected upstream panel must regenerate");
+  const inheritance = (result.evaluation as { inheritance?: { continuitySkipped?: number; eligiblePredecessorTasks?: number; inherited?: number } } | null)?.inheritance;
   assert.equal(inheritance?.eligiblePredecessorTasks, 1);
-  assert.equal(inheritance?.continuitySkipped, 1);
+  assert.equal(inheritance?.inherited, 1);
+  assert.equal(inheritance?.continuitySkipped, 0);
   await cancelScriptMangaRun(result.id);
+});
+
+test("a successor inherits a reference-bearing selected panel", async () => {
+  resetFakeProvider();
+  const templateId = chromaTemplate();
+  const project = createProject({ name: `script-manga-succ-ref-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Successor with reference",
+    fountainSource: ["INT. LAB - NIGHT", "", "Alice looks up.", "", "@Alice", "行こう。"].join("\n")
+  });
+  const alice = listCharacters(project.id).find((character) => character.name === "Alice");
+  assert.ok(alice);
+  const referenceSet = createReferenceSet(alice.id, {
+    modelFamily: "chroma",
+    variantId: `${alice.id}:default`,
+    appearanceJa: "短い銀髪、青い目、紺の上着",
+    appearancePromptEn: "short silver hair, blue eyes, navy jacket",
+    mustNotChange: ["silver hair"]
+  });
+  await uploadReferenceSetImage(referenceSet.id, "face", { imageDataUrl: TINY_PNG_DATA_URL });
+  await approveReferenceSet(referenceSet.id, {});
+
+  const prepared = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    requireReferenceSets: true,
+    panelsPerPage: 1,
+    maxDialoguesPerPanel: 1
+  });
+  approveScriptMangaRun(prepared.id);
+  const started = await startScriptMangaRun(prepared.id);
+  for (const task of started.tasks) {
+    assert.ok(task.roundId);
+    await collectRound(task.roundId!);
+  }
+  const review = getScriptMangaRun(prepared.id);
+  let completed = review;
+  for (const task of review.tasks) {
+    completed = await selectScriptMangaTaskCandidate(task.id, { assetId: task.candidateAssetIds[0]! });
+  }
+  assert.equal(completed.status, "completed");
+  const withCast = completed.tasks.find((task) =>
+    (JSON.parse(getRow<{ panel_spec_json: string }>(
+      "SELECT panel_spec_json FROM script_manga_tasks WHERE id = ?", [task.id]
+    )!.panel_spec_json) as { cast: unknown[] }).cast.length > 0
+  );
+  assert.ok(withCast, "expected at least one reference-bearing panel");
+
+  const successor = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    planningMode: "provided",
+    predecessorRunId: completed.id,
+    successorPlan: structuredClone(completed.plan!),
+    generateImages: false
+  });
+  approveScriptMangaRun(successor.id);
+  const inherited = await startScriptMangaRun(successor.id);
+  const successorWithCast = inherited.tasks.find((task) => task.inheritedFromTaskId === withCast.id);
+  assert.ok(successorWithCast, "reference-bearing panel must inherit across a same-material successor");
+  assert.equal(successorWithCast.selectedAssetId, withCast.selectedAssetId);
+  assert.equal(successorWithCast.roundId, null);
+  assert.ok(inherited.tasks.every((task) => task.inheritedFromTaskId !== null && task.roundId === null));
+});
+
+test("a successor regenerates a continuity-dependent panel when its selected upstream cannot be inherited", async () => {
+  resetFakeProvider();
+  const templateId = template();
+  const project = createProject({ name: `script-manga-continuity-strict-${createId("test")}`, mode: "book" });
+  assert.ok(project);
+  const imported = createScript(project.id, {
+    title: "Continuity strict closure",
+    fountainSource: ["INT. CORRIDOR - NIGHT", "", "Alice opens the hatch.", "", "Alice steps through the hatch."].join("\n")
+  });
+  const prepared = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    panelsPerPage: 2,
+    maxElementsPerPanel: 1
+  });
+  assert.equal(prepared.tasks.length, 2);
+  const predecessorPlan = structuredClone(prepared.plan!);
+  predecessorPlan.pages[0]!.panels[1]!.continuityFromPanelIds = [predecessorPlan.pages[0]!.panels[0]!.id];
+  updateScriptMangaPlan(predecessorPlan.id, predecessorPlan);
+  approveScriptMangaRun(prepared.id);
+  const started = await startScriptMangaRun(prepared.id);
+  for (const task of started.tasks) {
+    assert.ok(task.roundId);
+    await collectRound(task.roundId!);
+  }
+  const review = getScriptMangaRun(prepared.id);
+  let completed = review;
+  for (const task of review.tasks) {
+    completed = await selectScriptMangaTaskCandidate(task.id, { assetId: task.candidateAssetIds[0]! });
+  }
+  assert.equal(completed.status, "completed");
+
+  // Corrupt the selected upstream image: the upstream stays a reviewed selection but can no
+  // longer be inherited, so the dependent approved next to it must regenerate too.
+  const upstreamImage = getRow<{ image_path: string }>(
+    "SELECT image_path FROM assets WHERE id = ?",
+    [completed.tasks[0]!.selectedAssetId]
+  )!;
+  const upstreamBytes = await readFile(upstreamImage.image_path);
+  await writeFile(upstreamImage.image_path, Buffer.from("not an image"));
+  try {
+    const successor = await createScriptMangaRun(project.id, {
+      scriptId: imported.script.id,
+      planningMode: "provided",
+      predecessorRunId: completed.id,
+      successorPlan: structuredClone(completed.plan),
+      generateImages: false
+    });
+    approveScriptMangaRun(successor.id);
+    const result = await startScriptMangaRun(successor.id);
+    assert.deepEqual(result.tasks.map((task) => task.inheritedFromTaskId), [null, null]);
+    assert.ok(result.tasks.every((task) => task.roundId), "both the broken upstream and its dependent panel must regenerate");
+    const inheritance = (result.evaluation as { inheritance?: { continuitySkipped?: number; eligiblePredecessorTasks?: number } } | null)?.inheritance;
+    assert.equal(inheritance?.eligiblePredecessorTasks, 1);
+    assert.equal(inheritance?.continuitySkipped, 1);
+    await cancelScriptMangaRun(result.id);
+  } finally {
+    await writeFile(upstreamImage.image_path, upstreamBytes);
+  }
 });
 
 test("createScriptMangaRun assigns directed prompts to the same RTL panels as their dialogues", async () => {
