@@ -174,6 +174,11 @@ export function buildMangaPlanV2(input: {
   resolveLayoutTemplate: (layoutTemplateId: string) => PageLayout | null;
   /** ネームv4 D2: ビート注釈(ビート化N1が成立した場合)。beats を後付け生成から引き継ぎへ切り替える。 */
   beatAnnotation?: { units: PreLayoutUnit[]; beats: AnnotatedBeat[] } | null;
+  /**
+   * 人間ゲートの吹き出し位置ヒント(pageIndex → dialogue orderIndex → page 座標)。
+   * orderIndex は story graph 経由で lineId へ解決し、V2 page の balloonCenterHints へ固定する。
+   */
+  balloonCenterHints?: Record<number, Record<number, { x: number; y: number }>> | null;
 }): MangaPlanV2 {
   const story = buildStoryGraph({
     doc: input.doc,
@@ -231,12 +236,22 @@ export function buildMangaPlanV2(input: {
   }
 
   const pages = input.legacyPlan.pages.map((page) => {
-    const resolvedLayout = input.resolveLayoutTemplate(page.layoutTemplateId);
+    // 人間ゲートのコマ割り修正(customLayout)はテンプレ解決より優先して snapshot へ固定する。
+    const resolvedLayout = page.customLayout ?? input.resolveLayoutTemplate(page.layoutTemplateId);
     if (!resolvedLayout) throw new Error(`Layout template could not be resolved: ${page.layoutTemplateId}`);
     const layoutSnapshot = JSON.parse(JSON.stringify(resolvedLayout)) as PageLayout;
     // plan panels[index] は layout の reading-order スロットへ対応する(materialize と同じ規約)。
     // figure スロットに落ちた panel には role を写し、プロンプトを立ち絵仕様へ切り替える。
     const orderedLayoutPanels = orderPanelsByReadingDirection(layoutSnapshot.panels, layoutSnapshot.readingDirection);
+    const pageHints = input.balloonCenterHints?.[page.index];
+    const balloonCenterHints = pageHints
+      ? Object.entries(pageHints).flatMap(([orderKey, position]) => {
+          const line = story.dialogueByOrder.get(Number(orderKey));
+          return line && Number.isFinite(position.x) && Number.isFinite(position.y)
+            ? [{ lineId: line.id, x: position.x, y: position.y }]
+            : [];
+        })
+      : [];
     return {
       index: page.index,
       title: page.title,
@@ -245,6 +260,7 @@ export function buildMangaPlanV2(input: {
       pageIntent: pageIntent(page),
       // ネームv4 D1: N1のページめくり演出を V2 へも引き継ぐ(additive)。
       ...(page.turnHook !== undefined ? { turnHook: page.turnHook } : {}),
+      ...(balloonCenterHints.length > 0 ? { balloonCenterHints } : {}),
       panels: page.panels.map((legacyPanel, panelIndexOnPage): PanelSpec => {
       const layoutRole = orderedLayoutPanels[panelIndexOnPage]?.role;
       const direction = panelDirection(legacyPanel);

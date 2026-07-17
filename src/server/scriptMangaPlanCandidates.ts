@@ -15,15 +15,21 @@ import type {
   ScriptMangaPlanCandidateOrigin,
   ScriptMangaPlanCandidatesResponse,
   ScriptMangaPlanCandidateView,
+  SetCandidateCustomLayoutRequest,
+  SetCandidateCustomLayoutResponse,
   SetCandidateLayoutResponse
 } from "../shared/scriptMangaApi";
 import {
+  applyCustomNameLayouts,
   applyLayoutOverrides,
   normalizeScriptMangaPlanScales,
   scriptMangaPlanStructureSignature,
+  stripCustomNameLayouts,
   type ScriptMangaPlan,
   type ScriptMangaPlanOptions
 } from "../shared/scriptMangaPlan";
+import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
+import { toEditableNameLayout, validateEditedNameLayout } from "../shared/nameLayoutEdit";
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
 import { createId, getRow, getRows, runSql } from "./db";
@@ -46,6 +52,8 @@ export interface PlanCandidateRow {
   status: string;
   adopted_run_id: string | null;
   layout_overrides_json: string | null;
+  custom_layouts_json: string | null;
+  balloon_hints_json: string | null;
   edit_version: number;
   created_at: string;
 }
@@ -113,6 +121,48 @@ function parseOverrides(row: PlanCandidateRow): Record<number, string> {
     if (Number.isInteger(index) && index >= 0 && typeof value === "string" && value) overrides[index] = value;
   }
   return overrides;
+}
+
+/** 人間ゲートのコマ割り修正(pageIndex → 編集済み PageLayout)。壊れたJSON・不正エントリは黙って捨てる。 */
+export function parseCandidateCustomLayouts(
+  row: Pick<PlanCandidateRow, "custom_layouts_json">
+): Record<number, PageLayout> {
+  if (!row.custom_layouts_json) return {};
+  const parsed = safeParse(row.custom_layouts_json);
+  if (!parsed || typeof parsed !== "object") return {};
+  const layouts: Record<number, PageLayout> = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const index = Number(key);
+    if (!Number.isInteger(index) || index < 0) continue;
+    const layout = normalizeEditedPageLayout(value);
+    if (layout) layouts[index] = layout;
+  }
+  return layouts;
+}
+
+/** 吹き出し位置ヒント(pageIndex → dialogue orderIndex → page 座標)。 */
+export function parseCandidateBalloonHints(
+  row: Pick<PlanCandidateRow, "balloon_hints_json">
+): Record<number, Record<number, { x: number; y: number }>> {
+  if (!row.balloon_hints_json) return {};
+  const parsed = safeParse(row.balloon_hints_json);
+  if (!parsed || typeof parsed !== "object") return {};
+  const hints: Record<number, Record<number, { x: number; y: number }>> = {};
+  for (const [pageKey, pageValue] of Object.entries(parsed as Record<string, unknown>)) {
+    const pageIndex = Number(pageKey);
+    if (!Number.isInteger(pageIndex) || pageIndex < 0 || !pageValue || typeof pageValue !== "object") continue;
+    const pageHints: Record<number, { x: number; y: number }> = {};
+    for (const [orderKey, position] of Object.entries(pageValue as Record<string, unknown>)) {
+      const orderIndex = Number(orderKey);
+      if (!Number.isInteger(orderIndex) || orderIndex < 0 || !position || typeof position !== "object") continue;
+      const { x, y } = position as { x?: unknown; y?: unknown };
+      if (typeof x === "number" && Number.isFinite(x) && typeof y === "number" && Number.isFinite(y)) {
+        pageHints[orderIndex] = { x, y };
+      }
+    }
+    if (Object.keys(pageHints).length > 0) hints[pageIndex] = pageHints;
+  }
+  return hints;
 }
 
 function parseCandidateProvenance(row: Pick<PlanCandidateRow, "provenance_json">): PlanCandidateProvenance {
@@ -186,6 +236,8 @@ function candidateView(row: PlanCandidateRow): ScriptMangaPlanCandidateView {
     adoptedRunId: row.adopted_run_id,
     plan: parseCandidatePlan(row),
     layoutOverrides: parseOverrides(row),
+    customLayouts: parseCandidateCustomLayouts(row),
+    balloonHints: parseCandidateBalloonHints(row),
     editVersion: row.edit_version,
     pageNaming: mode ? { mode, fallback: pageNaming?.fallback === true, ...(pageNaming?.beatAnnotatorFallback !== undefined ? { beatAnnotatorFallback: pageNaming.beatAnnotatorFallback } : {}) } : null,
     createdAt: row.created_at
@@ -226,7 +278,8 @@ export function freezeEmbeddedDirectedPlanCandidate(
         SET plan_json = ?, provenance_json = ?, layout_overrides_json = NULL, edit_version = ?
       WHERE id = ? AND status = 'active' AND edit_version = ?`,
     [
-      JSON.stringify(directedPlan),
+      // customLayout は in-memory 注釈(custom_layouts_json が唯一の永続層)なので plan_json へ焼き込まない。
+      JSON.stringify(stripCustomNameLayouts(directedPlan)),
       JSON.stringify({
         ...provenance,
         origin: "embedded",
@@ -360,7 +413,8 @@ function storeCandidate(input: CandidateStoreInput, duplicateMode: "skip" | "ups
     runSql(
       `UPDATE script_manga_plan_candidates
           SET profile = ?, temperature = ?, plan_json = ?, provenance_json = ?,
-              layout_overrides_json = NULL, edit_version = edit_version + 1
+              layout_overrides_json = NULL, custom_layouts_json = NULL, balloon_hints_json = NULL,
+              edit_version = edit_version + 1
         WHERE id = ? AND status = 'active'`,
       [
         input.profile,
@@ -575,7 +629,12 @@ export function adoptablePlanCandidate(
   scriptId: string,
   latestRevisionId: string,
   expectedVersion?: number
-): { row: PlanCandidateRow; plan: ScriptMangaPlan } {
+): {
+  row: PlanCandidateRow;
+  plan: ScriptMangaPlan;
+  customLayouts: Record<number, PageLayout>;
+  balloonHints: Record<number, Record<number, { x: number; y: number }>>;
+} {
   const row = requirePlanCandidate(candidateId);
   if (row.project_id !== projectId || row.script_id !== scriptId) {
     throw new HttpError(404, "Plan candidate does not belong to this script");
@@ -588,7 +647,13 @@ export function adoptablePlanCandidate(
   if (expectedVersion !== undefined && expectedVersion !== row.edit_version) {
     throw new HttpError(409, "Plan candidate was modified concurrently; reload and retry");
   }
-  return { row, plan: applyLayoutOverrides(parseCandidatePlan(row), parseOverrides(row)) };
+  const customLayouts = parseCandidateCustomLayouts(row);
+  return {
+    row,
+    plan: applyCustomNameLayouts(applyLayoutOverrides(parseCandidatePlan(row), parseOverrides(row)), customLayouts),
+    customLayouts,
+    balloonHints: parseCandidateBalloonHints(row)
+  };
 }
 
 /**
@@ -677,10 +742,120 @@ export function setCandidateLayoutOverride(candidateId: string, body: unknown): 
   } else {
     overrides[pageIndex] = layoutTemplateId;
   }
+  // テンプレを切り替えたページのコマ割り修正・吹き出しヒントは旧テンプレ基準なので破棄する。
+  const customLayouts = parseCandidateCustomLayouts(row);
+  const balloonHints = parseCandidateBalloonHints(row);
+  delete customLayouts[pageIndex];
+  delete balloonHints[pageIndex];
   const version = row.edit_version + 1;
   runSql(
-    "UPDATE script_manga_plan_candidates SET layout_overrides_json = ?, edit_version = ? WHERE id = ? AND edit_version = ?",
-    [Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : null, version, row.id, row.edit_version]
+    `UPDATE script_manga_plan_candidates
+        SET layout_overrides_json = ?, custom_layouts_json = ?, balloon_hints_json = ?, edit_version = ?
+      WHERE id = ? AND edit_version = ?`,
+    [
+      Object.keys(overrides).length > 0 ? JSON.stringify(overrides) : null,
+      Object.keys(customLayouts).length > 0 ? JSON.stringify(customLayouts) : null,
+      Object.keys(balloonHints).length > 0 ? JSON.stringify(balloonHints) : null,
+      version,
+      row.id,
+      row.edit_version
+    ]
+  );
+  return { version, candidate: candidateView(requirePlanCandidate(row.id)) };
+}
+
+/**
+ * 人間ゲートのコマ割り修正の保存(set-custom-layout)。編集済みレイアウトはテンプレ選択
+ * (set-layout)より優先される別レイヤーとして pageIndex 毎に持ち、基礎プランは不変のまま。
+ * `layout`/`balloonHints` は undefined=変更しない / null=削除 / 値=置き換え の三値。
+ */
+export function setCandidateCustomLayout(candidateId: string, body: unknown): SetCandidateCustomLayoutResponse {
+  const input = objectBody(body) as Partial<SetCandidateCustomLayoutRequest> & Record<string, unknown>;
+  const row = requirePlanCandidate(candidateId);
+  if (row.status === "archived") throw new HttpError(409, "Archived plan candidates cannot be edited");
+  if (row.status === "adopting" || row.status === "adopted") {
+    throw new HttpError(409, "Candidate is being adopted or already adopted; the layout can no longer change");
+  }
+  const revision = latestRevision(row.script_id);
+  if (row.script_revision_id !== revision.id) {
+    throw new HttpError(409, "Plan candidate was made for an older script revision; regenerate candidates");
+  }
+  const pageIndex = typeof input.pageIndex === "number" && Number.isInteger(input.pageIndex) && input.pageIndex >= 0
+    ? input.pageIndex
+    : null;
+  if (pageIndex === null) throw new HttpError(400, "pageIndex must be a non-negative integer");
+  if (typeof input.expectedVersion !== "number" || !Number.isInteger(input.expectedVersion)) {
+    throw new HttpError(400, "expectedVersion is required (optimistic lock)");
+  }
+  if (input.expectedVersion !== row.edit_version) {
+    throw new HttpError(409, "Plan candidate was modified concurrently; reload and retry");
+  }
+  const basePlan = parseCandidatePlan(row);
+  const overrides = parseOverrides(row);
+  const page = basePlan.pages.find((candidatePage) => candidatePage.index === pageIndex);
+  if (!page) throw new HttpError(400, "pageIndex is out of range");
+  if (input.layout === undefined && input.balloonHints === undefined) {
+    throw new HttpError(400, "layout or balloonHints is required");
+  }
+
+  const customLayouts = parseCandidateCustomLayouts(row);
+  if (input.layout !== undefined) {
+    if (input.layout === null) {
+      delete customLayouts[pageIndex];
+    } else {
+      const edited = normalizeEditedPageLayout(input.layout);
+      if (!edited) throw new HttpError(400, "layout is not a valid PageLayout");
+      // 検証の基準は「そのページの現在の実効テンプレレイアウト」(編集セッションの開始点)。
+      const baseTemplateId = overrides[pageIndex] ?? page.layoutTemplateId;
+      const baseLayout = resolveScriptMangaLayout(baseTemplateId);
+      if (!baseLayout) throw new HttpError(422, `Layout template could not be resolved: ${baseTemplateId}`);
+      if (baseLayout.panels.length !== page.panels.length) {
+        throw new HttpError(422, "Base layout panel count does not match the page");
+      }
+      const validation = validateEditedNameLayout(edited, toEditableNameLayout(baseLayout));
+      if (!validation.ok) {
+        throw new HttpError(422, `編集済みコマ割りが検証に通りません: ${validation.issues.map((issue) => issue.message).join(" / ")}`);
+      }
+      customLayouts[pageIndex] = edited;
+    }
+  }
+
+  const balloonHints = parseCandidateBalloonHints(row);
+  if (input.balloonHints !== undefined) {
+    if (input.balloonHints === null) {
+      delete balloonHints[pageIndex];
+    } else {
+      if (typeof input.balloonHints !== "object") throw new HttpError(400, "balloonHints must be an object");
+      const pageOrderIndexes = new Set(page.panels.flatMap((panel) => panel.dialogueOrderIndexes));
+      const pageHints: Record<number, { x: number; y: number }> = {};
+      for (const [orderKey, position] of Object.entries(input.balloonHints as Record<string, unknown>)) {
+        const orderIndex = Number(orderKey);
+        if (!Number.isInteger(orderIndex) || !pageOrderIndexes.has(orderIndex)) {
+          throw new HttpError(400, `balloonHints key ${orderKey} is not a dialogue orderIndex on page ${pageIndex + 1}`);
+        }
+        const { x, y } = (position ?? {}) as { x?: unknown; y?: unknown };
+        if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+          throw new HttpError(400, `balloonHints[${orderKey}] must be a finite {x, y}`);
+        }
+        pageHints[orderIndex] = { x, y };
+      }
+      if (Object.keys(pageHints).length > 0) balloonHints[pageIndex] = pageHints;
+      else delete balloonHints[pageIndex];
+    }
+  }
+
+  const version = row.edit_version + 1;
+  runSql(
+    `UPDATE script_manga_plan_candidates
+        SET custom_layouts_json = ?, balloon_hints_json = ?, edit_version = ?
+      WHERE id = ? AND edit_version = ?`,
+    [
+      Object.keys(customLayouts).length > 0 ? JSON.stringify(customLayouts) : null,
+      Object.keys(balloonHints).length > 0 ? JSON.stringify(balloonHints) : null,
+      version,
+      row.id,
+      row.edit_version
+    ]
   );
   return { version, candidate: candidateView(requirePlanCandidate(row.id)) };
 }

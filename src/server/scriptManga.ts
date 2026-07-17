@@ -10,7 +10,7 @@ import {
   validateMangaPlanV2
 } from "../shared/mangaPlanV2";
 import { normalizeEditedPageLayout, panelBounds, panelBoundsSize, type PageLayout } from "../shared/pageLayout";
-import { DEFAULT_MAX_DIALOGUES_PER_PANEL, planScriptManga, type ScriptMangaPlan, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
+import { DEFAULT_MAX_DIALOGUES_PER_PANEL, applyCustomNameLayouts, planScriptManga, type ScriptMangaPlan, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import type {
@@ -473,6 +473,8 @@ function planCastAvoidZones(
 interface LetteringConstraints {
   avoidZones: Array<{ x: number; y: number; width: number; height: number; label?: string }>;
   maxPanelCoverageRatio: number;
+  /** 人間ゲートの吹き出し中心ヒント(lineId → page 座標)。 */
+  preferredCentersByLineId?: Record<string, { x: number; y: number }>;
 }
 
 function applyDialogueLayoutWithFallback(
@@ -484,7 +486,13 @@ function applyDialogueLayoutWithFallback(
 ): void {
   let lastError: unknown;
   const constraintBody = constraints
-    ? { avoidZones: constraints.avoidZones, maxPanelCoverageRatio: constraints.maxPanelCoverageRatio }
+    ? {
+        avoidZones: constraints.avoidZones,
+        maxPanelCoverageRatio: constraints.maxPanelCoverageRatio,
+        ...(constraints.preferredCentersByLineId && Object.keys(constraints.preferredCentersByLineId).length > 0
+          ? { preferredCentersByLineId: constraints.preferredCentersByLineId }
+          : {})
+      }
     : {};
   for (let attempt = 0; attempt < 16; attempt += 1) {
     try {
@@ -1114,7 +1122,10 @@ function ensureDialogueLettering(
   if (placementIds.length > 0) {
     applyDialogueLayoutWithFallback(run.project_id, pageId, placementIds, pageSpec.index + 1, {
       avoidZones: planCastAvoidZones(pageSpec, layoutPanels),
-      maxPanelCoverageRatio: SCRIPT_MANGA_MAX_BALLOON_COVERAGE
+      maxPanelCoverageRatio: SCRIPT_MANGA_MAX_BALLOON_COVERAGE,
+      preferredCentersByLineId: Object.fromEntries(
+        (pageSpec.balloonCenterHints ?? []).map((hint) => [hint.lineId, { x: hint.x, y: hint.y }])
+      )
     });
   }
   const fontChanged = applyMangaDialogueFont(pageId, lineIds);
@@ -3139,6 +3150,7 @@ async function createScriptMangaRunInternal(
   const planId = createId("manga_plan");
   let pageLimit: number;
   let plan: MangaPlanV2;
+  let candidateBalloonHints: Record<number, Record<number, { x: number; y: number }>> | null = null;
   if (predecessorPlan) {
     plan = completeSuccessorPlan(input.successorPlan, predecessorPlan, planId);
     pageLimit = plan.pages.length;
@@ -3167,6 +3179,9 @@ async function createScriptMangaRunInternal(
       fullPlan = directionIsFixed
         ? adoptable.plan
         : await directAdoptedCandidatePlan(revision.doc, adoptable.plan, candidateDirectionOptions);
+      // 監督はページを再構築するため、人間ゲートのコマ割り修正(in-memory注釈)を再適用する。
+      fullPlan = applyCustomNameLayouts(fullPlan, adoptable.customLayouts);
+      candidateBalloonHints = adoptable.balloonHints;
       const units = buildPreLayoutUnits(revision.doc);
       const cachedBeats = readCachedBeatAnnotation(revision.id, units);
       beatAnnotation = cachedBeats ? { units, beats: cachedBeats, fallback: false, cached: true } : null;
@@ -3208,7 +3223,8 @@ async function createScriptMangaRunInternal(
       globalLoras: loras,
       dialoguePolicy,
       resolveLayoutTemplate,
-      beatAnnotation: beatAnnotation ? { units: beatAnnotation.units, beats: beatAnnotation.beats } : null
+      beatAnnotation: beatAnnotation ? { units: beatAnnotation.units, beats: beatAnnotation.beats } : null,
+      balloonCenterHints: candidateBalloonHints
     });
   }
   const validation = validatePlan(plan);

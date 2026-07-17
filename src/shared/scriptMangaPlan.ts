@@ -1,6 +1,7 @@
 import type { FountainDoc, FountainElement } from "./fountain";
 import { scriptMangaLayoutCandidates } from "./layoutPresets";
 import { type MangaPageTurnHook, type MangaVisualScale, normalizeLegacyVisualScale } from "./mangaPlanV2";
+import type { PageLayout } from "./pageLayout";
 
 /**
  * 人間のページ別レイアウト選択(V5 D5)を不変の基礎プランへ適用した「実効プラン」を返す。
@@ -77,6 +78,12 @@ export interface ScriptMangaPagePlan {
   pageIntent?: string;
   /** N1ページネームのページめくり演出(ネームv4 D1)。決定的プランナーでは未設定。 */
   turnHook?: MangaPageTurnHook;
+  /**
+   * 人間ゲートのコマ割り修正(custom_layouts_json 由来)。**in-memory 注釈**であり plan_json へは
+   * 保存しない。`applyCustomNameLayouts` が実効プラン生成時に付与し、`buildMangaPlanV2` が
+   * layoutTemplateId の解決より優先して layoutSnapshot へ固定する。
+   */
+  customLayout?: PageLayout;
 }
 
 export interface ScriptMangaPlan {
@@ -104,6 +111,38 @@ export interface ScriptMangaPlan {
       /** ビート注釈が決定的フォールバック(1要素=1ビート)だったか。 */
       beatAnnotatorFallback?: boolean;
     };
+  };
+}
+
+/**
+ * 人間ゲートのコマ割り修正(pageIndex → 編集済み PageLayout)を実効プランへ注釈する。
+ * 基礎プランは書き換えず、該当ページへ `customLayout` を付与した新しいプランを返す。
+ * 注釈は plan_json へ保存されない(候補の custom_layouts_json が唯一の永続層)。
+ */
+export function applyCustomNameLayouts(
+  plan: ScriptMangaPlan,
+  customLayouts: Record<number, PageLayout> | undefined
+): ScriptMangaPlan {
+  if (!customLayouts || Object.keys(customLayouts).length === 0) return plan;
+  return {
+    ...plan,
+    pages: plan.pages.map((page) => {
+      const layout = customLayouts[page.index];
+      return layout ? { ...page, customLayout: layout } : page;
+    })
+  };
+}
+
+/** `customLayout` 注釈を取り除いたプランを返す(plan_json への保存前に使う)。 */
+export function stripCustomNameLayouts(plan: ScriptMangaPlan): ScriptMangaPlan {
+  if (!plan.pages.some((page) => page.customLayout !== undefined)) return plan;
+  return {
+    ...plan,
+    pages: plan.pages.map((page) => {
+      if (page.customLayout === undefined) return page;
+      const { customLayout: _dropped, ...rest } = page;
+      return rest;
+    })
   };
 }
 

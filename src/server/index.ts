@@ -122,6 +122,7 @@ import {
   importScriptMangaPlanCandidate,
   listScriptMangaPlanCandidates,
   requirePlanCandidate,
+  setCandidateCustomLayout,
   setCandidateLayoutOverride
 } from "./scriptMangaPlanCandidates";
 import { preflightScriptMangaCandidate } from "./scriptMangaCandidatePreflight";
@@ -762,6 +763,12 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
   const scriptMangaCandidateSetLayoutMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/set-layout$/);
   if (method === "POST" && scriptMangaCandidateSetLayoutMatch) {
     sendJson(res, 200, setCandidateLayoutOverride(scriptMangaCandidateSetLayoutMatch[1]!, await readJson(req)));
+    return;
+  }
+  // 人間ゲートのコマ割り修正(編集済みPageLayout+吹き出し位置ヒント、テンプレ選択より優先)。
+  const scriptMangaCandidateSetCustomLayoutMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/set-custom-layout$/);
+  if (method === "POST" && scriptMangaCandidateSetCustomLayoutMatch) {
+    sendJson(res, 200, setCandidateCustomLayout(scriptMangaCandidateSetCustomLayoutMatch[1]!, await readJson(req)));
     return;
   }
   const scriptMangaPlanMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)$/);

@@ -686,6 +686,9 @@ export function initializeDb() {
   // ネームスタジオV5 D5: 基礎プランを不変に保ち、人間のレイアウト選択と楽観ロックを別カラムで持つ。
   ensureColumn("script_manga_plan_candidates", "layout_overrides_json", "TEXT");
   ensureColumn("script_manga_plan_candidates", "edit_version", "INTEGER NOT NULL DEFAULT 0");
+  // 人間ゲートのコマ割り修正: pageIndex→編集済みPageLayout / pageIndex→orderIndex→吹き出し中心ヒント。
+  ensureColumn("script_manga_plan_candidates", "custom_layouts_json", "TEXT");
+  ensureColumn("script_manga_plan_candidates", "balloon_hints_json", "TEXT");
   // V5 D6: plan_json への全書き込みで加算する内容バージョン(差分編集の楽観ロック)。
   ensureColumn("script_manga_plans", "edit_version", "INTEGER NOT NULL DEFAULT 0");
   db.exec("CREATE INDEX IF NOT EXISTS idx_rounds_project_page ON generation_rounds(project_id, page_id)");
