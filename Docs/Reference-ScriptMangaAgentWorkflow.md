@@ -151,6 +151,8 @@ heuristic planningでも`targetPageCount`は有効で、生成済みの連続コ
 
 長編では、まず`maxPanelCount`を現実的な生成予算に設定し、候補ネームのページ数・コマ数を比較する。上限を外してから数百コマを投入し、後で全体を圧縮する運用は避ける。
 
+会話進行帯の「つなぎ」ショット(continuing/static)でも、promptBaseを「Exterior static shot continuing」のような薄い定型文にしてはいけない。cast空のコマは特に、モデルが画面外話者や無関係な人物・静物を自由連想で描くため、その瞬間に見えるsetting・props・光・カメラ位置など具体的なvisual factを必ず書き、画面外話者は`mustNotShow`の`entity-absent`で明示する(ALICE_REBOOT_E02で系統的なretry多発の実績原因)。
+
 既定の`stylePrompt`はジャンルを決めないモノクロ日本漫画である。SF、恋愛、時代劇などのジャンルや、破損、廃墟、未来的といった状態は脚本または明示した`stylePrompt`に根拠がある場合だけ加える。prompt compilerは作品固有辞書で日本語を疑似翻訳しない。natural方言では原文のvisual factを保持し、tags方言では上位plannerが英語のvisual factを構造化して渡す。未翻訳のfallbackを削除・脚色してはいけない。
 
 ## 3. visible castと画面外発話
@@ -186,6 +188,8 @@ Content-Type: application/json
 `scriptId`はpredecessorと同一でなければならない。template、provider、LoRA、画像サイズ、sampler等を省略した場合はpredecessorのrun設定を引き継ぐ。作成後は通常どおりplanを監査して`approve`、`start`する。
 
 継承対象はpredecessorで人が選択済みで、固定revision、source/dialogue、visible cast、action/props/setting、compiled prompt、reference snapshot、layout/画像寸法、生成設定から成る再利用fingerprintが完全一致するコマだけである。一致したselected assetは新taskへ割り当てられ、新taskを`completed`として生成をskipする。変更コマと未採用候補は継承しない。旧taskに署名が無い場合は、selected asset自身の凍結request、intent、native workflow、template version/hashがすべて揃うときだけ遅延署名し、mutableな現行templateから推測しない。凍結情報が欠ける旧taskはfail-closedで再生成する。assetを複製したりpredecessorの採用状態を変更したりせず、run/taskのlineageを記録する。
+
+`continuityFromPanelIds`を持つコマの継承は、依存先がpredecessorで**採用済み**の場合のみ「依存先も同じペアで継承成立していること」を要求する。依存先が未採用(レビュー途中のcancel等)のままだった場合、その依存コマの承認は確定した依存先画像を前提にしていないため、依存コマ自身のfingerprint一致(継続コマの意味論を含む)だけで継承し、依存先はsuccessorで再生成される。依存先が採用済みなのに継承できない(画像破損・凍結情報欠落・material不一致)場合は、従来どおり依存コマも連鎖的に再生成される。
 
 reuse fingerprint v4は、通常のtxt2img selected assetに加え、局所repair後に人が選択したimg2img assetも追跡する。検証署名には採用画像bytesのSHA-256と実寸、provider/template、凍結request/intent/native-workflowを含める。repairではさらに親asset/round lineage、mask content SHA-256、denoiseとmask方式を署名し、prompt、negative、sampling、LoRA、reference、pose/controlなど非repair条件が親と一致する場合だけ元コマのroot fingerprintへ対応付ける。画像pathが同じでもbytesが変わった場合、lineageが壊れた場合、凍結内容を読めない場合、可変character bindingしかない場合はfail-closedで再生成する。
 

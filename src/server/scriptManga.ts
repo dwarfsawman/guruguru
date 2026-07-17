@@ -2236,6 +2236,19 @@ async function inheritSelectedTasks(runId: string): Promise<void> {
     const panel = targetPanelByTaskId.get(match.successor.id);
     return panel ? [[panel.id, match] as const] : [];
   }));
+  // Panels whose predecessor task holds a reviewed selection, even when that selection is no
+  // longer reusable (missing/corrupt asset, unverifiable material). A dependent approved next to
+  // such a selection stays coupled to it; a dependent approved while its upstream was never
+  // selected was reviewed without a settled neighbor, so regenerating that upstream leaves the
+  // reviewer in the same position and must not discard the dependent's approval.
+  const selectedPredecessorPanelIds = new Set(getRows<Pick<TaskRow, "panel_spec_json">>(
+    `SELECT panel_spec_json FROM script_manga_tasks
+     WHERE run_id = ? AND status = 'completed' AND selected_asset_id IS NOT NULL`,
+    [predecessor.id]
+  ).flatMap((task) => {
+    const panel = parseJson<PanelSpec | null>(task.panel_spec_json, null);
+    return panel ? [panel.id] : [];
+  }));
   const dependencyMatches = (match: typeof matches[number]): Array<typeof matches[number]> | null => {
     const sourcePanel = sourcePanelByTaskId.get(match.predecessor.id);
     const targetPanel = targetPanelByTaskId.get(match.successor.id);
@@ -2244,6 +2257,13 @@ async function inheritSelectedTasks(runId: string): Promise<void> {
     for (let index = 0; index < sourcePanel.continuityFromPanelIds.length; index += 1) {
       const sourceDependency = matchBySourcePanelId.get(sourcePanel.continuityFromPanelIds[index]!);
       const targetDependency = matchByTargetPanelId.get(targetPanel.continuityFromPanelIds[index]!);
+      if (!selectedPredecessorPanelIds.has(sourcePanel.continuityFromPanelIds[index]!)) {
+        // The upstream will regenerate from semantics this panel's own fingerprint already
+        // verified (resolvedContinuityPanels). Fail closed if the successor side somehow paired
+        // that upstream with a different predecessor selection.
+        if (targetDependency) return null;
+        continue;
+      }
       if (!sourceDependency || sourceDependency !== targetDependency) return null;
       dependencies.push(sourceDependency);
     }
@@ -4147,3 +4167,4 @@ export function getScriptMangaRun(runId: string): ScriptMangaRunView {
   scheduleRunVisualAudit(run.id);
   return runView(refreshRunStatus(run.id));
 }
+
