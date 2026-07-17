@@ -139,7 +139,7 @@ test("script manga UI lifecycle clears revision-pinned runs without leaking proj
     templateId: "",
     planningMode: "llm",
     panelsPerPage: 4,
-    maxDialoguesPerPanel: 4,
+    maxDialoguesPerPanel: 3,
     targetPageCount: 0,
     maxPanelCount: 0,
     dialoguePolicy: "preserve",

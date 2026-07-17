@@ -11,6 +11,7 @@ import type {
   VlmAuditServiceStatus
 } from "../shared/scriptMangaApi";
 import type { ProjectDetail } from "../shared/apiTypes";
+import { DEFAULT_MAX_DIALOGUES_PER_PANEL } from "../shared/scriptMangaPlan";
 import { api, ApiError } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
@@ -34,7 +35,7 @@ const DEFAULT_SETTINGS: ScriptMangaUiSettings = {
   // V5 X5: planningMode select はUIから削除。既定はビート化N1(llm)。API値は残置。
   planningMode: "llm",
   panelsPerPage: 4,
-  maxDialoguesPerPanel: 4,
+  maxDialoguesPerPanel: DEFAULT_MAX_DIALOGUES_PER_PANEL,
   targetPageCount: 0,
   maxPanelCount: 0,
   dialoguePolicy: "preserve",

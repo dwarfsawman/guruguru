@@ -536,7 +536,7 @@ export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps)
           </select>
         </label>
         <label class="script-field">
-          <span title="吹き出し数ではなくFountainの台詞要素数。既定4、最終可否は文字preflightで判定します。">dialogues / panel (max)</span>
+          <span title="吹き出し数ではなくFountainの台詞要素数。既定3、最終可否は文字preflightで判定します。">dialogues / panel (max)</span>
           <select data-script-manga-setting="maxDialoguesPerPanel" ${props.scriptMangaBusy ? "disabled" : ""}>
             ${Array.from({ length: 8 }, (_, index) => index + 1).map((count) => `
               <option value="${count}" ${count === settings.maxDialoguesPerPanel ? "selected" : ""}>${count}</option>

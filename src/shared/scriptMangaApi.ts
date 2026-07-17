@@ -62,7 +62,7 @@ export interface ScriptMangaUiSettings {
   templateId: string;
   planningMode: ScriptMangaPlanningMode;
   panelsPerPage: number;
-  /** 1コマへ割り当てる台詞要素数の上限(1..8、既定4)。最終可否は文字preflightで判定する。 */
+  /** 1コマへ割り当てる台詞要素数の上限(1..8、既定3)。最終可否は文字preflightで判定する。 */
   maxDialoguesPerPanel: number;
   /** 希望ページ数(1..200)。0は脚本量から自動決定。 */
   targetPageCount: number;

@@ -134,10 +134,16 @@ export function scriptMangaPlanStructureSignature(
   ]);
 }
 
+/**
+ * `maxDialoguesPerPanel` の既定値。4だと1コマの台詞量が多く最小可読サイズ/専有率preflightで
+ * failしやすい実績があったため3にしている(2026-07-18)。
+ */
+export const DEFAULT_MAX_DIALOGUES_PER_PANEL = 3;
+
 export interface ScriptMangaPlanOptions {
   panelsPerPage?: number;
   maxElementsPerPanel?: number;
-  /** 1コマへ割り当てるFountain dialogue要素数の上限。1〜8、既定4。吹き出し数そのものではない。 */
+  /** 1コマへ割り当てるFountain dialogue要素数の上限。1〜8、既定は DEFAULT_MAX_DIALOGUES_PER_PANEL。吹き出し数そのものではない。 */
   maxDialoguesPerPanel?: number;
   maxSourceCharactersPerPanel?: number;
   stylePrompt?: string;
@@ -211,7 +217,7 @@ function layoutForPanelCount(count: number): string {
 export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOptions = {}): ScriptMangaPlan {
   const panelsPerPage = Math.max(1, Math.min(6, Math.trunc(options.panelsPerPage ?? 4)));
   const maxElements = Math.max(1, Math.trunc(options.maxElementsPerPanel ?? 6));
-  const maxDialogues = Math.max(1, Math.min(8, Math.trunc(options.maxDialoguesPerPanel ?? 4)));
+  const maxDialogues = Math.max(1, Math.min(8, Math.trunc(options.maxDialoguesPerPanel ?? DEFAULT_MAX_DIALOGUES_PER_PANEL)));
   const maxCharacters = Math.max(40, Math.trunc(options.maxSourceCharactersPerPanel ?? 260));
   const stylePrompt = options.stylePrompt?.trim() || DEFAULT_STYLE;
 

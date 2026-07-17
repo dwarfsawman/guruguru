@@ -25,6 +25,7 @@ import type {
   ExistingPlacementPolicy
 } from "../shared/chronicle";
 import type { PageLayout, PanelCrop } from "../shared/pageLayout";
+import { DEFAULT_MAX_DIALOGUES_PER_PANEL } from "../shared/scriptMangaPlan";
 import type { PageObject } from "../shared/pageObjects";
 import type { MosaicRegion } from "../shared/mosaicRegion";
 import type { ConnectionState } from "./views/homeView";
@@ -751,7 +752,7 @@ export const state: AppState = {
     templateId: "",
     planningMode: "heuristic",
     panelsPerPage: 4,
-    maxDialoguesPerPanel: 4,
+    maxDialoguesPerPanel: DEFAULT_MAX_DIALOGUES_PER_PANEL,
     targetPageCount: 0,
     maxPanelCount: 0,
     dialoguePolicy: "preserve",

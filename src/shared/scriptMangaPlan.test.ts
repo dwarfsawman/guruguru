@@ -23,7 +23,7 @@ test("planScriptManga preserves every dialogue order and scene boundary", () => 
   ]);
 });
 
-test("planScriptManga defaults to at most four dialogue elements per panel", () => {
+test("planScriptManga defaults to at most three dialogue elements per panel", () => {
   const { doc } = parseFountain(`INT. ROOM - DAY
 
 @Alice
@@ -43,7 +43,7 @@ Five.`);
   const plan = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 8 });
   assert.deepEqual(
     plan.pages.flatMap((page) => page.panels.map((panel) => panel.dialogueOrderIndexes.length)),
-    [4, 1]
+    [3, 2]
   );
 });
 

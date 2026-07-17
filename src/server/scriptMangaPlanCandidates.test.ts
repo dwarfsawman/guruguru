@@ -58,7 +58,7 @@ test("candidate direction settings use the same effective options as adoption", 
       scriptRevisionId: "revision-1",
       panelsPerPage: 2,
       maxElementsPerPanel: 6,
-      maxDialoguesPerPanel: 4,
+      maxDialoguesPerPanel: 3,
       targetPageCount: undefined,
       stylePrompt: undefined,
       characterBible: " Alice "

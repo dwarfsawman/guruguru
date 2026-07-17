@@ -121,7 +121,7 @@ test("script manga card renders supported controls and keeps only generate unava
   assert.match(html, /value="6" selected/);
   assert.match(html, /data-script-manga-setting="maxDialoguesPerPanel"/);
   assert.match(html, /value="3" selected/);
-  assert.match(html, /既定4、最終可否は文字preflight/);
+  assert.match(html, /既定3、最終可否は文字preflight/);
   assert.match(html, /data-script-manga-setting="targetPageCount"/);
   assert.match(html, /value="24" selected>24 pages/);
   assert.match(html, /data-script-manga-setting="maxPanelCount"/);
