@@ -92,6 +92,13 @@ import "./modelCheckController";
 import "./confirmDialogController";
 import "./scriptMangaController";
 import { handleNameStudioKeydown } from "./nameStudioController";
+import {
+  handleNameLayoutEditDblClick,
+  handleNameLayoutEditPointerCancel,
+  handleNameLayoutEditPointerDown,
+  handleNameLayoutEditPointerMove,
+  handleNameLayoutEditPointerUp
+} from "./nameLayoutEditController";
 import "./homeProgressController";
 import "./referenceSetController";
 import { importImagesAsPages } from "./bookController";
@@ -280,6 +287,9 @@ function bindEvents() {
 
   app.addEventListener("dblclick", (event) => {
     if (handleAssetCardDblClick(event)) {
+      return;
+    }
+    if (handleNameLayoutEditDblClick(event)) {
       return;
     }
     if (handlePanelShapeDblClick(event)) {
@@ -643,6 +653,9 @@ function bindEvents() {
     if (handlePageObjectsPointerDown(event)) {
       return;
     }
+    if (handleNameLayoutEditPointerDown(event)) {
+      return;
+    }
     if (handlePanelShapePointerDown(event)) {
       return;
     }
@@ -675,6 +688,9 @@ function bindEvents() {
       return;
     }
     if (handlePageObjectsPointerMove(event)) {
+      return;
+    }
+    if (handleNameLayoutEditPointerMove(event)) {
       return;
     }
     if (handlePanelShapePointerMove(event)) {
@@ -711,6 +727,9 @@ function bindEvents() {
     if (handlePageObjectsPointerUp(event)) {
       return;
     }
+    if (handleNameLayoutEditPointerUp(event)) {
+      return;
+    }
     if (handlePanelShapePointerUp(event)) {
       return;
     }
@@ -743,6 +762,9 @@ function bindEvents() {
       return;
     }
     if (handlePageObjectsPointerCancel(event)) {
+      return;
+    }
+    if (handleNameLayoutEditPointerCancel(event)) {
       return;
     }
     if (handlePanelShapePointerCancel(event)) {
@@ -866,7 +888,8 @@ function render(_options: RenderOptions = {}) {
             scriptMangaCandidatesBusy: state.scriptMangaCandidatesBusy,
             scriptMangaCandidateCount: state.scriptMangaCandidateCount,
             nameStudio: state.nameStudio,
-            nameStudioDraft: state.nameStudioDraft
+            nameStudioDraft: state.nameStudioDraft,
+            nameLayoutEdit: state.nameLayoutEdit
           })
         : state.book
           ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds, {

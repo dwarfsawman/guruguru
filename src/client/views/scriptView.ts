@@ -30,7 +30,7 @@ import { resolveScriptMangaLayout } from "../../shared/layoutPresets";
 import { renderPageWireframeSvg, type WireframePanelInfo } from "../../shared/pageLayoutSvg";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconPlus, iconScript, iconTrash } from "../icons";
-import type { NameStudioDraft, NameStudioState } from "../appState";
+import type { NameLayoutEditState, NameStudioDraft, NameStudioState } from "../appState";
 import { renderNameStudio } from "./nameStudioView";
 
 const SEMANTIC_KIND_LABEL: Record<DialogueLine["semanticKind"], string> = {
@@ -68,6 +68,7 @@ export interface ScriptViewProps {
   scriptMangaCandidateCount: number;
   nameStudio: NameStudioState;
   nameStudioDraft: NameStudioDraft | null;
+  nameLayoutEdit: NameLayoutEditState | null;
 }
 
 export type ScriptMangaControlViewProps = Pick<
@@ -111,7 +112,8 @@ export function renderScriptView(props: ScriptViewProps): string {
             templateSelected: Boolean(props.scriptMangaSettings.templateId),
             nameStudio: props.nameStudio,
             run: props.scriptMangaRun,
-            draft: props.nameStudioDraft
+            draft: props.nameStudioDraft,
+            layoutEdit: props.nameLayoutEdit
           }) : ""}
           ${renderScriptMangaControlCard(props)}
           <div class="script-columns">
@@ -536,7 +538,7 @@ export function renderScriptMangaControlCard(props: ScriptMangaControlViewProps)
           </select>
         </label>
         <label class="script-field">
-          <span title="吹き出し数ではなくFountainの台詞要素数。既定4、最終可否は文字preflightで判定します。">dialogues / panel (max)</span>
+          <span title="吹き出し数ではなくFountainの台詞要素数。既定3、最終可否は文字preflightで判定します。">dialogues / panel (max)</span>
           <select data-script-manga-setting="maxDialoguesPerPanel" ${props.scriptMangaBusy ? "disabled" : ""}>
             ${Array.from({ length: 8 }, (_, index) => index + 1).map((count) => `
               <option value="${count}" ${count === settings.maxDialoguesPerPanel ? "selected" : ""}>${count}</option>

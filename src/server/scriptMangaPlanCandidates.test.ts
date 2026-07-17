@@ -14,8 +14,12 @@ import {
   markPlanCandidateAdopted,
   requirePlanCandidate,
   scriptMangaCandidateDirectionInputHash,
+  setCandidateCustomLayout,
   setCandidateLayoutOverride
 } from "./scriptMangaPlanCandidates.ts";
+import { toEditableNameLayout } from "../shared/nameLayoutEdit.ts";
+import { resolveScriptMangaLayout } from "../shared/layoutPresets.ts";
+import { clonePageLayout } from "../shared/pageLayout.ts";
 import {
   applyNamePlanEdits,
   createScriptMangaRun,
@@ -58,7 +62,7 @@ test("candidate direction settings use the same effective options as adoption", 
       scriptRevisionId: "revision-1",
       panelsPerPage: 2,
       maxElementsPerPanel: 6,
-      maxDialoguesPerPanel: 4,
+      maxDialoguesPerPanel: 3,
       targetPageCount: undefined,
       stylePrompt: undefined,
       characterBible: " Alice "
@@ -521,4 +525,125 @@ test("set-layout(V5 D5): 基礎プラン不変+overrides+楽観ロック、リ�
     () => setCandidateLayoutOverride(candidate.id, { pageIndex: 0, layoutTemplateId: wrongCount, expectedVersion: 2 }),
     (error: unknown) => error instanceof HttpError && error.statusCode === 400
   );
+});
+
+test("set-custom-layout: 編集済みコマ割り+吹き出しヒントの保存・検証・採用/フリップとの相互作用", async () => {
+  initializeDb();
+  const project = createProject({ name: `plan-cand-custom-${createId("t")}`, mode: "book" })!;
+  const imported = createScript(project.id, { title: "Custom layout", fountainSource: SCRIPT });
+  const created = await createScriptMangaPlanCandidates(project.id, { scriptId: imported.script.id, count: 1 });
+  const candidate = created.candidates[0]!;
+  const page0 = candidate.plan.pages[0]!;
+  const baseLayout = resolveScriptMangaLayout(page0.layoutTemplateId);
+  assert.ok(baseLayout, "base template resolves");
+  const editable = toEditableNameLayout(baseLayout);
+
+  // 頂点を少し動かした編集(読み順・境界を保つ小変形)。
+  const edited = clonePageLayout(editable);
+  const firstPanel = edited.panels[0]!;
+  assert.ok(firstPanel.shape.type === "polygon");
+  firstPanel.shape.points[0] = [firstPanel.shape.points[0]![0] + 0.01, firstPanel.shape.points[0]![1] + 0.01];
+
+  // 楽観ロック: version不一致は409。
+  assert.throws(
+    () => setCandidateCustomLayout(candidate.id, { pageIndex: 0, expectedVersion: 9, layout: edited }),
+    (error: unknown) => error instanceof HttpError && error.statusCode === 409
+  );
+  // layout も balloonHints も無い呼び出しは400。
+  assert.throws(
+    () => setCandidateCustomLayout(candidate.id, { pageIndex: 0, expectedVersion: 0 }),
+    (error: unknown) => error instanceof HttpError && error.statusCode === 400
+  );
+
+  const saved = setCandidateCustomLayout(candidate.id, { pageIndex: 0, expectedVersion: 0, layout: edited });
+  assert.equal(saved.version, 1);
+  assert.ok(saved.candidate.customLayouts?.[0], "custom layout stored");
+  assert.equal(saved.candidate.plan.pages[0]!.layoutTemplateId, page0.layoutTemplateId, "基礎プランは不変");
+
+  // 検証NG: コマ数を減らした編集は422。
+  const dropped = clonePageLayout(edited);
+  dropped.panels = dropped.panels.slice(0, Math.max(1, dropped.panels.length - 1));
+  if (dropped.panels.length !== edited.panels.length) {
+    assert.throws(
+      () => setCandidateCustomLayout(candidate.id, { pageIndex: 0, expectedVersion: 1, layout: dropped }),
+      (error: unknown) => error instanceof HttpError && error.statusCode === 422
+    );
+  }
+
+  // 吹き出しヒント: ページ上の orderIndex は保存でき、無関係な orderIndex は400。
+  const orderIndexes = page0.panels.flatMap((panel) => panel.dialogueOrderIndexes);
+  assert.ok(orderIndexes.length > 0, "SCRIPT has dialogue on page 1");
+  const hinted = setCandidateCustomLayout(candidate.id, {
+    pageIndex: 0,
+    expectedVersion: 1,
+    balloonHints: { [orderIndexes[0]!]: { x: 0.72, y: 1.1 } }
+  });
+  assert.equal(hinted.version, 2);
+  assert.deepEqual(hinted.candidate.balloonHints?.[0]?.[orderIndexes[0]!], { x: 0.72, y: 1.1 });
+  assert.throws(
+    () => setCandidateCustomLayout(candidate.id, { pageIndex: 0, expectedVersion: 2, balloonHints: { 9999: { x: 0.5, y: 0.5 } } }),
+    (error: unknown) => error instanceof HttpError && error.statusCode === 400
+  );
+
+  // 採用時の実効プランに customLayout 注釈と balloonHints が現れる。
+  const latest = getRow<{ id: string }>(
+    "SELECT id FROM script_revisions WHERE script_id = ? ORDER BY revision DESC LIMIT 1",
+    [imported.script.id]
+  )!;
+  const adoptable = adoptablePlanCandidate(candidate.id, project.id, imported.script.id, latest.id, 2);
+  assert.ok(adoptable.plan.pages[0]!.customLayout, "effective plan carries the custom layout");
+  const movedPoint = (adoptable.plan.pages[0]!.customLayout!.panels[0]!.shape as { points: [number, number][] }).points[0]!;
+  assert.ok(Math.abs(movedPoint[0] - firstPanel.shape.points[0]![0]) < 1e-9);
+  assert.deepEqual(adoptable.balloonHints[0]![orderIndexes[0]!], { x: 0.72, y: 1.1 });
+
+  // 採用runのV2 layoutSnapshotへ編集ジオメトリと吹き出しヒントが固定される。
+  const run = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId: fakeTemplate(),
+    providerId: "fake",
+    planCandidateId: candidate.id,
+    generateImages: false,
+    requireReferenceSets: false,
+    auditMode: "manual"
+  });
+  const snapshot = run.plan!.pages[0]!.layoutSnapshot;
+  const snapshotPoint = (snapshot.panels[0]!.shape as { points: [number, number][] }).points[0]!;
+  assert.ok(Math.abs(snapshotPoint[0] - firstPanel.shape.points[0]![0]) < 1e-9, "layoutSnapshot uses the edited geometry");
+  const hints = run.plan!.pages[0]!.balloonCenterHints ?? [];
+  assert.equal(hints.length, 1);
+  assert.ok(Math.abs(hints[0]!.x - 0.72) < 1e-9 && Math.abs(hints[0]!.y - 1.1) < 1e-9);
+  // 候補は adopted、plan_json に customLayout は焼き込まれない。
+  const persisted = requirePlanCandidate(candidate.id);
+  assert.equal(persisted.status, "adopted");
+  assert.ok(!persisted.plan_json.includes("customLayout"), "plan_json stays free of customLayout annotations");
+});
+
+test("set-custom-layout: set-layoutフリップは同ページのコマ割り修正とヒントを破棄する", async () => {
+  initializeDb();
+  const project = createProject({ name: `plan-cand-custom-flip-${createId("t")}`, mode: "book" })!;
+  const imported = createScript(project.id, { title: "Custom flip", fountainSource: SCRIPT });
+  const created = await createScriptMangaPlanCandidates(project.id, { scriptId: imported.script.id, count: 1 });
+  const candidate = created.candidates[0]!;
+  const page0 = candidate.plan.pages[0]!;
+  const baseLayout = resolveScriptMangaLayout(page0.layoutTemplateId)!;
+  const edited = toEditableNameLayout(baseLayout);
+  const saved = setCandidateCustomLayout(candidate.id, { pageIndex: 0, expectedVersion: 0, layout: edited });
+  assert.ok(saved.candidate.customLayouts?.[0]);
+
+  const { scriptMangaLayoutCandidates } = await import("../shared/layoutPresets.ts");
+  const alternative = scriptMangaLayoutCandidates(page0.panels.length).find((id) => id !== page0.layoutTemplateId);
+  if (!alternative) return;
+  const flipped = setCandidateLayoutOverride(candidate.id, { pageIndex: 0, layoutTemplateId: alternative, expectedVersion: 1 });
+  assert.deepEqual(flipped.candidate.customLayouts ?? {}, {}, "フリップで旧テンプレ基準の編集は破棄");
+  assert.deepEqual(flipped.candidate.balloonHints ?? {}, {});
+
+  // リセット(layout: null)も動く。
+  const again = setCandidateCustomLayout(candidate.id, {
+    pageIndex: 0,
+    expectedVersion: 2,
+    layout: toEditableNameLayout(resolveScriptMangaLayout(alternative)!)
+  });
+  assert.ok(again.candidate.customLayouts?.[0]);
+  const cleared = setCandidateCustomLayout(candidate.id, { pageIndex: 0, expectedVersion: 3, layout: null });
+  assert.deepEqual(cleared.candidate.customLayouts ?? {}, {});
 });

@@ -25,6 +25,7 @@ import type {
   ExistingPlacementPolicy
 } from "../shared/chronicle";
 import type { PageLayout, PanelCrop } from "../shared/pageLayout";
+import { DEFAULT_MAX_DIALOGUES_PER_PANEL } from "../shared/scriptMangaPlan";
 import type { PageObject } from "../shared/pageObjects";
 import type { MosaicRegion } from "../shared/mosaicRegion";
 import type { ConnectionState } from "./views/homeView";
@@ -142,6 +143,30 @@ export interface NameStudioState {
   layout: BookReaderLayout;
   /** 全画面で紙面を高さまたは横幅へ合わせる。 */
   fitMode: NameStudioFitMode;
+}
+
+/**
+ * 人間ゲートのコマ割り修正セッション。ドラフトはポーリング再renderで消えないよう state に持ち、
+ * 保存(set-custom-layout)成功時だけ候補一覧へ反映する。
+ */
+export interface NameLayoutEditState {
+  candidateId: string;
+  pageIndex: number;
+  /** 編集セッション開始時の候補 editVersion(保存時の expectedVersion)。 */
+  baseVersion: number;
+  /** 検証・リセットの基準(実効テンプレレイアウトの polygon 化)。 */
+  baseLayout: PageLayout;
+  draftLayout: PageLayout;
+  /** 吹き出しヒント(dialogue orderIndex → page 座標)。 */
+  draftHints: Record<number, { x: number; y: number }>;
+  /** ドラッグ中の半透明プレビュー対象(裁ち切り/ガター詰め/境界移動)。 */
+  preview:
+    | null
+    | { kind: "bleed"; panelIndex: number; edgeIndex: number }
+    | { kind: "gutter" | "boundary"; edges: Array<{ panelIndex: number; edgeIndex: number }> };
+  /** 直近の検証結果(null=未検証/OK)。保存はOK時のみ有効。 */
+  issues: string[];
+  saveBusy: boolean;
 }
 
 /** 演出ネームの編集ドラフト(V5 D6)。フォームの値は常にここからレンダーする(morph保護は1要素のみ)。 */
@@ -596,6 +621,8 @@ export interface AppState {
   nameStudio: NameStudioState;
   /** 演出ネームの編集ドラフト(V5 D6)。非null中はポーリングの run 適用をskipする。 */
   nameStudioDraft: NameStudioDraft | null;
+  /** 人間ゲートのコマ割り修正セッション。非null中はポーリングの候補適用をskipする。 */
+  nameLayoutEdit: NameLayoutEditState | null;
   /** そのプロジェクトのキャラクタ一覧。脚本画面を開いた時に取得する。 */
   characters: Character[];
   /** キャラクタ一覧で選択中(編集対象)の id。null=未選択。 */
@@ -751,7 +778,7 @@ export const state: AppState = {
     templateId: "",
     planningMode: "heuristic",
     panelsPerPage: 4,
-    maxDialoguesPerPanel: 4,
+    maxDialoguesPerPanel: DEFAULT_MAX_DIALOGUES_PER_PANEL,
     targetPageCount: 0,
     maxPanelCount: 0,
     dialoguePolicy: "preserve",
@@ -774,6 +801,7 @@ export const state: AppState = {
     ...DEFAULT_NAME_STUDIO_READER_OPTIONS
   },
   nameStudioDraft: null,
+  nameLayoutEdit: null,
   characters: [],
   selectedCharacterId: null,
   selectedCharacterBinding: null,

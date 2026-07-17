@@ -3,6 +3,7 @@ import { scriptMangaLayoutCandidates } from "../shared/layoutPresets";
 import type { MangaPageTurnHook, MangaVisualScale } from "../shared/mangaPlanV2";
 import { type AnnotatedBeat, derivePanelVisualScale, type PreLayoutUnit } from "../shared/preLayoutBeat";
 import {
+  DEFAULT_MAX_DIALOGUES_PER_PANEL,
   DEFAULT_SCRIPT_MANGA_STYLE,
   type ScriptMangaPagePlan,
   type ScriptMangaPanelPlan,
@@ -60,7 +61,7 @@ export interface BeatPageNamingContext {
   stylePrompt?: string;
   /** コマあたりの台詞文字量上限(ローカル計算)。既定 260。 */
   maxDialogueCharactersPerPanel?: number;
-  /** コマあたりの台詞要素数上限。既定 4、最大 8。 */
+  /** コマあたりの台詞要素数上限。既定 3、最大 8。 */
   maxDialoguesPerPanel?: number;
   /** 1ページあたりのコマ数上限。既定 6。 */
   maxPanelsPerPage?: number;
@@ -80,7 +81,7 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
   const expectedBeatIds = context.beats.map((beat) => beat.id);
   const observedBeatIds: string[] = [];
   const maxDialogueCharacters = Math.max(40, Math.trunc(context.maxDialogueCharactersPerPanel ?? 260));
-  const maxDialogues = Math.max(1, Math.min(8, Math.trunc(context.maxDialoguesPerPanel ?? 4)));
+  const maxDialogues = Math.max(1, Math.min(8, Math.trunc(context.maxDialoguesPerPanel ?? DEFAULT_MAX_DIALOGUES_PER_PANEL)));
   const panelLimit = normalizeMaxPanelsPerPage(context.maxPanelsPerPage);
   const minPages = Math.max(1, Math.floor(context.targetPageCount * 0.8));
   const maxPages = Math.max(minPages, Math.ceil(context.targetPageCount * 1.2));

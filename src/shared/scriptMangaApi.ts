@@ -1,4 +1,5 @@
 import type { DialoguePolicy, MangaPlanV2, MangaPlanValidationReport, MangaShotSize } from "./mangaPlanV2";
+import type { PageLayout } from "./pageLayout";
 import type { ScriptMangaReferenceSnapshot } from "./referenceSets";
 import type { ScriptMangaPlan } from "./scriptMangaPlan";
 import type { InpaintArea, MaskedContent } from "./types";
@@ -62,7 +63,7 @@ export interface ScriptMangaUiSettings {
   templateId: string;
   planningMode: ScriptMangaPlanningMode;
   panelsPerPage: number;
-  /** 1コマへ割り当てる台詞要素数の上限(1..8、既定4)。最終可否は文字preflightで判定する。 */
+  /** 1コマへ割り当てる台詞要素数の上限(1..8、既定3)。最終可否は文字preflightで判定する。 */
   maxDialoguesPerPanel: number;
   /** 希望ページ数(1..200)。0は脚本量から自動決定。 */
   targetPageCount: number;
@@ -116,6 +117,13 @@ export interface ScriptMangaPlanCandidateView {
   plan: ScriptMangaPlan;
   /** 人間のページ別レイアウト選択(pageIndex → layoutTemplateId)。基礎プランは書き換えない。 */
   layoutOverrides: Record<number, string>;
+  /**
+   * 人間ゲートのコマ割り修正(pageIndex → 編集済み PageLayout)。テンプレ選択より優先される。
+   * 旧server応答には無いため optional。
+   */
+  customLayouts?: Record<number, PageLayout>;
+  /** 吹き出し位置ヒント(pageIndex → dialogue orderIndex → page 座標)。旧server応答には無い。 */
+  balloonHints?: Record<number, Record<number, { x: number; y: number }>>;
   /** 楽観的ロック用。set-layout/採用の expectedVersion に渡す。 */
   editVersion: number;
   pageNaming: {
@@ -134,6 +142,22 @@ export interface SetCandidateLayoutRequest {
 }
 
 export interface SetCandidateLayoutResponse {
+  version: number;
+  candidate: ScriptMangaPlanCandidateView;
+}
+
+/**
+ * 人間ゲートのコマ割り修正の保存(set-custom-layout)。`layout`/`balloonHints` は
+ * 「undefined = 変更しない / null = 削除(リセット) / 値 = 置き換え」の三値。
+ */
+export interface SetCandidateCustomLayoutRequest {
+  pageIndex: number;
+  expectedVersion: number;
+  layout?: PageLayout | null;
+  balloonHints?: Record<number, { x: number; y: number }> | null;
+}
+
+export interface SetCandidateCustomLayoutResponse {
   version: number;
   candidate: ScriptMangaPlanCandidateView;
 }

@@ -46,6 +46,11 @@ export interface DialogueAutoLayoutItem {
   orderIndex: number;
   /** 既に割当済みなら、そのコマを自動分配より優先する。 */
   preferredPanelId?: string | null;
+  /**
+   * 人間ゲート(ネームスタジオ)でドラッグ指定した吹き出し中心のヒント(page 座標)。
+   * 指定時は候補生成でこの位置自体を候補に加え、近傍を強く優先する(ハード制約は従来どおり)。
+   */
+  preferredCenter?: PageVec | null;
   /** 自動漫画など密度が高いページ向けの文字倍率。通常UIは1。 */
   fontScale?: number;
   /**
@@ -313,6 +318,8 @@ interface CandidateSearchArgs {
   insidePanelCheck?: (point: [number, number]) => boolean;
   avoidPanelBoxes?: [number, number, number, number][]; // narration: コマの上に極力置かない
   anchorHint?: PageVec | null; // 同一話者近接ボーナスの基準点
+  /** 人間指定の中心ヒント。グリッドに加え位置そのものも候補化し、近傍へ強いボーナスを与える。 */
+  preferredCenter?: PageVec | null;
   /** 顔・立ち絵などの回避領域。avoidHard=true なら重なる候補を除外、false ならスコア減点のみ。 */
   avoidZones?: Box[];
   avoidHard?: boolean;
@@ -326,8 +333,14 @@ function overlapArea(a: Box, b: Box): number {
   );
 }
 
+/** preferredCenter 指定時の近傍ボーナス。0.3page 幅以内で線形、最大 8(上部優先の振れ幅 2 を支配する)。 */
+function preferredCenterBonus(position: PageVec, preferred: PageVec): number {
+  const dist = Math.hypot(position.x - preferred.x, position.y - preferred.y);
+  return 8 * Math.max(0, 1 - dist / 0.3);
+}
+
 function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
-  const { bounds, size, direction, obstacles, pageBounds, insidePanelCheck, avoidPanelBoxes, anchorHint, avoidZones, avoidHard, random } = args;
+  const { bounds, size, direction, obstacles, pageBounds, insidePanelCheck, avoidPanelBoxes, anchorHint, preferredCenter, avoidZones, avoidHard, random } = args;
   const margin = Math.max(0.006, Math.min(bounds[2] - bounds[0], bounds[3] - bounds[1]) * 0.04);
   const minX = bounds[0] + margin + size.x / 2;
   const maxX = bounds[2] - margin - size.x / 2;
@@ -396,9 +409,66 @@ function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
         const dist = Math.hypot(position.x - anchorHint.x, position.y - anchorHint.y);
         score += Math.max(0, 0.5 - dist);
       }
+      if (preferredCenter) {
+        score += preferredCenterBonus(position, preferredCenter);
+      }
       score -= size.x * size.y * 0.1;
 
       candidates.push({ position, score });
+    }
+  }
+
+  // 人間指定の中心はグリッドとは別に「その位置そのもの」も候補にする(ハード制約は同一)。
+  if (preferredCenter) {
+    const position: PageVec = {
+      x: Math.min(maxX, Math.max(minX, preferredCenter.x)),
+      y: Math.min(maxY, Math.max(minY, preferredCenter.y))
+    };
+    const withinPage =
+      position.x - size.x / 2 >= pageBounds[0] && position.x + size.x / 2 <= pageBounds[2] &&
+      position.y - size.y / 2 >= pageBounds[1] && position.y + size.y / 2 <= pageBounds[3];
+    if (withinPage && (!insidePanelCheck || insidePanelCheck([position.x, position.y]))) {
+      const candidateBox = boxFromCenterSize(position, size, 0);
+      if (!obstacles.some((obstacle) => boxesOverlap(candidateBox, obstacle))) {
+        let avoidPenalty = 0;
+        let blocked = false;
+        if (avoidZones && avoidZones.length > 0) {
+          const candidateArea = Math.max(1e-9, size.x * size.y);
+          let overlapped = 0;
+          for (const zone of avoidZones) {
+            overlapped += overlapArea(candidateBox, zone);
+          }
+          if (overlapped > 0) {
+            if (avoidHard) blocked = true;
+            else avoidPenalty = 6 * Math.min(1, overlapped / candidateArea);
+          }
+        }
+        if (!blocked) {
+          const spanX = Math.max(1e-9, maxX - minX);
+          const spanY = Math.max(1e-9, maxY - minY);
+          const ty = (position.y - minY) / spanY;
+          const effectiveTx = (position.x - minX) / spanX;
+          let score = 0;
+          score -= avoidPenalty;
+          score -= ty * 2;
+          score -= effectiveTx * 0.3;
+          if (avoidPanelBoxes) {
+            for (const panelBox of avoidPanelBoxes) {
+              if (position.x >= panelBox[0] && position.x <= panelBox[2] && position.y >= panelBox[1] && position.y <= panelBox[3]) {
+                score -= 3;
+                break;
+              }
+            }
+          }
+          if (anchorHint) {
+            const dist = Math.hypot(position.x - anchorHint.x, position.y - anchorHint.y);
+            score += Math.max(0, 0.5 - dist);
+          }
+          score += preferredCenterBonus(position, preferredCenter);
+          score -= size.x * size.y * 0.1;
+          candidates.push({ position, score });
+        }
+      }
     }
   }
 
@@ -583,6 +653,7 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
             pageBounds,
             avoidPanelBoxes: panelBoundsList,
             anchorHint,
+            preferredCenter: item.preferredCenter ?? null,
             avoidZones: avoidZoneBoxes,
             avoidHard: !relaxed,
             random
@@ -609,6 +680,7 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
               pageBounds,
               avoidPanelBoxes: panelBoundsList,
               anchorHint,
+              preferredCenter: item.preferredCenter ?? null,
               avoidZones: avoidZoneBoxes,
               avoidHard: !relaxed,
               random
@@ -662,6 +734,7 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
             pageBounds,
             insidePanelCheck,
             anchorHint,
+            preferredCenter: item.preferredCenter ?? null,
             avoidZones: avoidZoneBoxes,
             avoidHard: !relaxed,
             random
@@ -707,6 +780,7 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
                 pageBounds,
                 insidePanelCheck: fbInsidePanelCheck,
                 anchorHint,
+                preferredCenter: item.preferredCenter ?? null,
                 avoidZones: avoidZoneBoxes,
                 avoidHard: !relaxed,
                 random
@@ -734,6 +808,7 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
               obstacles,
               pageBounds,
               anchorHint: panelCenter,
+              preferredCenter: item.preferredCenter ?? null,
               avoidZones: avoidZoneBoxes,
               avoidHard: !relaxed,
               random

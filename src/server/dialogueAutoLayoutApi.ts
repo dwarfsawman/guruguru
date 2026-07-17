@@ -112,6 +112,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
     ? Math.min(1, Math.max(0.35, input.fontScale))
     : 1;
   const preserveBalloonFontSize = typeof input.fontScale === "number" && Number.isFinite(input.fontScale);
+  const preferredCenters = parsePreferredCenters(input);
   const placementIds = parsePlacementIds(input);
   const placeholders = placementIds.map(() => "?").join(",");
   const placements = getRows<PlacementRow>(
@@ -163,12 +164,34 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
       speakerLabel: placement.speaker_label_override ?? line.speaker_label,
       orderIndex: placement.order_index_override ?? line.order_index,
       preferredPanelId: placement.panel_id,
+      preferredCenter: preferredCenters?.[line.id] ?? null,
       fontScale,
       sizeVariants: requiredSizeVariantsFor(text, semanticKind, fontScale, preserveBalloonFontSize)
     };
   });
 
   return { page, layout, existingObjects, placements, items };
+}
+
+/**
+ * 人間ゲートの吹き出し中心ヒント(lineId → page 座標)。自動漫画の materialize が計算済みの値を
+ * 渡す前提のため、フォーマット崩れは 400。未指定なら null(従来と同一挙動)。
+ */
+function parsePreferredCenters(input: Record<string, unknown>): Record<string, { x: number; y: number }> | null {
+  if (input.preferredCentersByLineId === undefined) return null;
+  const raw = input.preferredCentersByLineId;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new HttpError(400, "preferredCentersByLineId must be an object of lineId → {x, y}");
+  }
+  const centers: Record<string, { x: number; y: number }> = {};
+  for (const [lineId, position] of Object.entries(raw as Record<string, unknown>)) {
+    const { x, y } = (position ?? {}) as { x?: unknown; y?: unknown };
+    if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) {
+      throw new HttpError(400, `preferredCentersByLineId[${lineId}] must be a finite {x, y}`);
+    }
+    centers[lineId] = { x, y };
+  }
+  return Object.keys(centers).length > 0 ? centers : null;
 }
 
 /** dialogue の既定バルーンサイズ下限(page 単位)。短文でも読める最低限のサイズを保証する。 */

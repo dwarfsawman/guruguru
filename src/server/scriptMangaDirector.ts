@@ -2,6 +2,7 @@ import type { FountainDoc } from "../shared/fountain";
 import { deriveSceneBibles } from "./storyGraphBuilder";
 import { describeScriptMangaLayouts } from "../shared/layoutPresets";
 import {
+  DEFAULT_MAX_DIALOGUES_PER_PANEL,
   planScriptManga,
   type ScriptMangaPagePlan,
   type ScriptMangaPanelDirection,
@@ -237,7 +238,7 @@ export async function generateScriptMangaN1Plan(
 ): Promise<ScriptMangaN1Result> {
   const settings = getLlmSettings();
   const maxPanelsPerPage = Math.max(1, Math.min(6, Math.trunc(options.panelsPerPage ?? 4)));
-  const maxDialoguesPerPanel = Math.max(1, Math.min(8, Math.trunc(options.maxDialoguesPerPanel ?? 4)));
+  const maxDialoguesPerPanel = Math.max(1, Math.min(8, Math.trunc(options.maxDialoguesPerPanel ?? DEFAULT_MAX_DIALOGUES_PER_PANEL)));
   const temperature = n1Options.temperature ?? 0.3;
   const profileLines = n1Options.profileInstruction?.trim() ? [n1Options.profileInstruction.trim()] : [];
 

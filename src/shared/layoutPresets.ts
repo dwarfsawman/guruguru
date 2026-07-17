@@ -37,6 +37,11 @@ const GUTTER = 0.02;
  */
 const BLEED = 0.015;
 
+/** ネームスタジオのコマ割り編集(nameLayoutEdit.ts)と共有する規約値。 */
+export const LAYOUT_PAGE_MARGIN = MARGIN;
+export const LAYOUT_PANEL_GUTTER = GUTTER;
+export const LAYOUT_PANEL_BLEED = BLEED;
+
 /** 座標を扱いやすい精度へ丸める。 */
 function round(value: number): number {
   return Math.round(value * 1e6) / 1e6;

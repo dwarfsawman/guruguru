@@ -10,7 +10,7 @@ import {
   validateMangaPlanV2
 } from "../shared/mangaPlanV2";
 import { normalizeEditedPageLayout, panelBounds, panelBoundsSize, type PageLayout } from "../shared/pageLayout";
-import { planScriptManga, type ScriptMangaPlan, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
+import { DEFAULT_MAX_DIALOGUES_PER_PANEL, applyCustomNameLayouts, planScriptManga, type ScriptMangaPlan, type ScriptMangaPlanOptions } from "../shared/scriptMangaPlan";
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import type { GenerationRequest, StyleLoraSelection } from "../shared/types";
 import type {
@@ -251,15 +251,16 @@ export async function buildPoseControlAttachment(
 
 const SCRIPT_MANGA_FONT_SCALE = 0.88;
 // The 0.02 hard gate rejected even 7-16 character balloons in narrow/telecom
-// shapes after fitting. 0.016 remains comfortably legible at the default B5
-// export size while allowing the fitter's real glyph bbox to decide whether a
-// short line fits.
-const SCRIPT_MANGA_MIN_FONT_SIZE = 0.016;
+// shapes after fitting. 0.016 remained comfortably legible at the default B5
+// export size; 0.014 keeps the same tolerance philosophy while letting the
+// fitter's real glyph bbox decide whether a short line fits (2026-07-18).
+const SCRIPT_MANGA_MIN_FONT_SIZE = 0.014;
 /**
  * 自動レタリングでの「吹き出し等がコマ外接矩形を占有してよい面積比」の上限
  * (Docs/Reference-MangaCompositions.md)。preserve の長台詞は relax パスで超過を許すが警告が残る。
+ * 0.45では絵の見える面積が痩せすぎたため0.35へ縮小(2026-07-18)。
  */
-const SCRIPT_MANGA_MAX_BALLOON_COVERAGE = 0.45;
+const SCRIPT_MANGA_MAX_BALLOON_COVERAGE = 0.35;
 /** plan の cast bbox から顔領域とみなす高さ比(bbox 上端からこの割合)。auditLettering と共有。 */
 const CAST_FACE_HEIGHT_RATIO = 0.38;
 const activeTaskSubmissions = new Set<string>();
@@ -472,6 +473,8 @@ function planCastAvoidZones(
 interface LetteringConstraints {
   avoidZones: Array<{ x: number; y: number; width: number; height: number; label?: string }>;
   maxPanelCoverageRatio: number;
+  /** 人間ゲートの吹き出し中心ヒント(lineId → page 座標)。 */
+  preferredCentersByLineId?: Record<string, { x: number; y: number }>;
 }
 
 function applyDialogueLayoutWithFallback(
@@ -483,7 +486,13 @@ function applyDialogueLayoutWithFallback(
 ): void {
   let lastError: unknown;
   const constraintBody = constraints
-    ? { avoidZones: constraints.avoidZones, maxPanelCoverageRatio: constraints.maxPanelCoverageRatio }
+    ? {
+        avoidZones: constraints.avoidZones,
+        maxPanelCoverageRatio: constraints.maxPanelCoverageRatio,
+        ...(constraints.preferredCentersByLineId && Object.keys(constraints.preferredCentersByLineId).length > 0
+          ? { preferredCentersByLineId: constraints.preferredCentersByLineId }
+          : {})
+      }
     : {};
   for (let attempt = 0; attempt < 16; attempt += 1) {
     try {
@@ -770,7 +779,7 @@ function planningOptionsFromInput(
     panelsPerPage: boundedInteger(input.panelsPerPage, fallback.panelsPerPage ?? 4, 1, 6),
     maxElementsPerPanel: boundedInteger(input.maxElementsPerPanel, fallback.maxElementsPerPanel ?? 6, 1, 24),
     targetPageCount,
-    maxDialoguesPerPanel: boundedInteger(input.maxDialoguesPerPanel, fallback.maxDialoguesPerPanel ?? 4, 1, 8),
+    maxDialoguesPerPanel: boundedInteger(input.maxDialoguesPerPanel, fallback.maxDialoguesPerPanel ?? DEFAULT_MAX_DIALOGUES_PER_PANEL, 1, 8),
     stylePrompt: requestedStyle === null ? fallback.stylePrompt : requestedStyle || undefined
   };
 }
@@ -899,7 +908,7 @@ function requirePagePanelBudget(plan: MangaPlanV2, panelsPerPage: number): void 
 function requireRunPanelBudget(run: RunRow, plan: MangaPlanV2): void {
   const config = parseConfig(run);
   requirePanelBudget(plan, config.maxPanelCount);
-  requireDialogueBudget(plan, config.planOptions?.maxDialoguesPerPanel ?? 4);
+  requireDialogueBudget(plan, config.planOptions?.maxDialoguesPerPanel ?? DEFAULT_MAX_DIALOGUES_PER_PANEL);
   requirePagePanelBudget(plan, config.planOptions?.panelsPerPage ?? 4);
 }
 
@@ -1113,7 +1122,10 @@ function ensureDialogueLettering(
   if (placementIds.length > 0) {
     applyDialogueLayoutWithFallback(run.project_id, pageId, placementIds, pageSpec.index + 1, {
       avoidZones: planCastAvoidZones(pageSpec, layoutPanels),
-      maxPanelCoverageRatio: SCRIPT_MANGA_MAX_BALLOON_COVERAGE
+      maxPanelCoverageRatio: SCRIPT_MANGA_MAX_BALLOON_COVERAGE,
+      preferredCentersByLineId: Object.fromEntries(
+        (pageSpec.balloonCenterHints ?? []).map((hint) => [hint.lineId, { x: hint.x, y: hint.y }])
+      )
     });
   }
   const fontChanged = applyMangaDialogueFont(pageId, lineIds);
@@ -3138,6 +3150,7 @@ async function createScriptMangaRunInternal(
   const planId = createId("manga_plan");
   let pageLimit: number;
   let plan: MangaPlanV2;
+  let candidateBalloonHints: Record<number, Record<number, { x: number; y: number }>> | null = null;
   if (predecessorPlan) {
     plan = completeSuccessorPlan(input.successorPlan, predecessorPlan, planId);
     pageLimit = plan.pages.length;
@@ -3166,6 +3179,9 @@ async function createScriptMangaRunInternal(
       fullPlan = directionIsFixed
         ? adoptable.plan
         : await directAdoptedCandidatePlan(revision.doc, adoptable.plan, candidateDirectionOptions);
+      // 監督はページを再構築するため、人間ゲートのコマ割り修正(in-memory注釈)を再適用する。
+      fullPlan = applyCustomNameLayouts(fullPlan, adoptable.customLayouts);
+      candidateBalloonHints = adoptable.balloonHints;
       const units = buildPreLayoutUnits(revision.doc);
       const cachedBeats = readCachedBeatAnnotation(revision.id, units);
       beatAnnotation = cachedBeats ? { units, beats: cachedBeats, fallback: false, cached: true } : null;
@@ -3207,14 +3223,15 @@ async function createScriptMangaRunInternal(
       globalLoras: loras,
       dialoguePolicy,
       resolveLayoutTemplate,
-      beatAnnotation: beatAnnotation ? { units: beatAnnotation.units, beats: beatAnnotation.beats } : null
+      beatAnnotation: beatAnnotation ? { units: beatAnnotation.units, beats: beatAnnotation.beats } : null,
+      balloonCenterHints: candidateBalloonHints
     });
   }
   const validation = validatePlan(plan);
   if (!validation.ok) throw new HttpError(422, "Generated MangaPlanV2 failed deterministic validation");
   const maxPanelCount = boundedInteger(input.maxPanelCount, predecessorConfig?.maxPanelCount ?? 0, 0, 800);
   requirePanelBudget(plan, maxPanelCount);
-  requireDialogueBudget(plan, planOptions.maxDialoguesPerPanel ?? 4);
+  requireDialogueBudget(plan, planOptions.maxDialoguesPerPanel ?? DEFAULT_MAX_DIALOGUES_PER_PANEL);
   requirePagePanelBudget(plan, planOptions.panelsPerPage ?? 4);
   persistPlan(projectId, plan, validation);
 

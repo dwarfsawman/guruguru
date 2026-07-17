@@ -249,6 +249,11 @@ export interface MangaPageSpec {
   pageIntent: string;
   /** N1由来のページめくり演出(ネームv4 D1)。additive。 */
   turnHook?: MangaPageTurnHook;
+  /**
+   * 人間ゲートで指定した吹き出し中心のヒント(page 座標、additive)。materialize の
+   * 台詞自動配置がこの近傍を強く優先する。ヒントの無い行は従来どおり。
+   */
+  balloonCenterHints?: Array<{ lineId: string; x: number; y: number }>;
   panels: PanelSpec[];
 }
 
