@@ -38,6 +38,13 @@ const JUNCTION_CLUSTER_DISTANCE = 0.04;
 /** 編集後に許容する最小コマ面積(page-width^2 単位)。 */
 const MIN_PANEL_AREA = 0.003;
 
+/**
+ * 裁ち切り対象と認める外周辺の軸整合度(外向き法線の主軸成分の下限、≒11.5度以内)。
+ * ページの辺と平行な(=軸沿いの)辺だけを裁ち切りにする。斜め辺は snapEdgeToBleed が
+ * 強制的に軸整合へ潰してしまうため対象外とする(2026-07-18 ユーザー指摘)。
+ */
+const BLEED_AXIS_ALIGNMENT_MIN = 0.98;
+
 /** 頂点座標の可動範囲(裁ち切り分だけページ外を許す)。 */
 function clampVertex(x: number, y: number, pageHeight: number): [number, number] {
   return [
@@ -458,7 +465,8 @@ export interface OuterEdgeInfo {
 }
 
 /**
- * 外周辺かどうかの判定。共有境界に属さず、外向き法線の主軸成分が明確な辺を外周とみなす。
+ * 外周辺(裁ち切り対象)かどうかの判定。共有境界に属さず、外向き法線がほぼ軸沿い
+ * (=辺がページの辺と平行)である辺だけを外周とみなす。
  * `boundaries` は同じレイアウトで検出済みのものを渡す(呼び出し毎の再検出を避ける)。
  */
 export function outerEdgeInfo(
@@ -473,7 +481,9 @@ export function outerEdgeInfo(
   );
   if (inBoundary) return { isOuter: false, side: null };
   const [nx, ny] = geometry.outward;
-  if (Math.abs(nx) < 0.5 && Math.abs(ny) < 0.5) return { isOuter: false, side: null };
+  if (Math.abs(nx) < BLEED_AXIS_ALIGNMENT_MIN && Math.abs(ny) < BLEED_AXIS_ALIGNMENT_MIN) {
+    return { isOuter: false, side: null };
+  }
   const side: PageSide = Math.abs(nx) >= Math.abs(ny) ? (nx > 0 ? "right" : "left") : (ny > 0 ? "bottom" : "top");
   return { isOuter: true, side };
 }

@@ -1235,11 +1235,21 @@
   cursor: move;
 }
 
-.page-shape-gutter-handle {
-  fill: rgba(58, 110, 165, 0.85);
-  stroke: #ffffff;
-  stroke-width: 0.004;
+/* ⇔ ガター幅ハンドル: 透明ヒット円+境界法線方向の両矢印(形で役割が分かるように)。 */
+.page-shape-gutter-hit {
+  fill: rgba(58, 110, 165, 0.28);
+  stroke: rgba(58, 110, 165, 0.9);
+  stroke-width: 0.003;
   cursor: ew-resize;
+}
+
+.page-shape-gutter-shaft,
+.page-shape-gutter-head {
+  stroke: #2b5586;
+  stroke-width: 0.005;
+  stroke-linecap: round;
+  fill: none;
+  pointer-events: none;
 }
 
 .page-shape-junction-handle {
@@ -1261,4 +1271,24 @@
   stroke-width: 0.006;
   stroke-dasharray: 0.02 0.01;
   pointer-events: none;
+}
+
+/* ドラッグ範囲選択(マーキー)と選択済み頂点。 */
+.page-shape-marquee {
+  fill: rgba(58, 110, 165, 0.12);
+  stroke: rgba(58, 110, 165, 0.8);
+  stroke-width: 0.003;
+  stroke-dasharray: 0.01 0.006;
+  pointer-events: none;
+}
+
+.page-shape-mvertex-handle {
+  fill: #3a6ea5;
+  stroke: #ffffff;
+  stroke-width: 0.003;
+  cursor: grab;
+}
+
+.page-shape-history {
+  margin-top: 6px;
 }

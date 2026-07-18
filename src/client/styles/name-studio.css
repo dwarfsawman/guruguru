@@ -986,11 +986,21 @@
   cursor: move;
 }
 
-.nle-gutter-handle {
-  fill: rgba(58, 110, 165, 0.85);
-  stroke: #ffffff;
-  stroke-width: 0.004;
+/* ⇔ ガター幅ハンドル: 透明寄りのヒット円+境界法線方向の両矢印。 */
+.nle-gutter-hit {
+  fill: rgba(58, 110, 165, 0.28);
+  stroke: rgba(58, 110, 165, 0.9);
+  stroke-width: 0.003;
   cursor: ew-resize;
+}
+
+.nle-gutter-shaft,
+.nle-gutter-head {
+  stroke: #2b5586;
+  stroke-width: 0.005;
+  stroke-linecap: round;
+  fill: none;
+  pointer-events: none;
 }
 
 .nle-junction-handle {
