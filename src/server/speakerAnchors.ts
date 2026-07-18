@@ -1,4 +1,4 @@
-import { normalizeEditedPageLayout, panelBounds, type PageLayout } from "../shared/pageLayout";
+import { normalizeEditedPageLayout, panelBounds, panelImageRect, type PageLayout, type PanelImageRect } from "../shared/pageLayout";
 import { normalizePageObjects, type BalloonObject, type PageObject, type PageVec } from "../shared/pageObjects";
 import { getRow, getRows, runSql } from "./db";
 import { HttpError } from "./http";
@@ -54,11 +54,14 @@ function parsePanels(value: unknown): PanelFacesInput[] {
   });
 }
 
-/** asset 正規化座標を、crop(cover)を介してページ座標へ写す。回転cropは現在の自動生成では使わない。 */
-export function assetPointToPage(point: PageVec, bounds: [number, number, number, number], crop: Crop): PageVec {
+/**
+ * asset 正規化座標を、描画矩形(panelImageRect の等倍マップ)を介してページ座標へ写す。
+ * 回転cropは現在の自動生成では使わない。
+ */
+export function assetPointToPage(point: PageVec, rect: PanelImageRect): PageVec {
   return {
-    x: bounds[0] + ((point.x - crop.x) / crop.width) * (bounds[2] - bounds[0]),
-    y: bounds[1] + ((point.y - crop.y) / crop.height) * (bounds[3] - bounds[1])
+    x: rect.x + point.x * rect.width,
+    y: rect.y + point.y * rect.height
   };
 }
 
@@ -92,24 +95,27 @@ export function applySpeakerAnchors(projectId: string, pageId: string, body: unk
   for (const panelInput of panelsInput) {
     const panel = layout.panels.find((candidate) => candidate.id === panelInput.panelId);
     if (!panel || panelInput.faces.length === 0) continue;
-    const assignment = getRow<{ crop_json: string }>(
-      "SELECT crop_json FROM page_panel_assignments WHERE page_id = ? AND panel_id = ?",
+    const assignment = getRow<{ crop_json: string; asset_width: number | null; asset_height: number | null }>(
+      `SELECT ppa.crop_json, a.width AS asset_width, a.height AS asset_height
+         FROM page_panel_assignments ppa
+         LEFT JOIN assets a ON a.id = ppa.asset_id
+        WHERE ppa.page_id = ? AND ppa.panel_id = ?`,
       [pageId, panel.id]
     );
     if (!assignment) continue;
     const crop = JSON.parse(assignment.crop_json) as Crop;
     if (!(crop.width > 0 && crop.height > 0)) continue;
     const bounds = panelBounds(panel.shape);
+    const rect = panelImageRect(bounds, { rotation: 0, ...crop }, assignment.asset_width, assignment.asset_height);
     const anchors = panelInput.faces
       .filter((face) => face.score >= 0.25)
       .map((face) => {
-        const mouth = assetPointToPage(face.mouth, bounds, crop);
+        const mouth = assetPointToPage(face.mouth, rect);
         if (!face.bbox) return { mouth, faceExtent: 0 };
-        const topLeft = assetPointToPage({ x: face.bbox.x, y: face.bbox.y }, bounds, crop);
+        const topLeft = assetPointToPage({ x: face.bbox.x, y: face.bbox.y }, rect);
         const bottomRight = assetPointToPage(
           { x: face.bbox.x + face.bbox.width, y: face.bbox.y + face.bbox.height },
-          bounds,
-          crop
+          rect
         );
         return { mouth, faceExtent: Math.max(Math.abs(bottomRight.x - topLeft.x), Math.abs(bottomRight.y - topLeft.y)) };
       })

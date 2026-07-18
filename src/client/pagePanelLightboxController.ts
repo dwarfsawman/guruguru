@@ -24,6 +24,7 @@ import {
   normalizeRotation,
   panelBounds,
   panelBoundsSize,
+  panelImageRect,
   scaleCropAboutCenter
 } from "../shared/pageLayout";
 import { api } from "./api";
@@ -518,6 +519,9 @@ interface CropDragState {
   startCrop: PanelCrop;
   boxWidth: number;
   boxHeight: number;
+  /** ドラッグ開始時の描画矩形(page 単位、panelImageRect)。パンの px→crop 換算に使う。 */
+  drawnWidth: number;
+  drawnHeight: number;
   /** 画面px → SVG正規化座標1単位あたりの px 数(ctm.a)。 */
   pxPerUnit: number;
   /** パネル外接矩形中心の画面px座標(拡縮/回転の基準)。 */
@@ -568,6 +572,8 @@ export function handlePagePanelCropPointerDown(event: PointerEvent): boolean {
 
   const bounds = panelBounds(panel.shape);
   const [boxWidth, boxHeight] = panelBoundsSize(bounds);
+  const assignment = state.pagePanelAssignments.find((item) => item.panelId === lightbox.cropPanelId) ?? null;
+  const drawnRect = panelImageRect(bounds, lightbox.cropDraft, assignment?.assetWidth, assignment?.assetHeight);
   const centerX = (bounds[0] + bounds[2]) / 2;
   const centerY = (bounds[1] + bounds[3]) / 2;
   const centerScreenX = ctm.a * centerX + ctm.c * centerY + ctm.e;
@@ -583,6 +589,8 @@ export function handlePagePanelCropPointerDown(event: PointerEvent): boolean {
     startCrop: { ...lightbox.cropDraft },
     boxWidth,
     boxHeight,
+    drawnWidth: drawnRect.width,
+    drawnHeight: drawnRect.height,
     pxPerUnit: ctm.a,
     centerScreenX,
     centerScreenY,
@@ -638,8 +646,9 @@ function panGestureCrop(drag: CropDragState, event: PointerEvent): PanelCrop {
   const sin = Math.sin(rotation);
   const imgDx = dxPage * cos + dyPage * sin;
   const imgDy = -dxPage * sin + dyPage * cos;
-  const dxAsset = imgDx * (drag.startCrop.width / drag.boxWidth);
-  const dyAsset = imgDy * (drag.startCrop.height / drag.boxHeight);
+  // 等倍描画(panelImageRect)に合わせて、描画矩形の実寸で page→asset 正規化へ換算する。
+  const dxAsset = imgDx / Math.max(1e-9, drag.drawnWidth);
+  const dyAsset = imgDy / Math.max(1e-9, drag.drawnHeight);
   return clampPanelCrop({
     x: drag.startCrop.x - dxAsset,
     y: drag.startCrop.y - dyAsset,

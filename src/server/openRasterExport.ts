@@ -7,6 +7,7 @@ import {
   FULL_PANEL_CROP,
   normalizePanelCrop,
   panelBounds,
+  panelImageRect,
   type LayoutPanel,
   type PageLayout,
   type PanelCrop,
@@ -869,39 +870,46 @@ async function renderPanelImageLayer(
 ): Promise<Buffer> {
   const imagePath = await assetImagePath(assignment, source);
   const crop = parseCrop(assignment.crop_json);
-  // 回転ありは、コマ内生成プレビュー(pagePanelLightboxView)と同じ SVG transform で描き、見た目を一致させる。
-  if (crop.rotation && Math.abs(crop.rotation) > 1e-6) {
-    return renderRotatedPanelImageLayer(imagePath, panel, layout, canvas, crop);
-  }
   const metadata = await sharp(imagePath, { failOn: "none" }).rotate().metadata();
   const sourceWidth = source === "original" ? assignment.width ?? metadata.width ?? 1 : metadata.width ?? 1;
   const sourceHeight = source === "original" ? assignment.height ?? metadata.height ?? 1 : metadata.height ?? 1;
-  const extract = cropToExtract(crop, sourceWidth, sourceHeight);
-  const box = panelPixelBounds(panel, layout, canvas);
-  const panelImage = await sharp(imagePath, { failOn: "none" })
-    .rotate()
-    .extract(extract)
-    .resize(box.width, box.height, { fit: "fill" })
-    .ensureAlpha()
-    .png()
-    .toBuffer();
-  const layer = await sharp(blankInput(canvas))
-    .composite([{ input: panelImage, left: box.left, top: box.top }])
-    .png()
-    .toBuffer();
+  // 回転ありは、コマ内生成プレビュー(pagePanelLightboxView)と同じ SVG transform で描き、見た目を一致させる。
+  if (crop.rotation && Math.abs(crop.rotation) > 1e-6) {
+    return renderRotatedPanelImageLayer(imagePath, panel, layout, canvas, crop, sourceWidth, sourceHeight);
+  }
+  // 等倍描画(panelImageRect): 画像全体を一様スケールで置き、コマを覆えない部分は下の紙面(白)を見せる。
+  const bounds = panelBounds(panel.shape);
+  const rect = panelImageRect(bounds, crop, sourceWidth, sourceHeight);
+  const h = layoutHeight(layout);
+  const drawnLeft = Math.round(rect.x * canvas.width);
+  const drawnTop = Math.round((rect.y / h) * canvas.height);
+  const drawnWidth = Math.max(1, Math.round(rect.width * canvas.width));
+  const drawnHeight = Math.max(1, Math.round((rect.height / h) * canvas.height));
+  // sharp の composite は負オフセット不可なので、canvas 外へはみ出す分を先に切り落とす。
+  const cutLeft = Math.max(0, -drawnLeft);
+  const cutTop = Math.max(0, -drawnTop);
+  const visibleWidth = Math.min(drawnWidth - cutLeft, canvas.width - Math.max(0, drawnLeft));
+  const visibleHeight = Math.min(drawnHeight - cutTop, canvas.height - Math.max(0, drawnTop));
+  let layer: Buffer;
+  if (visibleWidth < 1 || visibleHeight < 1) {
+    layer = await sharp(blankInput(canvas)).png().toBuffer();
+  } else {
+    const panelImage = await sharp(imagePath, { failOn: "none" })
+      .rotate()
+      .resize(drawnWidth, drawnHeight, { fit: "fill" })
+      .extract({ left: cutLeft, top: cutTop, width: visibleWidth, height: visibleHeight })
+      .ensureAlpha()
+      .png()
+      .toBuffer();
+    layer = await sharp(blankInput(canvas))
+      .composite([{ input: panelImage, left: Math.max(0, drawnLeft), top: Math.max(0, drawnTop) }])
+      .png()
+      .toBuffer();
+  }
   return sharp(layer)
     .composite([{ input: Buffer.from(renderShapeMaskSvg(panel.shape, layout, canvas)), blend: "dest-in" }])
     .png()
     .toBuffer();
-}
-
-/** cover 窓(正規化)をコマ外接矩形へマップした `<image>` の x/y/width/height(pagePanelLightboxView と同式)。 */
-function imageRectForCropNorm(bounds: [number, number, number, number], crop: PanelCrop) {
-  const boxWidth = Math.max(1e-9, bounds[2] - bounds[0]);
-  const boxHeight = Math.max(1e-9, bounds[3] - bounds[1]);
-  const width = boxWidth / crop.width;
-  const height = boxHeight / crop.height;
-  return { x: bounds[0] - crop.x * width, y: bounds[1] - crop.y * height, width, height };
 }
 
 /**
@@ -913,12 +921,14 @@ async function renderRotatedPanelImageLayer(
   panel: LayoutPanel,
   layout: PageLayout,
   canvas: ExportCanvas,
-  crop: PanelCrop
+  crop: PanelCrop,
+  sourceWidth: number,
+  sourceHeight: number
 ): Promise<Buffer> {
   const oriented = await sharp(imagePath, { failOn: "none" }).rotate().png().toBuffer();
   const dataUri = `data:image/png;base64,${oriented.toString("base64")}`;
   const bounds = panelBounds(panel.shape);
-  const rect = imageRectForCropNorm(bounds, crop);
+  const rect = panelImageRect(bounds, crop, sourceWidth, sourceHeight);
   const h = layoutHeight(layout);
   const toPxX = (nx: number) => nx * canvas.width;
   const toPxY = (ny: number) => (ny / h) * canvas.height;
@@ -960,29 +970,6 @@ function parseCrop(raw: string): PanelCrop {
   } catch {
     return { ...FULL_PANEL_CROP };
   }
-}
-
-function cropToExtract(crop: PanelCrop, sourceWidth: number, sourceHeight: number) {
-  const left = Math.min(sourceWidth - 1, Math.max(0, Math.floor(crop.x * sourceWidth)));
-  const top = Math.min(sourceHeight - 1, Math.max(0, Math.floor(crop.y * sourceHeight)));
-  const width = Math.max(1, Math.min(sourceWidth - left, Math.round(crop.width * sourceWidth)));
-  const height = Math.max(1, Math.min(sourceHeight - top, Math.round(crop.height * sourceHeight)));
-  return { left, top, width, height };
-}
-
-function panelPixelBounds(panel: LayoutPanel, layout: PageLayout, canvas: ExportCanvas) {
-  const [minX, minY, maxX, maxY] = panelBounds(panel.shape);
-  const h = layoutHeight(layout);
-  const left = Math.max(0, Math.floor(minX * canvas.width));
-  const top = Math.max(0, Math.floor((minY / h) * canvas.height));
-  const right = Math.min(canvas.width, Math.ceil(maxX * canvas.width));
-  const bottom = Math.min(canvas.height, Math.ceil((maxY / h) * canvas.height));
-  return {
-    left,
-    top,
-    width: Math.max(1, right - left),
-    height: Math.max(1, bottom - top)
-  };
 }
 
 async function renderPanelFrameLayer(layout: PageLayout, canvas: ExportCanvas): Promise<Buffer | null> {

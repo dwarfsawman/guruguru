@@ -14,7 +14,7 @@
  */
 import type { Asset, DialogueLine, DialogueProposal, DialogueProposalItem, FontSummary, PagePanelAssignment, PageSummary } from "../../shared/apiTypes";
 import type { LayoutPanel, PageLayout, PanelCrop } from "../../shared/pageLayout";
-import { panelBounds, panelBoundsSize } from "../../shared/pageLayout";
+import { panelBounds, panelBoundsSize, panelImageRect } from "../../shared/pageLayout";
 import {
   DEFAULT_TONE_SNOW_BACK_COLOR,
   PAGE_OBJECT_MAX_SIZE,
@@ -271,14 +271,16 @@ function renderPanelGroup(panel: LayoutPanel, assignment: PagePanelAssignment | 
   return `<g class="${stateClass}" data-panel-id="${escapeAttr(panel.id)}">${image}${outline}${hint}</g>`;
 }
 
-/** crop(asset 画像座標系で正規化)をパネル外接矩形へ cover フィットさせた `<image>` の x/y/width/height。 */
-function imageRectForCrop(bounds: [number, number, number, number], crop: PanelCrop) {
-  const [boxWidth, boxHeight] = panelBoundsSize(bounds);
-  const width = boxWidth / crop.width;
-  const height = boxHeight / crop.height;
-  const x = bounds[0] - crop.x * width;
-  const y = bounds[1] - crop.y * height;
-  return { x, y, width, height };
+/**
+ * 割り当て画像の `<image>` x/y/width/height。共有の `panelImageRect`(等倍・引き伸ばしなし)へ
+ * 一本化する。画像がコマを覆えない部分は紙面(白)が見え、人間がクロップ編集で解消する。
+ */
+function imageRectForCrop(
+  bounds: [number, number, number, number],
+  crop: PanelCrop,
+  assignment: Pick<PagePanelAssignment, "assetWidth" | "assetHeight">
+) {
+  return panelImageRect(bounds, crop, assignment.assetWidth, assignment.assetHeight);
 }
 
 /** パネル外接矩形の中心(回転の軸・ギズモの基準)。 */
@@ -303,7 +305,7 @@ function rotationTransformAttr(crop: PanelCrop, center: [number, number]): strin
 /** 割り当て画像1枚(パネル形状クリップ + 回転)。他コマ用(pointer-events なしの純表示)。 */
 function renderAssignmentImage(panel: LayoutPanel, assignment: PagePanelAssignment, crop: PanelCrop): string {
   const bounds = panelBounds(panel.shape);
-  const rect = imageRectForCrop(bounds, crop);
+  const rect = imageRectForCrop(bounds, crop, assignment);
   const transform = rotationTransformAttr(crop, boxCenter(bounds));
   const image = `<image href="${escapeAttr(assignment.assetImageUrl)}" x="${num(rect.x)}" y="${num(rect.y)}" width="${num(rect.width)}" height="${num(rect.height)}" preserveAspectRatio="none" class="page-panel-image"${transform} />`;
   // clip は wrapper <g> に持たせ、回転は内側 <image> に付ける(clip を固定したまま画像だけ回す)。
@@ -318,7 +320,7 @@ function renderAssignmentImage(panel: LayoutPanel, assignment: PagePanelAssignme
  */
 function renderCropOverlay(panel: LayoutPanel, assignment: PagePanelAssignment, crop: PanelCrop, pageHeight: number): string {
   const bounds = panelBounds(panel.shape);
-  const rect = imageRectForCrop(bounds, crop);
+  const rect = imageRectForCrop(bounds, crop, assignment);
   const transform = rotationTransformAttr(crop, boxCenter(bounds));
   const rectAttrs = `x="${num(rect.x)}" y="${num(rect.y)}" width="${num(rect.width)}" height="${num(rect.height)}" preserveAspectRatio="none"`;
   const href = escapeAttr(assignment.assetImageUrl);
@@ -847,7 +849,7 @@ function renderObjectsPanelBackgroundImage(panel: LayoutPanel, assignment: PageP
   }
   const crop = assignment.crop;
   const bounds = panelBounds(panel.shape);
-  const rect = imageRectForCrop(bounds, crop);
+  const rect = imageRectForCrop(bounds, crop, assignment);
   const transform = rotationTransformAttr(crop, boxCenter(bounds));
   const image = `<image href="${escapeAttr(assignment.assetImageUrl)}" x="${num(rect.x)}" y="${num(rect.y)}" width="${num(rect.width)}" height="${num(rect.height)}" preserveAspectRatio="none" class="page-object-panel-bg-image"${transform} />`;
   return `<g clip-path="url(#${panelClipId(panel.id)})" pointer-events="none">${image}</g>`;

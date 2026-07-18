@@ -251,9 +251,12 @@ export function panelBoundsSize(bounds: [number, number, number, number]): [numb
 
 /**
  * コマへ割り当てた画像の表示範囲。asset 画像座標系で正規化(x,y,width,height ∈ [0,1])した
- * 「見えている矩形(窓)」。`renderPagePanelLightbox` はこれを panel の外接矩形へ cover フィットで
- * マップする。パン=x/y、拡大縮小=width/height(小さいほどズームイン)、`rotation`=窓の中心
- * まわりの画像回転(ラジアン、省略/0 で無回転=従来と完全に同一)。
+ * 「見えている矩形(窓)」。パン=x/y、拡大縮小=width/height(小さいほどズームイン)、
+ * `rotation`=窓の中心まわりの画像回転(ラジアン、省略/0 で無回転)。
+ *
+ * 描画は `panelImageRect` が唯一の正: 窓の**幅**をコマ外接矩形の幅へ合わせる等倍スケールで、
+ * 画像のピクセル縦横比を必ず保つ(引き伸ばさない)。縦横比が合わない分は画像がコマを覆えず、
+ * 紙面(白)が見える -- 白を無くすのは人間のクロップ編集(拡大・移動)の役割(2026-07-18 変更)。
  */
 export interface PanelCrop {
   x: number;
@@ -262,6 +265,38 @@ export interface PanelCrop {
   height: number;
   /** 窓の中心まわりの画像回転(ラジアン, (-π, π])。省略/0 で無回転。 */
   rotation?: number;
+}
+
+export interface PanelImageRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 割り当て画像の描画矩形(page 単位)。クロップ窓の幅を外接矩形の幅へ合わせ、高さは画像の
+ * ピクセル縦横比(assetWidth/assetHeight)から等倍で決める。縦方向は窓の中心を外接矩形の
+ * 中心へ合わせる(縦横比が一致するデータでは従来の cover マップとバイト同一)。
+ * asset 寸法が不明(<=0/未指定)な場合だけ従来の引き伸ばし(窓→矩形ストレッチ)へフォールバックする。
+ * クライアント表示・サーバー書き出し・顔アンカー写像はすべてこの関数を使う。
+ */
+export function panelImageRect(
+  bounds: [number, number, number, number],
+  crop: PanelCrop,
+  assetWidth?: number | null,
+  assetHeight?: number | null
+): PanelImageRect {
+  const [boxWidth, boxHeight] = panelBoundsSize(bounds);
+  const cropWidth = Math.max(EPSILON, crop.width);
+  const cropHeight = Math.max(EPSILON, crop.height);
+  const width = boxWidth / cropWidth;
+  const uniform = typeof assetWidth === "number" && typeof assetHeight === "number" && assetWidth > 0 && assetHeight > 0;
+  const height = uniform ? width * (assetHeight! / assetWidth!) : boxHeight / cropHeight;
+  const x = bounds[0] - crop.x * width;
+  // 窓の縦中心を外接矩形の縦中心へ(縦横比一致時は従来式 bounds[1] - crop.y*height と一致する)。
+  const y = (bounds[1] + bounds[3]) / 2 - (crop.y + cropHeight / 2) * height;
+  return { x, y, width, height };
 }
 
 export const FULL_PANEL_CROP: PanelCrop = { x: 0, y: 0, width: 1, height: 1, rotation: 0 };

@@ -273,3 +273,39 @@ test("normalizePanelCrop: 妥当な値のみ受け付け、それ以外は null"
   assert.equal(normalizePanelCrop(null), null);
   assert.equal(normalizePanelCrop("not an object"), null);
 });
+
+test("panelImageRect: 縦横比一致なら従来の cover 写像と同一", async () => {
+  const { panelImageRect } = await import("./pageLayout.ts");
+  // コマ 0.4x0.6(2:3)、窓 0.5x0.5、asset 800x1200(窓ピクセルも 2:3)。
+  const rect = panelImageRect([0.1, 0.2, 0.5, 0.8], { x: 0.25, y: 0.25, width: 0.5, height: 0.5 }, 800, 1200);
+  assert.ok(Math.abs(rect.width - 0.8) < 1e-9);
+  assert.ok(Math.abs(rect.height - 1.2) < 1e-9);
+  assert.ok(Math.abs(rect.x - -0.1) < 1e-9);
+  assert.ok(Math.abs(rect.y - -0.1) < 1e-9);
+});
+
+test("panelImageRect: 縦横比不一致は引き伸ばさず等倍(縦に覆えない分は白が見える)", async () => {
+  const { panelImageRect } = await import("./pageLayout.ts");
+  // 横長 asset 1600x800 を全体表示(窓=全体)で、縦長コマ 0.4x0.8 へ。
+  const bounds: [number, number, number, number] = [0.1, 0.1, 0.5, 0.9];
+  const rect = panelImageRect(bounds, { x: 0, y: 0, width: 1, height: 1 }, 1600, 800);
+  // 幅フィット: 描画幅=コマ幅 0.4、高さは等倍 0.4*(800/1600)=0.2 < コマ高 0.8 → 上下に白。
+  assert.ok(Math.abs(rect.width - 0.4) < 1e-9);
+  assert.ok(Math.abs(rect.height - 0.2) < 1e-9);
+  // 縦は中央寄せ: y = コマ縦中心 0.5 - 窓中心 0.1 = 0.4。
+  assert.ok(Math.abs(rect.x - 0.1) < 1e-9);
+  assert.ok(Math.abs(rect.y - 0.4) < 1e-9);
+  // ズームイン(窓を半分に)すると描画が倍になり、コマを覆える(白を消せる)。
+  const zoomed = panelImageRect(bounds, { x: 0.25, y: 0.25, width: 0.5, height: 0.5 }, 1600, 800);
+  assert.ok(Math.abs(zoomed.width - 0.8) < 1e-9);
+  assert.ok(Math.abs(zoomed.height - 0.4) < 1e-9);
+});
+
+test("panelImageRect: asset 寸法が不明なら従来の引き伸ばしへフォールバック", async () => {
+  const { panelImageRect } = await import("./pageLayout.ts");
+  const rect = panelImageRect([0, 0, 0.4, 0.8], { x: 0, y: 0, width: 0.5, height: 0.5 }, null, null);
+  assert.ok(Math.abs(rect.width - 0.8) < 1e-9);
+  assert.ok(Math.abs(rect.height - 1.6) < 1e-9);
+  assert.ok(Math.abs(rect.x - 0) < 1e-9);
+  assert.ok(Math.abs(rect.y - 0) < 1e-9);
+});
