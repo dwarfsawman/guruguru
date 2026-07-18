@@ -38,7 +38,7 @@ export function num(value: number): string {
   return Number(value.toFixed(5)).toString();
 }
 
-/** 形状の中心(コマ番号の配置、コマ内生成の空コマヒント表示に使う)。path は中心不明なので null。 */
+/** 形状の中心(コマ番号の配置、コマ内生成の空コマヒント表示に使う)。 */
 export function shapeCenter(shape: PanelShape): [number, number] | null {
   if (shape.type === "polygon") {
     const n = shape.points.length;
@@ -53,6 +53,13 @@ export function shapeCenter(shape: PanelShape): [number, number] | null {
   }
   if (shape.type === "ellipse") {
     return shape.center;
+  }
+  if (shape.bezier) {
+    const nodes = shape.bezier.nodes;
+    return nodes.reduce<[number, number]>(
+      (sum, node) => [sum[0] + node.point[0] / nodes.length, sum[1] + node.point[1] / nodes.length],
+      [0, 0]
+    );
   }
   return null;
 }

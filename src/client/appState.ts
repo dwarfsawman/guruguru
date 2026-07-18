@@ -25,6 +25,7 @@ import type {
   ExistingPlacementPolicy
 } from "../shared/chronicle";
 import type { PageLayout, PanelCrop } from "../shared/pageLayout";
+import type { ParallelSnapGuide } from "../shared/panelShapeAssist";
 import { DEFAULT_MAX_DIALOGUES_PER_PANEL } from "../shared/scriptMangaPlan";
 import type { PageObject } from "../shared/pageObjects";
 import type { MosaicRegion } from "../shared/mosaicRegion";
@@ -525,7 +526,7 @@ export interface AppState {
   pageLayoutDraft: PageLayout | null;
   /** コマ形状編集: 選択中パネル id。null=未選択。 */
   shapeSelectedPanelId: string | null;
-  /** コマ形状編集: 選択中頂点 index(Delete キーでの削除用)。null=頂点未選択。 */
+  /** コマ形状編集: 選択中の多角形頂点/Bezierアンカー index(Delete キー用)。null=未選択。 */
   shapeSelectedVertexIndex: number | null;
   /** コマ形状編集: 分割モード(コマ上ドラッグで直線を引いて2分割)が有効か。 */
   shapeSplitMode: boolean;
@@ -537,7 +538,16 @@ export interface AppState {
    * コマ形状編集: 裁ち切り/ガター詰めドラッグ中に半透明プレビュー表示する辺
    * (pageLayoutDraft の panelIndex/edgeIndex)。null=プレビューなし。
    */
-  shapeGeometryPreview: { edges: Array<{ panelIndex: number; edgeIndex: number }> } | null;
+  shapeGeometryPreview: {
+    kind: "bleed" | "gutter";
+    edges: Array<{ panelIndex: number; edgeIndex: number }>;
+    side?: "left" | "right" | "top" | "bottom";
+  } | null;
+  /** 頂点ドラッグ中に表示する水平/垂直/他辺へのスマートガイド。 */
+  shapeParallelSnapGuide: ParallelSnapGuide | null;
+  /** フリーハンドから Bezier コマを追加するモードと作業中の軌跡。 */
+  shapeFreehandMode: boolean;
+  shapeFreehandDraft: [number, number][] | null;
   /** コマ形状編集: ドラッグ範囲選択の作業矩形(page 座標)。null=非ドラッグ中。 */
   shapeMarquee: { start: [number, number]; current: [number, number] } | null;
   /** コマ形状編集: 範囲選択された頂点集合(全パネル横断)。ドラッグで一括移動する。 */
@@ -754,6 +764,9 @@ export const state: AppState = {
   shapeSplitDraft: null,
   shapeSplitGutter: 0.015,
   shapeGeometryPreview: null,
+  shapeParallelSnapGuide: null,
+  shapeFreehandMode: false,
+  shapeFreehandDraft: null,
   shapeMarquee: null,
   shapeSelectedVertices: [],
   pageMosaicDraft: [],

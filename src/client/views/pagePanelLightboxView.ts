@@ -61,6 +61,8 @@ import { pageLayerBand, visiblePageObjects } from "../pageLayers";
 import { num, panelShapeElement, shapeCenter } from "./pageLayoutSvg";
 import { detectJunctions, detectSharedBoundaries, toEditableNameLayout } from "../../shared/nameLayoutEdit";
 import { LAYOUT_PAGE_MARGIN } from "../../shared/layoutPresets";
+import type { ParallelSnapGuide } from "../../shared/panelShapeAssist";
+import type { PanelBezierNode } from "../../shared/panelBezier";
 import { renderChronicleBar, type ChronicleBarViewState } from "./chronicleBarView";
 
 const VIEWBOX_SCALE = 1000;
@@ -78,7 +80,14 @@ export interface PanelShapeEditViewState {
   splitDraft: { start: [number, number]; current: [number, number] } | null;
   gutter: number;
   /** 裁ち切り/ガター詰めドラッグ中の半透明プレビュー対象辺(人間ゲート編集と同じ表現)。 */
-  geometryPreview: { edges: Array<{ panelIndex: number; edgeIndex: number }> } | null;
+  geometryPreview: {
+    kind: "bleed" | "gutter";
+    edges: Array<{ panelIndex: number; edgeIndex: number }>;
+    side?: "left" | "right" | "top" | "bottom";
+  } | null;
+  snapGuide: ParallelSnapGuide | null;
+  freehandMode: boolean;
+  freehandDraft: [number, number][] | null;
   /** ドラッグ範囲選択の作業矩形(page 座標)。 */
   marquee: { start: [number, number]; current: [number, number] } | null;
   /** 範囲選択された頂点集合(全パネル横断、一括移動対象)。 */
@@ -436,10 +445,13 @@ function renderShapesStageContent(shapeEdit: PanelShapeEditViewState, pageHeight
   }
   const selectedPanel = shapeEdit.selectedPanelId ? layout.panels.find((panel) => panel.id === shapeEdit.selectedPanelId) ?? null : null;
   const panelsHtml = layout.panels.map((panel) => renderShapePanelOutline(panel, panel.id === shapeEdit.selectedPanelId)).join("");
-  const handles =
-    selectedPanel && selectedPanel.shape.type === "polygon" && !shapeEdit.splitMode
+  const handles = selectedPanel && !shapeEdit.splitMode
+    ? selectedPanel.shape.type === "polygon"
       ? renderShapeVertexHandles(selectedPanel.shape.points, shapeEdit.selectedVertexIndex)
-      : "";
+      : selectedPanel.shape.type === "path" && selectedPanel.shape.bezier
+        ? renderBezierHandles(selectedPanel.shape.bezier.nodes, shapeEdit.selectedVertexIndex)
+        : ""
+    : "";
   const splitPreview = shapeEdit.splitMode && shapeEdit.splitDraft ? renderShapeSplitPreview(shapeEdit.splitDraft) : "";
   const marquee = shapeEdit.marquee
     ? `<rect class="page-shape-marquee" x="${num(Math.min(shapeEdit.marquee.start[0], shapeEdit.marquee.current[0]))}"
@@ -448,16 +460,18 @@ function renderShapesStageContent(shapeEdit: PanelShapeEditViewState, pageHeight
         height="${num(Math.abs(shapeEdit.marquee.current[1] - shapeEdit.marquee.start[1]))}" />`
     : "";
   return `
-    <g id="pageShapeStageRoot" transform="scale(${VIEWBOX_SCALE})" data-shape-stage="1">
+    <g id="pageShapeStageRoot" class="${shapeEdit.freehandMode ? "is-freehand-mode" : ""}" transform="scale(${VIEWBOX_SCALE})" data-shape-stage="1">
       <rect x="0" y="0" width="1" height="${num(layout.page.height)}" class="page-panel-paper" data-shape-background="1" />
       <rect class="page-shape-margin-guide" x="${num(LAYOUT_PAGE_MARGIN)}" y="${num(LAYOUT_PAGE_MARGIN)}"
         width="${num(1 - LAYOUT_PAGE_MARGIN * 2)}" height="${num(layout.page.height - LAYOUT_PAGE_MARGIN * 2)}" />
       ${panelsHtml}
-      ${shapeEdit.splitMode ? "" : renderShapeGeometryHandles(layout, shapeEdit.geometryPreview)}
+      ${shapeEdit.splitMode || shapeEdit.freehandMode ? "" : renderShapeGeometryHandles(layout, shapeEdit.geometryPreview)}
+      ${renderParallelSnapGuide(shapeEdit.snapGuide)}
       ${handles}
       ${renderMultiSelectedVertexHandles(layout, shapeEdit.selectedVertices)}
       ${marquee}
       ${splitPreview}
+      ${renderFreehandPreview(shapeEdit.freehandDraft)}
     </g>
   `;
 }
@@ -533,8 +547,29 @@ function renderShapeGeometryHandles(
       `<circle class="page-shape-junction-handle" data-shape-junction="${escapeAttr(junction.id)}" cx="${num(junction.position[0])}" cy="${num(junction.position[1])}" r="0.014"><title>交差点(接続する全コマの角)を移動</title></circle>`
     );
   }
-  // 裁ち切り/ガター詰めプレビュー: 対象辺を紙色で塗り潰した上へ半透明の破線を重ねる。
+  // 裁ち切りはページ端の帯・トリム線・状態ラベルを重ね、枠線が消えて絵が端まで続く結果を予告する。
   if (geometryPreview) {
+    if (geometryPreview.kind === "bleed" && geometryPreview.side) {
+      const side = geometryPreview.side;
+      const band = 0.045;
+      const x = side === "right" ? 1 - band : 0;
+      const y = side === "bottom" ? layout.page.height - band : 0;
+      const width = side === "left" || side === "right" ? band : 1;
+      const height = side === "top" || side === "bottom" ? band : layout.page.height;
+      const trim = side === "left" || side === "right"
+        ? `<line class="page-shape-bleed-trim" x1="${side === "left" ? 0 : 1}" y1="0" x2="${side === "left" ? 0 : 1}" y2="${num(layout.page.height)}" />`
+        : `<line class="page-shape-bleed-trim" x1="0" y1="${side === "top" ? 0 : num(layout.page.height)}" x2="1" y2="${side === "top" ? 0 : num(layout.page.height)}" />`;
+      const labelX = side === "right" ? 0.79 : 0.035;
+      const labelY = side === "bottom" ? layout.page.height - 0.07 : 0.035;
+      parts.push(`<g class="page-shape-bleed-preview">
+        <rect class="page-shape-bleed-band" x="${num(x)}" y="${num(y)}" width="${num(width)}" height="${num(height)}" />
+        ${trim}
+        <g transform="translate(${num(labelX)} ${num(labelY)})">
+          <rect class="page-shape-bleed-pill" width="0.175" height="0.04" rx="0.02" />
+          <text class="page-shape-bleed-label" x="0.0875" y="0.022">裁ち切り</text>
+        </g>
+      </g>`);
+    }
     for (const edge of geometryPreview.edges) {
       const panel = layout.panels[edge.panelIndex];
       if (!panel || panel.shape.type !== "polygon") continue;
@@ -544,7 +579,7 @@ function renderShapeGeometryHandles(
       if (!a || !b) continue;
       parts.push(
         `<line class="page-shape-preview-mask" x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}" />`,
-        `<line class="page-shape-preview-edge" x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}" />`
+        `<line class="page-shape-preview-edge${geometryPreview.kind === "bleed" ? " is-bleed" : ""}" x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}" />`
       );
     }
   }
@@ -579,6 +614,43 @@ function renderShapeVertexHandles(points: [number, number][], selectedIndex: num
   return `<g class="page-shape-handles">${edges}${vertices}</g>`;
 }
 
+function renderBezierHandles(nodes: readonly PanelBezierNode[], selectedIndex: number | null): string {
+  const controls = nodes.map((node, index) => `
+    <line class="page-shape-bezier-control-line" x1="${num(node.point[0])}" y1="${num(node.point[1])}" x2="${num(node.in[0])}" y2="${num(node.in[1])}" />
+    <line class="page-shape-bezier-control-line" x1="${num(node.point[0])}" y1="${num(node.point[1])}" x2="${num(node.out[0])}" y2="${num(node.out[1])}" />
+    <circle class="page-shape-bezier-control" data-shape-bezier-handle="${index}:in" cx="${num(node.in[0])}" cy="${num(node.in[1])}" r="${num(SHAPE_EDGE_MARKER_RADIUS)}"><title>入る方向ハンドル(Altで片側だけ編集)</title></circle>
+    <circle class="page-shape-bezier-control" data-shape-bezier-handle="${index}:out" cx="${num(node.out[0])}" cy="${num(node.out[1])}" r="${num(SHAPE_EDGE_MARKER_RADIUS)}"><title>出る方向ハンドル(Altで片側だけ編集)</title></circle>
+  `).join("");
+  const anchors = nodes.map((node, index) =>
+    `<rect class="page-shape-bezier-anchor${index === selectedIndex ? " is-selected" : ""}" data-shape-bezier-anchor="${index}" x="${num(node.point[0] - SHAPE_VERTEX_RADIUS)}" y="${num(node.point[1] - SHAPE_VERTEX_RADIUS)}" width="${num(SHAPE_VERTEX_RADIUS * 2)}" height="${num(SHAPE_VERTEX_RADIUS * 2)}" rx="0.003"><title>Bezierアンカー</title></rect>`
+  ).join("");
+  return `<g class="page-shape-bezier-handles">${controls}${anchors}</g>`;
+}
+
+function renderParallelSnapGuide(guide: ParallelSnapGuide | null): string {
+  if (!guide) return "";
+  const [labelX, labelY] = guide.activeEnd;
+  return `<g class="page-shape-smart-guide">
+    <line class="page-shape-smart-guide-reference" x1="${num(guide.referenceStart[0])}" y1="${num(guide.referenceStart[1])}" x2="${num(guide.referenceEnd[0])}" y2="${num(guide.referenceEnd[1])}" />
+    <line class="page-shape-smart-guide-active" x1="${num(guide.activeStart[0])}" y1="${num(guide.activeStart[1])}" x2="${num(guide.activeEnd[0])}" y2="${num(guide.activeEnd[1])}" />
+    <g transform="translate(${num(Math.max(0.04, Math.min(0.89, labelX - 0.1)))} ${num(Math.max(0.045, Math.min(1.35, labelY - 0.03)))})">
+      <rect class="page-shape-smart-guide-pill" width="0.095" height="0.035" rx="0.0175" />
+      <text class="page-shape-smart-guide-label" x="0.0475" y="0.019">${guide.label}</text>
+    </g>
+  </g>`;
+}
+
+function renderFreehandPreview(points: readonly [number, number][] | null): string {
+  if (!points?.length) return "";
+  const d = points.map(([x, y], index) => `${index === 0 ? "M" : "L"} ${num(x)} ${num(y)}`).join(" ");
+  const close = points.length > 2 ? ` L ${num(points[0]![0])} ${num(points[0]![1])}` : "";
+  return `<g class="page-shape-freehand-preview">
+    <path class="page-shape-freehand-fill" d="${d}${close} Z" />
+    <path class="page-shape-freehand-stroke" d="${d}" />
+    ${points.length > 2 ? `<path class="page-shape-freehand-close" d="M ${num(points[points.length - 1]![0])} ${num(points[points.length - 1]![1])} L ${num(points[0]![0])} ${num(points[0]![1])}" />` : ""}
+  </g>`;
+}
+
 function renderShapeSplitPreview(splitDraft: { start: [number, number]; current: [number, number] }): string {
   const [x1, y1] = splitDraft.start;
   const [x2, y2] = splitDraft.current;
@@ -601,6 +673,17 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
   const selectedPanel = layout && shapeEdit.selectedPanelId ? layout.panels.find((panel) => panel.id === shapeEdit.selectedPanelId) ?? null : null;
   const history = shapeHistoryButtons(shapeEdit);
 
+  if (shapeEdit.freehandMode) {
+    return `
+      <footer class="page-panel-toolbar page-shape-freehand-toolbar">
+        <p class="page-panel-hint-text"><strong>フリーハンド曲線枠:</strong> 紙面上を一周ドラッグしてください。軌跡を滑らかな閉じたBezierへ整えます。</p>
+        <div class="page-panel-toolbar-actions">
+          <button class="button-secondary compact is-active" type="button" data-action="toggle-panel-shape-freehand-mode">キャンセル</button>
+        </div>
+        ${history}
+      </footer>`;
+  }
+
   if (shapeEdit.selectedVertices.length > 0) {
     return `
       <footer class="page-panel-toolbar">
@@ -616,9 +699,22 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
         <p class="page-panel-hint-text">コマをクリックして選択(頂点編集・分割)、ドラッグで頂点を範囲選択(一括移動)。
           辺はドラッグで法線方向へ移動 / ◆=境界を移動(両側追随) / ⇔=コマ間余白を詰め広げ /
           ●=交差点を一括移動 / ページの辺と平行な外周辺を余白外へドラッグすると裁ち切り(半透明プレビュー)。</p>
+        <div class="page-panel-toolbar-actions">
+          <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-freehand-mode">✎ フリーハンド曲線枠</button>
+        </div>
         ${history}
       </footer>
     `;
+  }
+  if (selectedPanel.shape.type === "path" && selectedPanel.shape.bezier) {
+    return `
+      <footer class="page-panel-toolbar">
+        <p class="page-panel-hint-text">□=アンカー移動 / ○=曲線の方向と強さ。通常ドラッグは反対側も滑らかに連動、Alt+ドラッグで片側だけ調整。アンカーはダブルクリックまたはDeleteで削除。</p>
+        <div class="page-panel-toolbar-actions">
+          <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-freehand-mode">✎ 別の曲線枠を描く</button>
+        </div>
+        ${history}
+      </footer>`;
   }
   if (selectedPanel.shape.type === "path") {
     return `
@@ -658,6 +754,8 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
       <p class="page-panel-hint-text">頂点をドラッグで移動・辺の中点クリックで頂点追加・ダブルクリック(または選択+Delete)で頂点削除</p>
       <div class="page-panel-toolbar-actions">
         <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-split-mode">コマを分割</button>
+        <button class="button-secondary compact" type="button" data-action="convert-panel-shape-to-bezier">曲線に変換</button>
+        <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-freehand-mode">✎ 曲線枠を描く</button>
       </div>
       ${history}
     </footer>

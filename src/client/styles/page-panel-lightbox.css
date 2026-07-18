@@ -1273,6 +1273,121 @@
   pointer-events: none;
 }
 
+.page-shape-preview-edge.is-bleed {
+  stroke: rgba(22, 104, 160, 0.78);
+  stroke-dasharray: 0.012 0.009;
+  animation: page-shape-preview-march 0.65s linear infinite;
+}
+
+@keyframes page-shape-preview-march {
+  to { stroke-dashoffset: -0.021; }
+}
+
+.page-shape-bleed-band {
+  fill: rgba(31, 122, 176, 0.12);
+  pointer-events: none;
+}
+
+.page-shape-bleed-trim {
+  stroke: rgba(22, 104, 160, 0.9);
+  stroke-width: 0.005;
+  pointer-events: none;
+}
+
+.page-shape-bleed-pill,
+.page-shape-smart-guide-pill {
+  fill: rgba(20, 72, 105, 0.92);
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 0.002;
+  pointer-events: none;
+}
+
+.page-shape-bleed-label,
+.page-shape-smart-guide-label {
+  fill: #ffffff;
+  font-size: 0.018px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
+/* PowerPoint風の平行スナップガイド。基準辺は淡色、確定方向は高彩度で全長表示。 */
+.page-shape-smart-guide-reference {
+  stroke: rgba(202, 54, 121, 0.52);
+  stroke-width: 0.006;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+.page-shape-smart-guide-active {
+  stroke: #ca3679;
+  stroke-width: 0.003;
+  stroke-dasharray: 0.01 0.007;
+  pointer-events: none;
+}
+
+.page-shape-smart-guide-pill {
+  fill: rgba(160, 29, 91, 0.94);
+}
+
+/* 編集可能なBezier: 四角=アンカー、円=方向ハンドル。 */
+.page-shape-bezier-control-line {
+  stroke: rgba(32, 116, 157, 0.62);
+  stroke-width: 0.0025;
+  pointer-events: none;
+}
+
+.page-shape-bezier-control {
+  fill: #ffffff;
+  stroke: #20749d;
+  stroke-width: 0.003;
+  cursor: crosshair;
+}
+
+.page-shape-bezier-anchor {
+  fill: #ffffff;
+  stroke: #a01d5b;
+  stroke-width: 0.004;
+  cursor: move;
+}
+
+.page-shape-bezier-anchor.is-selected {
+  fill: #ca3679;
+  stroke: #ffffff;
+}
+
+#pageShapeStageRoot.is-freehand-mode {
+  cursor: crosshair;
+}
+
+.page-shape-freehand-fill {
+  fill: rgba(31, 122, 176, 0.12);
+  stroke: none;
+  pointer-events: none;
+}
+
+.page-shape-freehand-stroke {
+  fill: none;
+  stroke: #1f7ab0;
+  stroke-width: 0.006;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.page-shape-freehand-close {
+  fill: none;
+  stroke: rgba(31, 122, 176, 0.55);
+  stroke-width: 0.003;
+  stroke-dasharray: 0.01 0.007;
+  pointer-events: none;
+}
+
+.page-shape-freehand-toolbar {
+  box-shadow: inset 0 2px 0 rgba(31, 122, 176, 0.55);
+}
+
 /* ドラッグ範囲選択(マーキー)と選択済み頂点。 */
 .page-shape-marquee {
   fill: rgba(58, 110, 165, 0.12);

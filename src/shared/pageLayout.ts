@@ -10,13 +10,18 @@
  * 将来機能(吹き出し追加・翻訳)のために保持だけする。
  */
 import { isJsonObject } from "./json";
+import {
+  bezierPathData,
+  normalizePanelBezierGeometry,
+  type PanelBezierGeometry
+} from "./panelBezier";
 
 /** パネル(コマ)形状。将来のコマ形状編集に備え polygon 以外も型で受ける。 */
 export type PanelShape =
   | { type: "polygon"; points: [number, number][] }
   | { type: "rect"; bounds: [number, number, number, number]; cornerRadius?: number }
   | { type: "ellipse"; center: [number, number]; radius: [number, number] }
-  | { type: "path"; d: string };
+  | { type: "path"; d: string; bezier?: PanelBezierGeometry };
 
 /** コマ枠の描画スタイル。style は元フォーマットの意味(solid/none/wavy/cloud/jagged/custom)を保持。 */
 export interface PanelFrame {
@@ -177,6 +182,8 @@ export function normalizePanelShape(raw: unknown): PanelShape | null {
     return center && radius ? { type: "ellipse", center, radius } : null;
   }
   if (type === "path") {
+    const bezier = normalizePanelBezierGeometry(raw.bezier);
+    if (bezier) return { type: "path", d: bezierPathData(bezier), bezier };
     return typeof raw.d === "string" && raw.d.trim() ? { type: "path", d: raw.d } : null;
   }
   return null;
@@ -205,7 +212,7 @@ function shapeMaxY(shape: PanelShape): number {
   if (shape.type === "ellipse") {
     return shape.center[1] + shape.radius[1];
   }
-  return 0;
+  return panelBounds(shape)[3];
 }
 
 /**
@@ -228,6 +235,12 @@ export function panelBounds(shape: PanelShape): [number, number, number, number]
     const [cx, cy] = shape.center;
     const [rx, ry] = shape.radius;
     return [cx - rx, cy - ry, cx + rx, cy + ry];
+  }
+  if (shape.bezier) {
+    const points = shape.bezier.nodes.flatMap((node) => [node.point, node.in, node.out]);
+    const xs = points.map(([x]) => x);
+    const ys = points.map(([, y]) => y);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
   }
   const numbers = shape.d.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
   const xs: number[] = [];
@@ -570,6 +583,17 @@ function translatePanelShape(shape: PanelShape, dx: number, dy: number): PanelSh
   if (shape.type === "ellipse") {
     return { type: "ellipse", center: [shape.center[0] + dx, shape.center[1] + dy], radius: shape.radius };
   }
+  if (shape.bezier) {
+    const bezier: PanelBezierGeometry = {
+      closed: true,
+      nodes: shape.bezier.nodes.map((node) => ({
+        point: [node.point[0] + dx, node.point[1] + dy],
+        in: [node.in[0] + dx, node.in[1] + dy],
+        out: [node.out[0] + dx, node.out[1] + dy]
+      }))
+    };
+    return { type: "path", d: bezierPathData(bezier), bezier };
+  }
   return shape;
 }
 
@@ -806,7 +830,12 @@ function translateGeometry(raw: unknown, dx: number, dy: number): unknown {
   if (!isJsonObject(raw)) return raw;
   const shape = normalizePanelShape(raw);
   if (!shape) return raw;
-  if (shape.type === "path") return { ...raw, d: translateSvgPathData(shape.d, dx, dy) };
+  if (shape.type === "path") {
+    const translated = translatePanelShape(shape, dx, dy);
+    return translated.type === "path"
+      ? { ...raw, d: translated.bezier ? translated.d : translateSvgPathData(shape.d, dx, dy), ...(translated.bezier ? { bezier: translated.bezier } : {}) }
+      : raw;
+  }
   return { ...raw, ...translatePanelShape(shape, dx, dy) };
 }
 

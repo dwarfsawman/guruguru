@@ -1147,6 +1147,9 @@ function renderPagePanelLightboxView(): string {
       splitDraft: state.shapeSplitDraft,
       gutter: state.shapeSplitGutter,
       geometryPreview: state.shapeGeometryPreview,
+      snapGuide: state.shapeParallelSnapGuide,
+      freehandMode: state.shapeFreehandMode,
+      freehandDraft: state.shapeFreehandDraft,
       marquee: state.shapeMarquee,
       selectedVertices: state.shapeSelectedVertices,
       ...panelShapeHistoryStatus()

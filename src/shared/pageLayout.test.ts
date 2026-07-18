@@ -118,6 +118,20 @@ test("normalizePanelShape: 対応形状を厳密に受け、未対応/不正は 
     radius: [0.2, 0.3]
   });
   assert.deepEqual(normalizePanelShape({ type: "path", d: "M0 0 L1 1 Z" }), { type: "path", d: "M0 0 L1 1 Z" });
+  const bezier = normalizePanelShape({
+    type: "path",
+    d: "stale",
+    bezier: {
+      closed: true,
+      nodes: [
+        { point: [0, 0], in: [0, 0.2], out: [0.2, 0] },
+        { point: [1, 0], in: [0.8, 0], out: [1, 0.2] },
+        { point: [0.5, 1], in: [0.7, 1], out: [0.3, 1] }
+      ]
+    }
+  });
+  assert.ok(bezier?.type === "path" && bezier.bezier);
+  assert.match(bezier.d, /^M 0 0 C .* Z$/);
   assert.equal(normalizePanelShape({ type: "polygon", points: [[0, "x"]] }), null);
   assert.equal(normalizePanelShape({ type: "star" }), null);
   assert.equal(normalizePanelShape(null), null);

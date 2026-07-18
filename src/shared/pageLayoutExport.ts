@@ -30,7 +30,22 @@ function shapeToSpec(shape: PanelShape): Record<string, unknown> {
     };
   }
   if (shape.type === "ellipse") return { type: "ellipse", center: [...shape.center], radius: [...shape.radius] };
-  return { type: "path", d: shape.d };
+  return {
+    type: "path",
+    d: shape.d,
+    ...(shape.bezier
+      ? {
+          bezier: {
+            closed: true,
+            nodes: shape.bezier.nodes.map((node) => ({
+              point: [...node.point],
+              in: [...node.in],
+              out: [...node.out]
+            }))
+          }
+        }
+      : {})
+  };
 }
 
 function frameDiff(frame: PanelFrame | undefined): Record<string, unknown> | null {

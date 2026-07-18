@@ -160,6 +160,8 @@ export function toEditableNameLayout(layout: PageLayout): PageLayout {
   const clone = clonePageLayout(layout);
   clone.panels = clone.panels.map((panel) => {
     if (panel.shape.type === "polygon") return panel;
+    // 構造化 Bezier は専用ハンドルで編集するため、境界編集用の外接矩形へ潰さない。
+    if (panel.shape.type === "path" && panel.shape.bezier) return panel;
     const points = panelShapeToPolygon(panel.shape);
     if (points) return { ...panel, shape: { type: "polygon", points } };
     const [x0, y0, x1, y1] = panelBounds(panel.shape);
