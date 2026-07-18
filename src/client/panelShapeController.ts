@@ -181,6 +181,9 @@ async function persistShapeLayout(): Promise<void> {
       bookPage.layout = result.layout;
     }
     shapesDirty = true;
+    // 保存完了時点でレイヤモード等が book 側 layout を表示していても最新化されるよう再描画する
+    // (これが無いと、保存前にタブを切り替えた場合に次の操作まで古いレイアウトが残る)。
+    requestRender();
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
   }

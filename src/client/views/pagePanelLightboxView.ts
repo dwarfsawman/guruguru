@@ -151,7 +151,10 @@ export function renderPagePanelLightbox(
   if (lightbox.pageId !== page.id) {
     return "";
   }
-  const layout = page.layout ?? null;
+  // コマ枠編集は `state.pageLayoutDraft`(shapeEdit.layout)に対して行われ、`page.layout`(book 一覧)へは
+  // debounce PATCH の応答時にしか書き戻らない。保存前にタブを切り替えても編集結果が見えるよう、
+  // lightbox 内の描画は常にドラフトを優先する(ドラフトは open 時に page.layout から clone される)。
+  const layout = shapeEdit.layout ?? page.layout ?? null;
   // レイアウトの無いページ(1枚絵)は "objects"/"mosaic" のみ開ける(呼び出し側が open 時に決める)。
   const mode = layout ? (lightbox.mode === "panels" ? "objects" : lightbox.mode) : lightbox.mode === "mosaic" ? "mosaic" : "objects";
   const label = page.title.trim() || "ページ";
