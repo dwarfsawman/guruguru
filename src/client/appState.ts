@@ -552,6 +552,13 @@ export interface AppState {
   shapeMarquee: { start: [number, number]; current: [number, number] } | null;
   /** コマ形状編集: 範囲選択された頂点集合(全パネル横断)。ドラッグで一括移動する。 */
   shapeSelectedVertices: Array<{ panelIndex: number; vertexIndex: number }>;
+  /** コマ形状編集: 頂点追加モード(全コマの辺中点に＋マーカーを表示し、クリックで頂点追加)。 */
+  shapeAddVertexMode: boolean;
+  /**
+   * コマ形状編集: ドラッグ中の幾何ハンドル。hover で現れるハンドルをドラッグ中も表示し続けるための
+   * ビュー状態。id は boundary/junction の安定 id、edge は "panelIndex:edgeIndex"。null=非ドラッグ中。
+   */
+  shapeActiveGeometry: { kind: "boundary" | "gutter" | "junction" | "edge"; id: string } | null;
   /**
    * モザイク編集(Docs/Feature-CGCollectionSuite.md P6): 開いている lightbox のページのモザイクリージョン
    * ドラフト。追加/頂点編集/削除/granularity 変更はこれを直接書き換え、`pageMosaicController.ts` が
@@ -769,6 +776,8 @@ export const state: AppState = {
   shapeFreehandDraft: null,
   shapeMarquee: null,
   shapeSelectedVertices: [],
+  shapeAddVertexMode: false,
+  shapeActiveGeometry: null,
   pageMosaicDraft: [],
   mosaicSelectedRegionId: null,
   mosaicSelectedVertexIndex: null,

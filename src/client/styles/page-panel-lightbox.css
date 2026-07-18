@@ -263,17 +263,87 @@
   fill: var(--accent-strong, var(--accent));
 }
 
-.page-shape-edge-handle {
-  fill: color-mix(in srgb, var(--accent) 45%, transparent);
-  stroke: #fff;
-  stroke-width: 1px;
-  vector-effect: non-scaling-stroke;
-  cursor: copy;
-  pointer-events: auto;
+/* コマ領域の薄い塗り(静かなキャンバスでもコマ範囲が分かる)。操作は枠線/バッジ側が受ける。 */
+.page-shape-panel-fill {
+  fill: color-mix(in srgb, #b8860b 6%, transparent);
+  pointer-events: none;
+  transition: fill 0.15s ease;
 }
 
-.page-shape-edge-handle:hover {
-  fill: var(--accent);
+.page-shape-panel-fill.is-selected {
+  fill: color-mix(in srgb, #b8860b 14%, transparent);
+}
+
+/* コマ番号バッジ。既定モードではドラッグ=コマ全体移動・クリック=選択のハンドルを兼ねる。 */
+.page-shape-order-badge {
+  pointer-events: none;
+}
+
+.page-shape-order-badge-bg {
+  fill: rgba(255, 255, 255, 0.92);
+  stroke: rgba(23, 20, 15, 0.28);
+  stroke-width: 0.0022;
+  transition: stroke 0.15s ease, fill 0.15s ease;
+}
+
+.page-shape-order-badge-text {
+  fill: rgba(23, 20, 15, 0.62);
+  font-size: 0.03px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  user-select: none;
+}
+
+.page-shape-order-badge.is-interactive .page-shape-order-badge-bg {
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.page-shape-order-badge.is-interactive .page-shape-order-badge-bg:active {
+  cursor: grabbing;
+}
+
+.page-shape-order-badge.is-interactive:hover .page-shape-order-badge-bg {
+  stroke: #b8860b;
+  fill: #ffffff;
+}
+
+.page-shape-order-badge.is-selected .page-shape-order-badge-bg {
+  stroke: var(--accent, #b8860b);
+  stroke-width: 0.0034;
+}
+
+/* 頂点追加モードの＋マーカー(辺中点)。 */
+.page-shape-addvertex-hit {
+  fill: transparent;
+  cursor: copy;
+}
+
+.page-shape-addvertex-dot {
+  fill: #ffffff;
+  stroke: #b8860b;
+  stroke-width: 0.0025;
+  pointer-events: none;
+  transition: fill 0.12s ease;
+}
+
+.page-shape-addvertex-plus {
+  stroke: #b8860b;
+  stroke-width: 0.002;
+  stroke-linecap: round;
+  fill: none;
+  pointer-events: none;
+  transition: stroke 0.12s ease;
+}
+
+.page-shape-addvertex:hover .page-shape-addvertex-dot {
+  fill: #b8860b;
+}
+
+.page-shape-addvertex:hover .page-shape-addvertex-plus {
+  stroke: #ffffff;
 }
 
 .page-shape-split-line {
@@ -1215,48 +1285,120 @@
   pointer-events: none;
 }
 
+/* ハンドルは hover-reveal: 透明ヒット領域は常時、可視要素は対象へ寄せた時とドラッグ中(.is-active)のみ。 */
+
+/* 非共有辺(外周など): hover でハイライト線が現れ、ドラッグで法線方向へ平行移動。 */
 .page-shape-edgeline-hit {
   stroke: transparent;
   stroke-width: 0.024;
   cursor: move;
 }
 
-.page-shape-boundary-line {
-  stroke: rgba(184, 134, 11, 0.35);
-  stroke-width: 0.004;
-  stroke-dasharray: 0.016 0.01;
+.page-shape-edge-glow {
+  stroke: rgba(184, 134, 11, 0.55);
+  stroke-width: 0.009;
+  stroke-linecap: round;
+  opacity: 0;
+  transition: opacity 0.12s ease;
   pointer-events: none;
 }
 
-.page-shape-boundary-handle {
-  fill: rgba(184, 134, 11, 0.85);
-  stroke: #ffffff;
-  stroke-width: 0.004;
-  cursor: move;
+.page-shape-edge-group:hover .page-shape-edge-glow,
+.page-shape-edge-group.is-active .page-shape-edge-glow {
+  opacity: 1;
 }
 
-/* ⇔ ガター幅ハンドル: 透明ヒット円+境界法線方向の両矢印(形で役割が分かるように)。 */
-.page-shape-gutter-hit {
-  fill: rgba(58, 110, 165, 0.28);
-  stroke: rgba(58, 110, 165, 0.9);
-  stroke-width: 0.003;
+/* 共有境界(仕切り): 太い透明バンドをそのまま掴んで移動。hover で中心線+ガターシェブロンが現れる。 */
+.page-shape-boundary-hit {
+  stroke: transparent;
+  fill: none;
+}
+
+.page-shape-boundary-hit.is-x {
+  cursor: col-resize;
+}
+
+.page-shape-boundary-hit.is-y {
+  cursor: row-resize;
+}
+
+.page-shape-boundary-line {
+  stroke: rgba(184, 134, 11, 0.85);
+  stroke-width: 0.005;
+  stroke-linecap: round;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+
+.page-shape-boundary-group:hover .page-shape-boundary-line,
+.page-shape-boundary-group.is-active .page-shape-boundary-line {
+  opacity: 1;
+}
+
+/* ガターシェブロン(境界の両側の〈 〉)。外向きへドラッグで余白を広げ、内向きで詰める。
+   境界へ寄せた時だけ現れ、それ以外はヒットも無効(近くのコマ操作を奪わない)。 */
+.page-shape-gutter-chevron {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.page-shape-boundary-group:hover .page-shape-gutter-chevron,
+.page-shape-boundary-group.is-active .page-shape-gutter-chevron {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.page-shape-gutter-chevron-hit {
+  fill: rgba(255, 255, 255, 0.88);
+  stroke: rgba(184, 134, 11, 0.9);
+  stroke-width: 0.0025;
+}
+
+.page-shape-gutter-chevron.is-x .page-shape-gutter-chevron-hit {
   cursor: ew-resize;
 }
 
-.page-shape-gutter-shaft,
-.page-shape-gutter-head {
-  stroke: #2b5586;
-  stroke-width: 0.005;
+.page-shape-gutter-chevron.is-y .page-shape-gutter-chevron-hit {
+  cursor: ns-resize;
+}
+
+.page-shape-gutter-chevron-mark {
+  stroke: #b8860b;
+  stroke-width: 0.0032;
   stroke-linecap: round;
+  stroke-linejoin: round;
   fill: none;
   pointer-events: none;
 }
 
-.page-shape-junction-handle {
-  fill: rgba(170, 60, 120, 0.85);
+.page-shape-gutter-chevron:hover .page-shape-gutter-chevron-hit {
+  fill: #b8860b;
+}
+
+.page-shape-gutter-chevron:hover .page-shape-gutter-chevron-mark {
+  stroke: #ffffff;
+}
+
+/* 交差点: hover でドットが現れ、ドラッグで接続する全コマの角を一括移動。 */
+.page-shape-junction-hit {
+  fill: transparent;
+  cursor: move;
+}
+
+.page-shape-junction-dot {
+  fill: rgba(184, 134, 11, 0.9);
   stroke: #ffffff;
   stroke-width: 0.004;
-  cursor: move;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+
+.page-shape-junction-group:hover .page-shape-junction-dot,
+.page-shape-junction-group.is-active .page-shape-junction-dot {
+  opacity: 1;
 }
 
 /* 裁ち切り/ガター詰めプレビュー: 実線を紙色でマスクして半透明の破線を重ねる */
@@ -1357,7 +1499,8 @@
   stroke: #ffffff;
 }
 
-#pageShapeStageRoot.is-freehand-mode {
+#pageShapeStageRoot.is-freehand-mode,
+#pageShapeStageRoot.is-split-mode {
   cursor: crosshair;
 }
 
@@ -1406,4 +1549,19 @@
 
 .page-shape-history {
   margin-top: 6px;
+}
+
+/* モードトグル(頂点追加/コマ分割/曲線枠)。有効中は accent で押下状態を示す。 */
+.page-shape-mode-actions .button-secondary.is-active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.page-shape-addvertex-toolbar {
+  box-shadow: inset 0 2px 0 rgba(184, 134, 11, 0.55);
+}
+
+.page-shape-split-toolbar {
+  box-shadow: inset 0 2px 0 rgba(217, 119, 6, 0.55);
 }

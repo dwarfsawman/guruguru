@@ -92,6 +92,10 @@ export interface PanelShapeEditViewState {
   marquee: { start: [number, number]; current: [number, number] } | null;
   /** 範囲選択された頂点集合(全パネル横断、一括移動対象)。 */
   selectedVertices: Array<{ panelIndex: number; vertexIndex: number }>;
+  /** 頂点追加モード(全コマの辺中点＋マーカー表示)。分割/フリーハンドと排他。 */
+  addVertexMode: boolean;
+  /** ドラッグ中の幾何ハンドル(hover-reveal ハンドルをドラッグ中も表示し続ける)。 */
+  activeGeometry: { kind: "boundary" | "gutter" | "junction" | "edge"; id: string } | null;
   /** undo/redo ボタンの活性判定。 */
   canUndo: boolean;
   canRedo: boolean;
@@ -443,9 +447,13 @@ function renderShapesStageContent(shapeEdit: PanelShapeEditViewState, pageHeight
   if (!layout) {
     return `<g transform="scale(${VIEWBOX_SCALE})"><rect x="0" y="0" width="1" height="${num(pageHeight)}" class="page-panel-paper" /></g>`;
   }
+  // 既定モードでは静かなキャンバス(塗り+番号バッジ+枠線)を保ち、ハンドルは hover で現れる。
+  // 頂点追加/分割/フリーハンドは排他のモードトグル(ツールバー)。
+  const isDefaultMode = !shapeEdit.splitMode && !shapeEdit.freehandMode && !shapeEdit.addVertexMode;
   const selectedPanel = shapeEdit.selectedPanelId ? layout.panels.find((panel) => panel.id === shapeEdit.selectedPanelId) ?? null : null;
+  const fillsHtml = layout.panels.map((panel) => renderShapePanelFill(panel, panel.id === shapeEdit.selectedPanelId)).join("");
   const panelsHtml = layout.panels.map((panel) => renderShapePanelOutline(panel, panel.id === shapeEdit.selectedPanelId)).join("");
-  const handles = selectedPanel && !shapeEdit.splitMode
+  const handles = selectedPanel && isDefaultMode
     ? selectedPanel.shape.type === "polygon"
       ? renderShapeVertexHandles(selectedPanel.shape.points, shapeEdit.selectedVertexIndex)
       : selectedPanel.shape.type === "path" && selectedPanel.shape.bezier
@@ -459,21 +467,79 @@ function renderShapesStageContent(shapeEdit: PanelShapeEditViewState, pageHeight
         width="${num(Math.abs(shapeEdit.marquee.current[0] - shapeEdit.marquee.start[0]))}"
         height="${num(Math.abs(shapeEdit.marquee.current[1] - shapeEdit.marquee.start[1]))}" />`
     : "";
+  const rootClass = [
+    shapeEdit.freehandMode ? "is-freehand-mode" : "",
+    shapeEdit.splitMode ? "is-split-mode" : "",
+    shapeEdit.addVertexMode ? "is-addvertex-mode" : ""
+  ].filter(Boolean).join(" ");
   return `
-    <g id="pageShapeStageRoot" class="${shapeEdit.freehandMode ? "is-freehand-mode" : ""}" transform="scale(${VIEWBOX_SCALE})" data-shape-stage="1">
+    <g id="pageShapeStageRoot" class="${rootClass}" transform="scale(${VIEWBOX_SCALE})" data-shape-stage="1">
       <rect x="0" y="0" width="1" height="${num(layout.page.height)}" class="page-panel-paper" data-shape-background="1" />
       <rect class="page-shape-margin-guide" x="${num(LAYOUT_PAGE_MARGIN)}" y="${num(LAYOUT_PAGE_MARGIN)}"
         width="${num(1 - LAYOUT_PAGE_MARGIN * 2)}" height="${num(layout.page.height - LAYOUT_PAGE_MARGIN * 2)}" />
+      ${fillsHtml}
       ${panelsHtml}
-      ${shapeEdit.splitMode || shapeEdit.freehandMode ? "" : renderShapeGeometryHandles(layout, shapeEdit.geometryPreview)}
+      ${isDefaultMode ? renderShapeGeometryHandles(layout, shapeEdit.geometryPreview, shapeEdit.activeGeometry) : ""}
+      ${renderShapeOrderBadges(layout, isDefaultMode, shapeEdit.selectedPanelId)}
       ${renderParallelSnapGuide(shapeEdit.snapGuide)}
       ${handles}
+      ${shapeEdit.addVertexMode ? renderAddVertexMarkers(layout) : ""}
       ${renderMultiSelectedVertexHandles(layout, shapeEdit.selectedVertices)}
       ${marquee}
       ${splitPreview}
       ${renderFreehandPreview(shapeEdit.freehandDraft)}
     </g>
   `;
+}
+
+/** コマ領域の薄い塗り(モック評価: コマ領域が一目で分かる)。クリックは枠線要素側で拾う。 */
+function renderShapePanelFill(panel: LayoutPanel, isSelected: boolean): string {
+  return panelShapeElement(panel.shape, `class="page-shape-panel-fill${isSelected ? " is-selected" : ""}"`);
+}
+
+/**
+ * コマ番号バッジ。読み順の把握と同時に、既定モードではドラッグでコマ全体を移動するハンドルになる
+ * (クリックだけならコマ選択)。他モードでは表示のみ(pointer-events なし)。
+ */
+function renderShapeOrderBadges(layout: PageLayout, interactive: boolean, selectedPanelId: string | null): string {
+  const parts = layout.panels.map((panel) => {
+    const bounds = panelBounds(panel.shape);
+    const center = shapeCenter(panel.shape) ?? [(bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2];
+    const classes = [
+      "page-shape-order-badge",
+      interactive ? "is-interactive" : "",
+      panel.id === selectedPanelId ? "is-selected" : ""
+    ].filter(Boolean).join(" ");
+    return `<g class="${classes}"${interactive ? ` data-shape-panel-move="${escapeAttr(panel.id)}"` : ""} transform="translate(${num(center[0])} ${num(center[1])})">
+      <circle class="page-shape-order-badge-bg" r="0.026" />
+      <text class="page-shape-order-badge-text" x="0" y="0.001">${panel.order}</text>
+      ${interactive ? `<title>ドラッグでコマ全体を移動 / クリックで選択</title>` : ""}
+    </g>`;
+  });
+  return `<g class="page-shape-order-badges">${parts.join("")}</g>`;
+}
+
+/** 頂点追加モードの＋マーカー(全 polygon コマの辺中点)。クリックで頂点追加。 */
+function renderAddVertexMarkers(layout: PageLayout): string {
+  const parts: string[] = [];
+  layout.panels.forEach((panel) => {
+    if (panel.shape.type !== "polygon") return;
+    const points = panel.shape.points;
+    const n = points.length;
+    for (let i = 0; i < n; i += 1) {
+      const a = points[i]!;
+      const b = points[(i + 1) % n]!;
+      const mx = (a[0] + b[0]) / 2;
+      const my = (a[1] + b[1]) / 2;
+      parts.push(`<g class="page-shape-addvertex" data-shape-addvertex="${i}" data-shape-addvertex-panel="${escapeAttr(panel.id)}" transform="translate(${num(mx)} ${num(my)})">
+        <circle class="page-shape-addvertex-hit" r="0.018" />
+        <circle class="page-shape-addvertex-dot" r="${num(SHAPE_EDGE_MARKER_RADIUS)}" />
+        <path class="page-shape-addvertex-plus" d="M -0.0045 0 H 0.0045 M 0 -0.0045 V 0.0045" />
+        <title>クリックで頂点を追加</title>
+      </g>`);
+    }
+  });
+  return `<g class="page-shape-addvertex-layer">${parts.join("")}</g>`;
 }
 
 /** 範囲選択された頂点のハンドル(ドラッグでまとめて移動)。 */
@@ -496,56 +562,77 @@ function renderMultiSelectedVertexHandles(
 }
 
 /**
- * 人間ゲートのコマ割り修正(Docs/Feature-NameGateLayoutEdit.md)と同じ幾何編集ハンドル群。
+ * 幾何編集ハンドル群(A案「ダイレクト仕切り」×モックの融合)。常時表示はせず、対象へマウスを
+ * 寄せた時(グループ hover)かドラッグ中(activeGeometry)だけ可視化する。
+ * - 共有境界: 太い透明バンドをドラッグ=境界移動(両側追随)。hover で中心線と両側の
+ *   ガターシェブロン(外向きへドラッグで余白を広げる/内向きで詰める)が現れる。
+ * - 非共有辺(外周など): hover でハイライト線。ドラッグで法線方向へ平行移動(裁ち切り対応)。
+ * - 交差点: hover でドットが現れ、ドラッグで接続する全コマの角を一括移動。
  * 検出は polygon 化した複製(toEditableNameLayout)上で行い、panelIndex/edgeIndex はドラフトと
  * 1:1 対応する(コントローラ側もドラッグ開始時に同じ polygon 化を行う)。
  */
 function renderShapeGeometryHandles(
   layout: PageLayout,
-  geometryPreview: PanelShapeEditViewState["geometryPreview"]
+  geometryPreview: PanelShapeEditViewState["geometryPreview"],
+  activeGeometry: PanelShapeEditViewState["activeGeometry"]
 ): string {
   const editable = toEditableNameLayout(layout);
   const parts: string[] = [];
-  // 辺ドラッグ用の太い透明ヒットライン(全パネル)。
+  const boundaries = detectSharedBoundaries(editable);
+  // 共有境界に属する辺は境界バンドで操作する(片側だけの調整は頂点ドラッグで可能)。
+  const boundaryEdgeKeys = new Set(
+    boundaries.flatMap((boundary) => boundary.edges.map((entry) => `${entry.ref.panelIndex}:${entry.ref.edgeIndex}`))
+  );
   editable.panels.forEach((panel, panelIndex) => {
     if (panel.shape.type !== "polygon") return;
     const points = panel.shape.points;
     const n = points.length;
     for (let edgeIndex = 0; edgeIndex < n; edgeIndex += 1) {
+      const id = `${panelIndex}:${edgeIndex}`;
+      if (boundaryEdgeKeys.has(id)) continue;
       const [x1, y1] = points[edgeIndex]!;
       const [x2, y2] = points[(edgeIndex + 1) % n]!;
-      parts.push(
-        `<line class="page-shape-edgeline-hit" data-shape-edgeline="${panelIndex}:${edgeIndex}" x1="${num(x1)}" y1="${num(y1)}" x2="${num(x2)}" y2="${num(y2)}" />`
-      );
+      const isActive = activeGeometry?.kind === "edge" && activeGeometry.id === id;
+      parts.push(`<g class="page-shape-edge-group${isActive ? " is-active" : ""}">
+        <line class="page-shape-edge-glow" x1="${num(x1)}" y1="${num(y1)}" x2="${num(x2)}" y2="${num(y2)}" />
+        <line class="page-shape-edgeline-hit" data-shape-edgeline="${id}" x1="${num(x1)}" y1="${num(y1)}" x2="${num(x2)}" y2="${num(y2)}"><title>辺をドラッグで移動(外周辺は余白の外へで裁ち切り)</title></line>
+      </g>`);
     }
   });
-  // 共有辺(ガター境界)の移動◆/幅⇔ハンドル。◆はひし形、⇔は法線方向の両矢印で形から役割が分かるようにする。
-  for (const boundary of detectSharedBoundaries(editable)) {
-    const [cx, cy] = boundary.center;
-    const dirX = boundary.end[0] - boundary.start[0];
-    const dirY = boundary.end[1] - boundary.start[1];
+  for (const boundary of boundaries) {
     const id = escapeAttr(boundary.id);
-    const r = 0.014;
-    const diamond = `M ${num(cx)} ${num(cy - r)} L ${num(cx + r)} ${num(cy)} L ${num(cx)} ${num(cy + r)} L ${num(cx - r)} ${num(cy)} Z`;
-    // ⇔ は境界の法線方向(=詰め広げの操作方向)へ向ける。
-    const gx = cx + dirX * 0.3;
-    const gy = cy + dirY * 0.3;
-    const angle = (Math.atan2(boundary.normal[1], boundary.normal[0]) * 180) / Math.PI;
-    parts.push(
-      `<line class="page-shape-boundary-line" x1="${num(boundary.start[0])}" y1="${num(boundary.start[1])}" x2="${num(boundary.end[0])}" y2="${num(boundary.end[1])}" />`,
-      `<path class="page-shape-boundary-handle" data-shape-boundary="${id}" d="${diamond}"><title>境界を移動(両側のコマが追随)</title></path>`,
-      `<g class="page-shape-gutter-arrow" transform="rotate(${num(angle)} ${num(gx)} ${num(gy)})">
-        <circle class="page-shape-gutter-hit" data-shape-gutter="${id}" cx="${num(gx)}" cy="${num(gy)}" r="0.016"><title>コマ間の余白を詰める/広げる</title></circle>
-        <line class="page-shape-gutter-shaft" x1="${num(gx - 0.014)}" y1="${num(gy)}" x2="${num(gx + 0.014)}" y2="${num(gy)}" />
-        <path class="page-shape-gutter-head" d="M ${num(gx - 0.014)} ${num(gy)} l 0.007 -0.006 M ${num(gx - 0.014)} ${num(gy)} l 0.007 0.006 M ${num(gx + 0.014)} ${num(gy)} l -0.007 -0.006 M ${num(gx + 0.014)} ${num(gy)} l -0.007 0.006" />
-      </g>`
-    );
+    const [nx, ny] = boundary.normal;
+    // 法線が水平寄り=縦の仕切り(左右へ動かす)、垂直寄り=横の仕切り。カーソル向きに使う。
+    const axisClass = Math.abs(nx) >= Math.abs(ny) ? "is-x" : "is-y";
+    const isActive = activeGeometry !== null &&
+      (activeGeometry.kind === "boundary" || activeGeometry.kind === "gutter") &&
+      activeGeometry.id === boundary.id;
+    const hitWidth = Math.max(0.034, boundary.gutterWidth + 0.02);
+    const chevronOffset = boundary.gutterWidth / 2 + 0.02;
+    const chevron = (dir: 1 | -1) => {
+      const cx = boundary.center[0] + nx * chevronOffset * dir;
+      const cy = boundary.center[1] + ny * chevronOffset * dir;
+      const angle = (Math.atan2(ny * dir, nx * dir) * 180) / Math.PI;
+      return `<g class="page-shape-gutter-chevron ${axisClass}" data-shape-gutter="${id}" data-gutter-dir="${dir}" transform="translate(${num(cx)} ${num(cy)}) rotate(${num(angle)})">
+        <circle class="page-shape-gutter-chevron-hit" r="0.019" />
+        <path class="page-shape-gutter-chevron-mark" d="M -0.0045 -0.0075 L 0.0055 0 L -0.0045 0.0075" />
+        <title>外へドラッグで余白を広げる / 内へで詰める</title>
+      </g>`;
+    };
+    parts.push(`<g class="page-shape-boundary-group${isActive ? " is-active" : ""}">
+      <line class="page-shape-boundary-hit ${axisClass}" data-shape-boundary="${id}" x1="${num(boundary.start[0])}" y1="${num(boundary.start[1])}" x2="${num(boundary.end[0])}" y2="${num(boundary.end[1])}" style="stroke-width: ${num(hitWidth)}"><title>仕切りをドラッグで移動(両側のコマが追随)</title></line>
+      <line class="page-shape-boundary-line" x1="${num(boundary.start[0])}" y1="${num(boundary.start[1])}" x2="${num(boundary.end[0])}" y2="${num(boundary.end[1])}" />
+      ${chevron(1)}${chevron(-1)}
+    </g>`);
   }
-  // 交差点(複数コマの角)ハンドル。
+  // 交差点(複数コマの角)ハンドル。hover でドットが現れる。
   for (const junction of detectJunctions(editable)) {
-    parts.push(
-      `<circle class="page-shape-junction-handle" data-shape-junction="${escapeAttr(junction.id)}" cx="${num(junction.position[0])}" cy="${num(junction.position[1])}" r="0.014"><title>交差点(接続する全コマの角)を移動</title></circle>`
-    );
+    const isActive = activeGeometry?.kind === "junction" && activeGeometry.id === junction.id;
+    parts.push(`<g class="page-shape-junction-group${isActive ? " is-active" : ""}" transform="translate(${num(junction.position[0])} ${num(junction.position[1])})">
+      <circle class="page-shape-junction-hit" data-shape-junction="${escapeAttr(junction.id)}" r="0.02" />
+      <circle class="page-shape-junction-dot" r="0.01" />
+      <title>交差点(接続する全コマの角)を移動</title>
+    </g>`);
   }
   // 裁ち切りはページ端の帯・トリム線・状態ラベルを重ね、枠線が消えて絵が端まで続く結果を予告する。
   if (geometryPreview) {
@@ -595,23 +682,15 @@ function renderShapePanelOutline(panel: LayoutPanel, isSelected: boolean): strin
 }
 
 function renderShapeVertexHandles(points: [number, number][], selectedIndex: number | null): string {
-  const n = points.length;
-  const edges = points
-    .map((point, i) => {
-      const next = points[(i + 1) % n]!;
-      const mx = (point[0] + next[0]) / 2;
-      const my = (point[1] + next[1]) / 2;
-      return `<circle class="page-shape-edge-handle" data-shape-edge="${i}" cx="${num(mx)}" cy="${num(my)}" r="${num(SHAPE_EDGE_MARKER_RADIUS)}" />`;
-    })
-    .join("");
+  // 辺中点の頂点追加マーカーは「頂点追加」モード(renderAddVertexMarkers)へ移した。
+  // 選択中コマには頂点ハンドルだけを出す(静かなキャンバスを保つ)。
   const vertices = points
     .map(
       ([x, y], i) =>
         `<circle class="page-shape-vertex-handle${i === selectedIndex ? " is-selected" : ""}" data-shape-vertex="${i}" cx="${num(x)}" cy="${num(y)}" r="${num(SHAPE_VERTEX_RADIUS)}" />`
     )
     .join("");
-  // 辺マーカーを先に描き頂点ハンドルを上に重ねる(頂点付近をクリックした時に頂点操作を優先させるため)。
-  return `<g class="page-shape-handles">${edges}${vertices}</g>`;
+  return `<g class="page-shape-handles">${vertices}</g>`;
 }
 
 function renderBezierHandles(nodes: readonly PanelBezierNode[], selectedIndex: number | null): string {
@@ -668,20 +747,54 @@ function shapeHistoryButtons(shapeEdit: PanelShapeEditViewState): string {
     </div>`;
 }
 
+/** モードトグル(頂点追加/コマ分割/フリーハンド)。排他で、押し直すと既定モードへ戻る。 */
+function shapeModeButtons(shapeEdit: PanelShapeEditViewState): string {
+  return `
+    <div class="page-panel-toolbar-actions page-shape-mode-actions">
+      <button class="button-secondary compact${shapeEdit.addVertexMode ? " is-active" : ""}" type="button"
+        data-action="toggle-panel-shape-add-vertex-mode" title="辺の中点に＋マーカーを表示し、クリックで頂点を追加">＋ 頂点追加</button>
+      <button class="button-secondary compact${shapeEdit.splitMode ? " is-active" : ""}" type="button"
+        data-action="toggle-panel-shape-split-mode" title="コマを横切る線を引いて2分割">⧉ コマ分割</button>
+      <button class="button-secondary compact${shapeEdit.freehandMode ? " is-active" : ""}" type="button"
+        data-action="toggle-panel-shape-freehand-mode" title="一周描いて滑らかな曲線コマを追加">✎ 曲線枠を描く</button>
+    </div>`;
+}
+
 function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
   const layout = shapeEdit.layout;
   const selectedPanel = layout && shapeEdit.selectedPanelId ? layout.panels.find((panel) => panel.id === shapeEdit.selectedPanelId) ?? null : null;
   const history = shapeHistoryButtons(shapeEdit);
+  const modes = shapeModeButtons(shapeEdit);
 
   if (shapeEdit.freehandMode) {
     return `
       <footer class="page-panel-toolbar page-shape-freehand-toolbar">
-        <p class="page-panel-hint-text"><strong>フリーハンド曲線枠:</strong> 紙面上を一周ドラッグしてください。軌跡を滑らかな閉じたBezierへ整えます。</p>
-        <div class="page-panel-toolbar-actions">
-          <button class="button-secondary compact is-active" type="button" data-action="toggle-panel-shape-freehand-mode">キャンセル</button>
-        </div>
+        <p class="page-panel-hint-text"><strong>フリーハンド曲線枠:</strong> 紙面上を一周ドラッグしてください。軌跡を滑らかな閉じたBezierへ整えます(Escで解除)。</p>
+        ${modes}
         ${history}
       </footer>`;
+  }
+  if (shapeEdit.addVertexMode) {
+    return `
+      <footer class="page-panel-toolbar page-shape-addvertex-toolbar">
+        <p class="page-panel-hint-text"><strong>頂点追加:</strong> 辺の中点の＋をクリックすると頂点が増えます。続けて追加できます(Escで解除)。</p>
+        ${modes}
+        ${history}
+      </footer>`;
+  }
+  if (shapeEdit.splitMode) {
+    return `
+      <footer class="page-panel-toolbar page-shape-split-toolbar">
+        <p class="page-panel-hint-text"><strong>コマ分割:</strong> 分割したいコマを横切るようにドラッグで線を引いてください。続けて分割できます(Escで解除)。</p>
+        <div class="page-panel-toolbar-actions">
+          <label class="page-object-property-field">ガター幅
+            <input type="number" step="0.005" min="0" max="0.1" data-shape-gutter-field="1" value="${num(shapeEdit.gutter)}" />
+          </label>
+        </div>
+        ${modes}
+        ${history}
+      </footer>
+    `;
   }
 
   if (shapeEdit.selectedVertices.length > 0) {
@@ -696,12 +809,11 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
   if (!selectedPanel) {
     return `
       <footer class="page-panel-toolbar">
-        <p class="page-panel-hint-text">コマをクリックして選択(頂点編集・分割)、ドラッグで頂点を範囲選択(一括移動)。
-          辺はドラッグで法線方向へ移動 / ◆=境界を移動(両側追随) / ⇔=コマ間余白を詰め広げ /
-          ●=交差点を一括移動 / ページの辺と平行な外周辺を余白外へドラッグすると裁ち切り(半透明プレビュー)。</p>
-        <div class="page-panel-toolbar-actions">
-          <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-freehand-mode">✎ フリーハンド曲線枠</button>
-        </div>
+        <p class="page-panel-hint-text">仕切り線・コマの辺・交差点は、マウスを寄せるとハンドルが現れます。
+          仕切りはドラッグで移動(両側が追随)、現れる〈 〉をドラッグでコマ間余白を調整。
+          中央の番号はドラッグでコマ全体を移動、クリックで選択(頂点編集)。
+          外周辺を余白の外へドラッグすると裁ち切り。背景ドラッグで頂点を範囲選択(一括移動)。</p>
+        ${modes}
         ${history}
       </footer>
     `;
@@ -710,9 +822,7 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
     return `
       <footer class="page-panel-toolbar">
         <p class="page-panel-hint-text">□=アンカー移動 / ○=曲線の方向と強さ。通常ドラッグは反対側も滑らかに連動、Alt+ドラッグで片側だけ調整。アンカーはダブルクリックまたはDeleteで削除。</p>
-        <div class="page-panel-toolbar-actions">
-          <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-freehand-mode">✎ 別の曲線枠を描く</button>
-        </div>
+        ${modes}
         ${history}
       </footer>`;
   }
@@ -735,28 +845,14 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
       </footer>
     `;
   }
-  if (shapeEdit.splitMode) {
-    return `
-      <footer class="page-panel-toolbar page-shape-split-toolbar">
-        <p class="page-panel-hint-text">コマの上をドラッグして分割線を引いてください。</p>
-        <div class="page-panel-toolbar-actions">
-          <label class="page-object-property-field">ガター幅
-            <input type="number" step="0.005" min="0" max="0.1" data-shape-gutter-field="1" value="${num(shapeEdit.gutter)}" />
-          </label>
-          <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-split-mode">キャンセル</button>
-        </div>
-        ${history}
-      </footer>
-    `;
-  }
   return `
     <footer class="page-panel-toolbar">
-      <p class="page-panel-hint-text">頂点をドラッグで移動・辺の中点クリックで頂点追加・ダブルクリック(または選択+Delete)で頂点削除</p>
+      <p class="page-panel-hint-text">頂点をドラッグで移動・ダブルクリック(または選択+Delete)で頂点削除。
+        番号をドラッグするとコマ全体が動きます。頂点の追加は「＋ 頂点追加」モードで。</p>
       <div class="page-panel-toolbar-actions">
-        <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-split-mode">コマを分割</button>
         <button class="button-secondary compact" type="button" data-action="convert-panel-shape-to-bezier">曲線に変換</button>
-        <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-freehand-mode">✎ 曲線枠を描く</button>
       </div>
+      ${modes}
       ${history}
     </footer>
   `;

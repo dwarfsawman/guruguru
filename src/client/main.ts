@@ -553,16 +553,17 @@ function bindEvents() {
     if (handleNameLayoutEditKeydown(event)) {
       return;
     }
+    // コマ形状編集(コマ枠モード)の Escape(モード/選択の段階的解除)・Ctrl+Z・Delete は
+    // lightbox の Escape(閉じる)より先に処理する。未処理の Escape だけが lightbox を閉じる。
+    if (handlePanelShapeKeydown(event)) {
+      return;
+    }
     // コマ選択 lightbox も detail とは排他(book grid の上に開く)なので同様に早期処理する。
     if (handlePagePanelLightboxKeydown(event)) {
       return;
     }
     // ページオブジェクト編集(オブジェクトモード)の Ctrl+Z/Ctrl+Shift+Z(undo/redo)・Delete。
     if (handlePageObjectsKeydown(event)) {
-      return;
-    }
-    // コマ形状編集(コマ枠モード)の選択中頂点の Delete/Backspace。
-    if (handlePanelShapeKeydown(event)) {
       return;
     }
     // モザイク編集(モザイクモード)の選択中頂点/リージョンの Delete/Backspace。
@@ -1152,6 +1153,8 @@ function renderPagePanelLightboxView(): string {
       freehandDraft: state.shapeFreehandDraft,
       marquee: state.shapeMarquee,
       selectedVertices: state.shapeSelectedVertices,
+      addVertexMode: state.shapeAddVertexMode,
+      activeGeometry: state.shapeActiveGeometry,
       ...panelShapeHistoryStatus()
     },
     {

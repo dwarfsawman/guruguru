@@ -189,6 +189,8 @@ export function closePagePanelLightbox() {
   state.shapeSelectedVertexIndex = null;
   state.shapeSplitMode = false;
   state.shapeSplitDraft = null;
+  state.shapeAddVertexMode = false;
+  state.shapeActiveGeometry = null;
   state.pageMosaicDraft = [];
   state.mosaicSelectedRegionId = null;
   state.mosaicSelectedVertexIndex = null;
