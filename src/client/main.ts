@@ -1139,7 +1139,8 @@ function renderPagePanelLightboxView(): string {
       selectedVertexIndex: state.shapeSelectedVertexIndex,
       splitMode: state.shapeSplitMode,
       splitDraft: state.shapeSplitDraft,
-      gutter: state.shapeSplitGutter
+      gutter: state.shapeSplitGutter,
+      geometryPreview: state.shapeGeometryPreview
     },
     {
       regions: state.pageMosaicDraft,

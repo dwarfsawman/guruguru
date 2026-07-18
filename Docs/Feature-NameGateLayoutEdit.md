@@ -21,6 +21,17 @@
 (クライアントの操作とサーバーの保存時検証で同一関数)。頂点操作は既存
 [src/shared/panelShapeEdit.ts](../src/shared/panelShapeEdit.ts) を再利用する。
 
+### Bookページ編集(コマ枠タブ)でも同じ操作が使える(2026-07-18 追補)
+
+上記の幾何操作(辺ドラッグ・◆境界・⇔ガター・●交差点・裁ち切りスナップ+半透明プレビュー)は、
+Bookのページ編集 lightbox「コマ枠」モードにも同じハンドル・同じ純ロジックで組み込まれている
+([src/client/panelShapeController.ts](../src/client/panelShapeController.ts) /
+[src/client/views/pagePanelLightboxView.ts](../src/client/views/pagePanelLightboxView.ts))。
+こちらは候補レイヤーではなく従来どおりページの `layout_json` へ 1s debounce PATCH で直接保存される。
+rect/ellipse コマは最初の幾何ドラッグで自動的に polygon 化される(「多角形に変換して編集」の自動版。
+id/order/frame/role は保持)。従来の選択→頂点編集・分割・吹き出し等のオブジェクト編集(レイヤタブ)は
+無変更。吹き出し位置「ヒント」はネーム候補専用で、ページ編集では実オブジェクトを直接動かす。
+
 ### 検証(保存前クライアント/保存時サーバー共通)
 
 `validateEditedNameLayout(edited, base)`:
@@ -95,6 +106,7 @@ full preflight を必ず再実行し、失敗時は 422 `{error, preflight}` で
 
 ## 残課題
 
+- ガター幅を共有辺判定の上限(0.08)超まで広げると、その境界の◆/⇔ハンドルが消える(辺ドラッグでは戻せる)
 - ガターハンドルのドラッグ方向は法線基準(境界の向きによっては直感と逆になる場合がある)
 - 吹き出しヒントは page 座標のため、ヒント設定後にコマ割りを大きく動かすとヒントがコマ外になる
   ことがある(ソルバーはハード制約でコマ内へフォールバックするため生成は壊れない)

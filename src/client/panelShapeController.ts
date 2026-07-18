@@ -9,7 +9,7 @@
  *
  * **undo/redo は P5 のスコープ外**(オブジェクトモードの `pageObjectHistory.ts` とは独立に持たない)。
  */
-import type { LayoutPanel, PageLayout } from "../shared/pageLayout";
+import { clonePageLayout, type LayoutPanel, type PageLayout } from "../shared/pageLayout";
 import {
   insertPolygonVertex,
   movePolygonVertex,
@@ -18,6 +18,22 @@ import {
   removePolygonVertex,
   splitPanelByLine
 } from "../shared/panelShapeEdit";
+import {
+  detectJunctions,
+  detectSharedBoundaries,
+  edgeInMarginBand,
+  edgeOutwardNormal,
+  moveBoundaryAlongNormal,
+  moveJunction,
+  outerEdgeInfo,
+  setBoundaryGutter,
+  snapEdgeToBleed,
+  toEditableNameLayout,
+  translateEdgeAlongNormal,
+  type LayoutJunction,
+  type PageSide,
+  type SharedBoundary
+} from "../shared/nameLayoutEdit";
 import type { PagePanelAssignment } from "../shared/apiTypes";
 import { getInverseStageTransform, getStageTransform } from "./svgGizmo";
 import { api } from "./api";
@@ -41,6 +57,8 @@ export function resetShapeEditSession(): void {
   shapesDirty = false;
   vertexDrag = null;
   splitDrag = null;
+  geometryDrag = null;
+  state.shapeGeometryPreview = null;
 }
 
 /** 未保存の変更が保留中なら true を返しつつリセットする(lightbox クローズ判定用)。 */
@@ -104,7 +122,7 @@ async function persistShapeLayout(): Promise<void> {
       body: JSON.stringify({ layout: draft })
     });
     // 応答時点で新しい編集が進行していない時だけドラフトへ反映する(pageObjectsController と同じ配慮)。
-    if (state.pagePanelLightbox?.pageId === pageId && saveDebounceTimer === null && !vertexDrag && !splitDrag) {
+    if (state.pagePanelLightbox?.pageId === pageId && saveDebounceTimer === null && !vertexDrag && !splitDrag && !geometryDrag) {
       state.pageLayoutDraft = result.layout;
     }
     // サーバ側で消えたパネルへの割り当ては削除済みなので、ローカルの一覧からも落とす。
@@ -375,6 +393,131 @@ interface SplitDragState {
 
 let splitDrag: SplitDragState | null = null;
 
+/** 幾何編集ドラッグ(人間ゲートのコマ割り修正と同じ操作系)。純関数は開始時スナップショットへ適用する。 */
+interface GeometryDragBase {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  pxPerUnit: number;
+  startLayout: PageLayout;
+}
+
+type GeometryDragState =
+  | (GeometryDragBase & { kind: "edge"; panelIndex: number; edgeIndex: number; outward: [number, number]; outerSide: PageSide | null })
+  | (GeometryDragBase & { kind: "boundary"; boundary: SharedBoundary })
+  | (GeometryDragBase & { kind: "gutter"; boundary: SharedBoundary })
+  | (GeometryDragBase & { kind: "junction"; junction: LayoutJunction });
+
+let geometryDrag: GeometryDragState | null = null;
+
+function parseEdgeRef(value: string | null | undefined): { panelIndex: number; edgeIndex: number } | null {
+  if (!value) return null;
+  const [panelIndex, edgeIndex] = value.split(":").map(Number);
+  return Number.isInteger(panelIndex) && Number.isInteger(edgeIndex)
+    ? { panelIndex: panelIndex!, edgeIndex: edgeIndex! }
+    : null;
+}
+
+/**
+ * 幾何編集ハンドルの pointerdown。rect/ellipse パネルを含むレイアウトは、最初のドラッグで
+ * polygon 化してから操作する(「多角形に変換して編集」の自動版。id/order/frame/role は保持)。
+ */
+function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
+  const draft = state.pageLayoutDraft;
+  if (!draft) return false;
+  const boundaryEl = target.closest<SVGElement>("[data-shape-boundary]");
+  const gutterEl = target.closest<SVGElement>("[data-shape-gutter]");
+  const junctionEl = target.closest<SVGElement>("[data-shape-junction]");
+  const edgelineEl = target.closest<SVGElement>("[data-shape-edgeline]");
+  if (!boundaryEl && !gutterEl && !junctionEl && !edgelineEl) return false;
+  const root = stageRootElement();
+  const stage = root ? getStageTransform(root) : null;
+  if (!stage) return true;
+  const editable = toEditableNameLayout(draft);
+  state.pageLayoutDraft = editable;
+  const startLayout = clonePageLayout(editable);
+  const base: GeometryDragBase = {
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    pxPerUnit: stage.pxPerUnit,
+    startLayout
+  };
+  event.preventDefault();
+  if (junctionEl) {
+    const junction = detectJunctions(startLayout).find((entry) => entry.id === junctionEl.getAttribute("data-shape-junction"));
+    if (junction) geometryDrag = { ...base, kind: "junction", junction };
+    return true;
+  }
+  if (boundaryEl || gutterEl) {
+    const id = (boundaryEl ?? gutterEl)!.getAttribute(boundaryEl ? "data-shape-boundary" : "data-shape-gutter");
+    const boundary = detectSharedBoundaries(startLayout).find((entry) => entry.id === id);
+    if (boundary) {
+      geometryDrag = { ...base, kind: boundaryEl ? "boundary" : "gutter", boundary };
+      if (!boundaryEl) {
+        state.shapeGeometryPreview = { edges: boundary.edges.map((entry) => entry.ref) };
+        requestRender();
+      }
+    }
+    return true;
+  }
+  const ref = parseEdgeRef(edgelineEl!.getAttribute("data-shape-edgeline"));
+  if (!ref) return true;
+  const outward = edgeOutwardNormal(startLayout, ref);
+  if (!outward) return true;
+  const outer = outerEdgeInfo(startLayout, ref, detectSharedBoundaries(startLayout));
+  geometryDrag = {
+    ...base,
+    kind: "edge",
+    panelIndex: ref.panelIndex,
+    edgeIndex: ref.edgeIndex,
+    outward,
+    outerSide: outer.isOuter ? outer.side : null
+  };
+  return true;
+}
+
+function moveGeometryDrag(event: PointerEvent): void {
+  const drag = geometryDrag;
+  if (!drag) return;
+  const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+  const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+  if (drag.kind === "junction") {
+    state.pageLayoutDraft = moveJunction(drag.startLayout, drag.junction, [dx, dy]);
+  } else if (drag.kind === "boundary") {
+    const offset = dx * drag.boundary.normal[0] + dy * drag.boundary.normal[1];
+    state.pageLayoutDraft = moveBoundaryAlongNormal(drag.startLayout, drag.boundary, offset);
+  } else if (drag.kind === "gutter") {
+    const along = dx * drag.boundary.normal[0] + dy * drag.boundary.normal[1];
+    state.pageLayoutDraft = setBoundaryGutter(drag.startLayout, drag.boundary, Math.max(0, drag.boundary.gutterWidth + along * 2));
+  } else {
+    const ref = { panelIndex: drag.panelIndex, edgeIndex: drag.edgeIndex };
+    const offset = dx * drag.outward[0] + dy * drag.outward[1];
+    const moved = translateEdgeAlongNormal(drag.startLayout, ref, offset);
+    state.pageLayoutDraft = moved;
+    // 外周辺が余白帯へ出たら裁ち切りプレビュー(線が半透明になる)。
+    state.shapeGeometryPreview = drag.outerSide && edgeInMarginBand(moved, ref, drag.outerSide)
+      ? { edges: [ref] }
+      : null;
+  }
+  requestRender();
+}
+
+function finishGeometryDrag(): void {
+  const drag = geometryDrag;
+  geometryDrag = null;
+  if (!drag) return;
+  if (drag.kind === "edge" && state.shapeGeometryPreview && drag.outerSide) {
+    // 余白帯で離した外周辺は裁ち切り(page外 0.015)へスナップする。
+    state.pageLayoutDraft = state.pageLayoutDraft
+      ? snapEdgeToBleed(state.pageLayoutDraft, { panelIndex: drag.panelIndex, edgeIndex: drag.edgeIndex }, drag.outerSide)
+      : state.pageLayoutDraft;
+  }
+  state.shapeGeometryPreview = null;
+  requestRender();
+  scheduleSave();
+}
+
 /** main.ts の pointerdown 委譲から呼ばれる。分割ドラッグ開始/頂点ドラッグ開始/辺への頂点追加/パネル選択を切り分ける。 */
 export function handlePanelShapePointerDown(event: PointerEvent): boolean {
   const lightbox = state.pagePanelLightbox;
@@ -442,6 +585,12 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
     return true;
   }
 
+  // 幾何編集ハンドル(境界◆/ガター⇔/交差点●/辺ドラッグ)。選択パネルの頂点・辺マーカーより後、
+  // パネル選択より前(辺ライン上のクリックはドラッグ、内部クリックは従来どおり選択)。
+  if (beginGeometryDrag(event, target)) {
+    return true;
+  }
+
   const panelEl = target.closest<SVGElement>("[data-shape-panel-id]");
   if (panelEl) {
     event.preventDefault();
@@ -456,6 +605,10 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
 }
 
 export function handlePanelShapePointerMove(event: PointerEvent): boolean {
+  if (geometryDrag && event.pointerId === geometryDrag.pointerId) {
+    moveGeometryDrag(event);
+    return true;
+  }
   if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
     const dx = (event.clientX - vertexDrag.startClientX) / vertexDrag.pxPerUnit;
     const dy = (event.clientY - vertexDrag.startClientY) / vertexDrag.pxPerUnit;
@@ -478,6 +631,10 @@ export function handlePanelShapePointerMove(event: PointerEvent): boolean {
 }
 
 export function handlePanelShapePointerUp(event: PointerEvent): boolean {
+  if (geometryDrag && event.pointerId === geometryDrag.pointerId) {
+    finishGeometryDrag();
+    return true;
+  }
   if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
     const drag = vertexDrag;
     vertexDrag = null;
@@ -498,6 +655,14 @@ export function handlePanelShapePointerUp(event: PointerEvent): boolean {
 }
 
 export function handlePanelShapePointerCancel(event: PointerEvent): boolean {
+  if (geometryDrag && event.pointerId === geometryDrag.pointerId) {
+    // ドラッグ開始前の状態へ復元する(保存しない)。
+    state.pageLayoutDraft = geometryDrag.startLayout;
+    geometryDrag = null;
+    state.shapeGeometryPreview = null;
+    requestRender();
+    return true;
+  }
   if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
     const drag = vertexDrag;
     vertexDrag = null;

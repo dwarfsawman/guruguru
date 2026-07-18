@@ -1204,3 +1204,61 @@
     max-height: 220px;
   }
 }
+
+/* --- コマ枠モードの幾何編集ハンドル(人間ゲートのコマ割り修正と同じ操作系) --- */
+
+.page-shape-margin-guide {
+  fill: none;
+  stroke: #c9c2b4;
+  stroke-width: 0.002;
+  stroke-dasharray: 0.012 0.008;
+  pointer-events: none;
+}
+
+.page-shape-edgeline-hit {
+  stroke: transparent;
+  stroke-width: 0.024;
+  cursor: move;
+}
+
+.page-shape-boundary-line {
+  stroke: rgba(184, 134, 11, 0.35);
+  stroke-width: 0.004;
+  stroke-dasharray: 0.016 0.01;
+  pointer-events: none;
+}
+
+.page-shape-boundary-handle {
+  fill: rgba(184, 134, 11, 0.85);
+  stroke: #ffffff;
+  stroke-width: 0.004;
+  cursor: move;
+}
+
+.page-shape-gutter-handle {
+  fill: rgba(58, 110, 165, 0.85);
+  stroke: #ffffff;
+  stroke-width: 0.004;
+  cursor: ew-resize;
+}
+
+.page-shape-junction-handle {
+  fill: rgba(170, 60, 120, 0.85);
+  stroke: #ffffff;
+  stroke-width: 0.004;
+  cursor: move;
+}
+
+/* 裁ち切り/ガター詰めプレビュー: 実線を紙色でマスクして半透明の破線を重ねる */
+.page-shape-preview-mask {
+  stroke: #ffffff;
+  stroke-width: 0.008;
+  pointer-events: none;
+}
+
+.page-shape-preview-edge {
+  stroke: rgba(26, 26, 26, 0.35);
+  stroke-width: 0.006;
+  stroke-dasharray: 0.02 0.01;
+  pointer-events: none;
+}
