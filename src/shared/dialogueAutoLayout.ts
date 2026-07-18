@@ -171,7 +171,7 @@ function boxesOverlap(a: Box, b: Box): boolean {
 }
 
 /** ray casting によるポリゴン内外判定。 */
-function pointInPolygon(point: [number, number], points: [number, number][]): boolean {
+export function pointInPolygon(point: [number, number], points: [number, number][]): boolean {
   const [px, py] = point;
   let inside = false;
   for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
