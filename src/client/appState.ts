@@ -531,6 +531,11 @@ export interface AppState {
   /** コマ形状編集: 分割時のガター幅(page 単位、既定はページ幅の1.5%)。 */
   shapeSplitGutter: number;
   /**
+   * コマ形状編集: 裁ち切り/ガター詰めドラッグ中に半透明プレビュー表示する辺
+   * (pageLayoutDraft の panelIndex/edgeIndex)。null=プレビューなし。
+   */
+  shapeGeometryPreview: { edges: Array<{ panelIndex: number; edgeIndex: number }> } | null;
+  /**
    * モザイク編集(Docs/Feature-CGCollectionSuite.md P6): 開いている lightbox のページのモザイクリージョン
    * ドラフト。追加/頂点編集/削除/granularity 変更はこれを直接書き換え、`pageMosaicController.ts` が
    * 1s debounce で PATCH する。lightbox 非開時は空配列。
@@ -741,6 +746,7 @@ export const state: AppState = {
   shapeSplitMode: false,
   shapeSplitDraft: null,
   shapeSplitGutter: 0.015,
+  shapeGeometryPreview: null,
   pageMosaicDraft: [],
   mosaicSelectedRegionId: null,
   mosaicSelectedVertexIndex: null,

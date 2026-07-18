@@ -59,6 +59,8 @@ import { escapeAttr, escapeHtml } from "../format";
 import { iconClose, iconEye, iconEyeOff, iconGrip, iconPlus, iconScript, iconShuffle, iconSparkle, iconTrash } from "../icons";
 import { pageLayerBand, visiblePageObjects } from "../pageLayers";
 import { num, panelShapeElement, shapeCenter } from "./pageLayoutSvg";
+import { detectJunctions, detectSharedBoundaries, toEditableNameLayout } from "../../shared/nameLayoutEdit";
+import { LAYOUT_PAGE_MARGIN } from "../../shared/layoutPresets";
 import { renderChronicleBar, type ChronicleBarViewState } from "./chronicleBarView";
 
 const VIEWBOX_SCALE = 1000;
@@ -75,6 +77,8 @@ export interface PanelShapeEditViewState {
   splitMode: boolean;
   splitDraft: { start: [number, number]; current: [number, number] } | null;
   gutter: number;
+  /** 裁ち切り/ガター詰めドラッグ中の半透明プレビュー対象辺(人間ゲート編集と同じ表現)。 */
+  geometryPreview: { edges: Array<{ panelIndex: number; edgeIndex: number }> } | null;
 }
 
 /** モザイク編集(P6)モードの表示用状態。追加モード/作業ドラフト/選択状態をまとめる。 */
@@ -428,11 +432,74 @@ function renderShapesStageContent(shapeEdit: PanelShapeEditViewState, pageHeight
   return `
     <g id="pageShapeStageRoot" transform="scale(${VIEWBOX_SCALE})" data-shape-stage="1">
       <rect x="0" y="0" width="1" height="${num(layout.page.height)}" class="page-panel-paper" data-shape-background="1" />
+      <rect class="page-shape-margin-guide" x="${num(LAYOUT_PAGE_MARGIN)}" y="${num(LAYOUT_PAGE_MARGIN)}"
+        width="${num(1 - LAYOUT_PAGE_MARGIN * 2)}" height="${num(layout.page.height - LAYOUT_PAGE_MARGIN * 2)}" />
       ${panelsHtml}
+      ${shapeEdit.splitMode ? "" : renderShapeGeometryHandles(layout, shapeEdit.geometryPreview)}
       ${handles}
       ${splitPreview}
     </g>
   `;
+}
+
+/**
+ * 人間ゲートのコマ割り修正(Docs/Feature-NameGateLayoutEdit.md)と同じ幾何編集ハンドル群。
+ * 検出は polygon 化した複製(toEditableNameLayout)上で行い、panelIndex/edgeIndex はドラフトと
+ * 1:1 対応する(コントローラ側もドラッグ開始時に同じ polygon 化を行う)。
+ */
+function renderShapeGeometryHandles(
+  layout: PageLayout,
+  geometryPreview: PanelShapeEditViewState["geometryPreview"]
+): string {
+  const editable = toEditableNameLayout(layout);
+  const parts: string[] = [];
+  // 辺ドラッグ用の太い透明ヒットライン(全パネル)。
+  editable.panels.forEach((panel, panelIndex) => {
+    if (panel.shape.type !== "polygon") return;
+    const points = panel.shape.points;
+    const n = points.length;
+    for (let edgeIndex = 0; edgeIndex < n; edgeIndex += 1) {
+      const [x1, y1] = points[edgeIndex]!;
+      const [x2, y2] = points[(edgeIndex + 1) % n]!;
+      parts.push(
+        `<line class="page-shape-edgeline-hit" data-shape-edgeline="${panelIndex}:${edgeIndex}" x1="${num(x1)}" y1="${num(y1)}" x2="${num(x2)}" y2="${num(y2)}" />`
+      );
+    }
+  });
+  // 共有辺(ガター境界)の移動◆/幅⇔ハンドル。
+  for (const boundary of detectSharedBoundaries(editable)) {
+    const [cx, cy] = boundary.center;
+    const dirX = boundary.end[0] - boundary.start[0];
+    const dirY = boundary.end[1] - boundary.start[1];
+    const id = escapeAttr(boundary.id);
+    parts.push(
+      `<line class="page-shape-boundary-line" x1="${num(boundary.start[0])}" y1="${num(boundary.start[1])}" x2="${num(boundary.end[0])}" y2="${num(boundary.end[1])}" />`,
+      `<circle class="page-shape-boundary-handle" data-shape-boundary="${id}" cx="${num(cx)}" cy="${num(cy)}" r="0.016"><title>境界を移動(両側のコマが追随)</title></circle>`,
+      `<circle class="page-shape-gutter-handle" data-shape-gutter="${id}" cx="${num(cx + dirX * 0.3)}" cy="${num(cy + dirY * 0.3)}" r="0.013"><title>コマ間の余白を詰める/広げる</title></circle>`
+    );
+  }
+  // 交差点(複数コマの角)ハンドル。
+  for (const junction of detectJunctions(editable)) {
+    parts.push(
+      `<circle class="page-shape-junction-handle" data-shape-junction="${escapeAttr(junction.id)}" cx="${num(junction.position[0])}" cy="${num(junction.position[1])}" r="0.014"><title>交差点(接続する全コマの角)を移動</title></circle>`
+    );
+  }
+  // 裁ち切り/ガター詰めプレビュー: 対象辺を紙色で塗り潰した上へ半透明の破線を重ねる。
+  if (geometryPreview) {
+    for (const edge of geometryPreview.edges) {
+      const panel = layout.panels[edge.panelIndex];
+      if (!panel || panel.shape.type !== "polygon") continue;
+      const points = panel.shape.points;
+      const a = points[edge.edgeIndex % points.length];
+      const b = points[(edge.edgeIndex + 1) % points.length];
+      if (!a || !b) continue;
+      parts.push(
+        `<line class="page-shape-preview-mask" x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}" />`,
+        `<line class="page-shape-preview-edge" x1="${num(a[0])}" y1="${num(a[1])}" x2="${num(b[0])}" y2="${num(b[1])}" />`
+      );
+    }
+  }
+  return `<g class="page-shape-geometry">${parts.join("")}</g>`;
 }
 
 function renderShapePanelOutline(panel: LayoutPanel, isSelected: boolean): string {
@@ -476,7 +543,9 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
   if (!selectedPanel) {
     return `
       <footer class="page-panel-toolbar">
-        <p class="page-panel-hint-text">コマをクリックして選択してください。</p>
+        <p class="page-panel-hint-text">コマをクリックして選択(頂点編集・分割)。
+          辺はドラッグで法線方向へ移動 / ◆=境界を移動(両側追随) / ⇔=コマ間余白を詰め広げ /
+          ●=交差点を一括移動 / 外周辺を余白外へドラッグすると裁ち切り(半透明プレビュー)。</p>
       </footer>
     `;
   }
