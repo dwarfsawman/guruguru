@@ -25,6 +25,14 @@
 - `panelBounds(shape)` — パネルの外接矩形 `[minX, minY, maxX, maxY]`。`path` 形状は d 内の数値を (x,y) ペアとして拾うベストエフォート（内蔵プリセット/取り込み仕様は polygon/rect/ellipse のみを使うため実害なし）。
 - `panelBoundsSize(bounds)` — 外接矩形の幅・高さ（0除算を避け最小値を敷く）。
 - `defaultCoverCrop(assetW, assetH, boxW, boxH)` — asset をコマの外接矩形へ「cover」フィットさせた時の既定 crop（`rotation: 0`。アスペクト比が合わない方向を中央寄せでクロップ）。
+- **描画は等倍(2026-07-18 変更)**: `panelImageRect(bounds, crop, assetW, assetH)`(shared/pageLayout.ts)が
+  クライアント表示・preview.png・全書き出し(PNG/JPEG/PPTX/ORA)・顔アンカー写像の唯一の正。
+  クロップ窓の**幅**をコマ外接矩形の幅へ合わせ、高さは画像ピクセル縦横比から等倍で決める(窓は縦中央寄せ)。
+  旧来の「窓→矩形へ引き伸ばし(`preserveAspectRatio="none"` 相当)」は廃止し、縦横比が合わない分は
+  **画像がコマを覆えず紙面の白が見える**。白を消すのは人間のクロップ編集(ズーム/パン)または
+  「リセット」(新しい縦横比で cover を再計算)の役割。窓とコマの縦横比が一致するデータ
+  (defaultCoverCrop 由来=自動漫画の全割り当て)では従来と同一の見た目になる。
+  asset 寸法不明時のみ旧ストレッチへフォールバック。
 - `clampPanelCrop` / `normalizePanelCrop` — 範囲・型の正規化（`rotation` は `(-π, π]` へ折り返す。サーバ側の入力検証にも使う）。
 - `scaleCropAboutCenter(crop, factor)` — 窓を中心固定で `factor` 倍にズーム（`MIN_CROP_ZOOM_SIZE=0.05` で頭打ち）。コーナーハンドル/ホイールズームで使う。
 - `normalizeRotation(value)` — 角度を `(-π, π]` へ折り返す（非数は 0）。
