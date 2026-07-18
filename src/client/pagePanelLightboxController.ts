@@ -62,10 +62,13 @@ function currentLightboxPage(): PageSummary | null {
 }
 
 function findPanel(page: PageSummary | null | undefined, panelId: string | null): LayoutPanel | null {
-  if (!page?.layout || !panelId) {
+  // コマ枠編集の未保存分も含む最新形状で扱えるよう、lightbox 表示中はドラフトを優先する
+  // (ビュー側 renderPagePanelLightbox と同じ優先順位。ドラフトが無いページは book 側 layout)。
+  const layout = state.pageLayoutDraft ?? page?.layout ?? null;
+  if (!layout || !panelId) {
     return null;
   }
-  return page.layout.panels.find((panel) => panel.id === panelId) ?? null;
+  return layout.panels.find((panel) => panel.id === panelId) ?? null;
 }
 
 /**
