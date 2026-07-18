@@ -79,6 +79,13 @@ export interface PanelShapeEditViewState {
   gutter: number;
   /** 裁ち切り/ガター詰めドラッグ中の半透明プレビュー対象辺(人間ゲート編集と同じ表現)。 */
   geometryPreview: { edges: Array<{ panelIndex: number; edgeIndex: number }> } | null;
+  /** ドラッグ範囲選択の作業矩形(page 座標)。 */
+  marquee: { start: [number, number]; current: [number, number] } | null;
+  /** 範囲選択された頂点集合(全パネル横断、一括移動対象)。 */
+  selectedVertices: Array<{ panelIndex: number; vertexIndex: number }>;
+  /** undo/redo ボタンの活性判定。 */
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 /** モザイク編集(P6)モードの表示用状態。追加モード/作業ドラフト/選択状態をまとめる。 */
@@ -429,6 +436,12 @@ function renderShapesStageContent(shapeEdit: PanelShapeEditViewState, pageHeight
       ? renderShapeVertexHandles(selectedPanel.shape.points, shapeEdit.selectedVertexIndex)
       : "";
   const splitPreview = shapeEdit.splitMode && shapeEdit.splitDraft ? renderShapeSplitPreview(shapeEdit.splitDraft) : "";
+  const marquee = shapeEdit.marquee
+    ? `<rect class="page-shape-marquee" x="${num(Math.min(shapeEdit.marquee.start[0], shapeEdit.marquee.current[0]))}"
+        y="${num(Math.min(shapeEdit.marquee.start[1], shapeEdit.marquee.current[1]))}"
+        width="${num(Math.abs(shapeEdit.marquee.current[0] - shapeEdit.marquee.start[0]))}"
+        height="${num(Math.abs(shapeEdit.marquee.current[1] - shapeEdit.marquee.start[1]))}" />`
+    : "";
   return `
     <g id="pageShapeStageRoot" transform="scale(${VIEWBOX_SCALE})" data-shape-stage="1">
       <rect x="0" y="0" width="1" height="${num(layout.page.height)}" class="page-panel-paper" data-shape-background="1" />
@@ -437,9 +450,30 @@ function renderShapesStageContent(shapeEdit: PanelShapeEditViewState, pageHeight
       ${panelsHtml}
       ${shapeEdit.splitMode ? "" : renderShapeGeometryHandles(layout, shapeEdit.geometryPreview)}
       ${handles}
+      ${renderMultiSelectedVertexHandles(layout, shapeEdit.selectedVertices)}
+      ${marquee}
       ${splitPreview}
     </g>
   `;
+}
+
+/** 範囲選択された頂点のハンドル(ドラッグでまとめて移動)。 */
+function renderMultiSelectedVertexHandles(
+  layout: PageLayout,
+  selectedVertices: PanelShapeEditViewState["selectedVertices"]
+): string {
+  if (selectedVertices.length === 0) return "";
+  const parts: string[] = [];
+  for (const ref of selectedVertices) {
+    const panel = layout.panels[ref.panelIndex];
+    if (!panel || panel.shape.type !== "polygon") continue;
+    const point = panel.shape.points[ref.vertexIndex];
+    if (!point) continue;
+    parts.push(
+      `<circle class="page-shape-mvertex-handle" data-shape-mvertex="${ref.panelIndex}:${ref.vertexIndex}" cx="${num(point[0])}" cy="${num(point[1])}" r="${num(SHAPE_VERTEX_RADIUS)}"><title>選択中の頂点(ドラッグで一括移動)</title></circle>`
+    );
+  }
+  return `<g class="page-shape-mvertex-handles">${parts.join("")}</g>`;
 }
 
 /**
@@ -466,16 +500,26 @@ function renderShapeGeometryHandles(
       );
     }
   });
-  // 共有辺(ガター境界)の移動◆/幅⇔ハンドル。
+  // 共有辺(ガター境界)の移動◆/幅⇔ハンドル。◆はひし形、⇔は法線方向の両矢印で形から役割が分かるようにする。
   for (const boundary of detectSharedBoundaries(editable)) {
     const [cx, cy] = boundary.center;
     const dirX = boundary.end[0] - boundary.start[0];
     const dirY = boundary.end[1] - boundary.start[1];
     const id = escapeAttr(boundary.id);
+    const r = 0.014;
+    const diamond = `M ${num(cx)} ${num(cy - r)} L ${num(cx + r)} ${num(cy)} L ${num(cx)} ${num(cy + r)} L ${num(cx - r)} ${num(cy)} Z`;
+    // ⇔ は境界の法線方向(=詰め広げの操作方向)へ向ける。
+    const gx = cx + dirX * 0.3;
+    const gy = cy + dirY * 0.3;
+    const angle = (Math.atan2(boundary.normal[1], boundary.normal[0]) * 180) / Math.PI;
     parts.push(
       `<line class="page-shape-boundary-line" x1="${num(boundary.start[0])}" y1="${num(boundary.start[1])}" x2="${num(boundary.end[0])}" y2="${num(boundary.end[1])}" />`,
-      `<circle class="page-shape-boundary-handle" data-shape-boundary="${id}" cx="${num(cx)}" cy="${num(cy)}" r="0.016"><title>境界を移動(両側のコマが追随)</title></circle>`,
-      `<circle class="page-shape-gutter-handle" data-shape-gutter="${id}" cx="${num(cx + dirX * 0.3)}" cy="${num(cy + dirY * 0.3)}" r="0.013"><title>コマ間の余白を詰める/広げる</title></circle>`
+      `<path class="page-shape-boundary-handle" data-shape-boundary="${id}" d="${diamond}"><title>境界を移動(両側のコマが追随)</title></path>`,
+      `<g class="page-shape-gutter-arrow" transform="rotate(${num(angle)} ${num(gx)} ${num(gy)})">
+        <circle class="page-shape-gutter-hit" data-shape-gutter="${id}" cx="${num(gx)}" cy="${num(gy)}" r="0.016"><title>コマ間の余白を詰める/広げる</title></circle>
+        <line class="page-shape-gutter-shaft" x1="${num(gx - 0.014)}" y1="${num(gy)}" x2="${num(gx + 0.014)}" y2="${num(gy)}" />
+        <path class="page-shape-gutter-head" d="M ${num(gx - 0.014)} ${num(gy)} l 0.007 -0.006 M ${num(gx - 0.014)} ${num(gy)} l 0.007 0.006 M ${num(gx + 0.014)} ${num(gy)} l -0.007 -0.006 M ${num(gx + 0.014)} ${num(gy)} l -0.007 0.006" />
+      </g>`
     );
   }
   // 交差点(複数コマの角)ハンドル。
@@ -536,16 +580,38 @@ function renderShapeSplitPreview(splitDraft: { start: [number, number]; current:
   return `<line class="page-shape-split-line" x1="${num(x1)}" y1="${num(y1)}" x2="${num(x2)}" y2="${num(y2)}" />`;
 }
 
+/** undo/redo ボタン(コマ枠モード共通、Ctrl+Z / Ctrl+Shift+Z)。 */
+function shapeHistoryButtons(shapeEdit: PanelShapeEditViewState): string {
+  return `
+    <div class="page-panel-toolbar-actions page-shape-history">
+      <button class="button-secondary compact" type="button" data-action="page-shape-undo"
+        title="元に戻す (Ctrl+Z)" ${shapeEdit.canUndo ? "" : "disabled"}>↩ 元に戻す</button>
+      <button class="button-secondary compact" type="button" data-action="page-shape-redo"
+        title="やり直す (Ctrl+Shift+Z)" ${shapeEdit.canRedo ? "" : "disabled"}>↪ やり直す</button>
+    </div>`;
+}
+
 function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
   const layout = shapeEdit.layout;
   const selectedPanel = layout && shapeEdit.selectedPanelId ? layout.panels.find((panel) => panel.id === shapeEdit.selectedPanelId) ?? null : null;
+  const history = shapeHistoryButtons(shapeEdit);
 
+  if (shapeEdit.selectedVertices.length > 0) {
+    return `
+      <footer class="page-panel-toolbar">
+        <p class="page-panel-hint-text">${shapeEdit.selectedVertices.length}個の頂点を選択中。
+          いずれかの頂点をドラッグすると選択した全頂点が一緒に動きます(Escで選択解除)。</p>
+        ${history}
+      </footer>
+    `;
+  }
   if (!selectedPanel) {
     return `
       <footer class="page-panel-toolbar">
-        <p class="page-panel-hint-text">コマをクリックして選択(頂点編集・分割)。
+        <p class="page-panel-hint-text">コマをクリックして選択(頂点編集・分割)、ドラッグで頂点を範囲選択(一括移動)。
           辺はドラッグで法線方向へ移動 / ◆=境界を移動(両側追随) / ⇔=コマ間余白を詰め広げ /
-          ●=交差点を一括移動 / 外周辺を余白外へドラッグすると裁ち切り(半透明プレビュー)。</p>
+          ●=交差点を一括移動 / ページの辺と平行な外周辺を余白外へドラッグすると裁ち切り(半透明プレビュー)。</p>
+        ${history}
       </footer>
     `;
   }
@@ -553,6 +619,7 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
     return `
       <footer class="page-panel-toolbar">
         <p class="page-panel-hint-text">このコマ形状は編集できません。</p>
+        ${history}
       </footer>
     `;
   }
@@ -563,6 +630,7 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
         <div class="page-panel-toolbar-actions">
           <button class="button-secondary compact" type="button" data-action="convert-panel-shape-to-polygon">多角形に変換して編集</button>
         </div>
+        ${history}
       </footer>
     `;
   }
@@ -576,6 +644,7 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
           </label>
           <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-split-mode">キャンセル</button>
         </div>
+        ${history}
       </footer>
     `;
   }
@@ -585,6 +654,7 @@ function renderShapesToolbar(shapeEdit: PanelShapeEditViewState): string {
       <div class="page-panel-toolbar-actions">
         <button class="button-secondary compact" type="button" data-action="toggle-panel-shape-split-mode">コマを分割</button>
       </div>
+      ${history}
     </footer>
   `;
 }

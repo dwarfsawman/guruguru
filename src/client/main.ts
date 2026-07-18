@@ -94,6 +94,7 @@ import "./scriptMangaController";
 import { handleNameStudioKeydown } from "./nameStudioController";
 import {
   handleNameLayoutEditDblClick,
+  handleNameLayoutEditKeydown,
   handleNameLayoutEditPointerCancel,
   handleNameLayoutEditPointerDown,
   handleNameLayoutEditPointerMove,
@@ -134,6 +135,7 @@ import {
   handlePanelShapePointerDown,
   handlePanelShapePointerMove,
   handlePanelShapePointerUp,
+  panelShapeHistoryStatus,
   updateShapeSplitGutterFromControl
 } from "./panelShapeController";
 import {
@@ -545,6 +547,10 @@ function bindEvents() {
       return;
     }
     if (handleNameStudioKeydown(event)) {
+      return;
+    }
+    // 人間ゲートのコマ割り修正セッション中の Ctrl+Z/Ctrl+Shift+Z(undo/redo)。
+    if (handleNameLayoutEditKeydown(event)) {
       return;
     }
     // コマ選択 lightbox も detail とは排他(book grid の上に開く)なので同様に早期処理する。
@@ -1140,7 +1146,10 @@ function renderPagePanelLightboxView(): string {
       splitMode: state.shapeSplitMode,
       splitDraft: state.shapeSplitDraft,
       gutter: state.shapeSplitGutter,
-      geometryPreview: state.shapeGeometryPreview
+      geometryPreview: state.shapeGeometryPreview,
+      marquee: state.shapeMarquee,
+      selectedVertices: state.shapeSelectedVertices,
+      ...panelShapeHistoryStatus()
     },
     {
       regions: state.pageMosaicDraft,

@@ -104,15 +104,21 @@ function boundaryHandles(boundary: SharedBoundary): string {
   const [cx, cy] = boundary.center;
   const dirX = boundary.end[0] - boundary.start[0];
   const dirY = boundary.end[1] - boundary.start[1];
-  const length = Math.hypot(dirX, dirY) || 1;
-  // ガター幅ハンドルは境界中央から 30% ずらした位置(移動ハンドルと重ねない)。
-  const gx = cx + (dirX / length) * length * 0.3;
-  const gy = cy + (dirY / length) * length * 0.3;
   const id = escapeAttr(boundary.id);
+  const r = BOUNDARY_HANDLE_RADIUS;
+  // ◆(ひし形)=境界移動、⇔(法線方向の両矢印)=ガター幅。形で役割が分かるようにする。
+  const diamond = `M ${num(cx)} ${num(cy - r)} L ${num(cx + r)} ${num(cy)} L ${num(cx)} ${num(cy + r)} L ${num(cx - r)} ${num(cy)} Z`;
+  const gx = cx + dirX * 0.3;
+  const gy = cy + dirY * 0.3;
+  const angle = (Math.atan2(boundary.normal[1], boundary.normal[0]) * 180) / Math.PI;
   return `
     <line class="nle-boundary-line" x1="${num(boundary.start[0])}" y1="${num(boundary.start[1])}" x2="${num(boundary.end[0])}" y2="${num(boundary.end[1])}" />
-    <circle class="nle-boundary-handle" data-nle-boundary="${id}" cx="${num(cx)}" cy="${num(cy)}" r="${num(BOUNDARY_HANDLE_RADIUS)}"><title>境界を移動(両側が追随)</title></circle>
-    <circle class="nle-gutter-handle" data-nle-gutter="${id}" cx="${num(gx)}" cy="${num(gy)}" r="${num(BOUNDARY_HANDLE_RADIUS * 0.8)}"><title>コマ間の余白を詰める/広げる</title></circle>`;
+    <path class="nle-boundary-handle" data-nle-boundary="${id}" d="${diamond}"><title>境界を移動(両側が追随)</title></path>
+    <g class="nle-gutter-arrow" transform="rotate(${num(angle)} ${num(gx)} ${num(gy)})">
+      <circle class="nle-gutter-hit" data-nle-gutter="${id}" cx="${num(gx)}" cy="${num(gy)}" r="${num(r)}"><title>コマ間の余白を詰める/広げる</title></circle>
+      <line class="nle-gutter-shaft" x1="${num(gx - r * 0.8)}" y1="${num(gy)}" x2="${num(gx + r * 0.8)}" y2="${num(gy)}" />
+      <path class="nle-gutter-head" d="M ${num(gx - r * 0.8)} ${num(gy)} l ${num(r * 0.4)} ${num(-r * 0.35)} M ${num(gx - r * 0.8)} ${num(gy)} l ${num(r * 0.4)} ${num(r * 0.35)} M ${num(gx + r * 0.8)} ${num(gy)} l ${num(-r * 0.4)} ${num(-r * 0.35)} M ${num(gx + r * 0.8)} ${num(gy)} l ${num(-r * 0.4)} ${num(r * 0.35)}" />
+    </g>`;
 }
 
 function junctionHandles(layout: PageLayout): string {
@@ -220,6 +226,10 @@ export function renderNameLayoutEditToolbar(edit: NameLayoutEditState): string {
       <div class="studio-actions nle-actions">
         <button type="button" class="button-primary compact" data-action="studio-layout-save"
           ${invalid || edit.saveBusy ? "disabled" : ""}>${edit.saveBusy ? "保存中…" : "修正を保存"}</button>
+        <button type="button" class="button-secondary compact" data-action="studio-layout-undo"
+          title="元に戻す (Ctrl+Z)" ${edit.canUndo ? "" : "disabled"}>↩ 元に戻す</button>
+        <button type="button" class="button-secondary compact" data-action="studio-layout-redo"
+          title="やり直す (Ctrl+Shift+Z)" ${edit.canRedo ? "" : "disabled"}>↪ やり直す</button>
         <button type="button" class="button-secondary compact" data-action="studio-layout-revert">編集をやり直す</button>
         <button type="button" class="button-secondary compact" data-action="studio-layout-reset"
           ${edit.saveBusy ? "disabled" : ""}>テンプレへ戻す</button>

@@ -7,7 +7,8 @@
  * 既存の割り当て(あれば)を新パネル id へ移行する(`panelAssignments` の requirePanel がサーバ側の
  * 保存済み layout を見るため、順序を守る必要がある)。
  *
- * **undo/redo は P5 のスコープ外**(オブジェクトモードの `pageObjectHistory.ts` とは独立に持たない)。
+ * undo/redo は `snapshotHistory.ts`(pageObjectHistory と同型の2スタック)でレイアウトスナップショットを持つ。
+ * 分割の undo はレイアウトだけを戻す(移行済みコマ割り当ては戻らない)。
  */
 import { clonePageLayout, type LayoutPanel, type PageLayout } from "../shared/pageLayout";
 import {
@@ -25,6 +26,7 @@ import {
   edgeOutwardNormal,
   moveBoundaryAlongNormal,
   moveJunction,
+  movePanelVertices,
   outerEdgeInfo,
   setBoundaryGutter,
   snapEdgeToBleed,
@@ -40,6 +42,7 @@ import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { clampNumber, isTextEntryTarget } from "./clientUtils";
+import { clearSnapshotHistory, createSnapshotHistory, pushSnapshot, redoSnapshot, undoSnapshot } from "./snapshotHistory";
 
 // --- 保存(debounce PATCH + flush、分割だけは即時) ---
 
@@ -48,7 +51,7 @@ let saveDebounceTimer: number | null = null;
 let inflightSave: Promise<void> | null = null;
 let shapesDirty = false;
 
-/** lightbox を開く直前に呼ぶ(保存タイマー・ドラッグ状態をリセットする)。 */
+/** lightbox を開く直前に呼ぶ(保存タイマー・ドラッグ状態・履歴・選択をリセットする)。 */
 export function resetShapeEditSession(): void {
   if (saveDebounceTimer !== null) {
     window.clearTimeout(saveDebounceTimer);
@@ -58,7 +61,51 @@ export function resetShapeEditSession(): void {
   vertexDrag = null;
   splitDrag = null;
   geometryDrag = null;
+  marqueeDrag = null;
+  multiVertexDrag = null;
+  clearSnapshotHistory(layoutHistory);
   state.shapeGeometryPreview = null;
+  state.shapeMarquee = null;
+  state.shapeSelectedVertices = [];
+}
+
+// --- undo/redo(スナップショット2スタック) ---
+
+const layoutHistory = createSnapshotHistory<PageLayout>();
+
+/** 確定操作の直前レイアウトを履歴へ積む(deep copy して渡す)。 */
+function pushLayoutHistory(before: PageLayout): void {
+  pushSnapshot(layoutHistory, clonePageLayout(before));
+}
+
+/** ツールバーの undo/redo ボタンの disabled 判定(main.ts がビュー状態として渡す)。 */
+export function panelShapeHistoryStatus(): { canUndo: boolean; canRedo: boolean } {
+  return { canUndo: layoutHistory.undoStack.length > 0, canRedo: layoutHistory.redoStack.length > 0 };
+}
+
+function applyRestoredLayout(restored: PageLayout): void {
+  state.pageLayoutDraft = restored;
+  // 頂点 index はレイアウト世代に紐づくため、選択・プレビューは復元時に破棄する。
+  state.shapeSelectedVertexIndex = null;
+  state.shapeSelectedVertices = [];
+  state.shapeMarquee = null;
+  state.shapeGeometryPreview = null;
+  requestRender();
+  scheduleSave();
+}
+
+function undoShapeLayout(): void {
+  const draft = state.pageLayoutDraft;
+  if (!draft || state.pagePanelLightbox?.mode !== "shapes") return;
+  const restored = undoSnapshot(layoutHistory, clonePageLayout(draft));
+  if (restored) applyRestoredLayout(restored);
+}
+
+function redoShapeLayout(): void {
+  const draft = state.pageLayoutDraft;
+  if (!draft || state.pagePanelLightbox?.mode !== "shapes") return;
+  const restored = redoSnapshot(layoutHistory, clonePageLayout(draft));
+  if (restored) applyRestoredLayout(restored);
 }
 
 /** 未保存の変更が保留中なら true を返しつつリセットする(lightbox クローズ判定用)。 */
@@ -122,7 +169,7 @@ async function persistShapeLayout(): Promise<void> {
       body: JSON.stringify({ layout: draft })
     });
     // 応答時点で新しい編集が進行していない時だけドラフトへ反映する(pageObjectsController と同じ配慮)。
-    if (state.pagePanelLightbox?.pageId === pageId && saveDebounceTimer === null && !vertexDrag && !splitDrag && !geometryDrag) {
+    if (state.pagePanelLightbox?.pageId === pageId && saveDebounceTimer === null && !vertexDrag && !splitDrag && !geometryDrag && !multiVertexDrag && !marqueeDrag) {
       state.pageLayoutDraft = result.layout;
     }
     // サーバ側で消えたパネルへの割り当ては削除済みなので、ローカルの一覧からも落とす。
@@ -175,6 +222,7 @@ function convertSelectedPanelToPolygon(): void {
     pushToast("このコマ形状は多角形に変換できません。", "error");
     return;
   }
+  pushLayoutHistory(draft);
   const nextPanels = [...draft.panels];
   nextPanels[index] = { ...panel, shape: { type: "polygon", points } };
   state.pageLayoutDraft = { ...draft, panels: nextPanels };
@@ -218,6 +266,7 @@ function insertVertexAt(panelId: string, edgeIndex: number): void {
   if (panel.shape.type !== "polygon") {
     return;
   }
+  pushLayoutHistory(draft);
   const nextPoints = insertPolygonVertex(panel.shape.points, edgeIndex);
   const nextPanels = [...draft.panels];
   nextPanels[index] = { ...panel, shape: { type: "polygon", points: nextPoints } };
@@ -245,6 +294,7 @@ function removeVertexAt(panelId: string, vertexIndex: number): void {
     pushToast("これ以上頂点を減らせません(最低3点必要です)。", "error");
     return;
   }
+  pushLayoutHistory(draft);
   const nextPanels = [...draft.panels];
   nextPanels[index] = { ...panel, shape: { type: "polygon", points: nextPoints } };
   state.pageLayoutDraft = { ...draft, panels: nextPanels };
@@ -336,6 +386,8 @@ async function commitSplit(): Promise<void> {
   const winnerId = areaA >= areaB ? idA : idB;
   const originalAssignment = state.pagePanelAssignments.find((assignment) => assignment.panelId === panelId) ?? null;
 
+  // undo はレイアウトのみ復元する(移行済みコマ割り当ては戻らない。復元後の再割り当てはユーザー操作)。
+  pushLayoutHistory(draft);
   state.pageLayoutDraft = { ...draft, panels: nextPanels };
   state.shapeSelectedPanelId = winnerId;
   state.shapeSelectedVertexIndex = null;
@@ -383,9 +435,35 @@ interface VertexDragState {
   startClientY: number;
   startPoint: [number, number];
   pageHeight: number;
+  /** undo 用: ドラッグ開始時レイアウトのスナップショット。 */
+  startLayout: PageLayout;
 }
 
 let vertexDrag: VertexDragState | null = null;
+
+/** ドラッグ範囲選択(クリックと区別するため 4px 動くまでは選択矩形を出さない)。 */
+interface MarqueeDragState {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startLocal: [number, number];
+  moved: boolean;
+  clickPanelId: string | null;
+}
+
+let marqueeDrag: MarqueeDragState | null = null;
+
+/** 範囲選択済み頂点集合の一括移動ドラッグ。 */
+interface MultiVertexDragState {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  pxPerUnit: number;
+  startLayout: PageLayout;
+  refs: Array<{ panelIndex: number; vertexIndex: number }>;
+}
+
+let multiVertexDrag: MultiVertexDragState | null = null;
 
 interface SplitDragState {
   pointerId: number;
@@ -514,6 +592,9 @@ function finishGeometryDrag(): void {
       : state.pageLayoutDraft;
   }
   state.shapeGeometryPreview = null;
+  if (JSON.stringify(drag.startLayout) !== JSON.stringify(state.pageLayoutDraft)) {
+    pushLayoutHistory(drag.startLayout);
+  }
   requestRender();
   scheduleSave();
 }
@@ -547,6 +628,26 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
     return true;
   }
 
+  // 範囲選択済み頂点の一括移動ハンドル。
+  const mvertexEl = target.closest<SVGElement>("[data-shape-mvertex]");
+  if (mvertexEl && state.shapeSelectedVertices.length > 0) {
+    const root = stageRootElement();
+    const stage = root ? getStageTransform(root) : null;
+    if (!stage) {
+      return true;
+    }
+    event.preventDefault();
+    multiVertexDrag = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      pxPerUnit: stage.pxPerUnit,
+      startLayout: clonePageLayout(draft),
+      refs: [...state.shapeSelectedVertices]
+    };
+    return true;
+  }
+
   const vertexEl = target.closest<SVGElement>("[data-shape-vertex]");
   if (vertexEl && state.shapeSelectedPanelId) {
     const vertexIndex = Number(vertexEl.getAttribute("data-shape-vertex"));
@@ -569,7 +670,8 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
       startClientX: event.clientX,
       startClientY: event.clientY,
       startPoint: [...panel.shape.points[vertexIndex]!] as [number, number],
-      pageHeight: draft.page.height
+      pageHeight: draft.page.height,
+      startLayout: clonePageLayout(draft)
     };
     requestRender();
     return true;
@@ -591,22 +693,52 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
     return true;
   }
 
+  // パネル本体/背景: クリック=選択/解除、ドラッグ=頂点の範囲選択(pointerup で判定)。
   const panelEl = target.closest<SVGElement>("[data-shape-panel-id]");
-  if (panelEl) {
-    event.preventDefault();
-    selectShapePanel(panelEl.getAttribute("data-shape-panel-id"));
+  const rootForMarquee = stageRootElement();
+  const inverseForMarquee = rootForMarquee ? getInverseStageTransform(rootForMarquee) : null;
+  if (!inverseForMarquee) {
     return true;
   }
-
-  // 背景クリック = 選択解除。
   event.preventDefault();
-  selectShapePanel(null);
+  const marqueeStart = inverseForMarquee({ x: event.clientX, y: event.clientY });
+  marqueeDrag = {
+    pointerId: event.pointerId,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startLocal: [marqueeStart.x, marqueeStart.y],
+    moved: false,
+    clickPanelId: panelEl?.getAttribute("data-shape-panel-id") ?? null
+  };
   return true;
 }
 
 export function handlePanelShapePointerMove(event: PointerEvent): boolean {
   if (geometryDrag && event.pointerId === geometryDrag.pointerId) {
     moveGeometryDrag(event);
+    return true;
+  }
+  if (multiVertexDrag && event.pointerId === multiVertexDrag.pointerId) {
+    const dx = (event.clientX - multiVertexDrag.startClientX) / multiVertexDrag.pxPerUnit;
+    const dy = (event.clientY - multiVertexDrag.startClientY) / multiVertexDrag.pxPerUnit;
+    state.pageLayoutDraft = movePanelVertices(multiVertexDrag.startLayout, multiVertexDrag.refs, [dx, dy]);
+    requestRender();
+    return true;
+  }
+  if (marqueeDrag && event.pointerId === marqueeDrag.pointerId) {
+    if (!marqueeDrag.moved) {
+      const dist = Math.hypot(event.clientX - marqueeDrag.startClientX, event.clientY - marqueeDrag.startClientY);
+      if (dist > 4) marqueeDrag.moved = true;
+    }
+    if (marqueeDrag.moved) {
+      const root = stageRootElement();
+      const inverse = root ? getInverseStageTransform(root) : null;
+      if (inverse) {
+        const point = inverse({ x: event.clientX, y: event.clientY });
+        state.shapeMarquee = { start: marqueeDrag.startLocal, current: [point.x, point.y] };
+        requestRender();
+      }
+    }
     return true;
   }
   if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
@@ -635,6 +767,54 @@ export function handlePanelShapePointerUp(event: PointerEvent): boolean {
     finishGeometryDrag();
     return true;
   }
+  if (multiVertexDrag && event.pointerId === multiVertexDrag.pointerId) {
+    const drag = multiVertexDrag;
+    multiVertexDrag = null;
+    if (JSON.stringify(drag.startLayout) !== JSON.stringify(state.pageLayoutDraft)) {
+      pushLayoutHistory(drag.startLayout);
+      scheduleSave();
+    }
+    requestRender();
+    return true;
+  }
+  if (marqueeDrag && event.pointerId === marqueeDrag.pointerId) {
+    const drag = marqueeDrag;
+    marqueeDrag = null;
+    if (!drag.moved) {
+      // クリック: 従来どおりパネル選択/背景で解除。範囲選択は解除する。
+      state.shapeMarquee = null;
+      state.shapeSelectedVertices = [];
+      selectShapePanel(drag.clickPanelId);
+      requestRender();
+      return true;
+    }
+    const rect = state.shapeMarquee;
+    state.shapeMarquee = null;
+    const draft = state.pageLayoutDraft;
+    if (!rect || !draft) {
+      requestRender();
+      return true;
+    }
+    // 頂点 index を確定させるため、範囲選択の確定時に polygon 化する(幾何ドラッグと同じ規約)。
+    const editable = toEditableNameLayout(draft);
+    state.pageLayoutDraft = editable;
+    const x0 = Math.min(rect.start[0], rect.current[0]);
+    const x1 = Math.max(rect.start[0], rect.current[0]);
+    const y0 = Math.min(rect.start[1], rect.current[1]);
+    const y1 = Math.max(rect.start[1], rect.current[1]);
+    const selected: Array<{ panelIndex: number; vertexIndex: number }> = [];
+    editable.panels.forEach((panel, panelIndex) => {
+      if (panel.shape.type !== "polygon") return;
+      panel.shape.points.forEach(([x, y], vertexIndex) => {
+        if (x >= x0 && x <= x1 && y >= y0 && y <= y1) selected.push({ panelIndex, vertexIndex });
+      });
+    });
+    state.shapeSelectedVertices = selected;
+    state.shapeSelectedPanelId = null;
+    state.shapeSelectedVertexIndex = null;
+    requestRender();
+    return true;
+  }
   if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
     const drag = vertexDrag;
     vertexDrag = null;
@@ -642,6 +822,7 @@ export function handlePanelShapePointerUp(event: PointerEvent): boolean {
     const panel = draft?.panels.find((item) => item.id === drag.panelId);
     const current = panel && panel.shape.type === "polygon" ? panel.shape.points[drag.vertexIndex] : null;
     if (current && (current[0] !== drag.startPoint[0] || current[1] !== drag.startPoint[1])) {
+      pushLayoutHistory(drag.startLayout);
       scheduleSave();
     }
     return true;
@@ -660,6 +841,19 @@ export function handlePanelShapePointerCancel(event: PointerEvent): boolean {
     state.pageLayoutDraft = geometryDrag.startLayout;
     geometryDrag = null;
     state.shapeGeometryPreview = null;
+    requestRender();
+    return true;
+  }
+  if (multiVertexDrag && event.pointerId === multiVertexDrag.pointerId) {
+    // ドラッグ開始前の状態へ復元する(保存しない)。
+    state.pageLayoutDraft = multiVertexDrag.startLayout;
+    multiVertexDrag = null;
+    requestRender();
+    return true;
+  }
+  if (marqueeDrag && event.pointerId === marqueeDrag.pointerId) {
+    marqueeDrag = null;
+    state.shapeMarquee = null;
     requestRender();
     return true;
   }
@@ -699,11 +893,33 @@ export function handlePanelShapeDblClick(event: MouseEvent): boolean {
   return true;
 }
 
-/** main.ts の keydown 委譲から呼ばれる。選択中頂点の Delete/Backspace = 削除。 */
+/** main.ts の keydown 委譲から呼ばれる。Ctrl+Z/Y(undo/redo)・選択中頂点の Delete・Escape。 */
 export function handlePanelShapeKeydown(event: KeyboardEvent): boolean {
   const lightbox = state.pagePanelLightbox;
   if (!lightbox || lightbox.mode !== "shapes") {
     return false;
+  }
+  if ((event.ctrlKey || event.metaKey) && !isTextEntryTarget(event.target)) {
+    const key = event.key.toLowerCase();
+    if (key === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redoShapeLayout();
+      else undoShapeLayout();
+      return true;
+    }
+    if (key === "y") {
+      event.preventDefault();
+      redoShapeLayout();
+      return true;
+    }
+  }
+  if (event.key === "Escape" && (state.shapeSelectedVertices.length > 0 || state.shapeMarquee)) {
+    event.preventDefault();
+    state.shapeSelectedVertices = [];
+    state.shapeMarquee = null;
+    marqueeDrag = null;
+    requestRender();
+    return true;
   }
   if (
     (event.key === "Delete" || event.key === "Backspace") &&
@@ -720,5 +936,7 @@ export function handlePanelShapeKeydown(event: KeyboardEvent): boolean {
 
 registerActions({
   "convert-panel-shape-to-polygon": () => convertSelectedPanelToPolygon(),
-  "toggle-panel-shape-split-mode": () => toggleSplitMode()
+  "toggle-panel-shape-split-mode": () => toggleSplitMode(),
+  "page-shape-undo": () => undoShapeLayout(),
+  "page-shape-redo": () => redoShapeLayout()
 });

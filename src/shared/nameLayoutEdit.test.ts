@@ -192,6 +192,24 @@ test("outer edge classification, margin band detection, bleed snap and margin re
   assert.equal(outerEdgeInfo(editable, { panelIndex: 0, edgeIndex: innerEdgeIndex }, boundaries).isOuter, false);
 });
 
+test("outer edge bleed is restricted to page-edge-parallel (axis-aligned) edges", () => {
+  const editable = toEditableNameLayout(fourGrid());
+  // tr の右辺を明確な斜めに崩す(上端を内側へ 0.25 ずらす ≈ 21度 → 軸整合 <0.98)。
+  const points = panelPoints(editable, "tr");
+  const topRight = points.findIndex(([x, y]) => Math.abs(x - (1 - MARGIN)) < 1e-9 && Math.abs(y - MARGIN) < 1e-9);
+  assert.ok(topRight >= 0);
+  points[topRight] = [1 - MARGIN - 0.25, MARGIN];
+  const boundaries = detectSharedBoundaries(editable);
+  const slantedEdgeIndex = points.findIndex((point, index) => {
+    const next = points[(index + 1) % points.length]!;
+    // 右辺: 両端の x が右側にあり、y 方向に伸びる辺。
+    return point[0] > 0.6 && next[0] > 0.6 && Math.abs(point[1] - next[1]) > 0.1;
+  });
+  assert.ok(slantedEdgeIndex >= 0);
+  const info = outerEdgeInfo(editable, { panelIndex: 0, edgeIndex: slantedEdgeIndex }, boundaries);
+  assert.equal(info.isOuter, false, "斜め辺は裁ち切り対象にしない");
+});
+
 test("validateEditedNameLayout rejects panel count change, tiny panels and reading-order flips", () => {
   const base = toEditableNameLayout(fourGrid());
 

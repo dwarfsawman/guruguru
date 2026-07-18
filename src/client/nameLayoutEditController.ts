@@ -33,6 +33,55 @@ import { pushToast, requestRender, state, type NameLayoutEditState } from "./app
 import { registerActions } from "./actionRegistry";
 import { getInverseStageTransform, getStageTransform } from "./svgGizmo";
 import { refreshScriptMangaCandidates } from "./scriptMangaController";
+import { isTextEntryTarget } from "./clientUtils";
+import { clearSnapshotHistory, createSnapshotHistory, pushSnapshot, redoSnapshot, undoSnapshot } from "./snapshotHistory";
+
+// --- undo/redo(レイアウト+吹き出しヒントのスナップショット) ---
+
+interface NameLayoutEditSnapshot {
+  layout: PageLayout;
+  hints: Record<number, { x: number; y: number }>;
+}
+
+const editHistory = createSnapshotHistory<NameLayoutEditSnapshot>();
+
+function currentEditSnapshot(edit: NameLayoutEditState): NameLayoutEditSnapshot {
+  return { layout: clonePageLayout(edit.draftLayout), hints: { ...edit.draftHints } };
+}
+
+function syncHistoryFlags(edit: NameLayoutEditState): void {
+  edit.canUndo = editHistory.undoStack.length > 0;
+  edit.canRedo = editHistory.redoStack.length > 0;
+}
+
+/** 確定操作の直前状態を履歴へ積む(snapshot は呼び出し側で deep copy 済みであること)。 */
+function pushEditHistory(edit: NameLayoutEditState, snapshot: NameLayoutEditSnapshot): void {
+  pushSnapshot(editHistory, snapshot);
+  syncHistoryFlags(edit);
+}
+
+function applyEditSnapshot(edit: NameLayoutEditState, snapshot: NameLayoutEditSnapshot): void {
+  edit.draftLayout = snapshot.layout;
+  edit.draftHints = snapshot.hints;
+  edit.preview = null;
+  validateDraft(edit);
+  syncHistoryFlags(edit);
+  requestRender();
+}
+
+function undoLayoutEdit(): void {
+  const edit = state.nameLayoutEdit;
+  if (!edit) return;
+  const restored = undoSnapshot(editHistory, currentEditSnapshot(edit));
+  if (restored) applyEditSnapshot(edit, restored);
+}
+
+function redoLayoutEdit(): void {
+  const edit = state.nameLayoutEdit;
+  if (!edit) return;
+  const restored = redoSnapshot(editHistory, currentEditSnapshot(edit));
+  if (restored) applyEditSnapshot(edit, restored);
+}
 
 function stageRootElement(): SVGGraphicsElement | null {
   const el = document.getElementById("nameLayoutEditRoot");
@@ -69,6 +118,7 @@ function beginLayoutEdit(candidateId: string, target: HTMLElement): void {
   }
   const baseLayout = toEditableNameLayout(template);
   const savedCustom = candidate.customLayouts?.[pageIndex];
+  clearSnapshotHistory(editHistory);
   state.nameLayoutEdit = {
     candidateId,
     pageIndex,
@@ -78,7 +128,9 @@ function beginLayoutEdit(candidateId: string, target: HTMLElement): void {
     draftHints: { ...(candidate.balloonHints?.[pageIndex] ?? {}) },
     preview: null,
     issues: [],
-    saveBusy: false
+    saveBusy: false,
+    canUndo: false,
+    canRedo: false
   };
   requestRender();
 }
@@ -90,11 +142,12 @@ function cancelLayoutEdit(): void {
   requestRender();
 }
 
-/** 未保存のローカル編集を破棄して、保存済み(または基準テンプレ)の状態へ戻す。 */
+/** 未保存のローカル編集を破棄して、保存済み(または基準テンプレ)の状態へ戻す。undo で取り消せる。 */
 function revertLayoutEdit(): void {
   const edit = state.nameLayoutEdit;
   const candidate = activeEditCandidate();
   if (!edit || !candidate) return;
+  pushEditHistory(edit, currentEditSnapshot(edit));
   const savedCustom = candidate.customLayouts?.[edit.pageIndex];
   edit.draftLayout = savedCustom ? toEditableNameLayout(savedCustom) : clonePageLayout(edit.baseLayout);
   edit.draftHints = { ...(candidate.balloonHints?.[edit.pageIndex] ?? {}) };
@@ -165,6 +218,7 @@ async function resetLayoutEdit(): Promise<void> {
     state.scriptMangaCandidates = state.scriptMangaCandidates.map((entry) =>
       entry.id === candidate.id ? response.candidate : entry
     );
+    pushEditHistory(edit, currentEditSnapshot(edit));
     edit.draftLayout = clonePageLayout(edit.baseLayout);
     edit.draftHints = {};
     edit.preview = null;
@@ -210,6 +264,7 @@ function parsePairRef(value: string | null | undefined): { a: number; b: number 
 function insertVertexOnEdge(edit: NameLayoutEditState, panelIndex: number, edgeIndex: number): void {
   const panel = edit.draftLayout.panels[panelIndex];
   if (!panel || panel.shape.type !== "polygon") return;
+  pushEditHistory(edit, currentEditSnapshot(edit));
   const layout = clonePageLayout(edit.draftLayout);
   const target = layout.panels[panelIndex]!;
   if (target.shape.type !== "polygon") return;
@@ -228,6 +283,7 @@ function removeVertex(edit: NameLayoutEditState, panelIndex: number, vertexIndex
     pushToast("これ以上頂点を減らせません(最低3点必要です)。", "error");
     return;
   }
+  pushEditHistory(edit, currentEditSnapshot(edit));
   target.shape.points = next;
   edit.draftLayout = layout;
   validateDraft(edit);
@@ -384,9 +440,34 @@ export function handleNameLayoutEditPointerUp(event: PointerEvent): boolean {
   }
   edit.preview = null;
   if (drag.kind !== "balloon") validateDraft(edit);
+  // 実際に変化したドラッグだけを履歴へ積む(開始時スナップショットは drag が所有しているので再cloneしない)。
+  const changed =
+    JSON.stringify(drag.startLayout) !== JSON.stringify(edit.draftLayout) ||
+    JSON.stringify(drag.startHints) !== JSON.stringify(edit.draftHints);
+  if (changed) pushEditHistory(edit, { layout: drag.startLayout, hints: drag.startHints });
   drag = null;
   requestRender();
   return true;
+}
+
+/** main.ts の keydown 委譲から呼ばれる。編集セッション中の Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y。 */
+export function handleNameLayoutEditKeydown(event: KeyboardEvent): boolean {
+  if (!state.nameLayoutEdit) return false;
+  if ((event.ctrlKey || event.metaKey) && !isTextEntryTarget(event.target)) {
+    const key = event.key.toLowerCase();
+    if (key === "z") {
+      event.preventDefault();
+      if (event.shiftKey) redoLayoutEdit();
+      else undoLayoutEdit();
+      return true;
+    }
+    if (key === "y") {
+      event.preventDefault();
+      redoLayoutEdit();
+      return true;
+    }
+  }
+  return false;
 }
 
 export function handleNameLayoutEditPointerCancel(event: PointerEvent): boolean {
@@ -420,5 +501,7 @@ registerActions({
   "studio-layout-save": () => void saveLayoutEdit(),
   "studio-layout-cancel": () => cancelLayoutEdit(),
   "studio-layout-revert": () => revertLayoutEdit(),
-  "studio-layout-reset": () => void resetLayoutEdit()
+  "studio-layout-reset": () => void resetLayoutEdit(),
+  "studio-layout-undo": () => undoLayoutEdit(),
+  "studio-layout-redo": () => redoLayoutEdit()
 });

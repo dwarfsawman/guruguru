@@ -167,6 +167,9 @@ export interface NameLayoutEditState {
   /** 直近の検証結果(null=未検証/OK)。保存はOK時のみ有効。 */
   issues: string[];
   saveBusy: boolean;
+  /** undo/redo ボタンの活性判定(コントローラが履歴操作のたびに更新する)。 */
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 /** 演出ネームの編集ドラフト(V5 D6)。フォームの値は常にここからレンダーする(morph保護は1要素のみ)。 */
@@ -535,6 +538,10 @@ export interface AppState {
    * (pageLayoutDraft の panelIndex/edgeIndex)。null=プレビューなし。
    */
   shapeGeometryPreview: { edges: Array<{ panelIndex: number; edgeIndex: number }> } | null;
+  /** コマ形状編集: ドラッグ範囲選択の作業矩形(page 座標)。null=非ドラッグ中。 */
+  shapeMarquee: { start: [number, number]; current: [number, number] } | null;
+  /** コマ形状編集: 範囲選択された頂点集合(全パネル横断)。ドラッグで一括移動する。 */
+  shapeSelectedVertices: Array<{ panelIndex: number; vertexIndex: number }>;
   /**
    * モザイク編集(Docs/Feature-CGCollectionSuite.md P6): 開いている lightbox のページのモザイクリージョン
    * ドラフト。追加/頂点編集/削除/granularity 変更はこれを直接書き換え、`pageMosaicController.ts` が
@@ -747,6 +754,8 @@ export const state: AppState = {
   shapeSplitDraft: null,
   shapeSplitGutter: 0.015,
   shapeGeometryPreview: null,
+  shapeMarquee: null,
+  shapeSelectedVertices: [],
   pageMosaicDraft: [],
   mosaicSelectedRegionId: null,
   mosaicSelectedVertexIndex: null,
