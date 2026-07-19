@@ -22,7 +22,21 @@ interface DirectedPanel {
   id: string;
   shot: string;
   angle: string;
-  subjects: Array<{ ref: string; position: string; action: string; expression: string; gaze?: string }>;
+  subjects: Array<{
+    ref: string;
+    position: string;
+    action: string;
+    expression: string;
+    gaze?: string;
+    /** 脚本上のキャラ名(非視覚の結線メタデータ、ネームポーズレイヤ)。プロンプトへは出さない。 */
+    castRef?: string;
+    /** 頭部中心のパネルローカル座標 0..1(ネームポーズレイヤのアンカー)。 */
+    head?: { x: number; y: number };
+    /** 腰・胴中心のパネルローカル座標 0..1。head→torso が背骨の向き。 */
+    torso?: { x: number; y: number };
+    /** レイヤ深度 0..3(大きいほど手前)。重なりのあるコマ用。 */
+    layer?: number;
+  }>;
   action: string;
   emotion: string;
   composition: string;
@@ -66,7 +80,13 @@ const schema = {
                 subjects: { type: "array", items: { type: "object", additionalProperties: false,
                   required: ["ref", "position", "action", "expression"], properties: {
                     ref: { type: "string" }, position: { type: "string", enum: ["upper-left", "upper-center", "upper-right", "middle-left", "middle-center", "middle-right", "lower-left", "lower-center", "lower-right"] },
-                    action: { type: "string" }, expression: { type: "string" }, gaze: { type: "string" }
+                    action: { type: "string" }, expression: { type: "string" }, gaze: { type: "string" },
+                    castRef: { type: "string" },
+                    head: { type: "object", additionalProperties: false, required: ["x", "y"], properties: {
+                      x: { type: "number", minimum: 0, maximum: 1 }, y: { type: "number", minimum: 0, maximum: 1 } } },
+                    torso: { type: "object", additionalProperties: false, required: ["x", "y"], properties: {
+                      x: { type: "number", minimum: 0, maximum: 1 }, y: { type: "number", minimum: 0, maximum: 1 } } },
+                    layer: { type: "integer", minimum: 0, maximum: 3 }
                   } } },
                 action: { type: "string" }, emotion: { type: "string" }, composition: { type: "string" },
                 prompt: { type: "string" }, avoid: { type: "array", maxItems: 8, items: { type: "string" } }
@@ -83,12 +103,36 @@ function nonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/** アンカー座標のサニタイズ(数値でなければ捨て、0..1 へクランプ)。 */
+function anchorPointFrom(value: unknown): { x: number; y: number } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const x = (value as { x?: unknown }).x;
+  const y = (value as { y?: unknown }).y;
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+  return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+}
+
 function directionFrom(panel: DirectedPanel): ScriptMangaPanelDirection {
   return {
     shot: panel.shot.trim(),
     angle: panel.angle.trim(),
     subject: panel.subjects.map((item) => item.ref).join(", "),
-    subjects: panel.subjects,
+    // ネームポーズレイヤの新フィールドは不正値をここで捨てる(バッチ全体は落とさない)。
+    // head/torso は両方揃ったときのみ採用(片方だけでは相似変換フィットが組めない)。
+    subjects: panel.subjects.map((item) => {
+      const head = anchorPointFrom(item.head);
+      const torso = anchorPointFrom(item.torso);
+      return {
+        ref: item.ref,
+        position: item.position,
+        action: item.action,
+        expression: item.expression,
+        ...(item.gaze !== undefined ? { gaze: item.gaze } : {}),
+        ...(typeof item.castRef === "string" && item.castRef.trim() ? { castRef: item.castRef.trim() } : {}),
+        ...(head && torso ? { head, torso } : {}),
+        ...(Number.isInteger(item.layer) && item.layer! >= 0 && item.layer! <= 3 ? { layer: item.layer } : {})
+      };
+    }),
     avoid: panel.avoid,
     action: panel.action.trim(),
     emotion: panel.emotion.trim(),
@@ -189,6 +233,8 @@ export function buildScriptMangaDirectorSystemPrompt(input: {
     "This is naming contract v3.0. Use only the fixed shot, angle, and position enum values from the schema.",
     "Write prompt in English with panel-specific visual facts only. Never include appearance/style attributes, dialogue, non-English text, or the words no/not/without/never. Put exclusions in avoid as English noun phrases.",
     "Character names and aliases are narrative metadata only. Never copy them into visual-generation fields: prompt, action, emotion, composition, avoid, or any subjects[] string (ref, action, expression, gaze). Use neutral visual roles such as 'primary character', 'second character', 'foreground character', or 'background character' instead. Names may remain in pageIntent and other non-visual metadata.",
+    "For each subject, set castRef to the exact character name from the script that this subject depicts. castRef is non-visual wiring metadata (like pageIntent) and is never rendered into prompts; the neutral-role rule above still applies to ref and every other visual field.",
+    "When a subject's body placement matters, also set head {x,y} and torso {x,y}: the approximate centers of the character's head and hips in panel-local coordinates (0..1, origin at the panel's top-left, two decimals are enough). These drive the pose skeleton, so keep head/torso consistent with the stated action and shot. When characters overlap in depth, set layer (integer 0-3, larger = nearer to the viewer).",
     "Layout ids containing 'bleed' extend panels past the page edge (borderless art) — pick them for climactic, atmospheric, or montage pages instead of always using framed grids.",
     "Layouts with a figureSlot render that reading position as a borderless full-body character cut-out standing over the page (punch-out). Panels are mapped to layout slots in reading order, so the panel at that position becomes the figure: give it a single character-defining beat, set its subject to full body, and keep its dialogue minimal.",
     "Each page's layout is already decided and read-only (see the layout guide). Panels map to layout slots in reading order — direct each panel to fit its slot: visualScale=large panels sit on the biggest slots, so stage them as the page's visual peak.",

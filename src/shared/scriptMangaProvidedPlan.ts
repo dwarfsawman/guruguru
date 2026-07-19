@@ -53,6 +53,15 @@ function optionalDirectionStrings(value: unknown): string[] | null | undefined {
   return values.every(Boolean) ? values : null;
 }
 
+/** ネームポーズレイヤのアンカー座標。数値でなければ捨て、0..1 へクランプする(監督経路と同じ寛容さ)。 */
+function optionalAnchorPoint(value: unknown): { x: number; y: number } | undefined {
+  if (!isJsonObject(value)) return undefined;
+  const x = value.x;
+  const y = value.y;
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+  return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+}
+
 function optionalDirectionSubjects(
   value: unknown
 ): ScriptMangaPanelDirection["subjects"] | null | undefined {
@@ -67,7 +76,24 @@ function optionalDirectionSubjects(
     const expression = text(raw.expression);
     const gaze = raw.gaze === undefined ? undefined : text(raw.gaze);
     if (!ref || !position || !action || !expression || (raw.gaze !== undefined && !gaze)) return null;
-    subjects.push({ ref, position, action, expression, ...(gaze ? { gaze } : {}) });
+    // ネームポーズレイヤ(castRef/head/torso/layer)は subject 単位で寛容にサニタイズ
+    // (不正値はそのフィールドだけ捨て、plan 全体は落とさない。監督経路 directionFrom と同型)。
+    const castRef = typeof raw.castRef === "string" && raw.castRef.trim() ? raw.castRef.trim() : undefined;
+    const head = optionalAnchorPoint(raw.head);
+    const torso = optionalAnchorPoint(raw.torso);
+    const layer = Number.isInteger(raw.layer) && (raw.layer as number) >= 0 && (raw.layer as number) <= 3
+      ? (raw.layer as number)
+      : undefined;
+    subjects.push({
+      ref,
+      position,
+      action,
+      expression,
+      ...(gaze ? { gaze } : {}),
+      ...(castRef ? { castRef } : {}),
+      ...(head && torso ? { head, torso } : {}),
+      ...(layer !== undefined ? { layer } : {})
+    });
   }
   return subjects;
 }

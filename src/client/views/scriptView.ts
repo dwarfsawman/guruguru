@@ -30,7 +30,7 @@ import { resolveScriptMangaLayout } from "../../shared/layoutPresets";
 import { renderPageWireframeSvg, type WireframePanelInfo } from "../../shared/pageLayoutSvg";
 import { escapeAttr, escapeHtml } from "../format";
 import { iconPlus, iconScript, iconTrash } from "../icons";
-import type { NameLayoutEditState, NameStudioDraft, NameStudioState } from "../appState";
+import type { NameLayoutEditState, NamePoseEditState, NameStudioDraft, NameStudioState } from "../appState";
 import { renderNameStudio } from "./nameStudioView";
 
 const SEMANTIC_KIND_LABEL: Record<DialogueLine["semanticKind"], string> = {
@@ -69,6 +69,7 @@ export interface ScriptViewProps {
   nameStudio: NameStudioState;
   nameStudioDraft: NameStudioDraft | null;
   nameLayoutEdit: NameLayoutEditState | null;
+  namePoseEdit: NamePoseEditState | null;
 }
 
 export type ScriptMangaControlViewProps = Pick<
@@ -113,7 +114,8 @@ export function renderScriptView(props: ScriptViewProps): string {
             nameStudio: props.nameStudio,
             run: props.scriptMangaRun,
             draft: props.nameStudioDraft,
-            layoutEdit: props.nameLayoutEdit
+            layoutEdit: props.nameLayoutEdit,
+            poseEdit: props.namePoseEdit
           }) : ""}
           ${renderScriptMangaControlCard(props)}
           <div class="script-columns">

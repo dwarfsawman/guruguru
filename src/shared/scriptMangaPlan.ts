@@ -48,6 +48,14 @@ export interface ScriptMangaPanelDirection {
     action: string;
     expression: string;
     gaze?: string;
+    /** 脚本上のキャラ名(非視覚の結線メタデータ)。プロンプトへはコンパイルしない。 */
+    castRef?: string;
+    /** ポーズアンカー: 頭部中心(パネルローカル 0..1)。ネームポーズレイヤ。 */
+    head?: { x: number; y: number };
+    /** ポーズアンカー: 腰・胴中心(パネルローカル 0..1)。 */
+    torso?: { x: number; y: number };
+    /** レイヤ深度 0..3(大きいほど手前)。 */
+    layer?: number;
   }>;
   avoid?: string[];
   action: string;

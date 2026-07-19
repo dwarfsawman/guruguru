@@ -315,10 +315,11 @@ function delay(ms: number): Promise<void> {
 /** run を静かに(busy表示なしで)取り直す。ポーリング用。 */
 async function refreshRunQuietly(runId: string): Promise<void> {
   // V5 D6: 編集ドラフト中は run の適用をskipする(ドラフトの根拠planが差し替わる巻き戻り防止)。
-  if (state.nameStudioDraft) return;
+  // ポーズ編集セッション中も同様(Docs/Feature-NamePoseLayer.md)。
+  if (state.nameStudioDraft || state.namePoseEdit) return;
   try {
     const run = await api<ScriptMangaRunView>(`/api/script-manga-runs/${encodeURIComponent(runId)}`);
-    if (!state.scriptScreenOpen || state.scriptMangaBusy || state.nameStudioDraft) return;
+    if (!state.scriptScreenOpen || state.scriptMangaBusy || state.nameStudioDraft || state.namePoseEdit) return;
     if (state.scriptMangaRun && state.scriptMangaRun.id !== runId) return;
     if (run.scriptId !== state.activeScriptId) return;
     state.scriptMangaRun = run;

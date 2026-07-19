@@ -15,6 +15,8 @@ export interface StoryGraphCharacterInput {
   name: string;
   aliases: string[];
   notes: string;
+  /** `Character.color` 由来のUI表示色(ネームポーズレイヤの色分け)。 */
+  color?: string | null;
 }
 
 export interface StoryGraphDialogueInput {
@@ -153,7 +155,8 @@ export function buildStoryGraph(input: {
       name: character.name,
       aliases: [...character.aliases],
       attributes,
-      variants: [{ id: `${character.id}:default`, label: "default", attributes: {} }]
+      variants: [{ id: `${character.id}:default`, label: "default", attributes: {} }],
+      ...(character.color ? { color: character.color } : {})
     };
   });
   const taggedEntities = explicitEntities(doc, scriptRevisionId).filter(

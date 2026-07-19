@@ -16,7 +16,8 @@ import {
 import type { ScriptMangaPanelPlan, ScriptMangaPlan } from "../shared/scriptMangaPlan";
 import type { AnnotatedBeat, PreLayoutUnit } from "../shared/preLayoutBeat";
 import { orderPanelsByReadingDirection } from "../shared/dialogueAutoLayout";
-import type { PageLayout } from "../shared/pageLayout";
+import { panelBounds, type PageLayout } from "../shared/pageLayout";
+import { reconstructCastPoses, type PoseAnchor } from "./panelPoseReconstructor";
 import type { StyleLoraSelection } from "../shared/types";
 import { extractFillUnits } from "../shared/dialogueAdaptation";
 import { dialogueEstablishesVisibleSpeaker } from "../shared/dialoguePresentation";
@@ -33,11 +34,30 @@ interface DirectedPanelFields {
   shot?: string;
   angle?: string;
   subject?: string;
-  subjects?: Array<{ ref: string; position: string; action: string; expression: string; gaze?: string }>;
+  subjects?: Array<{
+    ref: string;
+    position: string;
+    action: string;
+    expression: string;
+    gaze?: string;
+    castRef?: string;
+    head?: { x: number; y: number };
+    torso?: { x: number; y: number };
+    layer?: number;
+  }>;
   avoid?: string[];
   action?: string;
   emotion?: string;
   composition?: string;
+}
+
+/** 監督出力のアンカー座標を防御的に検証する(0..1クランプ、数値以外は捨てる)。 */
+function anchorPoint(value: unknown): { x: number; y: number } | null {
+  if (!value || typeof value !== "object") return null;
+  const x = (value as { x?: unknown }).x;
+  const y = (value as { y?: unknown }).y;
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
 }
 
 function positionBox(position: string): NormalizedBox {
@@ -283,11 +303,39 @@ export function buildMangaPlanV2(input: {
         ...actionSources.flatMap((source) => story.visibleCharacterIdsForActionText(source.text))
       ].filter((id, index, all) => all.indexOf(id) === index);
       const boxes = castBoxes(Math.max(1, characterIds.length));
+      // ネームポーズレイヤ: 監督の castRef(脚本上のキャラ名、非視覚メタデータ)で subject と
+      // キャラを結線し、head/torso アンカーと layer 深度ヒントを集める。castRef 一致が
+      // 最優先、無ければ旧来の ref 完全一致(中立ロール規約下では実質届かない)へ落ちる。
+      const claimedSubjects = new Set<number>();
+      const poseAnchors = new Map<string, PoseAnchor>();
+      const poseLayers = new Map<string, number>();
       const cast: PanelCastSpec[] = characterIds.map((characterId, index) => {
         const character = story.characterById.get(characterId);
-        const directedSubject = direction.subjects?.find((subject) =>
-          [character?.name, ...(character?.aliases ?? [])].some((name) => name === subject.ref)
+        const labels = [character?.name, ...(character?.aliases ?? [])]
+          .filter((name): name is string => Boolean(name))
+          .map((name) => name.trim().toLocaleLowerCase());
+        const subjects = direction.subjects ?? [];
+        let subjectIndex = subjects.findIndex((subject, position) =>
+          !claimedSubjects.has(position) &&
+          typeof subject.castRef === "string" &&
+          labels.includes(subject.castRef.trim().toLocaleLowerCase())
         );
+        if (subjectIndex < 0) {
+          subjectIndex = subjects.findIndex((subject, position) =>
+            !claimedSubjects.has(position) &&
+            [character?.name, ...(character?.aliases ?? [])].some((name) => name === subject.ref)
+          );
+        }
+        if (subjectIndex >= 0) claimedSubjects.add(subjectIndex);
+        const directedSubject = subjectIndex >= 0 ? subjects[subjectIndex] : undefined;
+        if (directedSubject?.head && directedSubject.torso) {
+          const head = anchorPoint(directedSubject.head);
+          const torso = anchorPoint(directedSubject.torso);
+          if (head && torso) poseAnchors.set(characterId, { head, torso });
+        }
+        if (typeof directedSubject?.layer === "number" && Number.isFinite(directedSubject.layer)) {
+          poseLayers.set(characterId, directedSubject.layer);
+        }
         const speakingLineIds = dialogueLines.filter((line) => line.characterId === characterId).map((line) => line.id);
         return {
           characterId,
@@ -418,6 +466,22 @@ export function buildMangaPlanV2(input: {
         promptBase,
         compiledPrompt: ""
       };
+      // ネームポーズレイヤ: 骨格を plan へ焼き込む(poseControl 設定とは独立に常時生成)。
+      // アスペクトはコマ枠スロットの外接箱(width-relative 単位で x/y 同一スケール)から取る。
+      const slotShape = orderedLayoutPanels[panelIndexOnPage]?.shape;
+      let panelAspect = 1;
+      if (slotShape) {
+        const bounds = panelBounds(slotShape);
+        const boundsWidth = bounds[2] - bounds[0];
+        const boundsHeight = bounds[3] - bounds[1];
+        if (boundsWidth > 1e-6 && boundsHeight > 1e-6) panelAspect = boundsHeight / boundsWidth;
+      }
+      const castPoses = reconstructCastPoses(provisional, {
+        anchors: poseAnchors,
+        layers: poseLayers,
+        aspect: panelAspect
+      });
+      if (castPoses) provisional.castPoses = castPoses;
       const references = resolvePanelReferences({
         projectId: input.projectId,
         providerId: input.providerId,
