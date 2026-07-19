@@ -1053,3 +1053,80 @@
 .nle-actions {
   margin-top: 0;
 }
+
+/* --- ネームポーズレイヤ(Docs/Feature-NamePoseLayer.md) --- */
+
+/* 表示レイヤ: コマ枠SVG(z:auto)の上・コマHTMLオーバーレイ(z:2)の下。 */
+.studio-pose-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.studio-pose-layer .studio-pose-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 編集ステージ: オーバーレイを外した状態で骨格だけ操作可能に。 */
+.studio-pose-layer.is-editing {
+  z-index: 3;
+  pointer-events: auto;
+}
+
+.studio-pose-svg.is-editing [data-pose-el="joint"],
+.studio-pose-svg.is-editing [data-pose-el="hit"],
+.studio-pose-svg.is-editing [data-pose-el="bone"],
+.studio-pose-svg.is-editing [data-pose-el="label"] {
+  cursor: grab;
+}
+
+.studio-pose-svg .pose-layer-figure.is-selected .pose-layer-joint {
+  filter: drop-shadow(0 0 0.004px rgba(255, 255, 255, 0.9));
+}
+
+.studio-pose-svg .pose-layer-label {
+  user-select: none;
+  font-family: inherit;
+}
+
+.studio-page-sheet.is-pose-edit .studio-page {
+  outline: 2px dashed #3e63dd;
+  outline-offset: 2px;
+}
+
+.studio-pose-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color, #3b3731);
+  border-radius: 8px;
+  background: var(--panel-bg, rgba(0, 0, 0, 0.15));
+}
+
+.pose-toolbar-selected {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pose-toolbar-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
+.pose-toolbar-hint {
+  font-size: 11px;
+  opacity: 0.75;
+}

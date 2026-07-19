@@ -30,7 +30,8 @@ import { renderNameLayoutEditSvg, renderNameLayoutEditToolbar } from "./nameLayo
 import type { MangaPageSpec, MangaPlanV2, PanelSpec } from "../../shared/mangaPlanV2";
 import type { ScriptMangaPlanCandidateView, ScriptMangaRunView } from "../../shared/scriptMangaApi";
 import type { DialogueLine } from "../../shared/apiTypes";
-import type { NameLayoutEditState, NameStudioDraft, NameStudioState } from "../appState";
+import type { NameLayoutEditState, NamePoseEditState, NameStudioDraft, NameStudioState } from "../appState";
+import { renderNamePoseEditToolbar, renderNamePoseOverlaySvg } from "./namePoseLayerView";
 import {
   canonicalReaderIndex,
   getVisibleReaderPages,
@@ -62,6 +63,8 @@ export interface NameStudioViewProps {
   draft: NameStudioDraft | null;
   /** 人間ゲートのコマ割り修正セッション(非null中は該当ページを編集ステージで表示)。 */
   layoutEdit: NameLayoutEditState | null;
+  /** ネームポーズレイヤの編集セッション(非null中は該当ページをポーズ編集ステージで表示)。 */
+  poseEdit: NamePoseEditState | null;
 }
 
 const SCALE_LABELS: Record<MangaVisualScale, string> = {
@@ -632,6 +635,21 @@ function renderDirectedPage(
     panels: wireframePanels,
     turnHook: page.turnHook
   });
+  // ポーズ編集ステージ: コマのHTMLオーバーレイを外し、骨格SVGだけを操作可能に重ねる。
+  const poseEditActive = props.poseEdit && props.poseEdit.pageIndex === page.index;
+  if (poseEditActive) {
+    return `
+    <div class="studio-page-sheet is-pose-edit" data-page-number="${entry.pageNumber}">
+      <span class="studio-page-sheet-number">p${entry.pageNumber}</span>
+      <div class="studio-page" style="aspect-ratio: 1 / ${page.layoutSnapshot.page.height.toFixed(6)};">
+        ${svg}
+        <div class="studio-pose-layer is-editing">${renderNamePoseOverlaySvg(page, plan, props.poseEdit)}</div>
+      </div>
+      ${renderNamePoseEditToolbar(props.poseEdit!, plan)}
+    </div>`;
+  }
+  const showPoseLayer = props.nameStudio.showPoseLayer !== false &&
+    page.panels.some((panel) => (panel.castPoses?.length ?? 0) > 0);
   const overlays = page.panels
     .map((panel, slotIndex) => directedPanelOverlay(panel, slotIndex, page, plan, props))
     .join("");
@@ -640,6 +658,7 @@ function renderDirectedPage(
       <span class="studio-page-sheet-number">p${entry.pageNumber}</span>
       <div class="studio-page" style="aspect-ratio: 1 / ${page.layoutSnapshot.page.height.toFixed(6)};">
         ${svg}
+        ${showPoseLayer ? `<div class="studio-pose-layer">${renderNamePoseOverlaySvg(page, plan)}</div>` : ""}
         <div class="studio-overlays">${overlays}</div>
       </div>
     </div>`;
@@ -664,9 +683,13 @@ function renderDirectedReader(props: NameStudioViewProps): string {
       <div class="studio-visible-page-meta">
         ${reader.visible.map(({ page, pageNumber }) => {
           const turnHookLabel = page.turnHook === "reveal" ? "▼reveal" : page.turnHook === "cliffhanger" ? "▼cliffhanger" : "なし";
+          const canEditPoses = directedPlanEditable(run) && !props.poseEdit &&
+            page.panels.some((panel) => (panel.castPoses?.length ?? 0) > 0);
           return `<div class="studio-page-footer"><strong>p${pageNumber}</strong>
             <span class="studio-page-intent">ページ意図: ${escapeHtml(page.pageIntent?.trim() || "—")}</span>
-            <span class="studio-page-hook">めくり: ${turnHookLabel}</span></div>`;
+            <span class="studio-page-hook">めくり: ${turnHookLabel}</span>
+            ${canEditPoses ? `<button type="button" class="button-secondary compact" data-action="studio-edit-poses"
+              data-page-index="${page.index}">ポーズ編集</button>` : ""}</div>`;
         }).join("")}
       </div>
     </div>`;
@@ -849,6 +872,9 @@ export function renderNameStudio(props: NameStudioViewProps): string {
             <button type="button" class="${props.nameStudio.fitMode === "fit-width" ? "button-primary" : "button-secondary"} compact"
               data-action="studio-set-fit" data-id="fit-width" aria-pressed="${props.nameStudio.fitMode === "fit-width"}">横幅合わせ</button>
           </div>
+          ${isDirected ? `<button type="button" class="${props.nameStudio.showPoseLayer !== false ? "button-primary" : "button-secondary"} compact"
+            data-action="studio-toggle-pose-layer" aria-pressed="${props.nameStudio.showPoseLayer !== false}"
+            title="キャラ骨格レイヤの表示切替">ポーズ</button>` : ""}
           <button type="button" class="button-secondary compact" data-action="studio-toggle-fullscreen"
             aria-pressed="${props.nameStudio.fullscreen ? "true" : "false"}">${props.nameStudio.fullscreen ? "元の表示へ" : "⛶ 全画面"}</button>
         </div>

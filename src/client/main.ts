@@ -100,6 +100,13 @@ import {
   handleNameLayoutEditPointerMove,
   handleNameLayoutEditPointerUp
 } from "./nameLayoutEditController";
+import {
+  handleNamePoseEditKeydown,
+  handleNamePoseEditPointerCancel,
+  handleNamePoseEditPointerDown,
+  handleNamePoseEditPointerMove,
+  handleNamePoseEditPointerUp
+} from "./namePoseEditController";
 import "./homeProgressController";
 import "./referenceSetController";
 import { importImagesAsPages } from "./bookController";
@@ -546,6 +553,10 @@ function bindEvents() {
     if (handleBookReaderKeydown(event)) {
       return;
     }
+    // ポーズ編集セッション中の Escape(閉じる)/Ctrl+Z 系は Studio の Escape より先に処理する。
+    if (handleNamePoseEditKeydown(event)) {
+      return;
+    }
     if (handleNameStudioKeydown(event)) {
       return;
     }
@@ -663,6 +674,9 @@ function bindEvents() {
     if (handleNameLayoutEditPointerDown(event)) {
       return;
     }
+    if (handleNamePoseEditPointerDown(event)) {
+      return;
+    }
     if (handlePanelShapePointerDown(event)) {
       return;
     }
@@ -698,6 +712,9 @@ function bindEvents() {
       return;
     }
     if (handleNameLayoutEditPointerMove(event)) {
+      return;
+    }
+    if (handleNamePoseEditPointerMove(event)) {
       return;
     }
     if (handlePanelShapePointerMove(event)) {
@@ -737,6 +754,9 @@ function bindEvents() {
     if (handleNameLayoutEditPointerUp(event)) {
       return;
     }
+    if (handleNamePoseEditPointerUp(event)) {
+      return;
+    }
     if (handlePanelShapePointerUp(event)) {
       return;
     }
@@ -772,6 +792,9 @@ function bindEvents() {
       return;
     }
     if (handleNameLayoutEditPointerCancel(event)) {
+      return;
+    }
+    if (handleNamePoseEditPointerCancel(event)) {
       return;
     }
     if (handlePanelShapePointerCancel(event)) {
@@ -896,7 +919,8 @@ function render(_options: RenderOptions = {}) {
             scriptMangaCandidateCount: state.scriptMangaCandidateCount,
             nameStudio: state.nameStudio,
             nameStudioDraft: state.nameStudioDraft,
-            nameLayoutEdit: state.nameLayoutEdit
+            nameLayoutEdit: state.nameLayoutEdit,
+            namePoseEdit: state.namePoseEdit
           })
         : state.book
           ? renderBookView(state.book, state.bookSelectionMode, state.selectedBookPageIds, {

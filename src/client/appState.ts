@@ -25,6 +25,7 @@ import type {
   ExistingPlacementPolicy
 } from "../shared/chronicle";
 import type { PageLayout, PanelCrop } from "../shared/pageLayout";
+import type { PanelCastPose } from "../shared/mangaPlanV2";
 import type { ParallelSnapGuide } from "../shared/panelShapeAssist";
 import { DEFAULT_MAX_DIALOGUES_PER_PANEL } from "../shared/scriptMangaPlan";
 import type { PageObject } from "../shared/pageObjects";
@@ -144,6 +145,8 @@ export interface NameStudioState {
   layout: BookReaderLayout;
   /** 全画面で紙面を高さまたは横幅へ合わせる。 */
   fitMode: NameStudioFitMode;
+  /** ポーズ骨格レイヤの表示(演出ネームのみ)。undefined = 表示ON(既定)。 */
+  showPoseLayer?: boolean;
 }
 
 /**
@@ -169,6 +172,28 @@ export interface NameLayoutEditState {
   issues: string[];
   saveBusy: boolean;
   /** undo/redo ボタンの活性判定(コントローラが履歴操作のたびに更新する)。 */
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
+/**
+ * ネームポーズレイヤの編集セッション(Docs/Feature-NamePoseLayer.md)。ドラフトはポーリング
+ * 再renderで消えないよう state に持ち、保存(/edits の {kind:"pose"})成功時だけ run を取り直す。
+ */
+export interface NamePoseEditState {
+  runId: string;
+  planId: string;
+  /** 編集セッション開始時の plan editVersion(保存時の expectedVersion)。 */
+  baseVersion: number;
+  /** 編集対象の plan page index。 */
+  pageIndex: number;
+  /** panelId → 骨格ドラフト(パネルローカル 0..1)。 */
+  draft: Record<string, PanelCastPose[]>;
+  /** 編集開始時のスナップショット(保存時の差分抽出基準)。 */
+  saved: Record<string, PanelCastPose[]>;
+  /** 選択中の骨格(深度操作・削除の対象)。 */
+  selected: { panelId: string; characterId: string } | null;
+  saveBusy: boolean;
   canUndo: boolean;
   canRedo: boolean;
 }
@@ -652,6 +677,8 @@ export interface AppState {
   nameStudioDraft: NameStudioDraft | null;
   /** 人間ゲートのコマ割り修正セッション。非null中はポーリングの候補適用をskipする。 */
   nameLayoutEdit: NameLayoutEditState | null;
+  /** ネームポーズレイヤの編集セッション。非null中はポーリングの run 適用をskipする。 */
+  namePoseEdit: NamePoseEditState | null;
   /** そのプロジェクトのキャラクタ一覧。脚本画面を開いた時に取得する。 */
   characters: Character[];
   /** キャラクタ一覧で選択中(編集対象)の id。null=未選択。 */
@@ -839,6 +866,7 @@ export const state: AppState = {
   },
   nameStudioDraft: null,
   nameLayoutEdit: null,
+  namePoseEdit: null,
   characters: [],
   selectedCharacterId: null,
   selectedCharacterBinding: null,
