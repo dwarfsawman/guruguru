@@ -9,7 +9,7 @@ import {
   POSE_PRESETS
 } from "../shared/posePresetLibrary.ts";
 import { renderPoseSkeletonSvg } from "../shared/poseSkeletonSvg.ts";
-import { reconstructPanelPoses } from "./panelPoseReconstructor.ts";
+import { reconstructCastPoses, reconstructPanelPoses, type PoseAnchor } from "./panelPoseReconstructor.ts";
 
 function panel(overrides: Partial<PanelSpec> & { cast?: PanelSpec["cast"] } = {}): PanelSpec {
   const cast: PanelSpec["cast"] = overrides.cast ?? [{
@@ -123,6 +123,108 @@ test("reconstructPanelPoses: 相手の位置から左右向きを反転する", 
   // char:b(左側)は右の char:a を向く → 反転で伸び手側が右。
   const bob = result!.poses[1]!;
   assert.ok(bob[4]!.x > bob[0]!.x - 200, "右向きへ反転(左向きの初期形より右側)");
+});
+
+function headCentroid(points: Array<{ x: number; y: number }>): { x: number; y: number } {
+  const indexes = [0, 14, 15, 16, 17];
+  const sum = indexes.reduce((acc, index) => ({ x: acc.x + points[index]!.x, y: acc.y + points[index]!.y }), { x: 0, y: 0 });
+  return { x: sum.x / indexes.length, y: sum.y / indexes.length };
+}
+
+function hipMidpoint(points: Array<{ x: number; y: number }>): { x: number; y: number } {
+  return { x: (points[8]!.x + points[11]!.x) / 2, y: (points[8]!.y + points[11]!.y) / 2 };
+}
+
+test("reconstructPanelPoses: アンカーがあると頭・胴の2点相似変換でフィットする", () => {
+  const anchors = new Map<string, PoseAnchor>([
+    ["char:a", { head: { x: 0.3, y: 0.2 }, torso: { x: 0.3, y: 0.6 } }]
+  ]);
+  const result = reconstructPanelPoses(panel(), 1000, 1000, "full", anchors);
+  assert.ok(result);
+  const points = result!.poses[0]!;
+  const head = headCentroid(points);
+  const hips = hipMidpoint(points);
+  assert.ok(Math.abs(head.x - 300) < 1e-6 && Math.abs(head.y - 200) < 1e-6, `頭部重心がheadアンカーへ (${head.x},${head.y})`);
+  assert.ok(Math.abs(hips.x - 300) < 1e-6 && Math.abs(hips.y - 600) < 1e-6, `ヒップ中点がtorsoアンカーへ (${hips.x},${hips.y})`);
+});
+
+test("reconstructPanelPoses: 水平アンカーは骨格ごと回転する(寝そべり)", () => {
+  const anchors = new Map<string, PoseAnchor>([
+    ["char:a", { head: { x: 0.7, y: 0.5 }, torso: { x: 0.3, y: 0.5 } }]
+  ]);
+  const result = reconstructPanelPoses(panel(), 1000, 1000, "full", anchors);
+  assert.ok(result);
+  const points = result!.poses[0]!;
+  const head = headCentroid(points);
+  const hips = hipMidpoint(points);
+  assert.ok(Math.abs(head.x - 700) < 1e-6 && Math.abs(head.y - 500) < 1e-6);
+  assert.ok(Math.abs(hips.x - 300) < 1e-6 && Math.abs(hips.y - 500) < 1e-6);
+  // 背骨が水平 → 足首は胴の左側(x が小さい)へ伸びる。
+  assert.ok(points[10]!.x < hips.x && points[13]!.x < hips.x, "足首は頭と反対側");
+});
+
+test("reconstructPanelPoses: 退化アンカー(頭≒胴)は従来の bbox フィットへ落ちる", () => {
+  const anchors = new Map<string, PoseAnchor>([
+    ["char:a", { head: { x: 0.5, y: 0.5 }, torso: { x: 0.5, y: 0.505 } }]
+  ]);
+  const withAnchor = reconstructPanelPoses(panel(), 1000, 1400, "full", anchors)!;
+  const without = reconstructPanelPoses(panel(), 1000, 1400, "full")!;
+  assert.deepEqual(withAnchor.poses, without.poses, "bbox フィット結果と一致");
+});
+
+test("reconstructCastPoses: パネルローカル0..1へ正規化し depth は focal 最前面 > cast 順", () => {
+  const twoShot = panel({
+    cast: [
+      { characterId: "char:a", variantId: "a", bbox: { x: 0.55, y: 0.2, width: 0.4, height: 0.7 },
+        pose: "standing", expression: "x", action: "stands", speakingLineIds: [] },
+      { characterId: "char:b", variantId: "b", bbox: { x: 0.05, y: 0.2, width: 0.4, height: 0.7 },
+        pose: "standing", expression: "x", action: "stands", speakingLineIds: [] }
+    ]
+  });
+  const poses = reconstructCastPoses(twoShot, { aspect: 1.4 });
+  assert.ok(poses);
+  assert.equal(poses!.length, 2);
+  // focalSubject=char:a が最前面(depth最大)。配列は depth 昇順。
+  assert.equal(poses![0]!.characterId, "char:b");
+  assert.equal(poses![0]!.depth, 0);
+  assert.equal(poses![1]!.characterId, "char:a");
+  assert.equal(poses![1]!.depth, 1);
+  for (const pose of poses!) {
+    assert.equal(pose.joints.length, 18);
+    assert.equal(pose.source, "reconstructed");
+    assert.ok(pose.presetId);
+    for (const joint of pose.joints) {
+      assert.ok(joint.x >= 0 && joint.x <= 1 && joint.y >= 0 && joint.y <= 1, "bboxフィットは0..1に収まる");
+    }
+  }
+});
+
+test("reconstructCastPoses: layers ヒントが depth を上書きし、アンカー由来は source=llm", () => {
+  const twoShot = panel({
+    cast: [
+      { characterId: "char:a", variantId: "a", bbox: { x: 0.55, y: 0.2, width: 0.4, height: 0.7 },
+        pose: "standing", expression: "x", action: "stands", speakingLineIds: [] },
+      { characterId: "char:b", variantId: "b", bbox: { x: 0.05, y: 0.2, width: 0.4, height: 0.7 },
+        pose: "standing", expression: "x", action: "stands", speakingLineIds: [] }
+    ]
+  });
+  const anchors = new Map<string, PoseAnchor>([
+    ["char:a", { head: { x: 0.7, y: 0.2 }, torso: { x: 0.7, y: 0.6 } }]
+  ]);
+  const layers = new Map<string, number>([["char:a", 0], ["char:b", 1]]);
+  const poses = reconstructCastPoses(twoShot, { anchors, layers, aspect: 1.4 });
+  assert.ok(poses);
+  // layers 指定時は focal より layers が優先: char:a が奥(depth 0)。
+  assert.equal(poses![0]!.characterId, "char:a");
+  assert.equal(poses![0]!.source, "llm");
+  assert.equal(poses![1]!.characterId, "char:b");
+  assert.equal(poses![1]!.source, "reconstructed");
+  // アンカーは正規化座標のまま反映される(ヒップ中点=torso)。
+  const alice = poses![0]!;
+  const hips = hipMidpoint(alice.joints);
+  assert.ok(Math.abs(hips.x - 0.7) < 1e-6 && Math.abs(hips.y - 0.6) < 1e-6, `(${hips.x},${hips.y})`);
+  const head = headCentroid(alice.joints);
+  assert.ok(Math.abs(head.x - 0.7) < 1e-6 && Math.abs(head.y - 0.2) < 1e-6);
 });
 
 test("renderPoseSkeletonSvg: 黒背景+可視関節ぶんの line/circle を出力する", () => {

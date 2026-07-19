@@ -295,6 +295,62 @@ test("validateMangaPlanV2 warns only when an omitted source lacks a reason", () 
   assert.ok(report.issues.some((issue) => issue.code === "source-unassigned" && issue.severity === "warning"));
 });
 
+test("validateMangaPlanV2: castPoses の関節数・座標域・重複・cast参照を検証する", () => {
+  const joints = () => Array.from({ length: 18 }, () => ({ x: 0.5, y: 0.5, visible: true }));
+
+  const ok = validPlan();
+  ok.pages[0]!.panels[0]!.castPoses = [
+    { characterId: "character-alice", depth: 0, joints: joints(), source: "llm", presetId: "standing" }
+  ];
+  assert.equal(validateMangaPlanV2(ok).ok, true);
+
+  // 見切れ・ぶち抜き許容域 [-1, 2] の内側は valid。
+  const bleed = validPlan();
+  const bleedJoints = joints();
+  bleedJoints[10] = { x: -0.4, y: 1.6, visible: false };
+  bleed.pages[0]!.panels[0]!.castPoses = [
+    { characterId: "character-alice", depth: 0, joints: bleedJoints, source: "human" }
+  ];
+  assert.equal(validateMangaPlanV2(bleed).ok, true, "パネル外の関節は [-1,2] まで許容");
+
+  const short = validPlan();
+  short.pages[0]!.panels[0]!.castPoses = [
+    { characterId: "character-alice", depth: 0, joints: joints().slice(0, 17), source: "llm" }
+  ];
+  assert.ok(issueCodes(short).includes("cast-pose-joints"), "18関節未満はエラー");
+
+  const outOfRange = validPlan();
+  const badJoints = joints();
+  badJoints[0] = { x: 3, y: 0.5, visible: true };
+  outOfRange.pages[0]!.panels[0]!.castPoses = [
+    { characterId: "character-alice", depth: 0, joints: badJoints, source: "llm" }
+  ];
+  assert.ok(issueCodes(outOfRange).includes("cast-pose-joints"), "[-1,2] 域外はエラー");
+
+  const duplicated = validPlan();
+  duplicated.pages[0]!.panels[0]!.castPoses = [
+    { characterId: "character-alice", depth: 0, joints: joints(), source: "llm" },
+    { characterId: "character-alice", depth: 1, joints: joints(), source: "human" }
+  ];
+  assert.ok(issueCodes(duplicated).includes("cast-pose-duplicate"));
+
+  const orphan = validPlan();
+  orphan.pages[0]!.panels[0]!.castPoses = [
+    { characterId: "character-ghost", depth: 0, joints: joints(), source: "llm" }
+  ];
+  const report = validateMangaPlanV2(orphan);
+  const issue = report.issues.find((entry) => entry.code === "cast-pose-reference");
+  assert.ok(issue, "cast 外キャラの骨格は warning");
+  assert.equal(issue!.severity, "warning");
+  assert.equal(report.ok, true, "materialize が間引くので実行は止めない");
+
+  const badDepth = validPlan();
+  badDepth.pages[0]!.panels[0]!.castPoses = [
+    { characterId: "character-alice", depth: Number.NaN, joints: joints(), source: "llm" }
+  ];
+  assert.ok(issueCodes(badDepth).includes("cast-pose-depth"));
+});
+
 test("validateMangaPlanV2 warns when a figure slot panel does not have exactly one cast member", () => {
   // splash(1コマ)を figure スロット化した snapshot。cast 2人で warning、1人なら issue 無し。
   const plan = validPlan();

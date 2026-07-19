@@ -1,5 +1,6 @@
 import type { ArtifactRef } from "./generationIntent";
 import type { PageLayout } from "./pageLayout";
+import { OPENPOSE_JOINT_COUNT, type PosePoint } from "./poseTypes";
 import type { DialogueUnit } from "./dialogueAdaptation";
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
 import { actionTextEstablishesVisibleActor, dialogueEstablishesVisibleSpeaker } from "./dialoguePresentation";
@@ -85,6 +86,8 @@ export interface NarrativeEntity {
   aliases: string[];
   attributes: Record<string, string>;
   variants: NarrativeEntityVariant[];
+  /** キャラのUI表示色(`Character.color` 由来、ネームポーズレイヤの色分け等)。additive。 */
+  color?: string | null;
 }
 
 export interface CharacterWorldState {
@@ -191,6 +194,23 @@ export interface PanelPropSpec {
   bbox?: NormalizedBox;
 }
 
+/**
+ * コマ内1キャラ分のポーズ骨格レイヤ(Docs/Feature-NamePoseLayer.md)。joints はパネル
+ * ローカル正規化座標(cast.bbox と同系)だが、見切れ・ぶち抜きを許すため 0..1 に
+ * クランプせず [-1, 2] を有効域とする。`PosePoint` の px 前提はこの文脈では適用しない。
+ */
+export interface PanelCastPose {
+  characterId: string;
+  /** レイヤ深度。大きいほど手前。ControlNet 描画は昇順(奥→手前)で上書きする。 */
+  depth: number;
+  /** OpenPose-18。visible は shot/mode 由来+手動トグルの合成結果。 */
+  joints: PosePoint[];
+  /** llm=監督アンカー由来 / reconstructed=ヒューリスティック復元 / human=スタジオ編集 */
+  source: "llm" | "reconstructed" | "human";
+  /** 復元に使ったプリセット(来歴・リセット用)。 */
+  presetId?: string;
+}
+
 export interface PanelSpec {
   id: string;
   /**
@@ -215,6 +235,8 @@ export interface PanelSpec {
   postStateDelta: StateDelta;
   settingId: string;
   cast: PanelCastSpec[];
+  /** キャラ別ポーズ骨格レイヤ(ネームポーズレイヤ)。省略 = 未生成(旧plan)。additive。 */
+  castPoses?: PanelCastPose[];
   props: PanelPropSpec[];
   shot: {
     size: MangaShotSize;
@@ -557,6 +579,33 @@ export function validateMangaPlanV2(plan: MangaPlanV2, options: MangaPlanValidat
           } else if (!line || line.characterId !== cast.characterId) {
             error("cast-dialogue-speaker", `Cast member does not match dialogue speaker: ${lineId}`, pageIndex, panel.id);
           }
+        }
+      }
+      const castIdsInPanel = new Set(panel.cast.map((member) => member.characterId));
+      const poseCharacterIds = new Set<string>();
+      for (const castPose of panel.castPoses ?? []) {
+        if (poseCharacterIds.has(castPose.characterId)) {
+          error("cast-pose-duplicate", `Duplicate cast pose for ${castPose.characterId}`, pageIndex, panel.id);
+        }
+        poseCharacterIds.add(castPose.characterId);
+        // materialize が cast から外れたキャラの骨格を間引くため、参照ズレは warning に留める。
+        if (!castIdsInPanel.has(castPose.characterId)) {
+          warning("cast-pose-reference", `Cast pose targets a character outside the panel cast: ${castPose.characterId}`, pageIndex, panel.id);
+        }
+        if (!Number.isFinite(castPose.depth)) {
+          error("cast-pose-depth", `Invalid cast pose depth for ${castPose.characterId}`, pageIndex, panel.id);
+        }
+        const jointsValid =
+          Array.isArray(castPose.joints) &&
+          castPose.joints.length === OPENPOSE_JOINT_COUNT &&
+          castPose.joints.every(
+            (joint) =>
+              Number.isFinite(joint.x) && Number.isFinite(joint.y) &&
+              joint.x >= -1 && joint.x <= 2 && joint.y >= -1 && joint.y <= 2 &&
+              typeof joint.visible === "boolean"
+          );
+        if (!jointsValid) {
+          error("cast-pose-joints", `Cast pose joints must be ${OPENPOSE_JOINT_COUNT} panel-local points in [-1, 2] for ${castPose.characterId}`, pageIndex, panel.id);
         }
       }
       if (!entityIds.has(panel.shot.focalSubjectId)) {

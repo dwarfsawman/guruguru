@@ -610,10 +610,16 @@ function actualTextSafeZones(pageId: string, layout: PageLayout, panelId: string
 }
 
 function loadCharacters(projectId: string): StoryGraphCharacterInput[] {
-  return getRows<{ id: string; name: string; aliases_json: string | null; notes: string }>(
-    "SELECT id, name, aliases_json, notes FROM characters WHERE project_id = ? ORDER BY created_at ASC",
+  return getRows<{ id: string; name: string; aliases_json: string | null; notes: string; color: string | null }>(
+    "SELECT id, name, aliases_json, notes, color FROM characters WHERE project_id = ? ORDER BY created_at ASC",
     [projectId]
-  ).map((row) => ({ id: row.id, name: row.name, aliases: parseJson<string[]>(row.aliases_json, []), notes: row.notes }));
+  ).map((row) => ({
+    id: row.id,
+    name: row.name,
+    aliases: parseJson<string[]>(row.aliases_json, []),
+    notes: row.notes,
+    color: row.color
+  }));
 }
 
 function loadActiveDialogues(scriptId: string): StoryGraphDialogueInput[] {
