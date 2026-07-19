@@ -69,17 +69,20 @@ export interface PanelCastPose {
 
 `subjects[]` に optional フィールドを追加:
 
-- `castIndex`: integer。**入力コンパクト表現に列挙した cast の順序インデックス**を参照させる。
-  中立ロール文字列より確実にキャラへ結線でき、既存の「position→bbox結線切れ」も同時に修復する
-  (castIndex があれば positionBox/castBoxes より優先して subject→cast を対応付ける)
+- `castRef`: string。**そのsubjectが演じる脚本上のキャラ名**(非視覚メタデータ)。監督入力には
+  cast一覧が存在しない(castは後段のbuildMangaPlanV2で確定)ため、LLMが既に見ている
+  source テキスト中の名前で結線する。v3規約の名前禁止は「視覚生成フィールド」対象であり、
+  pageIntent と同様の非視覚メタデータとして許容(プロンプトへは一切コンパイルしない)。
+  plan ビルド側で name/alias の大文字小文字無視一致 → 旧 ref 一致の順で照合し、
+  既存の「position→bbox結線切れ」も同時に修復する
 - `head`: `{x, y}` パネルローカル 0..1(小数2桁で十分)。頭部中心
 - `torso`: `{x, y}` 同上。腰・胴中心。head→torso が背骨の向きになる
 - `layer`: integer 0..3。大きいほど手前(省略時は既定則)
 
-検証(`validateDirectedMangaBatch`): 数値域 0..1、NaN排除、castIndex ∈ [0, cast.length)。
-不正・欠落は**そのsubjectのアンカーだけ捨てて**従来復元へフォールバック(バッチ全体は落とさない)。
-システムプロンプトには「頭と胴の位置は構図上の位置。キャラ名は従来通り出力禁止、castIndex で指す」
-旨を追記する。
+不正・欠落は**そのsubjectの新フィールドだけ捨てて**従来復元へフォールバック(バッチ全体は
+落とさない)。サニタイズは `directionFrom`(0..1クランプ、head/torso は両方揃ったときのみ採用)。
+システムプロンプトには「castRef は非視覚の結線メタデータ、head/torso は構図上の位置、
+ref 等の視覚フィールドの中立ロール規約は従来どおり」を追記する。
 
 ## 骨格復元の拡張(`panelPoseReconstructor.ts`)
 
