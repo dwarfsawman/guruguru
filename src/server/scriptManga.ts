@@ -62,6 +62,8 @@ import { withImageExport, type ImageExportResult } from "./imageExport";
 import { withOpenRasterExport, type OpenRasterExportResult } from "./openRasterExport";
 import sharp from "sharp";
 import { renderPoseSkeletonSvg } from "../shared/poseSkeletonSvg";
+import { OPENPOSE_JOINT_COUNT, type PosePoint } from "../shared/poseTypes";
+import { visibleJointsForPoseMode } from "../shared/posePresetLibrary";
 import { reconstructPanelPoses, type PoseControlMode } from "./panelPoseReconstructor";
 import { directAdoptedCandidatePlan, planScriptMangaWithDirectorDetailed } from "./scriptMangaDirector";
 import { readCachedBeatAnnotation, type BeatAnnotationResult } from "./scriptBeatAnnotator";
@@ -227,8 +229,35 @@ export function parsePoseControlInput(value: unknown): PoseControlConfig | undef
 }
 
 /**
- * panel から ControlNet 添付(骨格 data URL)を組み立てる。骨格を復元できないコマ
- * (insert/無人/5人以上)や不正サイズは null(添付なしで通常生成)。
+ * 保存済みネームポーズレイヤ(panel.castPoses)を生成 px 空間へ展開する。
+ * depth 昇順(奥→手前)に並べ、手前キャラのボーン/関節が奥キャラを上書きすることで
+ * オクルージョンが ControlNet 画像に現れる。poseControl の mode マスクは交差適用。
+ */
+function storedPanelPoses(
+  panel: PanelSpec,
+  width: number,
+  height: number,
+  mode: PoseControlMode
+): { poses: PosePoint[][]; presetIds: string[] } | null {
+  const castPoses = panel.castPoses;
+  if (!castPoses || castPoses.length === 0) return null;
+  const modeVisible = visibleJointsForPoseMode(mode);
+  const ordered = [...castPoses].sort((a, b) => a.depth - b.depth);
+  const poses = ordered.map((pose) =>
+    pose.joints.map((joint, index) => ({
+      x: joint.x * width,
+      y: joint.y * height,
+      visible: joint.visible && (modeVisible === null || modeVisible.has(index))
+    }))
+  );
+  if (!poses.some((pose) => pose.some((joint) => joint.visible))) return null;
+  return { poses, presetIds: ordered.map((pose) => pose.presetId ?? "stored") };
+}
+
+/**
+ * panel から ControlNet 添付(骨格 data URL)を組み立てる。保存済みネームポーズレイヤが
+ * あればそれを優先(人間編集・LLMアンカーが反映される)、無い旧planはオンザフライ復元。
+ * 骨格を用意できないコマ(insert/無人/5人以上)や不正サイズは null(添付なしで通常生成)。
  */
 export async function buildPoseControlAttachment(
   panel: PanelSpec,
@@ -236,16 +265,17 @@ export async function buildPoseControlAttachment(
   height: number,
   poseControl: PoseControlConfig
 ): Promise<{ poseImageDataUrl: string; strength: number; startPercent: number; endPercent: number; presetIds: string[] } | null> {
-  const reconstructed = reconstructPanelPoses(panel, width, height, poseControl.mode);
-  if (!reconstructed) return null;
-  const svg = renderPoseSkeletonSvg(reconstructed.poses, width, height);
+  const material = (width > 0 && height > 0 ? storedPanelPoses(panel, width, height, poseControl.mode) : null)
+    ?? reconstructPanelPoses(panel, width, height, poseControl.mode);
+  if (!material) return null;
+  const svg = renderPoseSkeletonSvg(material.poses, width, height);
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   return {
     poseImageDataUrl: `data:image/png;base64,${png.toString("base64")}`,
     strength: poseControl.strength,
     startPercent: 0,
     endPercent: poseControl.endPercent,
-    presetIds: reconstructed.presetIds
+    presetIds: material.presetIds
   };
 }
 
@@ -1361,6 +1391,13 @@ function materializeRun(runId: string): void {
       else delete panel.role;
       const castNormalization = normalizePanelCast(panel, dialogueById, sourceGroundedCharacterIds(panel, plan.narrativeGraph));
       panel.cast = castNormalization.cast;
+      // ネームポーズレイヤ: cast 正規化で外れたキャラの骨格はタスクスナップショットから間引く
+      // (plan_json 側のレイヤは保持される。validateMangaPlanV2 の cast-pose-reference warning と対)。
+      if (panel.castPoses) {
+        const castIdsForPoses = new Set(panel.cast.map((member) => member.characterId));
+        panel.castPoses = panel.castPoses.filter((pose) => castIdsForPoses.has(pose.characterId));
+        if (panel.castPoses.length === 0) delete panel.castPoses;
+      }
       const excludedCharacterIds = new Set(castNormalization.excludedOffscreenIds);
       if (excludedCharacterIds.size > 0) {
         const excludedLabels = plan.narrativeGraph.entities
@@ -3392,7 +3429,62 @@ export function applyNamePlanEdits(planId: string, body: unknown): ScriptMangaPl
       panel.directionSource = "human";
       continue;
     }
-    throw new HttpError(400, 'edit.kind must be "page", "panel", or "cast"');
+    if (edit.kind === "pose") {
+      const panel = typeof edit.panelId === "string" ? panelById.get(edit.panelId) : undefined;
+      if (!panel) throw new HttpError(400, `panel ${String(edit.panelId)} was not found`);
+      const characterId = typeof edit.characterId === "string" ? edit.characterId : "";
+      if (!panel.cast.some((member) => member.characterId === characterId)) {
+        throw new HttpError(400, `cast member ${String(edit.characterId)} was not found on panel ${panel.id}`);
+      }
+      if (edit.joints === undefined && edit.depth === undefined) {
+        throw new HttpError(400, "pose edit requires joints and/or depth");
+      }
+      const validPoseJoint = (joint: unknown): joint is { x: number; y: number; visible: boolean } => {
+        if (!joint || typeof joint !== "object") return false;
+        const candidate = joint as { x?: unknown; y?: unknown; visible?: unknown };
+        return (
+          typeof candidate.x === "number" && Number.isFinite(candidate.x) && candidate.x >= -1 && candidate.x <= 2 &&
+          typeof candidate.y === "number" && Number.isFinite(candidate.y) && candidate.y >= -1 && candidate.y <= 2 &&
+          typeof candidate.visible === "boolean"
+        );
+      };
+      const poses = panel.castPoses ?? [];
+      if (edit.joints === null) {
+        // 骨格の削除。depth 併記は無視(消えた骨格に深度は無い)。
+        panel.castPoses = poses.filter((pose) => pose.characterId !== characterId);
+        if (panel.castPoses.length === 0) delete panel.castPoses;
+        panel.directionSource = "human";
+        continue;
+      }
+      let pose = poses.find((candidatePose) => candidatePose.characterId === characterId);
+      if (edit.joints !== undefined) {
+        const joints = edit.joints;
+        if (!Array.isArray(joints) || joints.length !== OPENPOSE_JOINT_COUNT || !joints.every(validPoseJoint)) {
+          throw new HttpError(400, `joints must be ${OPENPOSE_JOINT_COUNT} panel-local points with x/y in [-1, 2] and boolean visible`);
+        }
+        const nextJoints = (joints as Array<{ x: number; y: number; visible: boolean }>)
+          .map((joint) => ({ x: joint.x, y: joint.y, visible: joint.visible }));
+        if (!pose) {
+          pose = { characterId, depth: poses.length, joints: nextJoints, source: "human" };
+          poses.push(pose);
+          panel.castPoses = poses;
+        } else {
+          pose.joints = nextJoints;
+          pose.source = "human";
+        }
+      }
+      if (edit.depth !== undefined) {
+        if (typeof edit.depth !== "number" || !Number.isFinite(edit.depth)) {
+          throw new HttpError(400, "depth must be a finite number");
+        }
+        if (!pose) throw new HttpError(400, `no pose exists for ${characterId} on panel ${panel.id}; send joints to create one`);
+        pose.depth = edit.depth;
+        pose.source = "human";
+      }
+      panel.directionSource = "human";
+      continue;
+    }
+    throw new HttpError(400, 'edit.kind must be "page", "panel", "cast", or "pose"');
   }
   return updateScriptMangaPlan(planId, { plan });
 }

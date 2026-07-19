@@ -172,7 +172,19 @@ export interface SetCandidateCustomLayoutResponse {
 export type NamePlanEdit =
   | { kind: "page"; pageIndex: number; pageIntent: string }
   | { kind: "panel"; panelId: string; shotSize?: MangaShotSize; shotAngle?: string; compositionIntent?: string; promptBase?: string }
-  | { kind: "cast"; panelId: string; characterId: string; expression?: string; action?: string };
+  | { kind: "cast"; panelId: string; characterId: string; expression?: string; action?: string }
+  /**
+   * ネームポーズレイヤの編集(Docs/Feature-NamePoseLayer.md)。joints は
+   * 「undefined = 変更しない / null = そのキャラの骨格を削除 / 18点 = 置き換え」の三値。
+   * 座標はパネルローカル正規化で [-1, 2](見切れ許容)。depth は大きいほど手前。
+   */
+  | {
+      kind: "pose";
+      panelId: string;
+      characterId: string;
+      joints?: Array<{ x: number; y: number; visible: boolean }> | null;
+      depth?: number;
+    };
 
 export interface NamePlanEditRequest {
   /** 楽観ロック(plan の editVersion。plan_json への全書き込みで加算される内容バージョン)。 */

@@ -94,6 +94,18 @@ function compileProvidedVisualFacts(input: {
 }
 
 /**
+ * ネームポーズレイヤの深度ヒント: 深度差のある2人以上のコマにだけ中立の1フレーズを足す
+ * (Docs/Feature-NamePoseLayer.md。キャラ名・否定語なし = v3規約維持)。
+ */
+function depthStagingHint(panel: PanelSpec): string | null {
+  const poses = panel.castPoses ?? [];
+  if (poses.length < 2) return null;
+  const depths = new Set(poses.map((pose) => pose.depth));
+  if (depths.size < 2) return null;
+  return "clear foreground and background separation between overlapping figures";
+}
+
+/**
  * Compiles visual facts only. Dialogue wording remains in the lettering layer and is represented
  * here as speech act / mouth state, preventing diffusion models from trying to draw the script.
  */
@@ -115,6 +127,8 @@ export function compilePanelPrompt(input: {
       input.panel.shot.angle || "eye-level angle",
       input.panel.shot.compositionIntent || "clear single-moment composition"
     );
+    const directedDepthHint = depthStagingHint(input.panel);
+    if (directedDepthHint) parts.push(directedDepthHint);
     for (const member of input.panel.cast) {
       const lineStates = member.speakingLineIds
         .map((lineId) => input.dialogueById.get(lineId))
@@ -148,6 +162,8 @@ export function compilePanelPrompt(input: {
     input.panel.shot.angle || "eye-level angle",
     input.panel.shot.compositionIntent || "clear single-moment composition"
   );
+  const appendDepthHint = depthStagingHint(input.panel);
+  if (appendDepthHint) parts.push(appendDepthHint);
   if (focal) parts.push(`focal subject: ${focal.name}`);
 
   for (const member of input.panel.cast) {
