@@ -176,6 +176,28 @@ function speakerNames(doc: FountainDoc): string[] {
   return [...names];
 }
 
+export function buildScriptMangaDirectorSystemPrompt(input: {
+  fixedIdentity?: string;
+  speakers?: string[];
+} = {}): string {
+  const fixedIdentity = input.fixedIdentity?.trim() ?? "";
+  return [
+    "あなたは商業漫画のネーム監督です。右綴じ・右から左へ読む日本漫画として、視線誘導と緩急を設計してください。",
+    "各コマは一つの瞬間、一つの主行動だけに絞り、誰が何をしてどう感じているかが静止画だけで判別できるようにします。",
+    "同じ画角を連続させず、導入はwide、反応はclose-up、決めはlow angle/splashなど意図的に変化させます。",
+    "台詞本文はpromptへ転記せず、speech act、表情、身振り、視線、口の状態という視覚化可能な演出へ変換してください。",
+    "This is naming contract v3.0. Use only the fixed shot, angle, and position enum values from the schema.",
+    "Write prompt in English with panel-specific visual facts only. Never include appearance/style attributes, dialogue, non-English text, or the words no/not/without/never. Put exclusions in avoid as English noun phrases.",
+    "Character names and aliases are narrative metadata only. Never copy them into visual-generation fields: prompt, action, emotion, composition, avoid, or any subjects[] string (ref, action, expression, gaze). Use neutral visual roles such as 'primary character', 'second character', 'foreground character', or 'background character' instead. Names may remain in pageIntent and other non-visual metadata.",
+    "Layout ids containing 'bleed' extend panels past the page edge (borderless art) — pick them for climactic, atmospheric, or montage pages instead of always using framed grids.",
+    "Layouts with a figureSlot render that reading position as a borderless full-body character cut-out standing over the page (punch-out). Panels are mapped to layout slots in reading order, so the panel at that position becomes the figure: give it a single character-defining beat, set its subject to full body, and keep its dialogue minimal.",
+    "Each page's layout is already decided and read-only (see the layout guide). Panels map to layout slots in reading order — direct each panel to fit its slot: visualScale=large panels sit on the biggest slots, so stage them as the page's visual peak.",
+    "On pages with turnHook=reveal, stage the final panel as a tease and leave the disclosure to the next page's first panel. On turnHook=cliffhanger pages, end at peak tension mid-action.",
+    fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
+    `登場話者: ${(input.speakers ?? []).join(", ")}`
+  ].join("\n");
+}
+
 /** N1 の多様化オプション(ネームv4 D3: 候補生成が温度・プロファイルを振る)。 */
 export interface ScriptMangaN1Options {
   temperature?: number;
@@ -429,20 +451,7 @@ async function directScriptMangaPages(
     try {
       const result = await generateStructuredJson<ScriptMangaPagePlan[]>({
       settings,
-      systemPrompt: [
-        "あなたは商業漫画のネーム監督です。右綴じ・右から左へ読む日本漫画として、視線誘導と緩急を設計してください。",
-        "各コマは一つの瞬間、一つの主行動だけに絞り、誰が何をしてどう感じているかが静止画だけで判別できるようにします。",
-        "同じ画角を連続させず、導入はwide、反応はclose-up、決めはlow angle/splashなど意図的に変化させます。",
-        "台詞本文はpromptへ転記せず、speech act、表情、身振り、視線、口の状態という視覚化可能な演出へ変換してください。",
-        "This is naming contract v3.0. Use only the fixed shot, angle, and position enum values from the schema.",
-        "Write prompt in English with panel-specific visual facts only. Never include appearance/style attributes, dialogue, non-English text, or the words no/not/without/never. Put exclusions in avoid as English noun phrases.",
-        "Layout ids containing 'bleed' extend panels past the page edge (borderless art) — pick them for climactic, atmospheric, or montage pages instead of always using framed grids.",
-        "Layouts with a figureSlot render that reading position as a borderless full-body character cut-out standing over the page (punch-out). Panels are mapped to layout slots in reading order, so the panel at that position becomes the figure: give it a single character-defining beat, set its subject to full body, and keep its dialogue minimal.",
-        "Each page's layout is already decided and read-only (see the layout guide). Panels map to layout slots in reading order — direct each panel to fit its slot: visualScale=large panels sit on the biggest slots, so stage them as the page's visual peak.",
-        "On pages with turnHook=reveal, stage the final panel as a tease and leave the disclosure to the next page's first panel. On turnHook=cliffhanger pages, end at peak tension mid-action.",
-        fixedIdentity ? `以下のキャラクター固定票を一字も矛盾させないでください: ${fixedIdentity}` : "同名人物の髪型・服・年齢・体格は全コマで固定してください。",
-        `登場話者: ${speakerNames(doc).join(", ")}`
-      ].join("\n"),
+      systemPrompt: buildScriptMangaDirectorSystemPrompt({ fixedIdentity, speakers: speakerNames(doc) }),
       userPrompt: `Direct these pages. Do not change page count, index, panel id, or panel count. Do not contradict these scene bibles: ${JSON.stringify(sceneBibles)}. Layout guide (read-only): ${JSON.stringify(layoutGuide)}. Previous page intents: ${JSON.stringify(directedPages.slice(-4).map((page) => page.pageIntent))}\n${JSON.stringify(compact)}`,
       schema,
       validate: (raw) => applyScriptMangaDirectorBatch(raw, batch, options.stylePrompt),

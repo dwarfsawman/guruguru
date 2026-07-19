@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parseFountain } from "../shared/fountain.ts";
 import { planScriptManga } from "../shared/scriptMangaPlan.ts";
-import { applyScriptMangaDirectorBatch } from "./scriptMangaDirector.ts";
+import { applyScriptMangaDirectorBatch, buildScriptMangaDirectorSystemPrompt } from "./scriptMangaDirector.ts";
 
 function basePages(panelCount: number) {
   const actions = Array.from({ length: panelCount }, (_, index) => `Action ${index + 1}.`).join("\n\n");
@@ -29,6 +29,20 @@ function directedRaw(sourcePages: ReturnType<typeof basePages>, extras: Record<s
     }]
   };
 }
+
+test("ネーム監督は人物名を画像生成フィールドへ転記せず中立な役割名を使う", () => {
+  const prompt = buildScriptMangaDirectorSystemPrompt({
+    fixedIdentity: "Alice: silver hair and a black pilot suit",
+    speakers: ["ALICE", "BOB"]
+  });
+  assert.match(prompt, /Character names and aliases are narrative metadata only/);
+  assert.match(prompt, /Never copy them into visual-generation fields/);
+  assert.match(prompt, /prompt, action, emotion, composition, avoid, or any subjects\[\] string/);
+  assert.match(prompt, /primary character/);
+  assert.match(prompt, /Names may remain in pageIntent and other non-visual metadata/);
+  assert.match(prompt, /Alice: silver hair and a black pilot suit/);
+  assert.match(prompt, /登場話者: ALICE, BOB/);
+});
 
 test("director batch preserves structured direction and page intent for five and six panel pages", () => {
   for (const panelCount of [5, 6]) {
