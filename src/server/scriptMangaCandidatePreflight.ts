@@ -22,6 +22,7 @@ import {
   withDatabaseConnection
 } from "./db";
 import { HttpError } from "./http";
+import { latestRevisionRow } from "./scriptRevisions";
 import { objectBody, requiredString } from "./validate";
 
 export type ScriptMangaCandidatePreflightStage =
@@ -352,11 +353,7 @@ export async function preflightScriptMangaCandidate(
       if (candidateRow.project_id !== projectId) {
         throw new HttpError(404, "Plan candidate does not belong to this project");
       }
-      const latestRevision = getRow<{ id: string; parsed_json: string }>(
-        "SELECT id, parsed_json FROM script_revisions WHERE script_id = ? ORDER BY revision DESC LIMIT 1",
-        [candidateRow.script_id]
-      );
-      if (!latestRevision) throw new HttpError(400, "Script has no Fountain revision");
+      const latestRevision = latestRevisionRow(candidateRow.script_id);
       let candidate = adoptablePlanCandidate(
         candidateId,
         projectId,
