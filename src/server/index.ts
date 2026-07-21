@@ -116,9 +116,9 @@ import {
   updateScriptMangaPlan
 } from "./scriptManga";
 import {
+  adoptScriptMangaPlanCandidate,
   archiveScriptMangaPlanCandidate,
   createScriptMangaPlanCandidates,
-  getScriptMangaPlanCandidate,
   importScriptMangaPlanCandidate,
   listScriptMangaPlanCandidates,
   requirePlanCandidate,
@@ -191,16 +191,35 @@ server.listen(port, host, () => {
 
 setupShutdownHandlers();
 
-async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
-  const method = req.method ?? "GET";
-  const path = url.pathname;
+/**
+ * API ルートハンドラ。params は pattern(RegExp)の捕捉グループ(match.slice(1))。
+ * 文字列 pattern(完全一致)の場合は空配列。
+ */
+type ApiHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  params: string[]
+) => void | Promise<void>;
 
-  if (method === "GET" && path === "/api/health") {
+/**
+ * 宣言的ルート: [method, pattern, handler]。テーブルは上から順に評価され、最初に
+ * method+pattern が一致した 1 件だけが実行される。順序依存(例: /pages/reorder は
+ * /pages/:pageId より前)はテーブルの並び順そのもので表現する。
+ */
+type ApiRoute = readonly [method: string, pattern: string | RegExp, handler: ApiHandler];
+
+// PATCH/PUT の両方で同じテンプレ更新を受ける(従来挙動)。
+const updateTemplateHandler: ApiHandler = async (req, res, _url, p) => {
+  sendJson(res, 200, { template: updateTemplatePromptProfile(p[0]!, await readJson(req)) });
+};
+
+const apiRoutes: ApiRoute[] = [
+  // --- ヘルス / エージェント情報 ---
+  ["GET", "/api/health", (_req, res) => {
     sendJson(res, 200, { ok: true, instanceMode });
-    return;
-  }
-
-  if (method === "GET" && path === "/api/agent/capabilities") {
+  }],
+  ["GET", "/api/agent/capabilities", (_req, res) => {
     sendJson(res, 200, {
       apiVersion: 2,
       instanceMode,
@@ -226,16 +245,14 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
         controlImageField: "controlnet.poseImageDataUrl"
       }
     });
-    return;
-  }
+  }],
 
-  if (method === "GET" && path === "/api/settings/comfy") {
+  // --- ComfyUI 設定・状態 ---
+  ["GET", "/api/settings/comfy", (_req, res) => {
     const settings = getSettingOrDefault();
     sendJson(res, 200, settings);
-    return;
-  }
-
-  if (method === "PUT" && path === "/api/settings/comfy") {
+  }],
+  ["PUT", "/api/settings/comfy", async (req, res) => {
     const body = await readJson<Partial<ComfySettings>>(req);
     const currentSettings = getSettingOrDefault();
     const settings: ComfySettings = {
@@ -249,46 +266,33 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     };
     setSetting("comfy", settings);
     sendJson(res, 200, settings);
-    return;
-  }
-
-  if (method === "POST" && path === "/api/comfy/test") {
+  }],
+  ["POST", "/api/comfy/test", async (_req, res) => {
     sendJson(res, 200, await testComfyConnection());
-    return;
-  }
-
-  if (method === "GET" && path === "/api/comfy/status") {
+  }],
+  ["GET", "/api/comfy/status", async (_req, res) => {
     sendJson(res, 200, await getComfyStatus());
-    return;
-  }
-
-  if (method === "GET" && path === "/api/comfy/model-check") {
+  }],
+  ["GET", "/api/comfy/model-check", async (_req, res, url) => {
     const family = url.searchParams.get("family");
     if (family !== "chroma" && family !== "anima") {
       sendJson(res, 404, { error: `Unknown model family: ${family}` });
       return;
     }
     sendJson(res, 200, await checkModels(family));
-    return;
-  }
-
-  const modelPresetMatch = path.match(/^\/api\/model-presets\/(chroma|anima)$/);
-  if (method === "POST" && modelPresetMatch) {
-    sendJson(res, 200, installModelPreset(modelPresetMatch[1] as "chroma" | "anima"));
-    return;
-  }
-
-  if (method === "GET" && path === "/api/comfy/loras") {
+  }],
+  ["POST", /^\/api\/model-presets\/(chroma|anima)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, installModelPreset(p[0] as "chroma" | "anima"));
+  }],
+  ["GET", "/api/comfy/loras", async (_req, res) => {
     sendJson(res, 200, await listAvailableLoras());
-    return;
-  }
+  }],
 
-  if (method === "GET" && path === "/api/settings/llm") {
+  // --- LLM / VLM 監査設定 ---
+  ["GET", "/api/settings/llm", (_req, res) => {
     sendJson(res, 200, toLlmSettingsView(getLlmSettings()));
-    return;
-  }
-
-  if (method === "PUT" && path === "/api/settings/llm") {
+  }],
+  ["PUT", "/api/settings/llm", async (req, res) => {
     const body = await readJson<Partial<LlmSettings> & { clearApiKey?: boolean }>(req);
     const currentSettings = getLlmSettings();
     // apiKey はフィールド単位の部分更新(既知の罠11: GET が生の値を返さないため、未指定=維持が既定。
@@ -309,25 +313,17 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     };
     setSetting("llm", settings);
     sendJson(res, 200, toLlmSettingsView(settings));
-    return;
-  }
-
-  if (method === "POST" && path === "/api/llm/test") {
+  }],
+  ["POST", "/api/llm/test", async (_req, res) => {
     sendJson(res, 200, await testLlmConnection());
-    return;
-  }
-
-  if (method === "GET" && path === "/api/llm/status") {
+  }],
+  ["GET", "/api/llm/status", async (_req, res) => {
     sendJson(res, 200, await getLlmStatus());
-    return;
-  }
-
-  if (method === "GET" && path === "/api/settings/vlm-audit") {
+  }],
+  ["GET", "/api/settings/vlm-audit", (_req, res) => {
     sendJson(res, 200, getVlmAuditSettings());
-    return;
-  }
-
-  if (method === "PUT" && path === "/api/settings/vlm-audit") {
+  }],
+  ["PUT", "/api/settings/vlm-audit", async (req, res) => {
     const body = await readJson<Partial<VlmAuditSettings>>(req);
     const current = getVlmAuditSettings();
     const settings: VlmAuditSettings = {
@@ -348,69 +344,50 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
     };
     setSetting("vlm_audit", settings);
     sendJson(res, 200, settings);
-    return;
-  }
-
-  if (method === "GET" && path === "/api/vlm-audit/status") {
+  }],
+  ["GET", "/api/vlm-audit/status", async (_req, res) => {
     sendJson(res, 200, await getVlmAuditStatus());
-    return;
-  }
-
-  if (method === "POST" && path === "/api/llm/improve-prompt") {
+  }],
+  ["POST", "/api/llm/improve-prompt", async (req, res) => {
     const body = await readJson<{ prompt?: string; negativePrompt?: string }>(req);
     const improved = await improvePromptWithLlm(
       stringOr(body.prompt, ""),
       typeof body.negativePrompt === "string" ? body.negativePrompt : undefined
     );
     sendJson(res, 200, { prompt: improved });
-    return;
-  }
+  }],
 
-  const webSamModelMatch = path.match(/^\/api\/websam-models\/([^/]+)$/);
-  if (method === "GET" && webSamModelMatch) {
-    await serveReleaseAsset(res, webSamModelMatch[1]!, "WebSAM");
-    return;
-  }
+  // --- WebSAM / pose モデル資材(GitHub Release 中継) ---
+  ["GET", /^\/api\/websam-models\/([^/]+)$/, async (_req, res, _url, p) => {
+    await serveReleaseAsset(res, p[0]!, "WebSAM");
+  }],
+  ["GET", /^\/api\/pose-models\/([^/]+)$/, async (_req, res, _url, p) => {
+    await serveReleaseAsset(res, p[0]!, "pose");
+  }],
 
-  const poseModelMatch = path.match(/^\/api\/pose-models\/([^/]+)$/);
-  if (method === "GET" && poseModelMatch) {
-    await serveReleaseAsset(res, poseModelMatch[1]!, "pose");
-    return;
-  }
-
-  if (method === "GET" && path === "/api/templates") {
+  // --- 生成テンプレート ---
+  ["GET", "/api/templates", (_req, res) => {
     sendJson(res, 200, { templates: listTemplates() });
-    return;
-  }
-
-  if (method === "POST" && path === "/api/templates") {
+  }],
+  ["POST", "/api/templates", async (req, res) => {
     sendJson(res, 201, { template: createTemplate(await readJson(req)) });
-    return;
-  }
-
-  const templateDeleteMatch = path.match(/^\/api\/templates\/([^/]+)$/);
-  if ((method === "PATCH" || method === "PUT") && templateDeleteMatch) {
-    sendJson(res, 200, { template: updateTemplatePromptProfile(templateDeleteMatch[1]!, await readJson(req)) });
-    return;
-  }
-  if (method === "DELETE" && templateDeleteMatch) {
-    sendJson(res, 200, deleteTemplate(templateDeleteMatch[1]!));
-    return;
-  }
+  }],
+  ["PATCH", /^\/api\/templates\/([^/]+)$/, updateTemplateHandler],
+  ["PUT", /^\/api\/templates\/([^/]+)$/, updateTemplateHandler],
+  ["DELETE", /^\/api\/templates\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, deleteTemplate(p[0]!));
+  }],
 
   // --- コマ割りテンプレート(漫画レイアウト)。グローバル(全Book共通)。 ---
-  if (method === "GET" && path === "/api/layout-templates") {
+  ["GET", "/api/layout-templates", (_req, res) => {
     sendJson(res, 200, { templates: listLayoutTemplates() });
-    return;
-  }
-  if (method === "POST" && path === "/api/layout-templates") {
+  }],
+  ["POST", "/api/layout-templates", async (req, res) => {
     sendJson(res, 201, importLayoutTemplate(await readJson(req)));
-    return;
-  }
+  }],
   // テンプレートの .guruguru-layout.json5 書き出し(SPEC v0.3 §27、内蔵/取り込みの両対応)。
-  const layoutTemplateExportMatch = path.match(/^\/api\/layout-templates\/([^/]+)\/export$/);
-  if (method === "GET" && layoutTemplateExportMatch) {
-    const result = exportLayoutTemplate(decodeURIComponent(layoutTemplateExportMatch[1]!));
+  ["GET", /^\/api\/layout-templates\/([^/]+)\/export$/, (_req, res, _url, p) => {
+    const result = exportLayoutTemplate(decodeURIComponent(p[0]!));
     const body = Buffer.from(result.json5, "utf8");
     res.writeHead(200, {
       "content-type": "application/json5; charset=utf-8",
@@ -418,48 +395,33 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`
     });
     res.end(body);
-    return;
-  }
-  const layoutTemplateDeleteMatch = path.match(/^\/api\/layout-templates\/([^/]+)$/);
-  if (method === "DELETE" && layoutTemplateDeleteMatch) {
-    sendJson(res, 200, deleteLayoutTemplate(layoutTemplateDeleteMatch[1]!));
-    return;
-  }
+  }],
+  ["DELETE", /^\/api\/layout-templates\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, deleteLayoutTemplate(p[0]!));
+  }],
 
-  if (method === "GET" && path === "/api/projects") {
+  // --- プロジェクト(import は /:projectId より前に置く) ---
+  ["GET", "/api/projects", (_req, res) => {
     sendJson(res, 200, { projects: listProjects() });
-    return;
-  }
-
-  if (method === "POST" && path === "/api/projects") {
+  }],
+  ["POST", "/api/projects", async (req, res) => {
     sendJson(res, 201, { project: createProject(await readJson(req)) });
-    return;
-  }
-
+  }],
   // .guruzip プロジェクトインポート(Docs/Feature-ProjectImportExport.md §5)。ボディはZIP
-  // バイナリそのもの(multipart にはしない)。/api/projects/:id と衝突しないよう先に判定する
-  // (":id" 部分に "import" は入り得ないため実害はないが、意図を明確にする)。
-  if (method === "POST" && path === "/api/projects/import") {
+  // バイナリそのもの(multipart にはしない)。
+  ["POST", "/api/projects/import", async (req, res) => {
     const result = await importProjectFromStream(req);
     sendJson(res, 201, result);
-    return;
-  }
-
-  const projectDetailMatch = path.match(/^\/api\/projects\/([^/]+)$/);
-  if (method === "GET" && projectDetailMatch) {
-    sendJson(res, 200, getProjectDetail(projectDetailMatch[1]!, { ensureRoundMonitor }));
-    return;
-  }
-
-  if (method === "DELETE" && projectDetailMatch) {
-    sendJson(res, 200, await deleteProject(projectDetailMatch[1]!));
-    return;
-  }
-
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, getProjectDetail(p[0]!, { ensureRoundMonitor }));
+  }],
+  ["DELETE", /^\/api\/projects\/([^/]+)$/, async (_req, res, _url, p) => {
+    sendJson(res, 200, await deleteProject(p[0]!));
+  }],
   // .guruzip プロジェクトエクスポート(Docs/Feature-ProjectImportExport.md §5)。
-  const projectExportMatch = path.match(/^\/api\/projects\/([^/]+)\/export$/);
-  if (method === "GET" && projectExportMatch) {
-    await withProjectExportArchive(projectExportMatch[1]!, async (result) => {
+  ["GET", /^\/api\/projects\/([^/]+)\/export$/, async (_req, res, _url, p) => {
+    await withProjectExportArchive(p[0]!, async (result) => {
       res.writeHead(200, {
         "content-type": result.contentType,
         "content-length": String(result.byteLength),
@@ -475,58 +437,37 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
         }
       }
     });
-    return;
-  }
-
-  const openRasterExportMatch = path.match(/^\/api\/projects\/([^/]+)\/openraster-export$/);
-  if (method === "POST" && openRasterExportMatch) {
-    await withOpenRasterExport(openRasterExportMatch[1]!, await readJson(req), (result) => streamFileExport(res, result));
-    return;
-  }
-
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/openraster-export$/, async (req, res, _url, p) => {
+    await withOpenRasterExport(p[0]!, await readJson(req), (result) => streamFileExport(res, result));
+  }],
   // 完成品の画像一括書き出し(Docs/Feature-CGCollectionSuite.md P4)。PNG/JPEG 連番(単ページは画像単体)。
   // format="pptx"(Docs/Feature-PptxExport.md)は同じエンドポイントで、常に単一 .pptx を返す。
-  const imageExportMatch = path.match(/^\/api\/projects\/([^/]+)\/export-images$/);
-  if (method === "POST" && imageExportMatch) {
-    await withImageExport(imageExportMatch[1]!, await readJson(req), (result) => streamFileExport(res, result));
-    return;
-  }
+  ["POST", /^\/api\/projects\/([^/]+)\/export-images$/, async (req, res, _url, p) => {
+    await withImageExport(p[0]!, await readJson(req), (result) => streamFileExport(res, result));
+  }],
 
-  // --- Book のページ操作。/pages/reorder は /pages/:pageId より前に判定する。 ---
-  const pagesCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/pages$/);
-  if (method === "GET" && pagesCollectionMatch) {
-    sendJson(res, 200, listPagesWithProject(pagesCollectionMatch[1]!));
-    return;
-  }
-  if (method === "POST" && pagesCollectionMatch) {
-    sendJson(res, 201, { page: createPage(pagesCollectionMatch[1]!, await readJson(req)) });
-    return;
-  }
-
-  const pagesReorderMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/reorder$/);
-  if (method === "POST" && pagesReorderMatch) {
-    sendJson(res, 200, reorderPages(pagesReorderMatch[1]!, await readJson(req)));
-    return;
-  }
-
-  // 画像を新規ページとして取り込む(複数インポートの1枚分)。/pages/:pageId より前に判定する。
-  const pageImportImageMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/import-image$/);
-  if (method === "POST" && pageImportImageMatch) {
-    sendJson(res, 201, await importImageAsPage(pageImportImageMatch[1]!, await readJson(req)));
-    return;
-  }
-
-  const referenceImagesMatch = path.match(/^\/api\/projects\/([^/]+)\/reference-images$/);
-  if (method === "GET" && referenceImagesMatch) {
+  // --- Book のページ操作(/pages/reorder・/pages/import-image は /pages/:pageId より前) ---
+  ["GET", /^\/api\/projects\/([^/]+)\/pages$/, (_req, res, _url, p) => {
+    sendJson(res, 200, listPagesWithProject(p[0]!));
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/pages$/, async (req, res, _url, p) => {
+    sendJson(res, 201, { page: createPage(p[0]!, await readJson(req)) });
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/reorder$/, async (req, res, _url, p) => {
+    sendJson(res, 200, reorderPages(p[0]!, await readJson(req)));
+  }],
+  // 画像を新規ページとして取り込む(複数インポートの1枚分)。
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/import-image$/, async (req, res, _url, p) => {
+    sendJson(res, 201, await importImageAsPage(p[0]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)\/reference-images$/, async (_req, res, url, p) => {
     const limit = Number(url.searchParams.get("limit")) || 24;
-    sendJson(res, 200, { images: await listRecentImages(referenceImagesMatch[1]!, limit) });
-    return;
-  }
-
-  const pagePreviewMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/preview\.png$/);
-  if (method === "GET" && pagePreviewMatch) {
+    sendJson(res, 200, { images: await listRecentImages(p[0]!, limit) });
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/preview\.png$/, async (_req, res, url, p) => {
     const size = Number(url.searchParams.get("size")) || 512;
-    const buffer = await createPagePreviewPng(pagePreviewMatch[1]!, pagePreviewMatch[2]!, { size });
+    const buffer = await createPagePreviewPng(p[0]!, p[1]!, { size });
     res.writeHead(200, {
       "content-type": "image/png",
       "content-length": String(buffer.byteLength),
@@ -535,69 +476,43 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
         : "private, max-age=60"
     });
     res.end(buffer);
-    return;
-  }
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, getPageDetail(p[0]!, p[1]!, { ensureRoundMonitor }));
+  }],
+  ["PATCH", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)$/, async (req, res, _url, p) => {
+    sendJson(res, 200, { page: updatePage(p[0]!, p[1]!, await readJson(req)) });
+  }],
+  ["DELETE", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, deletePage(p[0]!, p[1]!));
+  }],
 
-  const pageDetailMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)$/);
-  if (method === "GET" && pageDetailMatch) {
-    sendJson(res, 200, getPageDetail(pageDetailMatch[1]!, pageDetailMatch[2]!, { ensureRoundMonitor }));
-    return;
-  }
-  if (method === "PATCH" && pageDetailMatch) {
-    sendJson(res, 200, { page: updatePage(pageDetailMatch[1]!, pageDetailMatch[2]!, await readJson(req)) });
-    return;
-  }
-  if (method === "DELETE" && pageDetailMatch) {
-    sendJson(res, 200, deletePage(pageDetailMatch[1]!, pageDetailMatch[2]!));
-    return;
-  }
-
+  // --- ページ内オブジェクト・レイアウト編集 ---
   // コマ内生成(Docs/Feature-PanelGeneration.md): コマへの画像割り当て/クロップの更新。
-  const panelAssignmentMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/panels\/([^/]+)\/assignment$/);
-  if (method === "PATCH" && panelAssignmentMatch) {
-    sendJson(
-      res,
-      200,
-      updatePagePanelAssignment(panelAssignmentMatch[1]!, panelAssignmentMatch[2]!, panelAssignmentMatch[3]!, await readJson(req))
-    );
-    return;
-  }
-
+  ["PATCH", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/panels\/([^/]+)\/assignment$/, async (req, res, _url, p) => {
+    sendJson(res, 200, updatePagePanelAssignment(p[0]!, p[1]!, p[2]!, await readJson(req)));
+  }],
   // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1): テキスト/吹き出し/ボックスの配列を丸ごと置換する。
-  const pageObjectsMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/objects$/);
-  if (method === "PATCH" && pageObjectsMatch) {
-    sendJson(res, 200, updatePageObjects(pageObjectsMatch[1]!, pageObjectsMatch[2]!, await readJson(req)));
-    return;
-  }
-  const speakerAnchorsMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/speaker-anchors$/);
-  if (method === "POST" && speakerAnchorsMatch) {
-    sendJson(res, 200, applySpeakerAnchors(speakerAnchorsMatch[1]!, speakerAnchorsMatch[2]!, await readJson(req)));
-    return;
-  }
-  const fitBalloonTextMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/fit-balloon-text$/);
-  if (method === "POST" && fitBalloonTextMatch) {
-    sendJson(res, 200, fitPageBalloonText(fitBalloonTextMatch[1]!, fitBalloonTextMatch[2]!));
-    return;
-  }
-
+  ["PATCH", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/objects$/, async (req, res, _url, p) => {
+    sendJson(res, 200, updatePageObjects(p[0]!, p[1]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/speaker-anchors$/, async (req, res, _url, p) => {
+    sendJson(res, 200, applySpeakerAnchors(p[0]!, p[1]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/fit-balloon-text$/, (_req, res, _url, p) => {
+    sendJson(res, 200, fitPageBalloonText(p[0]!, p[1]!));
+  }],
   // ImageObject(Docs/Feature-ScriptToManga.md S2): 配置時に Asset 画像を page_media へコピーする。
-  const pageMediaCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/page-media$/);
-  if (method === "POST" && pageMediaCreateMatch) {
-    sendJson(res, 201, await createPageMedia(pageMediaCreateMatch[1]!, await readJson(req)));
-    return;
-  }
-
-  const pageMediaServeMatch = path.match(/^\/api\/page-media\/([^/]+)$/);
-  if (method === "GET" && pageMediaServeMatch) {
-    servePageMedia(res, pageMediaServeMatch[1]!);
-    return;
-  }
-
+  ["POST", /^\/api\/projects\/([^/]+)\/page-media$/, async (req, res, _url, p) => {
+    sendJson(res, 201, await createPageMedia(p[0]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/page-media\/([^/]+)$/, (_req, res, _url, p) => {
+    servePageMedia(res, p[0]!);
+  }],
   // コマ形状編集(Docs/Feature-CGCollectionSuite.md P5): レイアウト(panels の shape/order 等)を丸ごと置換する。
   // ページの現在のコマ枠+吹き出し+テキストを .guruguru-layout.json5 へ書き出す(SPEC v0.3 §27)。
-  const pageExportLayoutMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/export-layout$/);
-  if (method === "GET" && pageExportLayoutMatch) {
-    const result = exportPageLayout(pageExportLayoutMatch[1]!, pageExportLayoutMatch[2]!);
+  ["GET", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/export-layout$/, (_req, res, _url, p) => {
+    const result = exportPageLayout(p[0]!, p[1]!);
     const body = Buffer.from(result.json5, "utf8");
     res.writeHead(200, {
       "content-type": "application/json5; charset=utf-8",
@@ -605,45 +520,35 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(result.filename)}`
     });
     res.end(body);
-    return;
-  }
-  const pageLayoutMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/layout$/);
-  if (method === "PATCH" && pageLayoutMatch) {
-    sendJson(res, 200, updatePageLayout(pageLayoutMatch[1]!, pageLayoutMatch[2]!, await readJson(req)));
-    return;
-  }
-
+  }],
+  ["PATCH", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/layout$/, async (req, res, _url, p) => {
+    sendJson(res, 200, updatePageLayout(p[0]!, p[1]!, await readJson(req)));
+  }],
   // モザイク(Docs/Feature-CGCollectionSuite.md P6): 非破壊リージョンの配列を丸ごと置換する。
-  const pageMosaicMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/mosaic$/);
-  if (method === "PATCH" && pageMosaicMatch) {
-    sendJson(res, 200, updatePageMosaic(pageMosaicMatch[1]!, pageMosaicMatch[2]!, await readJson(req)));
-    return;
-  }
+  ["PATCH", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/mosaic$/, async (req, res, _url, p) => {
+    sendJson(res, 200, updatePageMosaic(p[0]!, p[1]!, await readJson(req)));
+  }],
 
-  // テキストオブジェクト(Docs/Feature-CGCollectionSuite.md P2): フォント一覧+自前レイアウト計算。
-  if (method === "GET" && path === "/api/fonts") {
+  // --- テキストオブジェクト(Docs/Feature-CGCollectionSuite.md P2): フォント一覧+自前レイアウト計算 ---
+  ["GET", "/api/fonts", (_req, res) => {
     sendJson(res, 200, { fonts: listFonts() });
-    return;
-  }
-  if (method === "POST" && path === "/api/text-layout") {
+  }],
+  ["POST", "/api/text-layout", async (req, res) => {
     sendJson(res, 200, computeTextLayout(await readJson(req)));
-    return;
-  }
+  }],
 
-  const generateMatch = path.match(/^\/api\/projects\/([^/]+)\/rounds$/);
-  if (method === "POST" && generateMatch) {
+  // --- 生成ラウンド(作成) ---
+  ["POST", /^\/api\/projects\/([^/]+)\/rounds$/, async (req, res, _url, p) => {
     const roundBody = await readJson<GenerationRequest & { pageId?: string | null; targetPanelId?: string | null }>(req);
     sendJson(
       res,
       201,
-      await createGenerationRound(generateMatch[1]!, roundBody, roundBody.pageId ?? null, roundBody.targetPanelId ?? null)
+      await createGenerationRound(p[0]!, roundBody, roundBody.pageId ?? null, roundBody.targetPanelId ?? null)
     );
-    return;
-  }
+  }],
 
-  // Fountain → 自動コマ割り → コマ別画像生成 → 吹き出し完成の一括実行。
-  const scriptMangaCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-runs$/);
-  if (method === "POST" && scriptMangaCreateMatch) {
+  // --- Script-Manga(Fountain → 自動コマ割り → コマ別画像生成 → 吹き出し完成の一括実行) ---
+  ["POST", /^\/api\/projects\/([^/]+)\/script-manga-runs$/, async (req, res, _url, p) => {
     const body = await readJson<Record<string, unknown>>(req);
     if (body && typeof body === "object" && !Array.isArray(body) && typeof body.planCandidateId === "string") {
       throw new HttpError(
@@ -651,151 +556,58 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
         "Adopt plan candidates through POST /api/script-manga-plan-candidates/:candidateId/adopt so full preflight cannot be bypassed"
       );
     }
-    sendJson(res, 201, await createScriptMangaRun(scriptMangaCreateMatch[1]!, body));
-    return;
-  }
-  const scriptMangaRunMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)$/);
-  if (method === "GET" && scriptMangaRunMatch) {
-    sendJson(res, 200, getScriptMangaRun(scriptMangaRunMatch[1]!));
-    return;
-  }
+    sendJson(res, 201, await createScriptMangaRun(p[0]!, body));
+  }],
+  ["GET", /^\/api\/script-manga-runs\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, getScriptMangaRun(p[0]!));
+  }],
   // プラン候補(ネームv4 D3): 複数生成して見比べ、専用adopt APIでfull preflight後に採用する。
-  const scriptMangaCandidatesMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-plan-candidates$/);
-  if (method === "POST" && scriptMangaCandidatesMatch) {
-    sendJson(res, 201, await createScriptMangaPlanCandidates(scriptMangaCandidatesMatch[1]!, await readJson(req)));
-    return;
-  }
-  if (method === "GET" && scriptMangaCandidatesMatch) {
+  ["POST", /^\/api\/projects\/([^/]+)\/script-manga-plan-candidates$/, async (req, res, _url, p) => {
+    sendJson(res, 201, await createScriptMangaPlanCandidates(p[0]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)\/script-manga-plan-candidates$/, (_req, res, url, p) => {
     const scriptId = url.searchParams.get("scriptId") ?? "";
-    sendJson(res, 200, listScriptMangaPlanCandidates(scriptMangaCandidatesMatch[1]!, scriptId));
-    return;
-  }
-  const scriptMangaCandidateImportMatch = path.match(/^\/api\/projects\/([^/]+)\/script-manga-plan-candidates\/import$/);
-  if (method === "POST" && scriptMangaCandidateImportMatch) {
-    sendJson(res, 201, importScriptMangaPlanCandidate(scriptMangaCandidateImportMatch[1]!, await readJson(req)));
-    return;
-  }
-  const scriptMangaCandidateAdoptMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/adopt$/);
-  if (method === "POST" && scriptMangaCandidateAdoptMatch) {
-    const candidateId = scriptMangaCandidateAdoptMatch[1]!;
-    const adoptedReplay = () => {
-      const row = requirePlanCandidate(candidateId);
-      return row.status === "adopted" && row.adopted_run_id
-        ? { candidate: getScriptMangaPlanCandidate(candidateId), run: getScriptMangaRun(row.adopted_run_id) }
-        : null;
-    };
-    const candidateRow = requirePlanCandidate(candidateId);
-    const initialReplay = adoptedReplay();
-    if (initialReplay) {
-      sendJson(res, 200, initialReplay);
-      return;
-    }
-    const body = await readJson<Record<string, unknown>>(req);
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      throw new HttpError(400, "Request body must be an object");
-    }
-    if (body.predecessorRunId !== undefined || body.successorPlan !== undefined) {
-      throw new HttpError(400, "Candidate adoption cannot be combined with a successor run");
-    }
-    let preflight: Awaited<ReturnType<typeof preflightScriptMangaCandidate>>;
-    try {
-      preflight = await preflightScriptMangaCandidate(candidateRow.project_id, candidateId, body);
-    } catch (error) {
-      const concurrentReplay = adoptedReplay();
-      if (concurrentReplay) {
-        sendJson(res, 200, concurrentReplay);
-        return;
-      }
-      throw error;
-    }
-    if (!preflight.ok) {
-      sendJson(res, 422, {
-        error: "Candidate failed full preflight and was not adopted",
-        preflight
-      });
-      return;
-    }
-    const afterPreflightReplay = adoptedReplay();
-    if (afterPreflightReplay) {
-      sendJson(res, 200, afterPreflightReplay);
-      return;
-    }
-    let run;
-    try {
-      run = await createScriptMangaRun(candidateRow.project_id, {
-        ...body,
-        scriptId: candidateRow.script_id,
-        planCandidateId: candidateId,
-        expectedCandidateVersion: preflight.candidateEditVersion,
-        generateImages: false,
-        candidateSelectionPolicy: "review",
-        requireReferenceSets: true,
-        allowReferenceFallback: false
-      });
-    } catch (error) {
-      const concurrentReplay = adoptedReplay();
-      if (concurrentReplay) {
-        sendJson(res, 200, concurrentReplay);
-        return;
-      }
-      throw error;
-    }
-    sendJson(res, 201, { candidate: getScriptMangaPlanCandidate(candidateId), run, preflight });
-    return;
-  }
-  const scriptMangaCandidatePreflightMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/preflight$/);
-  if (method === "POST" && scriptMangaCandidatePreflightMatch) {
-    const candidateId = scriptMangaCandidatePreflightMatch[1]!;
+    sendJson(res, 200, listScriptMangaPlanCandidates(p[0]!, scriptId));
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/script-manga-plan-candidates\/import$/, async (req, res, _url, p) => {
+    sendJson(res, 201, importScriptMangaPlanCandidate(p[0]!, await readJson(req)));
+  }],
+  // 候補採用。本体は scriptMangaPlanCandidates.adoptScriptMangaPlanCandidate(冪等リプレイ含む)。
+  ["POST", /^\/api\/script-manga-plan-candidates\/([^/]+)\/adopt$/, async (req, res, _url, p) => {
+    const result = await adoptScriptMangaPlanCandidate(p[0]!, () => readJson<Record<string, unknown>>(req));
+    sendJson(res, result.status, result.body);
+  }],
+  ["POST", /^\/api\/script-manga-plan-candidates\/([^/]+)\/preflight$/, async (req, res, _url, p) => {
+    const candidateId = p[0]!;
     const candidate = requirePlanCandidate(candidateId);
-    sendJson(
-      res,
-      200,
-      await preflightScriptMangaCandidate(candidate.project_id, candidateId, await readJson(req))
-    );
-    return;
-  }
-  const scriptMangaCandidateArchiveMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/archive$/);
-  if (method === "POST" && scriptMangaCandidateArchiveMatch) {
-    sendJson(res, 200, archiveScriptMangaPlanCandidate(scriptMangaCandidateArchiveMatch[1]!));
-    return;
-  }
+    sendJson(res, 200, await preflightScriptMangaCandidate(candidate.project_id, candidateId, await readJson(req)));
+  }],
+  ["POST", /^\/api\/script-manga-plan-candidates\/([^/]+)\/archive$/, (_req, res, _url, p) => {
+    sendJson(res, 200, archiveScriptMangaPlanCandidate(p[0]!));
+  }],
   // V5 D5: ページ別レイアウトフリップ(基礎プラン不変+layout overrides+楽観ロック)。
-  const scriptMangaCandidateSetLayoutMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/set-layout$/);
-  if (method === "POST" && scriptMangaCandidateSetLayoutMatch) {
-    sendJson(res, 200, setCandidateLayoutOverride(scriptMangaCandidateSetLayoutMatch[1]!, await readJson(req)));
-    return;
-  }
+  ["POST", /^\/api\/script-manga-plan-candidates\/([^/]+)\/set-layout$/, async (req, res, _url, p) => {
+    sendJson(res, 200, setCandidateLayoutOverride(p[0]!, await readJson(req)));
+  }],
   // 人間ゲートのコマ割り修正(編集済みPageLayout+吹き出し位置ヒント、テンプレ選択より優先)。
-  const scriptMangaCandidateSetCustomLayoutMatch = path.match(/^\/api\/script-manga-plan-candidates\/([^/]+)\/set-custom-layout$/);
-  if (method === "POST" && scriptMangaCandidateSetCustomLayoutMatch) {
-    sendJson(res, 200, setCandidateCustomLayout(scriptMangaCandidateSetCustomLayoutMatch[1]!, await readJson(req)));
-    return;
-  }
-  const scriptMangaPlanMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)$/);
-  if (method === "GET" && scriptMangaPlanMatch) {
-    sendJson(res, 200, getScriptMangaPlan(scriptMangaPlanMatch[1]!));
-    return;
-  }
+  ["POST", /^\/api\/script-manga-plan-candidates\/([^/]+)\/set-custom-layout$/, async (req, res, _url, p) => {
+    sendJson(res, 200, setCandidateCustomLayout(p[0]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/script-manga-plans\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, getScriptMangaPlan(p[0]!));
+  }],
   // V5 D6: スタジオ用ホワイトリスト差分編集(完全V2のPATCHは successor/provided 系ツール向けに残置)。
-  const scriptMangaPlanEditsMatch = path.match(/^\/api\/script-manga-plans\/([^/]+)\/edits$/);
-  if (method === "POST" && scriptMangaPlanEditsMatch) {
-    sendJson(res, 200, applyNamePlanEdits(scriptMangaPlanEditsMatch[1]!, await readJson(req)));
-    return;
-  }
-  if (method === "PATCH" && scriptMangaPlanMatch) {
-    sendJson(res, 200, updateScriptMangaPlan(scriptMangaPlanMatch[1]!, await readJson(req)));
-    return;
-  }
-  const scriptMangaRunExportMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)\/export$/);
-  if (method === "POST" && scriptMangaRunExportMatch) {
-    await withScriptMangaRunExport(scriptMangaRunExportMatch[1]!, await readJson(req), (result) =>
-      streamFileExport(res, result)
-    );
-    return;
-  }
-  const scriptMangaRunActionMatch = path.match(/^\/api\/script-manga-runs\/([^/]+)\/(approve|start|resume|cancel)$/);
-  if (method === "POST" && scriptMangaRunActionMatch) {
-    const [, runId, action] = scriptMangaRunActionMatch;
+  ["POST", /^\/api\/script-manga-plans\/([^/]+)\/edits$/, async (req, res, _url, p) => {
+    sendJson(res, 200, applyNamePlanEdits(p[0]!, await readJson(req)));
+  }],
+  ["PATCH", /^\/api\/script-manga-plans\/([^/]+)$/, async (req, res, _url, p) => {
+    sendJson(res, 200, updateScriptMangaPlan(p[0]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/script-manga-runs\/([^/]+)\/export$/, async (req, res, _url, p) => {
+    await withScriptMangaRunExport(p[0]!, await readJson(req), (result) => streamFileExport(res, result));
+  }],
+  ["POST", /^\/api\/script-manga-runs\/([^/]+)\/(approve|start|resume|cancel)$/, async (_req, res, _url, p) => {
+    const [runId, action] = p;
     const result = action === "approve"
       ? approveScriptMangaRun(runId!)
       : action === "start"
@@ -804,87 +616,57 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
           ? await resumeScriptMangaRun(runId!)
           : await cancelScriptMangaRun(runId!);
     sendJson(res, 200, result);
-    return;
-  }
-  const scriptMangaTaskActionMatch = path.match(/^\/api\/script-manga-tasks\/([^/]+)\/(retry|select|audit|repair)$/);
-  if (method === "POST" && scriptMangaTaskActionMatch) {
+  }],
+  ["POST", /^\/api\/script-manga-tasks\/([^/]+)\/(retry|select|audit|repair)$/, async (req, res, _url, p) => {
     sendJson(
       res,
       200,
-      scriptMangaTaskActionMatch[2] === "retry"
-        ? await retryScriptMangaTask(scriptMangaTaskActionMatch[1]!)
-        : scriptMangaTaskActionMatch[2] === "audit"
-          ? await auditScriptMangaTask(scriptMangaTaskActionMatch[1]!)
-          : scriptMangaTaskActionMatch[2] === "repair"
-            ? await repairScriptMangaTask(scriptMangaTaskActionMatch[1]!, await readJson(req))
-          : await selectScriptMangaTaskCandidate(scriptMangaTaskActionMatch[1]!, await readJson(req))
+      p[1] === "retry"
+        ? await retryScriptMangaTask(p[0]!)
+        : p[1] === "audit"
+          ? await auditScriptMangaTask(p[0]!)
+          : p[1] === "repair"
+            ? await repairScriptMangaTask(p[0]!, await readJson(req))
+          : await selectScriptMangaTaskCandidate(p[0]!, await readJson(req))
     );
-    return;
-  }
-  const scriptMangaTaskExternalAuditMatch = path.match(/^\/api\/script-manga-tasks\/([^/]+)\/audit-results$/);
-  if (method === "POST" && scriptMangaTaskExternalAuditMatch) {
-    sendJson(
-      res,
-      200,
-      recordExternalScriptMangaTaskAudit(scriptMangaTaskExternalAuditMatch[1]!, await readJson(req))
-    );
-    return;
-  }
+  }],
+  ["POST", /^\/api\/script-manga-tasks\/([^/]+)\/audit-results$/, async (req, res, _url, p) => {
+    sendJson(res, 200, recordExternalScriptMangaTaskAudit(p[0]!, await readJson(req)));
+  }],
 
-  const sourceAssetMatch = path.match(/^\/api\/projects\/([^/]+)\/source-assets$/);
-  if (method === "POST" && sourceAssetMatch) {
-    sendJson(res, 201, await createSourceAsset(sourceAssetMatch[1]!, await readJson(req)));
-    return;
-  }
+  // --- 素材アセット / ペースト画像 ---
+  ["POST", /^\/api\/projects\/([^/]+)\/source-assets$/, async (req, res, _url, p) => {
+    sendJson(res, 201, await createSourceAsset(p[0]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/paste-sources$/, async (req, res, _url, p) => {
+    sendJson(res, 201, await createPasteSource(p[0]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)\/paste-sources\/([^/]+)$/, (_req, res, _url, p) => {
+    servePasteSource(res, p[0]!, p[1]!);
+  }],
+  ["GET", /^\/api\/assets\/([^/]+)\/paste-attachments$/, (_req, res, _url, p) => {
+    sendJson(res, 200, getPasteAttachments(p[0]!));
+  }],
+  ["PUT", /^\/api\/assets\/([^/]+)\/paste-attachments$/, async (req, res, _url, p) => {
+    sendJson(res, 200, putPasteAttachments(p[0]!, await readJson(req)));
+  }],
 
-  const pasteSourceCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/paste-sources$/);
-  if (method === "POST" && pasteSourceCreateMatch) {
-    sendJson(res, 201, await createPasteSource(pasteSourceCreateMatch[1]!, await readJson(req)));
-    return;
-  }
-
-  const pasteSourceServeMatch = path.match(/^\/api\/projects\/([^/]+)\/paste-sources\/([^/]+)$/);
-  if (method === "GET" && pasteSourceServeMatch) {
-    servePasteSource(res, pasteSourceServeMatch[1]!, pasteSourceServeMatch[2]!);
-    return;
-  }
-
-  const pasteAttachmentsMatch = path.match(/^\/api\/assets\/([^/]+)\/paste-attachments$/);
-  if (method === "GET" && pasteAttachmentsMatch) {
-    sendJson(res, 200, getPasteAttachments(pasteAttachmentsMatch[1]!));
-    return;
-  }
-  if (method === "PUT" && pasteAttachmentsMatch) {
-    sendJson(res, 200, putPasteAttachments(pasteAttachmentsMatch[1]!, await readJson(req)));
-    return;
-  }
-
-  const roundAttachmentMatch = path.match(/^\/api\/rounds\/([^/]+)\/attachments\/(mask|pose|reference)$/);
-  if (method === "GET" && roundAttachmentMatch) {
-    serveRoundAttachment(res, roundAttachmentMatch[1]!, roundAttachmentMatch[2]! as "mask" | "pose" | "reference");
-    return;
-  }
-
-  const collectMatch = path.match(/^\/api\/rounds\/([^/]+)\/collect$/);
-  if (method === "POST" && collectMatch) {
-    const result = await collectRound(collectMatch[1]!);
+  // --- 生成ラウンド(添付・回収・削除) ---
+  ["GET", /^\/api\/rounds\/([^/]+)\/attachments\/(mask|pose|reference)$/, (_req, res, _url, p) => {
+    serveRoundAttachment(res, p[0]!, p[1]! as "mask" | "pose" | "reference");
+  }],
+  ["POST", /^\/api\/rounds\/([^/]+)\/collect$/, async (_req, res, _url, p) => {
+    const result = await collectRound(p[0]!);
     sendJson(res, result.statusCode, result.body);
-    return;
-  }
-
-  const roundInterruptMatch = path.match(/^\/api\/rounds\/([^/]+)\/interrupt$/);
-  if (method === "POST" && roundInterruptMatch) {
-    sendJson(res, 200, await interruptRound(roundInterruptMatch[1]!));
-    return;
-  }
-
-  if (method === "POST" && path === "/api/rounds/restore") {
+  }],
+  ["POST", /^\/api\/rounds\/([^/]+)\/interrupt$/, async (_req, res, _url, p) => {
+    sendJson(res, 200, await interruptRound(p[0]!));
+  }],
+  ["POST", "/api/rounds/restore", async (req, res) => {
     sendJson(res, 200, restoreRounds(await readJson(req)));
-    return;
-  }
-
+  }],
   // プロジェクトを離れる時に呼ばれ、そのセッションの削除を確定(復元不能に)する。
-  if (method === "POST" && path === "/api/rounds/trash/discard") {
+  ["POST", "/api/rounds/trash/discard", async (req, res) => {
     const body = await readJson(req);
     const rootIds = Array.isArray((body as Record<string, unknown>)?.rootIds)
       ? ((body as Record<string, unknown>).rootIds as unknown[]).filter((id): id is string => typeof id === "string")
@@ -899,275 +681,186 @@ async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
       }
     }
     sendJson(res, 200, { discarded });
-    return;
-  }
+  }],
+  ["DELETE", /^\/api\/rounds\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, deleteRoundTree(p[0]!));
+  }],
 
-  const roundDeleteMatch = path.match(/^\/api\/rounds\/([^/]+)$/);
-  if (method === "DELETE" && roundDeleteMatch) {
-    sendJson(res, 200, deleteRoundTree(roundDeleteMatch[1]!));
-    return;
-  }
-
-  // --- 脚本ドメイン(Docs/Feature-ScriptToManga.md S3): Character / Script / DialogueLine / Placement ---
-  const charactersCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/characters$/);
-  if (method === "GET" && charactersCollectionMatch) {
-    sendJson(res, 200, { characters: listCharacters(charactersCollectionMatch[1]!) });
-    return;
-  }
-
-  const projectReferenceSetsMatch = path.match(/^\/api\/projects\/([^/]+)\/reference-sets$/);
-  if (method === "GET" && projectReferenceSetsMatch) {
-    sendJson(res, 200, { referenceSets: listProjectReferenceSets(projectReferenceSetsMatch[1]!) });
-    return;
-  }
-
-  const characterReferenceSetsMatch = path.match(/^\/api\/characters\/([^/]+)\/reference-sets$/);
-  if (method === "POST" && characterReferenceSetsMatch) {
-    sendJson(res, 201, { referenceSet: createReferenceSet(characterReferenceSetsMatch[1]!, await readJson(req)) });
-    return;
-  }
-
-  const referenceSetImageMatch = path.match(/^\/api\/reference-sets\/([^/]+)\/images\/(face|full_body)$/);
-  if (method === "PUT" && referenceSetImageMatch) {
-    sendJson(res, 200, { referenceSet: await uploadReferenceSetImage(referenceSetImageMatch[1]!, referenceSetImageMatch[2]!, await readJson(req)) });
-    return;
-  }
-
-  const referenceSetActionMatch = path.match(/^\/api\/reference-sets\/([^/]+)\/(generate|approve)$/);
-  if (method === "POST" && referenceSetActionMatch) {
-    const result = referenceSetActionMatch[2] === "generate"
-      ? await generateReferenceSetCandidates(referenceSetActionMatch[1]!, await readJson(req))
-      : await approveReferenceSet(referenceSetActionMatch[1]!, await readJson(req));
-    sendJson(res, referenceSetActionMatch[2] === "generate" ? 202 : 200,
-      referenceSetActionMatch[2] === "generate" ? result : { referenceSet: result });
-    return;
-  }
-
-  const referenceImageMatch = path.match(/^\/api\/reference-images\/([^/]+)$/);
-  if (method === "GET" && referenceImageMatch) {
-    serveReferenceSetImage(res, referenceImageMatch[1]!);
-    return;
-  }
-  if (method === "POST" && charactersCollectionMatch) {
-    sendJson(res, 201, { character: createCharacter(charactersCollectionMatch[1]!, await readJson(req)) });
-    return;
-  }
-
-  const characterFaceImageMatch = path.match(/^\/api\/characters\/([^/]+)\/bindings\/([^/]+)\/face-image$/);
-  if (method === "GET" && characterFaceImageMatch) {
-    serveCharacterFaceImage(res, characterFaceImageMatch[1]!, characterFaceImageMatch[2]!);
-    return;
-  }
-
-  const characterBindingMatch = path.match(/^\/api\/characters\/([^/]+)\/bindings\/([^/]+)$/);
-  if (method === "GET" && characterBindingMatch) {
-    sendJson(res, 200, getCharacterBinding(characterBindingMatch[1]!, characterBindingMatch[2]!));
-    return;
-  }
-  if (method === "PUT" && characterBindingMatch) {
-    sendJson(res, 200, await putCharacterBinding(characterBindingMatch[1]!, characterBindingMatch[2]!, await readJson(req)));
-    return;
-  }
-
-  const characterSheetMatch = path.match(/^\/api\/characters\/([^/]+)\/character-sheet$/);
-  if (method === "POST" && characterSheetMatch) {
-    sendJson(res, 202, await createCharacterSheetRun(characterSheetMatch[1]!, await readJson(req)));
-    return;
-  }
-  const characterSheetAdoptMatch = path.match(/^\/api\/characters\/([^/]+)\/character-sheet\/adopt$/);
-  if (method === "POST" && characterSheetAdoptMatch) {
+  // --- 脚本ドメイン(Docs/Feature-ScriptToManga.md S3): Character / 参照セット ---
+  ["GET", /^\/api\/projects\/([^/]+)\/characters$/, (_req, res, _url, p) => {
+    sendJson(res, 200, { characters: listCharacters(p[0]!) });
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)\/reference-sets$/, (_req, res, _url, p) => {
+    sendJson(res, 200, { referenceSets: listProjectReferenceSets(p[0]!) });
+  }],
+  ["POST", /^\/api\/characters\/([^/]+)\/reference-sets$/, async (req, res, _url, p) => {
+    sendJson(res, 201, { referenceSet: createReferenceSet(p[0]!, await readJson(req)) });
+  }],
+  ["PUT", /^\/api\/reference-sets\/([^/]+)\/images\/(face|full_body)$/, async (req, res, _url, p) => {
+    sendJson(res, 200, { referenceSet: await uploadReferenceSetImage(p[0]!, p[1]!, await readJson(req)) });
+  }],
+  ["POST", /^\/api\/reference-sets\/([^/]+)\/(generate|approve)$/, async (req, res, _url, p) => {
+    const result = p[1] === "generate"
+      ? await generateReferenceSetCandidates(p[0]!, await readJson(req))
+      : await approveReferenceSet(p[0]!, await readJson(req));
+    sendJson(res, p[1] === "generate" ? 202 : 200,
+      p[1] === "generate" ? result : { referenceSet: result });
+  }],
+  ["GET", /^\/api\/reference-images\/([^/]+)$/, (_req, res, _url, p) => {
+    serveReferenceSetImage(res, p[0]!);
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/characters$/, async (req, res, _url, p) => {
+    sendJson(res, 201, { character: createCharacter(p[0]!, await readJson(req)) });
+  }],
+  ["GET", /^\/api\/characters\/([^/]+)\/bindings\/([^/]+)\/face-image$/, (_req, res, _url, p) => {
+    serveCharacterFaceImage(res, p[0]!, p[1]!);
+  }],
+  ["GET", /^\/api\/characters\/([^/]+)\/bindings\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, getCharacterBinding(p[0]!, p[1]!));
+  }],
+  ["PUT", /^\/api\/characters\/([^/]+)\/bindings\/([^/]+)$/, async (req, res, _url, p) => {
+    sendJson(res, 200, await putCharacterBinding(p[0]!, p[1]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/characters\/([^/]+)\/character-sheet$/, async (req, res, _url, p) => {
+    sendJson(res, 202, await createCharacterSheetRun(p[0]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/characters\/([^/]+)\/character-sheet\/adopt$/, async (req, res, _url, p) => {
     const input = await readJson(req) as Record<string, unknown>;
-    sendJson(res, 200, await adoptCharacterSheetAsset(characterSheetAdoptMatch[1]!, String(input.assetId ?? ""), String(input.providerId ?? "comfy")));
-    return;
-  }
+    sendJson(res, 200, await adoptCharacterSheetAsset(p[0]!, String(input.assetId ?? ""), String(input.providerId ?? "comfy")));
+  }],
+  ["PATCH", /^\/api\/characters\/([^/]+)$/, async (req, res, _url, p) => {
+    sendJson(res, 200, { character: updateCharacter(p[0]!, await readJson(req)) });
+  }],
+  ["DELETE", /^\/api\/characters\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, deleteCharacter(p[0]!));
+  }],
 
-  const characterDetailMatch = path.match(/^\/api\/characters\/([^/]+)$/);
-  if (method === "PATCH" && characterDetailMatch) {
-    sendJson(res, 200, { character: updateCharacter(characterDetailMatch[1]!, await readJson(req)) });
-    return;
-  }
-  if (method === "DELETE" && characterDetailMatch) {
-    sendJson(res, 200, deleteCharacter(characterDetailMatch[1]!));
-    return;
-  }
-
-  const scriptsCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/scripts$/);
-  if (method === "GET" && scriptsCollectionMatch) {
-    sendJson(res, 200, { scripts: listScripts(scriptsCollectionMatch[1]!) });
-    return;
-  }
-  if (method === "POST" && scriptsCollectionMatch) {
-    sendJson(res, 201, createScript(scriptsCollectionMatch[1]!, await readJson(req)));
-    return;
-  }
-
-  const scriptRevisionDetailMatch = path.match(/^\/api\/scripts\/([^/]+)\/revisions\/([^/]+)$/);
-  if (method === "GET" && scriptRevisionDetailMatch) {
-    sendJson(res, 200, getScriptRevision(scriptRevisionDetailMatch[1]!, Number(scriptRevisionDetailMatch[2])));
-    return;
-  }
-
+  // --- 脚本(Script / Revision) ---
+  ["GET", /^\/api\/projects\/([^/]+)\/scripts$/, (_req, res, _url, p) => {
+    sendJson(res, 200, { scripts: listScripts(p[0]!) });
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/scripts$/, async (req, res, _url, p) => {
+    sendJson(res, 201, createScript(p[0]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/scripts\/([^/]+)\/revisions\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, getScriptRevision(p[0]!, Number(p[1])));
+  }],
   // GET は設計書のルート表に明示は無いが、クライアントが「最新 revision」を O(revision数) の
   // ポーリング無しで解決するために追加した(scripts.ts の listScriptRevisions を配線するだけ)。
-  const scriptRevisionsMatch = path.match(/^\/api\/scripts\/([^/]+)\/revisions$/);
-  if (method === "GET" && scriptRevisionsMatch) {
-    sendJson(res, 200, { revisions: listScriptRevisions(scriptRevisionsMatch[1]!) });
-    return;
-  }
-  if (method === "POST" && scriptRevisionsMatch) {
-    sendJson(res, 201, addScriptRevision(scriptRevisionsMatch[1]!, await readJson(req)));
-    return;
-  }
+  ["GET", /^\/api\/scripts\/([^/]+)\/revisions$/, (_req, res, _url, p) => {
+    sendJson(res, 200, { revisions: listScriptRevisions(p[0]!) });
+  }],
+  ["POST", /^\/api\/scripts\/([^/]+)\/revisions$/, async (req, res, _url, p) => {
+    sendJson(res, 201, addScriptRevision(p[0]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/scripts\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, { script: getScript(p[0]!) });
+  }],
+  ["DELETE", /^\/api\/scripts\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, deleteScript(p[0]!));
+  }],
 
-  const scriptDetailMatch = path.match(/^\/api\/scripts\/([^/]+)$/);
-  if (method === "GET" && scriptDetailMatch) {
-    sendJson(res, 200, { script: getScript(scriptDetailMatch[1]!) });
-    return;
-  }
-  if (method === "DELETE" && scriptDetailMatch) {
-    sendJson(res, 200, deleteScript(scriptDetailMatch[1]!));
-    return;
-  }
-
-  const dialogueLinesCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/dialogue-lines$/);
-  if (method === "GET" && dialogueLinesCollectionMatch) {
+  // --- セリフ(DialogueLine / Placement / Chronicle / 一括配置) ---
+  ["GET", /^\/api\/projects\/([^/]+)\/dialogue-lines$/, (_req, res, url, p) => {
     sendJson(res, 200, {
-      lines: listDialogueLines(dialogueLinesCollectionMatch[1]!, {
+      lines: listDialogueLines(p[0]!, {
         pageId: url.searchParams.get("pageId") ?? undefined,
         scriptId: url.searchParams.get("scriptId") ?? undefined,
         status: url.searchParams.get("status") ?? undefined
       })
     });
-    return;
-  }
-  if (method === "POST" && dialogueLinesCollectionMatch) {
-    sendJson(res, 201, { line: createDialogueLine(dialogueLinesCollectionMatch[1]!, await readJson(req)) });
-    return;
-  }
-
-  // Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md §3)。dialogue-lines と同じブロックに置く
-  // (`/api/projects/:id/scripts` 等、他の projectId 系ルートとの前方一致衝突は起きない -- 末尾 $ で完全一致)。
-  const chronicleMatch = path.match(/^\/api\/projects\/([^/]+)\/chronicle$/);
-  if (method === "GET" && chronicleMatch) {
-    sendJson(res, 200, getChronicle(chronicleMatch[1]!, url.searchParams.get("scriptId") ?? undefined));
-    return;
-  }
-
-  // Chronicle Page Flow フェーズII(§3・§6): 一括割り当て/解除。`/pages/:pageId` より末尾セグメントが
-  // 多く末尾 $ で完全一致するため、既存の pageDetailMatch 等との順序衝突は無い。
-  const dialogueAllocationRemoveMatch = path.match(
-    /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-allocation\/remove$/
-  );
-  if (method === "POST" && dialogueAllocationRemoveMatch) {
-    sendJson(
-      res,
-      200,
-      removeDialogueAllocation(dialogueAllocationRemoveMatch[1]!, dialogueAllocationRemoveMatch[2]!, await readJson(req))
-    );
-    return;
-  }
-
-  const dialogueAllocationMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-allocation$/);
-  if (method === "POST" && dialogueAllocationMatch) {
-    sendJson(res, 200, allocateDialoguePages(dialogueAllocationMatch[1]!, dialogueAllocationMatch[2]!, await readJson(req)));
-    return;
-  }
-
-  // Chronicle Page Flow フェーズIII(§3・§4): 吹き出し一括配置の preview/apply。末尾セグメントが
-  // dialogue-allocation より多く末尾 $ で完全一致するため、前段の pageDetailMatch 等との順序衝突は無い。
-  const dialogueLayoutPreviewMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/preview$/);
-  if (method === "POST" && dialogueLayoutPreviewMatch) {
-    sendJson(res, 200, previewDialogueLayout(dialogueLayoutPreviewMatch[1]!, dialogueLayoutPreviewMatch[2]!, await readJson(req)));
-    return;
-  }
-
-  const dialogueLayoutApplyMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/apply$/);
-  if (method === "POST" && dialogueLayoutApplyMatch) {
-    sendJson(res, 200, applyDialogueLayout(dialogueLayoutApplyMatch[1]!, dialogueLayoutApplyMatch[2]!, await readJson(req)));
-    return;
-  }
-
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/dialogue-lines$/, async (req, res, _url, p) => {
+    sendJson(res, 201, { line: createDialogueLine(p[0]!, await readJson(req)) });
+  }],
+  // Chronicle Page Flow(S5、Docs/Done/Feature-ChroniclePageFlow.md §3)。
+  ["GET", /^\/api\/projects\/([^/]+)\/chronicle$/, (_req, res, url, p) => {
+    sendJson(res, 200, getChronicle(p[0]!, url.searchParams.get("scriptId") ?? undefined));
+  }],
+  // Chronicle Page Flow フェーズII(§3・§6): 一括割り当て/解除。
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-allocation\/remove$/, async (req, res, _url, p) => {
+    sendJson(res, 200, removeDialogueAllocation(p[0]!, p[1]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-allocation$/, async (req, res, _url, p) => {
+    sendJson(res, 200, allocateDialoguePages(p[0]!, p[1]!, await readJson(req)));
+  }],
+  // Chronicle Page Flow フェーズIII(§3・§4): 吹き出し一括配置の preview/apply。
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/preview$/, async (req, res, _url, p) => {
+    sendJson(res, 200, previewDialogueLayout(p[0]!, p[1]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/apply$/, async (req, res, _url, p) => {
+    sendJson(res, 200, applyDialogueLayout(p[0]!, p[1]!, await readJson(req)));
+  }],
   // Chronicle Page Flow フェーズIV(§2.6・§3・§6): 再配置(seed 変更)とロック一括解除。
-  const dialogueLayoutReflowMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/reflow$/);
-  if (method === "POST" && dialogueLayoutReflowMatch) {
-    sendJson(res, 200, reflowDialogueLayout(dialogueLayoutReflowMatch[1]!, dialogueLayoutReflowMatch[2]!, await readJson(req)));
-    return;
-  }
-
-  const dialogueLayoutUnlockMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/unlock$/);
-  if (method === "POST" && dialogueLayoutUnlockMatch) {
-    sendJson(res, 200, unlockAllDialoguePlacementsForPage(dialogueLayoutUnlockMatch[1]!, dialogueLayoutUnlockMatch[2]!));
-    return;
-  }
-
-  const dialoguePlacementsCreateMatch = path.match(/^\/api\/dialogue-lines\/([^/]+)\/placements$/);
-  if (method === "POST" && dialoguePlacementsCreateMatch) {
-    sendJson(res, 201, createDialoguePlacement(dialoguePlacementsCreateMatch[1]!, await readJson(req)));
-    return;
-  }
-
-  const dialogueLineDetailMatch = path.match(/^\/api\/dialogue-lines\/([^/]+)$/);
-  if (method === "PATCH" && dialogueLineDetailMatch) {
-    sendJson(res, 200, { line: updateDialogueLine(dialogueLineDetailMatch[1]!, await readJson(req)) });
-    return;
-  }
-  if (method === "DELETE" && dialogueLineDetailMatch) {
-    sendJson(res, 200, deleteDialogueLine(dialogueLineDetailMatch[1]!));
-    return;
-  }
-
-  const dialoguePlacementDetailMatch = path.match(/^\/api\/dialogue-placements\/([^/]+)$/);
-  if (method === "PATCH" && dialoguePlacementDetailMatch) {
-    sendJson(res, 200, { placement: updateDialoguePlacement(dialoguePlacementDetailMatch[1]!, await readJson(req)) });
-    return;
-  }
-  if (method === "DELETE" && dialoguePlacementDetailMatch) {
-    sendJson(res, 200, deleteDialoguePlacement(dialoguePlacementDetailMatch[1]!));
-    return;
-  }
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/reflow$/, async (req, res, _url, p) => {
+    sendJson(res, 200, reflowDialogueLayout(p[0]!, p[1]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-layout\/unlock$/, (_req, res, _url, p) => {
+    sendJson(res, 200, unlockAllDialoguePlacementsForPage(p[0]!, p[1]!));
+  }],
+  ["POST", /^\/api\/dialogue-lines\/([^/]+)\/placements$/, async (req, res, _url, p) => {
+    sendJson(res, 201, createDialoguePlacement(p[0]!, await readJson(req)));
+  }],
+  ["PATCH", /^\/api\/dialogue-lines\/([^/]+)$/, async (req, res, _url, p) => {
+    sendJson(res, 200, { line: updateDialogueLine(p[0]!, await readJson(req)) });
+  }],
+  ["DELETE", /^\/api\/dialogue-lines\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, deleteDialogueLine(p[0]!));
+  }],
+  ["PATCH", /^\/api\/dialogue-placements\/([^/]+)$/, async (req, res, _url, p) => {
+    sendJson(res, 200, { placement: updateDialoguePlacement(p[0]!, await readJson(req)) });
+  }],
+  ["DELETE", /^\/api\/dialogue-placements\/([^/]+)$/, (_req, res, _url, p) => {
+    sendJson(res, 200, deleteDialoguePlacement(p[0]!));
+  }],
 
   // --- 構造化 LLM セリフ提案(Docs/Feature-ScriptToManga.md S4): DialogueProposal ---
-  const dialogueProposalsCreateMatch = path.match(/^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-proposals$/);
-  if (method === "POST" && dialogueProposalsCreateMatch) {
-    sendJson(
-      res,
-      201,
-      await createDialogueProposal(dialogueProposalsCreateMatch[1]!, dialogueProposalsCreateMatch[2]!, await readJson(req))
-    );
-    return;
-  }
-
-  const dialogueProposalsCollectionMatch = path.match(/^\/api\/projects\/([^/]+)\/dialogue-proposals$/);
-  if (method === "GET" && dialogueProposalsCollectionMatch) {
+  ["POST", /^\/api\/projects\/([^/]+)\/pages\/([^/]+)\/dialogue-proposals$/, async (req, res, _url, p) => {
+    sendJson(res, 201, await createDialogueProposal(p[0]!, p[1]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)\/dialogue-proposals$/, (_req, res, url, p) => {
     sendJson(res, 200, {
-      proposals: listDialogueProposals(dialogueProposalsCollectionMatch[1]!, {
+      proposals: listDialogueProposals(p[0]!, {
         pageId: url.searchParams.get("pageId") ?? undefined
       })
     });
-    return;
-  }
+  }],
+  ["POST", /^\/api\/dialogue-proposals\/([^/]+)\/adopt$/, async (req, res, _url, p) => {
+    sendJson(res, 200, adoptDialogueProposalItems(p[0]!, await readJson(req)));
+  }],
+  ["POST", /^\/api\/dialogue-proposals\/([^/]+)\/reject$/, async (req, res, _url, p) => {
+    sendJson(res, 200, rejectDialogueProposalItems(p[0]!, await readJson(req)));
+  }],
 
-  const dialogueProposalAdoptMatch = path.match(/^\/api\/dialogue-proposals\/([^/]+)\/adopt$/);
-  if (method === "POST" && dialogueProposalAdoptMatch) {
-    sendJson(res, 200, adoptDialogueProposalItems(dialogueProposalAdoptMatch[1]!, await readJson(req)));
-    return;
-  }
+  // --- 生成アセット ---
+  ["POST", /^\/api\/assets\/([^/]+)\/status$/, async (req, res, _url, p) => {
+    sendJson(res, 200, updateAssetStatus(p[0]!, await readJson(req)));
+  }],
+  ["GET", /^\/api\/assets\/([^/]+)\/(image|thumbnail)$/, async (_req, res, url, p) => {
+    await serveAssetFile(res, p[0]!, p[1]!, url);
+  }]
+];
 
-  const dialogueProposalRejectMatch = path.match(/^\/api\/dialogue-proposals\/([^/]+)\/reject$/);
-  if (method === "POST" && dialogueProposalRejectMatch) {
-    sendJson(res, 200, rejectDialogueProposalItems(dialogueProposalRejectMatch[1]!, await readJson(req)));
-    return;
-  }
+async function routeApi(req: IncomingMessage, res: ServerResponse, url: URL) {
+  const method = req.method ?? "GET";
+  const path = url.pathname;
 
-  const assetStatusMatch = path.match(/^\/api\/assets\/([^/]+)\/status$/);
-  if (method === "POST" && assetStatusMatch) {
-    sendJson(res, 200, updateAssetStatus(assetStatusMatch[1]!, await readJson(req)));
-    return;
-  }
-
-  const assetImageMatch = path.match(/^\/api\/assets\/([^/]+)\/(image|thumbnail)$/);
-  if (method === "GET" && assetImageMatch) {
-    await serveAssetFile(res, assetImageMatch[1]!, assetImageMatch[2]!, url);
+  for (const [routeMethod, pattern, handler] of apiRoutes) {
+    if (routeMethod !== method) {
+      continue;
+    }
+    if (typeof pattern === "string") {
+      if (pattern !== path) {
+        continue;
+      }
+      await handler(req, res, url, []);
+      return;
+    }
+    const match = path.match(pattern);
+    if (!match) {
+      continue;
+    }
+    await handler(req, res, url, match.slice(1));
     return;
   }
 
