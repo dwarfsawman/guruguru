@@ -893,18 +893,24 @@ export function setSetting(key: string, value: unknown) {
   );
 }
 
+// bun:sqlite の query() は prepare() と違い、コンパイル済みステートメントを
+// Database インスタンス毎にキャッシュする(SQL文字列がキー)。キャッシュは
+// インスタンスに紐づくので、withDatabaseConnection のスナップショットDBは自分の
+// キャッシュを持ち、close() で一緒に解放される(本体 db と混線しない)。
+// IN句の可変プレースホルダ等の動的SQLはバリアント数が要素数/スキーマ列数で
+// 有界なので、無限成長の懸念はない。
 export function runSql(sql: string, params: unknown[] = []) {
-  const statement = activeDatabase().prepare(sql);
+  const statement = activeDatabase().query(sql);
   return statement.run(...(params as SqlValue[]));
 }
 
 export function getRow<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | null {
-  const statement = activeDatabase().prepare(sql);
+  const statement = activeDatabase().query(sql);
   return (statement.get(...(params as SqlValue[])) as T | undefined) ?? null;
 }
 
 export function getRows<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
-  const statement = activeDatabase().prepare(sql);
+  const statement = activeDatabase().query(sql);
   return statement.all(...(params as SqlValue[])) as T[];
 }
 

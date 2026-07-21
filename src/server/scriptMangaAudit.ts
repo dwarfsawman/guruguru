@@ -76,7 +76,21 @@ function candidateScores(task: TaskRow): CandidateScore[] {
   });
 }
 
-export function syncTaskFromRound(task: TaskRow, config: ScriptMangaRunConfig): void {
+export interface SyncRoundSnapshot {
+  status: string;
+  last_error_json: string | null;
+}
+
+/**
+ * `prefetchedRound` を渡すと round の個別 SELECT を省略する(undefined = 個別取得、
+ * null = round が存在しないことが確定済み)。getScriptMangaRun のポーリングが
+ * 対象 round を IN 1回で先読みして渡す。
+ */
+export function syncTaskFromRound(
+  task: TaskRow,
+  config: ScriptMangaRunConfig,
+  prefetchedRound?: SyncRoundSnapshot | null
+): void {
   if (
     !task.round_id ||
     task.status === "completed" ||
@@ -88,9 +102,11 @@ export function syncTaskFromRound(task: TaskRow, config: ScriptMangaRunConfig): 
     task.status === "auditing"
   ) return;
   const hasFallbackCandidates = parseJson<string[]>(task.candidate_asset_ids_json, []).length > 0;
-  const round = getRow<{ status: string; last_error_json: string | null }>("SELECT status, last_error_json FROM generation_rounds WHERE id = ?", [
-    task.round_id
-  ]);
+  const round = prefetchedRound !== undefined
+    ? prefetchedRound
+    : getRow<SyncRoundSnapshot>("SELECT status, last_error_json FROM generation_rounds WHERE id = ?", [
+        task.round_id
+      ]);
   if (!round) {
     runSql(
       "UPDATE script_manga_tasks SET status = ?, last_error_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -281,7 +297,8 @@ export function scheduleRunVisualAudit(runId: string): void {
   if (activeAuditRuns.has(runId)) return;
   const run = requireRun(runId);
   const config = parseConfig(run);
-  const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ?", [runId]);
+  // status 判定にしか使わないので列を絞る(巨大JSON列をポーリング毎に持ち出さない)。
+  const tasks = getRows<Pick<TaskRow, "status">>("SELECT status FROM script_manga_tasks WHERE run_id = ?", [runId]);
   if (!tasks.some((task) => task.status === "auditing")) return;
   if (tasks.some((task) => task.status === "pending" || task.status === "inheriting" || task.status === "submitting" || task.status === "running" || task.status === "selecting")) return;
 

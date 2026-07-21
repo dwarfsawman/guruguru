@@ -170,9 +170,29 @@ export function planView(row: PlanRow): ScriptMangaPlanView {
   };
 }
 
-export function taskView(row: TaskRow): ScriptMangaTaskView {
+/** assets 実在チェック用の id 一括取得(taskView の per-task SELECT を IN 1回に集約する)。 */
+export function fetchExistingAssetIds(assetIds: Iterable<string>): ReadonlySet<string> {
+  const distinct = [...new Set(assetIds)];
+  const existing = new Set<string>();
+  const CHUNK = 400;
+  for (let offset = 0; offset < distinct.length; offset += CHUNK) {
+    const chunk = distinct.slice(offset, offset + CHUNK);
+    const rows = getRows<{ id: string }>(
+      `SELECT id FROM assets WHERE id IN (${chunk.map(() => "?").join(", ")})`,
+      chunk
+    );
+    for (const row of rows) existing.add(row.id);
+  }
+  return existing;
+}
+
+export function taskView(row: TaskRow, existingAssetIds?: ReadonlySet<string>): ScriptMangaTaskView {
   const selectedId = row.selected_asset_id ?? row.asset_id;
-  const selectedAssetId = selectedId && getRow("SELECT id FROM assets WHERE id = ?", [selectedId]) ? selectedId : null;
+  const selectedAssetId = selectedId && (existingAssetIds
+    ? existingAssetIds.has(selectedId)
+    : Boolean(getRow("SELECT id FROM assets WHERE id = ?", [selectedId])))
+    ? selectedId
+    : null;
   return {
     id: row.id,
     pageId: row.page_id,
@@ -192,6 +212,12 @@ export function taskView(row: TaskRow): ScriptMangaTaskView {
 export function runView(row: RunRow): ScriptMangaRunView {
   const planRow = row.plan_id ? getRow<PlanRow>("SELECT * FROM script_manga_plans WHERE id = ?", [row.plan_id]) : null;
   const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ? ORDER BY created_at ASC", [row.id]);
+  const existingAssetIds = fetchExistingAssetIds(
+    tasks.flatMap((task) => {
+      const selectedId = task.selected_asset_id ?? task.asset_id;
+      return selectedId ? [selectedId] : [];
+    })
+  );
   return {
     id: row.id,
     predecessorRunId: row.predecessor_run_id,
@@ -216,7 +242,7 @@ export function runView(row: RunRow): ScriptMangaRunView {
     plan: planRow ? planFromRow(planRow) : null,
     planEditVersion: planRow ? planRow.edit_version : null,
     validation: planRow ? parseJson<MangaPlanValidationReport>(planRow.validation_json, { ok: false, issues: [] }) : null,
-    tasks: tasks.map(taskView),
+    tasks: tasks.map((task) => taskView(task, existingAssetIds)),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at
@@ -276,7 +302,11 @@ export function pageLayout(pageId: string): PageLayout {
 export function refreshRunStatus(runId: string): RunRow {
   const run = requireRun(runId);
   if (run.status === "canceled" || run.status === "exporting" || (run.status === "failed" && run.phase !== "rendering")) return run;
-  const tasks = getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ?", [run.id]);
+  // 集計に使う列だけ取得する(panel_spec_json 等の巨大JSON列をポーリング毎に持ち出さない)。
+  const tasks = getRows<Pick<TaskRow, "status" | "scores_json">>(
+    "SELECT status, scores_json FROM script_manga_tasks WHERE run_id = ?",
+    [run.id]
+  );
   const completed = tasks.filter((task) => task.status === "completed").length;
   const failed = tasks.filter((task) => task.status === "failed" || task.status === "blocked").length;
   const selecting = tasks.filter((task) => task.status === "selecting").length;
