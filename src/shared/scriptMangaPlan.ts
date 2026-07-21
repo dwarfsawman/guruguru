@@ -246,7 +246,8 @@ function visualText(element: FountainElement): string {
   }
 }
 
-function sourceElementId(sceneIndex: number, elementIndex: number): string {
+/** scene-element の決定的 ID。`preLayoutBeat.ts` の unit ID とも共有(同一規則である必要がある)。 */
+export function sourceElementId(sceneIndex: number, elementIndex: number): string {
   return `scene-${sceneIndex}-element-${elementIndex}`;
 }
 
