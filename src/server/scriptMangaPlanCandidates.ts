@@ -34,6 +34,7 @@ import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPl
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
 import { createId, getRow, getRows, runSql } from "./db";
 import { HttpError } from "./http";
+import { latestRevision, requireScript } from "./scriptRevisions";
 import { objectBody, requiredString } from "./validate";
 import { readCachedBeatAnnotation } from "./scriptBeatAnnotator";
 import { generateScriptMangaN1Plan } from "./scriptMangaDirector";
@@ -75,25 +76,6 @@ const PROFILE_INSTRUCTIONS: Record<string, string> = {
   tempo: "Profile: tempo — vary panel counts page to page for rhythm; dense conversation pages followed by sparse impact pages."
 };
 const DEFAULT_PROFILE_CYCLE = ["readability", "cinematic", "tempo"] as const;
-
-function requireScript(projectId: string, scriptId: string): void {
-  if (!getRow("SELECT id FROM manga_scripts WHERE id = ? AND project_id = ?", [scriptId, projectId])) {
-    throw new HttpError(404, "Script was not found in this project");
-  }
-}
-
-function latestRevision(scriptId: string): { id: string; doc: FountainDoc } {
-  const row = getRow<{ id: string; parsed_json: string }>(
-    "SELECT id, parsed_json FROM script_revisions WHERE script_id = ? ORDER BY revision DESC LIMIT 1",
-    [scriptId]
-  );
-  if (!row) throw new HttpError(400, "Script has no Fountain revision");
-  try {
-    return { id: row.id, doc: JSON.parse(row.parsed_json) as FountainDoc };
-  } catch {
-    throw new HttpError(500, "Stored Fountain revision is invalid");
-  }
-}
 
 export function requirePlanCandidate(candidateId: string): PlanCandidateRow {
   const row = getRow<PlanCandidateRow>("SELECT * FROM script_manga_plan_candidates WHERE id = ?", [candidateId]);

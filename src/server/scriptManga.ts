@@ -50,6 +50,7 @@ import { cutoutFigure } from "./figureCutout";
 import { createPageMediaFromBuffer, deletePageMedia } from "./pageMedia";
 import { upsertPanelAssignment } from "./panelAssignments";
 import { HttpError } from "./http";
+import { latestRevision, requireScript } from "./scriptRevisions";
 import { resolveLayoutTemplate } from "./layoutTemplates";
 import { createPage, updatePage } from "./pages";
 import { validatePanelPreflight, type PanelPreflightReport } from "./panelPreflightValidator";
@@ -310,25 +311,6 @@ function parseJson<T>(raw: string | null | undefined, fallback: T): T {
 
 function errorJson(error: unknown): string {
   return JSON.stringify({ message: error instanceof Error ? error.message : String(error) });
-}
-
-function requireScript(projectId: string, scriptId: string): void {
-  if (!getRow("SELECT id FROM manga_scripts WHERE id = ? AND project_id = ?", [scriptId, projectId])) {
-    throw new HttpError(404, "Script was not found in this project");
-  }
-}
-
-function latestRevision(scriptId: string): { id: string; doc: FountainDoc } {
-  const row = getRow<{ id: string; parsed_json: string }>(
-    "SELECT id, parsed_json FROM script_revisions WHERE script_id = ? ORDER BY revision DESC LIMIT 1",
-    [scriptId]
-  );
-  if (!row) throw new HttpError(400, "Script has no Fountain revision");
-  try {
-    return { id: row.id, doc: JSON.parse(row.parsed_json) as FountainDoc };
-  } catch {
-    throw new HttpError(500, "Stored Fountain revision is invalid");
-  }
 }
 
 function revisionById(scriptId: string, revisionId: string): { id: string; doc: FountainDoc } {
