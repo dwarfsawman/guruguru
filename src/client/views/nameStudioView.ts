@@ -133,7 +133,10 @@ export function activeStudioTake(
   studio: NameStudioState
 ): ScriptMangaPlanCandidateView | null {
   if (candidates.length === 0) return null;
-  return candidates.find((candidate) => candidate.id === studio.takeId) ?? candidates[0]!;
+  // ビューと同じ dedup 後の一覧で解決する(全候補の先頭へフォールバックすると、takeId が
+  // 非表示の重複候補を指したままビューと食い違う)。takeId が実在すれば dedup はそれを代表に残す。
+  const visible = distinctNameStudioCandidates(candidates, studio.takeId);
+  return visible.find((candidate) => candidate.id === studio.takeId) ?? visible[0] ?? null;
 }
 
 function panelDialogueStats(panel: ScriptMangaPanelPlan, dialogueChars: number[]): { count: number; chars: number } {
@@ -347,7 +350,9 @@ function flipChips(
 ): string {
   if (candidate.status !== "active") return "";
   const demands = pageDemands(page, props.dialogueChars);
-  const previousLayoutId = plan.pages[page.index - 1]?.layoutTemplateId;
+  // 外部提供プランでは index≠配列位置のことがあるため、位置アクセスでなく index フィールドで探す
+  // (:360 の baseLayoutId 解決と同じ防御)。
+  const previousLayoutId = plan.pages.find((entry) => entry.index === page.index - 1)?.layoutTemplateId;
   const ranked = feasibleLayouts(demands, { previousLayoutId });
   const alternatives = selectDiverseLayouts(ranked.filter((entry) => entry.layoutId !== page.layoutTemplateId), {
     count: FLIP_CHOICES
@@ -756,10 +761,16 @@ function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudio
   const pageCount = plan.pages.length;
   const reader = studioReaderState(plan.pages, props.nameStudio);
   if (reader.visible.length === 0) return `<p class="studio-inspector-hint">この候補にはページがありません。</p>`;
-  // diff署名はビート/element基準なのでフリップでは変化しない(基礎プランで判定してよい)。
+  // diff署名は基礎プラン同士で計算されるため、判定も基礎プランのページで行う
+  // (実効プランのページは flip で layoutTemplateId が変わり署名が一致しなくなる)。
   const diff = candidateDiffSignatures(props.candidates);
-  const isDiffPage = reader.visible.some(({ page }) => diff.has(candidatePageSignature(page)));
-  const adoptDisabled = props.runBusy || !props.templateSelected || candidate.status !== "active";
+  const isDiffPage = reader.visible.some(({ page }) => {
+    const basePage = candidate.plan.pages.find((entry) => entry.index === page.index) ?? page;
+    return diff.has(candidatePageSignature(basePage));
+  });
+  // コマ割り修正セッション中は adopt/破棄を止める(未保存ドラフトの黙殺・セッション残留を防ぐ)。
+  const layoutEditActive = props.layoutEdit !== null;
+  const adoptDisabled = props.runBusy || !props.templateSelected || candidate.status !== "active" || layoutEditActive;
   const takeIndex = Math.max(0, props.candidates.findIndex((entry) => entry.id === candidate.id));
   const comparisonNote = props.candidates.length >= 2 && isDiffPage
     ? `<span class="studio-diff-note">この頁は候補間で異なる</span>`
@@ -796,7 +807,7 @@ function renderReader(candidate: ScriptMangaPlanCandidateView, props: NameStudio
           data-id="${escapeAttr(candidate.id)}" ${adoptDisabled ? "disabled" : ""}
           title="修正済みコマ割りを含む実効プランで検査(full preflight)が走り、通過するとエージェントの生成フローへ進みます">このネームで生成</button>
         <button type="button" class="button-secondary" data-action="archive-script-manga-plan-candidate"
-          data-id="${escapeAttr(candidate.id)}" ${props.candidatesBusy ? "disabled" : ""}>破棄</button>
+          data-id="${escapeAttr(candidate.id)}" ${props.candidatesBusy || layoutEditActive ? "disabled" : ""}>破棄</button>
         ${!props.templateSelected ? `<span class="studio-inspector-hint">採用には workflow template の選択が必要です。</span>` : ""}
       </div>
     </div>`;

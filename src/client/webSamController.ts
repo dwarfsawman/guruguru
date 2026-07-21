@@ -3,7 +3,7 @@ import { requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { ensureInpaintDraft, inpaintDraftForAsset, setInpaintDraft } from "./draftStore";
 import { ensureMaskLayerSet, getOrCreateMaskLayerSet, maskLayerCache } from "./maskLayerStore";
-import { clampNumber, imageToRawData } from "./clientUtils";
+import { clampNumber, imageToRawData, waitForImageLoad } from "./clientUtils";
 import { paintLayerCache, pasteLayersForEyedropper } from "./paintEditorController";
 import { composePaintResultCanvas } from "./paintCanvas";
 import { buildWebSamModelUrls, formatModelBytes, modelForProvider, SMART_MASK_PROVIDERS } from "./websam/models";
@@ -65,7 +65,11 @@ export function beginWebSamBoxPrompt(event: PointerEvent, canvas: HTMLCanvasElem
     start: point,
     current: point
   };
-  canvas.setPointerCapture(event.pointerId);
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch {
+    // capture 失敗でもドラッグは app レベルの委譲で継続する。
+  }
 }
 
 function continueWebSamBoxPrompt(event: PointerEvent, canvas: HTMLCanvasElement) {
@@ -417,11 +421,17 @@ async function encodeActiveImageForWebSam() {
   if (!image || !assetId || !draft) {
     return;
   }
-  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
-    await new Promise<void>((resolve, reject) => {
-      image.addEventListener("load", () => resolve(), { once: true });
-      image.addEventListener("error", () => reject(new Error("画像を読み込めませんでした。")), { once: true });
+  try {
+    await waitForImageLoad(image);
+  } catch (error) {
+    setInpaintDraft({
+      ...draft,
+      webSamModelStatus: "error",
+      webSamError: error instanceof Error ? error.message : String(error),
+      webSamStatusText: "Error"
     });
+    requestRender();
+    return;
   }
   const raw = webSamInputRawData(image, assetId);
   const requestId = nextWebSamRequestId();
@@ -579,9 +589,18 @@ async function drawCandidatePreview(assetId: string, dataUrl: string) {
   if (!draft || !canvas) {
     return;
   }
+  // await 中にアセット切替が起きたら描かない(#maskCanvas は切替後アセットの表示になっている)。
+  const stillCurrent = () =>
+    assetId === (state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null);
   const layers = await ensureMaskLayerSet(draft, canvas.width, canvas.height);
+  if (!stillCurrent()) {
+    return;
+  }
   clearCanvas(layers.previewSamMask);
   await drawDataUrlIntoCanvas(layers.previewSamMask, dataUrl);
+  if (!stillCurrent()) {
+    return;
+  }
   renderFinalMaskToCanvas(canvas, layers, { ...draft, previewSamMaskDataUrl: dataUrl }, true);
 }
 

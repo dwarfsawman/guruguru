@@ -137,7 +137,8 @@ async function fetchLatestRevisionInto(scriptId: string) {
   const latest = result.revisions[result.revisions.length - 1] ?? null;
   if (state.activeScriptId === scriptId) {
     state.activeScriptRevision = latest;
-    state.scriptFountainDraft = latest?.fountainSource ?? state.scriptFountainDraft;
+    // revision が無い脚本では空にする(前の脚本の Fountain テキストが残ったまま取り込めてしまう)。
+    state.scriptFountainDraft = latest?.fountainSource ?? "";
   }
 }
 
@@ -175,10 +176,13 @@ async function importOrReimportScript() {
         method: "POST",
         body: JSON.stringify({ fountainSource })
       });
-      state.scripts = [...state.scripts, result.script];
     }
     if (state.currentProjectId !== projectId) {
       return;
+    }
+    if (!state.scripts.some((script) => script.id === result.script.id)) {
+      // ガード通過後に追加する(POST中にプロジェクトを離れると旧プロジェクトの脚本が混入していた)。
+      state.scripts = [...state.scripts, result.script];
     }
     state.activeScriptId = result.script.id;
     state.activeScriptRevision = result.revision;
@@ -239,6 +243,11 @@ export async function selectCharacter(characterId: string) {
     state.characterLoraNameDraft = binding.loraName ?? "";
     state.characterLoraStrengthDraft = binding.loraStrength ?? 1;
   } catch (error) {
+    // 取得失敗時に前キャラの LoRA ドラフトを残さない。
+    if (state.selectedCharacterId === characterId) {
+      state.characterLoraNameDraft = "";
+      state.characterLoraStrengthDraft = 1;
+    }
     pushToast(error instanceof Error ? error.message : String(error), "error");
   } finally {
     requestRender();

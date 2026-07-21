@@ -503,8 +503,9 @@ function bindEvents() {
   });
 
   app.addEventListener("contextmenu", (event) => {
-    const target = event.target as HTMLElement;
-    if (target.id === "maskCanvas") {
+    const target = event.target as Element;
+    // pose overlay 上も抑止する(右クリックは背景点プロンプト/編集操作に使うため)。
+    if (target.id === "maskCanvas" || target.closest?.(".pose-overlay")) {
       event.preventDefault();
     }
   });

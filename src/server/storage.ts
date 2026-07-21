@@ -422,19 +422,28 @@ export function readImageSize(bytes: Buffer): { width: number; height: number } 
 
   if (bytes.length >= 10 && bytes[0] === 0xff && bytes[1] === 0xd8) {
     let offset = 2;
-    while (offset < bytes.length) {
+    // 切り詰められた JPEG で readUInt16BE が RangeError → 生の500 にならないよう境界チェックする。
+    while (offset + 3 < bytes.length) {
       if (bytes[offset] !== 0xff) {
         offset += 1;
         continue;
       }
 
-      const marker = bytes[offset + 1];
+      const marker = bytes[offset + 1]!;
       const length = bytes.readUInt16BE(offset + 2);
-      if (marker >= 0xc0 && marker <= 0xc3) {
+      // SOF0-3/5-7/9-11/13-15(0xC4=DHT, 0xC8=JPG, 0xCC=DAC は除く)。
+      const isSofMarker = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (isSofMarker) {
+        if (offset + 8 >= bytes.length) {
+          return null;
+        }
         return {
           height: bytes.readUInt16BE(offset + 5),
           width: bytes.readUInt16BE(offset + 7)
         };
+      }
+      if (length < 2) {
+        return null;
       }
       offset += 2 + length;
     }

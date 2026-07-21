@@ -41,7 +41,8 @@ import {
   ensureFontsLoaded,
   flushPageObjectsSave,
   markPageObjectsDirty,
-  resetPageObjectsSession
+  resetPageObjectsSession,
+  schedulePageObjectsSave
 } from "./pageObjectsController";
 import { consumeShapeEditDirtyFlag, flushShapeEditSave, resetShapeEditSession } from "./panelShapeController";
 import { consumeMosaicDirtyFlag, flushMosaicEditSave, resetMosaicEditSession } from "./pageMosaicController";
@@ -102,6 +103,11 @@ export async function openPagePanelLightbox(pageId: string) {
   }
   requestRender();
   void openChronicleForPage(projectId, pageId);
+  // detail 応答までの間にユーザー編集が始まっていたら、その draft を応答で上書きしない
+  // (open 直後のコマ枠/オブジェクト/モザイク編集が fetch レイテンシ分の窓で消えるのを防ぐ)。
+  const layoutDraftAtOpen = state.pageLayoutDraft;
+  const objectsDraftAtOpen = state.pageObjectsDraft;
+  const mosaicDraftAtOpen = state.pageMosaicDraft;
   try {
     const detail = await api<PageDetail>(`/api/projects/${projectId}/pages/${pageId}`);
     // 取得中に閉じられた/別ページへ切り替わっていたら結果を捨てる。
@@ -109,11 +115,15 @@ export async function openPagePanelLightbox(pageId: string) {
       return;
     }
     state.pagePanelAssignments = detail.panelAssignments;
-    state.pageObjectsDraft = detail.page.objects ?? [];
-    state.pageMosaicDraft = detail.page.mosaic ?? [];
+    if (state.pageObjectsDraft === objectsDraftAtOpen) {
+      state.pageObjectsDraft = detail.page.objects ?? [];
+    }
+    if (state.pageMosaicDraft === mosaicDraftAtOpen) {
+      state.pageMosaicDraft = detail.page.mosaic ?? [];
+    }
     state.pagePanelLightboxAssets = detail.assets;
     state.pagePanelLightboxMissingMediaIds = detail.missingPageMediaIds;
-    if (detail.page.layout) {
+    if (detail.page.layout && state.pageLayoutDraft === layoutDraftAtOpen) {
       state.pageLayoutDraft = clonePageLayout(detail.page.layout);
     }
     state.pagePanelLightbox.pageHeight = resolveLightboxPageHeight(detail, page);
@@ -264,6 +274,10 @@ function selectPanel(panelId: string) {
   const lightbox = state.pagePanelLightbox;
   if (!lightbox || lightbox.cropPanelId) {
     // クロップ編集中はシングルクリックでの選択切替を無視する(ドラッグ操作に専念させる)。
+    return;
+  }
+  // 220ms のシングル/ダブル判定タイマー越しに届くため、現在ページに属するコマかを検証する。
+  if (!findPanel(currentLightboxPage(), panelId)) {
     return;
   }
   lightbox.selectedPanelId = panelId;
@@ -822,7 +836,8 @@ async function loadDialogueDrawerLines() {
   }
   try {
     const result = await api<{ lines: DialogueLine[] }>(`/api/projects/${projectId}/dialogue-lines?status=active`);
-    if (state.currentProjectId === projectId) {
+    // lightbox クローズ後の到着は捨てる(projectId だけだと閉じた後に stale な一覧が残る)。
+    if (state.currentProjectId === projectId && state.pagePanelLightbox) {
       state.pagePanelLightboxDialogueLines = result.lines;
     }
   } catch (error) {
@@ -854,6 +869,7 @@ async function placeDialogueLine(lineId: string) {
     if (lightbox.selectedPanelId) {
       body.panelId = lightbox.selectedPanelId;
     }
+    const draftBeforePost = state.pageObjectsDraft;
     const result = await api<CreatePlacementResult>(`/api/dialogue-lines/${lineId}/placements`, {
       method: "POST",
       body: JSON.stringify(body)
@@ -861,11 +877,21 @@ async function placeDialogueLine(lineId: string) {
     if (state.pagePanelLightbox?.pageId !== pageId) {
       return;
     }
-    state.pageObjectsDraft = result.objects;
-    // 既に専用 API でサーバへ保存済み(このモジュールの debounce PATCH は経由しない)。
-    // undo 履歴は「配置」を安全に取り消せない(取り消すと dialogue_placements 行と PageObject が
-    // 食い違う)ため、ここでリセットする。
-    resetPageObjectsSession();
+    if (state.pageObjectsDraft === draftBeforePost) {
+      state.pageObjectsDraft = result.objects;
+      // 既に専用 API でサーバへ保存済み(このモジュールの debounce PATCH は経由しない)。
+      // undo 履歴は「配置」を安全に取り消せない(取り消すと dialogue_placements 行と PageObject が
+      // 食い違う)ため、ここでリセットする。
+      resetPageObjectsSession();
+    } else {
+      // POST の在飛中にユーザー編集が入った: サーバ応答で丸ごと置換すると編集が消えるため、
+      // ローカル draft を残したまま応答の新規オブジェクト(新しい吹き出し)だけを取り込み、
+      // debounce 保存でローカル側をサーバへ反映する。履歴もリセットしない。
+      const knownIds = new Set(state.pageObjectsDraft.map((object) => object.id));
+      const added = result.objects.filter((object) => !knownIds.has(object.id));
+      state.pageObjectsDraft = [...state.pageObjectsDraft, ...added];
+      schedulePageObjectsSave();
+    }
     ensureAllPageObjectTextLayouts(state.pageObjectsDraft);
     // ページ一覧プレビューのキャッシュバスタ(閉じる時の dirty 判定)に乗せる。
     markPageObjectsDirty();
@@ -908,6 +934,12 @@ async function loadDialogueProposals() {
  * 結果が返っても無視する。既知の罠6と同型)。サーバは LLM 呼び出し失敗時も status='failed' の
  * proposal を返す(HttpError にはならない)ので、catch は主にネットワーク断/バリデーションエラー用。
  */
+/**
+ * 提案リクエストの世代。pageId 照合だけだと「同一ページを閉→再開→再リクエスト」で先行リクエストの
+ * finally が後続の busy を先に解除し、後続応答が捨てられる(pageId が同じため区別できない)。
+ */
+let dialogueProposalSerial = 0;
+
 async function requestDialogueProposal() {
   const projectId = state.currentProjectId;
   const lightbox = state.pagePanelLightbox;
@@ -915,6 +947,7 @@ async function requestDialogueProposal() {
     return;
   }
   const pageId = lightbox.pageId;
+  const serial = ++dialogueProposalSerial;
   state.dialogueProposalBusy = true;
   state.dialogueProposalRequestPageId = pageId;
   requestRender();
@@ -923,7 +956,7 @@ async function requestDialogueProposal() {
       `/api/projects/${projectId}/pages/${pageId}/dialogue-proposals`,
       { method: "POST", body: JSON.stringify({}) }
     );
-    if (state.dialogueProposalRequestPageId !== pageId || state.pagePanelLightbox?.pageId !== pageId) {
+    if (serial !== dialogueProposalSerial || state.pagePanelLightbox?.pageId !== pageId) {
       return;
     }
     state.dialogueProposals = [result.proposal, ...state.dialogueProposals];
@@ -931,12 +964,12 @@ async function requestDialogueProposal() {
       pushToast(result.proposal.error ?? "LLMセリフ提案の生成に失敗しました。", "error");
     }
   } catch (error) {
-    if (state.dialogueProposalRequestPageId !== pageId || state.pagePanelLightbox?.pageId !== pageId) {
+    if (serial !== dialogueProposalSerial || state.pagePanelLightbox?.pageId !== pageId) {
       return;
     }
     pushToast(error instanceof Error ? error.message : String(error), "error");
   } finally {
-    if (state.dialogueProposalRequestPageId === pageId) {
+    if (serial === dialogueProposalSerial) {
       state.dialogueProposalBusy = false;
       state.dialogueProposalRequestPageId = null;
     }

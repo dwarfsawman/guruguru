@@ -9,9 +9,9 @@ import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { carryoverFields, flushProjectDraftPersist, persistProjectDraft, restoreOrResetProjectDrafts } from "./draftStore";
-import { resumeAutoCollectForActiveRounds } from "./generationController";
+import { resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
 import { captureGenerationDraft, restoreGenerationDraftForRound } from "./generationDraft";
-import { resetPageWorkspaceState, resetProjectWorkspaceState, stashActivePageFormDrafts } from "./workspaceSession";
+import { beginNavigation, isCurrentNavigation, resetPageWorkspaceState, resetProjectWorkspaceState, stashActivePageFormDrafts } from "./workspaceSession";
 import { refreshModelCheck, refreshModelCheckForTemplate } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
@@ -22,9 +22,14 @@ import { clearScriptProjectSession } from "./scriptController";
 
 /** Book を開く（グリッド表示）。単一プロジェクトの openProject に相当するプロジェクトセッション初期化 + ページ一覧取得。 */
 export async function openBook(projectId: string) {
+  const navigation = beginNavigation();
   stashActivePageFormDrafts();
-  state.currentProjectId = projectId;
   const data = await api<BookPages>(`/api/projects/${projectId}/pages`);
+  // 取得成功後に確定する(失敗時に中途半端な state を残さない)+遅延応答の旧遷移を捨てる。
+  if (!isCurrentNavigation(navigation)) {
+    return;
+  }
+  state.currentProjectId = projectId;
   resetProjectWorkspaceState();
   state.book = data;
   state.activePageId = null;
@@ -55,7 +60,12 @@ export async function openPage(pageId: string) {
   // 遷移(コマ内生成の generateForPanel 経由)でも rememberActiveRoundDraft が要る -- 以前は
   // commitActivePageDrafts だけで、旧ページのラウンド別フォーム編集が失われていた)。
   stashActivePageFormDrafts();
+  const navigation = beginNavigation();
   const detail = await api<PageDetail>(`/api/projects/${state.currentProjectId}/pages/${pageId}`);
+  // out-of-order レース: 遅いレスポンスの旧ページ遷移が最新の画面を上書きしない。
+  if (!isCurrentNavigation(navigation)) {
+    return;
+  }
   resetPageWorkspaceState();
   state.detail = detail;
   state.templates = detail.templates;
@@ -172,7 +182,9 @@ const IMPORT_IMAGE_MIME = ["image/png", "image/jpeg", "image/webp"];
 export async function importImagesAsPages(input: HTMLInputElement) {
   const files = Array.from(input.files ?? []);
   input.value = "";
-  if (files.length === 0 || !state.currentProjectId) {
+  // ループの await 後に state を再読みしない(離脱すると /api/projects/null/... へ POST してしまう)。
+  const projectId = state.currentProjectId;
+  if (files.length === 0 || !projectId) {
     return;
   }
   const images = files.filter((file) => IMPORT_IMAGE_MIME.includes(file.type));
@@ -191,7 +203,11 @@ export async function importImagesAsPages(input: HTMLInputElement) {
   for (const file of images) {
     try {
       const dataUrl = await fileToDataUrl(file);
-      await api(`/api/projects/${state.currentProjectId}/pages/import-image`, {
+      if (state.currentProjectId !== projectId) {
+        // 取り込み中にプロジェクトを離れたら残りは中断する。
+        break;
+      }
+      await api(`/api/projects/${projectId}/pages/import-image`, {
         method: "POST",
         body: JSON.stringify({ filename: file.name, dataUrl })
       });
@@ -303,6 +319,14 @@ async function deletePages(pageIds: string[]) {
     return;
   }
   for (const page of pages) {
+    if (state.activePageId === page.id && state.detail) {
+      // 表示中ページを消す場合は、そのページの round に紐づくフォームdraft/進捗も掃除する
+      // (残すとメモリリーク+残ったroundのundo参照が404になる)。
+      for (const round of state.detail.rounds) {
+        delete state.generationDraftsByRound[round.id];
+        delete state.roundProgress[round.id];
+      }
+    }
     await api(`/api/projects/${state.currentProjectId}/pages/${page.id}`, { method: "DELETE" });
     delete state.referenceDraftsByPage[page.id];
     delete state.loraDraftsByPage[page.id];
@@ -312,6 +336,8 @@ async function deletePages(pageIds: string[]) {
       state.activePageId = null;
     }
   }
+  // 削除ページの round を指す undo/redo が残ると Ctrl+Z が404になるため、履歴ごと確定させる。
+  resetRoundDeletionHistory();
   await reloadPages();
   state.bookSelectionMode = false;
   state.selectedBookPageIds = [];

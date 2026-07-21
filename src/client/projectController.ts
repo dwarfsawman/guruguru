@@ -9,7 +9,7 @@ import { draftStorageKey, resetProjectDrafts, restoreOrResetProjectDrafts } from
 import { readForm } from "./formUtils";
 import { applyAssetDimensionsToDraft, generationDraftFromForm } from "./generationDraft";
 import { refreshProject, resumeAutoCollectForActiveRounds } from "./generationController";
-import { resetProjectWorkspaceState, stashActivePageFormDrafts } from "./workspaceSession";
+import { beginNavigation, isCurrentNavigation, resetProjectWorkspaceState, stashActivePageFormDrafts } from "./workspaceSession";
 import { refreshComfyStatus, refreshLlmStatus } from "./settingsController";
 import { refreshModelCheckForTemplate } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
@@ -36,12 +36,17 @@ export async function loadHome() {
 }
 
 async function openProject(projectId: string) {
+  const navigation = beginNavigation();
   stashActivePageFormDrafts();
+  const detail = await api<ProjectDetail>(`/api/projects/${projectId}`);
+  // 取得成功後に確定する(失敗時に中途半端な state を残さない)+遅延応答の旧遷移を捨てる。
+  if (!isCurrentNavigation(navigation)) {
+    return;
+  }
   state.currentProjectId = projectId;
   // single プロジェクトは book 状態を持たない(book から戻ってきた場合の取り残しを防ぐ)。
   state.book = null;
   state.activePageId = null;
-  const detail = await api<ProjectDetail>(`/api/projects/${projectId}`);
   resetProjectWorkspaceState();
   state.detail = detail;
   state.templates = detail.templates;
@@ -416,10 +421,15 @@ export async function importProjectFile(input: HTMLInputElement) {
       throw new Error(await responseErrorMessage(response));
     }
     const result = (await response.json()) as { project: ProjectRow; warnings?: string[] };
-    state.projects = [
-      { ...result.project, roundCount: 0, assetCount: 0, pageCount: result.project.mode === "book" ? 1 : 0 },
-      ...state.projects
-    ];
+    // 手組みのカウント(0/1)はリロードまで虚偽表示になるため、一覧を取り直して実カウントを反映する。
+    try {
+      state.projects = (await api<{ projects: ProjectSummary[] }>("/api/projects")).projects;
+    } catch {
+      state.projects = [
+        { ...result.project, roundCount: 0, assetCount: 0, pageCount: result.project.mode === "book" ? 1 : 0 },
+        ...state.projects
+      ];
+    }
     for (const warning of result.warnings ?? []) {
       pushToast(warning, "error");
     }

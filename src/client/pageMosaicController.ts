@@ -153,7 +153,16 @@ function finalizePolygonDraft(): void {
 // --- 頂点/矩形ハンドル編集 ---
 
 function pageHeightForLightbox(): number {
-  return state.pagePanelLightbox?.pageHeight ?? 50;
+  // フォールバックは lightbox 側の FALLBACK_PAGE_HEIGHT と同じ既定(旧: 50 で実質クランプ無効だった)。
+  return state.pagePanelLightbox?.pageHeight ?? 1.4142;
+}
+
+/** 追加クリック/矩形ドラッグの点をページ境界へクランプする(頂点ドラッグと同じ規則)。 */
+function clampPointToPage(point: [number, number]): [number, number] {
+  return [
+    Math.min(1, Math.max(0, point[0])),
+    Math.min(pageHeightForLightbox(), Math.max(0, point[1]))
+  ];
 }
 
 function applyVertexMove(regionId: string, vertexIndex: number, newPos: [number, number]): void {
@@ -297,7 +306,8 @@ function pointFromEvent(event: PointerEvent | MouseEvent): [number, number] | nu
     return null;
   }
   const point = inverse({ x: event.clientX, y: event.clientY });
-  return [point.x, point.y];
+  // 追加クリック/矩形ドラッグもページ境界へクランプする(頂点ドラッグだけクランプされる不整合の解消)。
+  return clampPointToPage([point.x, point.y]);
 }
 
 function distance(a: readonly [number, number], b: readonly [number, number]): number {

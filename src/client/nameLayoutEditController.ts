@@ -195,7 +195,8 @@ async function saveLayoutEdit(): Promise<void> {
     state.scriptMangaCandidates = state.scriptMangaCandidates.map((entry) =>
       entry.id === candidate.id ? response.candidate : entry
     );
-    state.nameLayoutEdit = null;
+    // await 中に cancel→新セッション開始が起きていたら、新しいセッションを破壊しない。
+    if (state.nameLayoutEdit === edit) state.nameLayoutEdit = null;
     pushToast("コマ割りの修正を保存しました。「このネームで生成」で検査と採用へ進めます。", "info");
     requestRender();
   } catch (error) {

@@ -734,7 +734,7 @@ export function setCandidateLayoutOverride(candidateId: string, body: unknown): 
   delete customLayouts[pageIndex];
   delete balloonHints[pageIndex];
   const version = row.edit_version + 1;
-  runSql(
+  const updated = runSql(
     `UPDATE script_manga_plan_candidates
         SET layout_overrides_json = ?, custom_layouts_json = ?, balloon_hints_json = ?, edit_version = ?
       WHERE id = ? AND edit_version = ?`,
@@ -746,7 +746,11 @@ export function setCandidateLayoutOverride(candidateId: string, body: unknown): 
       row.id,
       row.edit_version
     ]
-  );
+  ) as { changes?: number };
+  // CAS の changes を検査する(adoption 系と同じ規約。未検査だと将来 await が挟まった時に lost update)。
+  if (updated.changes !== 1) {
+    throw new HttpError(409, "Plan candidate was updated concurrently");
+  }
   return { version, candidate: candidateView(requirePlanCandidate(row.id)) };
 }
 
@@ -831,7 +835,7 @@ export function setCandidateCustomLayout(candidateId: string, body: unknown): Se
   }
 
   const version = row.edit_version + 1;
-  runSql(
+  const updated = runSql(
     `UPDATE script_manga_plan_candidates
         SET custom_layouts_json = ?, balloon_hints_json = ?, edit_version = ?
       WHERE id = ? AND edit_version = ?`,
@@ -842,7 +846,10 @@ export function setCandidateCustomLayout(candidateId: string, body: unknown): Se
       row.id,
       row.edit_version
     ]
-  );
+  ) as { changes?: number };
+  if (updated.changes !== 1) {
+    throw new HttpError(409, "Plan candidate was updated concurrently");
+  }
   return { version, candidate: candidateView(requirePlanCandidate(row.id)) };
 }
 

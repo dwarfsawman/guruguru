@@ -1,4 +1,4 @@
-import { requestRender, state } from "./appState";
+import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { ensureInpaintDraft, inpaintDraftForAsset, setInpaintDraft, setInpaintEnabledForAsset } from "./draftStore";
 import { ensureMaskLayerSet, getOrCreateMaskLayerSet, maskLayerCache } from "./maskLayerStore";
@@ -105,15 +105,20 @@ export function syncAssetModalMaskCanvas() {
       setInpaintDraft({ ...draft, imageWidth: width, imageHeight: height });
     }
     canvas.style.opacity = String(clampNumber(draft.maskOpacity, 0, 1, 0.58));
-    void ensureMaskLayerSet(draft, width, height).then((layers) => {
-      if (!canvas.isConnected || canvas.dataset.assetId !== draft.parentAssetId) {
-        return;
-      }
-      renderFinalMaskToCanvas(canvas, layers, draft, true);
-      if (featherCanvas) {
-        renderMaskFeatherPreview(featherCanvas, layers, draft);
-      }
-    });
+    void ensureMaskLayerSet(draft, width, height)
+      .then((layers) => {
+        if (!canvas.isConnected || canvas.dataset.assetId !== draft.parentAssetId) {
+          return;
+        }
+        renderFinalMaskToCanvas(canvas, layers, draft, true);
+        if (featherCanvas) {
+          renderMaskFeatherPreview(featherCanvas, layers, draft);
+        }
+      })
+      .catch((error) => {
+        // レイヤ画像のロード失敗を unhandled rejection にしない(次の描画機会で再試行される)。
+        pushToast(`マスクレイヤーの読み込みに失敗しました: ${error instanceof Error ? error.message : String(error)}`, "error");
+      });
   };
 
   if (image.complete && image.naturalWidth > 0) {
@@ -656,7 +661,11 @@ function beginMaskStroke(event: PointerEvent, canvas: HTMLCanvasElement, kind: M
   }
   ensureInpaintDraft(assetId);
   pushMaskUndoSnapshot(assetId, canvas.width, canvas.height);
-  canvas.setPointerCapture(event.pointerId);
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch {
+    // capture 失敗でもストローク自体は app レベルの委譲で継続する(throw させると undo だけ積まれる)。
+  }
   const point = pointerToMaskCanvasPoint(canvas, event);
   activeMaskStroke = {
     pointerId: event.pointerId,
@@ -708,6 +717,10 @@ export function handleMaskStrokePointerUp(event: PointerEvent): boolean {
   if (canvas) {
     event.preventDefault();
     finishMaskStroke(canvas);
+  } else {
+    // canvas が消えていても stroke を残さない(残すと以降のポインタイベントを飲み続ける)。
+    cancelPendingMaskStrokeFlush();
+    activeMaskStroke = null;
   }
   return true;
 }
@@ -719,6 +732,9 @@ export function handleMaskStrokePointerCancel(event: PointerEvent): boolean {
   const canvas = document.querySelector<HTMLCanvasElement>("#maskCanvas");
   if (canvas) {
     finishMaskStroke(canvas);
+  } else {
+    cancelPendingMaskStrokeFlush();
+    activeMaskStroke = null;
   }
   return true;
 }

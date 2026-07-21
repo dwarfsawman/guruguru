@@ -54,15 +54,23 @@ function resetChronicleState() {
  * 1件も無ければバーは非表示のまま(status="idle")にする。1件以上あれば選択中(または最初)の
  * 脚本の Chronicle データを取得する。
  */
+/**
+ * Chronicle 取得の世代。pageId 照合だけだと「同一ページを閉→即再開」で新旧レスポンスが
+ * last-write-wins になるため、open/load の度に世代を進めて古い応答を捨てる。
+ */
+let chronicleLoadSerial = 0;
+
 export async function openChronicleForPage(projectId: string, pageId: string): Promise<void> {
   const preferredScriptId = state.chronicle.scriptId;
+  const serial = ++chronicleLoadSerial;
   resetChronicleState();
   state.chronicle.status = "loading";
   requestRender();
+  const stale = () => serial !== chronicleLoadSerial || state.pagePanelLightbox?.pageId !== pageId;
   try {
     const result = await api<{ scripts: MangaScript[] }>(`/api/projects/${projectId}/scripts`);
-    // 取得中に閉じられた/別ページへ切り替わっていたら結果を捨てる(既知の罠6と同型)。
-    if (state.pagePanelLightbox?.pageId !== pageId) {
+    // 取得中に閉じられた/別ページへ切り替わっていた/新しい取得が始まっていたら結果を捨てる。
+    if (stale()) {
       return;
     }
     state.chronicle.scripts = result.scripts;
@@ -78,7 +86,7 @@ export async function openChronicleForPage(projectId: string, pageId: string): P
     for (const script of orderedScripts) {
       try {
         const chronicle = await fetchChronicleData(projectId, script.id);
-        if (state.pagePanelLightbox?.pageId !== pageId) return;
+        if (stale()) return;
         fallback ??= chronicle;
         if (hasChroniclePlacementOnPage(chronicle.lines, pageId)) {
           applyChronicleData(chronicle, pageId);
@@ -94,7 +102,7 @@ export async function openChronicleForPage(projectId: string, pageId: string): P
     }
     throw lastError ?? new Error("Chronicle の取得に失敗しました。");
   } catch (error) {
-    if (state.pagePanelLightbox?.pageId !== pageId) {
+    if (stale()) {
       return;
     }
     state.chronicle.status = "error";
@@ -130,17 +138,19 @@ function applyChronicleData(result: ChronicleApiResponse, pageId: string): void 
 }
 
 async function loadChronicleData(projectId: string, scriptId: string, pageId: string): Promise<void> {
+  const serial = ++chronicleLoadSerial;
   state.chronicle.status = "loading";
   requestRender();
+  const stale = () => serial !== chronicleLoadSerial || state.pagePanelLightbox?.pageId !== pageId;
   try {
     const result = await fetchChronicleData(projectId, scriptId);
-    // ページ切替/lightbox クローズ後の到着は捨てる(非同期完了後の state 書き込みガード)。
-    if (state.pagePanelLightbox?.pageId !== pageId) {
+    // ページ切替/lightbox クローズ後/より新しい取得開始後の到着は捨てる。
+    if (stale()) {
       return;
     }
     applyChronicleData(result, pageId);
   } catch (error) {
-    if (state.pagePanelLightbox?.pageId !== pageId) {
+    if (stale()) {
       return;
     }
     // このプロジェクトに脚本はあるが revision が無い等(通常は起きない)。バーは出さず静かに失敗する。
@@ -356,10 +366,12 @@ async function applyChronicleLayoutPreview(): Promise<void> {
       `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/apply`,
       { method: "POST", body: JSON.stringify({ placementIds, seed: preview.seed }) }
     );
+    // apply は既に DB へ確定している。ガードで early return する場合でも undo 基準点は積んでおく
+    // (積まないと同一セッションへ戻った時に一括配置前へ戻せない)。
+    pushPageObjectHistorySnapshotExternal(previousSnapshot);
     if (!chronicleContextStillCurrent(context)) {
       return;
     }
-    pushPageObjectHistorySnapshotExternal(previousSnapshot);
     const detail = await api<PageDetail>(`/api/projects/${context.projectId}/pages/${context.pageId}`);
     if (!chronicleContextStillCurrent(context)) {
       return;
@@ -467,12 +479,15 @@ async function unlockAllChroniclePlacementsForCurrentPage(): Promise<void> {
   }
 }
 
-/** Beat プレビュー内の個別行の「ロック解除」(§2.6・§6 フェーズIV)。 */
+/** Beat プレビュー内の個別行の「ロック解除」(§2.6・§6 フェーズIV)。連打の多重発行を防ぐ。 */
+const unlockingPlacementIds = new Set<string>();
+
 async function unlockChroniclePlacement(placementId: string): Promise<void> {
   const context = currentAllocationContext();
-  if (!context) {
+  if (!context || unlockingPlacementIds.has(placementId)) {
     return;
   }
+  unlockingPlacementIds.add(placementId);
   try {
     await api(`/api/dialogue-placements/${placementId}`, {
       method: "PATCH",
@@ -484,6 +499,8 @@ async function unlockChroniclePlacement(placementId: string): Promise<void> {
     await loadChronicleData(context.projectId, context.scriptId, context.pageId);
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
+  } finally {
+    unlockingPlacementIds.delete(placementId);
   }
 }
 
@@ -546,7 +563,10 @@ export function notifyChroniclePageObjectManualEdit(objectId: string): void {
           method: "PATCH",
           body: JSON.stringify({ autoLayoutLocked: true })
         }).catch((error) => {
+          // 失敗したら楽観更新をロールバックする(残すとバーの表示とサーバが乖離したまま)。
+          placement.autoLayoutLocked = false;
           pushToast(error instanceof Error ? error.message : String(error), "error");
+          requestRender();
         });
         return;
       }

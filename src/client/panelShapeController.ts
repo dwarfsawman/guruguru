@@ -136,6 +136,12 @@ function persistShapeLayoutNow(): Promise<void> {
 }
 
 async function persistShapeLayout(context: PersistAttemptContext): Promise<void> {
+  // ドラッグ進行中はドラフトが過渡状態(確定前)なので送らず、確定後へ先送りする
+  // (過渡状態を送るとキャンセル復元時にサーバとローカルが乖離する)。
+  if (shapeDragActive()) {
+    shapePersister.schedule();
+    return;
+  }
   // pageId/projectId/送信ボディは await より前(同期)に確定する(オブジェクト保存と同じ理由)。
   const lightbox = state.pagePanelLightbox;
   const projectId = state.currentProjectId;
@@ -885,8 +891,12 @@ function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
   const stage = root ? getStageTransform(root) : null;
   if (!stage) return true;
   const editable = toEditableNameLayout(draft);
-  state.pageLayoutDraft = editable;
   const startLayout = clonePageLayout(editable);
+  // polygon 化(editable)の反映は「実際にドラッグが始まる」各成功分岐で行う。ここで先に代入すると
+  // ハンドル解決に失敗した時に履歴なしの polygon 化だけが残る(undo 不能)。
+  const commitEditable = () => {
+    state.pageLayoutDraft = editable;
+  };
   const base: GeometryDragBase = {
     startClientX: event.clientX,
     startClientY: event.clientY,
@@ -897,6 +907,7 @@ function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
   if (junctionEl) {
     const junction = detectJunctions(startLayout).find((entry) => entry.id === junctionEl.getAttribute("data-shape-junction"));
     if (junction) {
+      commitEditable();
       geometrySession.begin(event, { ...base, kind: "junction", junction });
       state.shapeActiveGeometry = { kind: "junction", id: junction.id };
       requestRender();
@@ -907,6 +918,7 @@ function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
     const id = (boundaryEl ?? gutterEl)!.getAttribute(boundaryEl ? "data-shape-boundary" : "data-shape-gutter");
     const boundary = detectSharedBoundaries(startLayout).find((entry) => entry.id === id);
     if (boundary) {
+      commitEditable();
       if (boundaryEl) {
         geometrySession.begin(event, { ...base, kind: "boundary", boundary });
         state.shapeActiveGeometry = { kind: "boundary", id: boundary.id };
@@ -926,6 +938,7 @@ function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
   const outward = edgeOutwardNormal(startLayout, ref);
   if (!outward) return true;
   const outer = outerEdgeInfo(startLayout, ref, detectSharedBoundaries(startLayout));
+  commitEditable();
   geometrySession.begin(event, {
     ...base,
     kind: "edge",
@@ -1236,6 +1249,16 @@ export function handlePanelShapeKeydown(event: KeyboardEvent): boolean {
       redoShapeLayout();
       return true;
     }
+  }
+  // Escape 第0段: 進行中ドラッグの中断(開始スナップショットへ復元)。復元せずに
+  // lightbox クローズまで落とすと過渡状態のまま閉じてしまう。
+  if (event.key === "Escape" && shapeDragActive()) {
+    event.preventDefault();
+    for (const session of shapeDragSessions) {
+      session.abort();
+    }
+    requestRender();
+    return true;
   }
   // Escape は段階的に解除する(モード/範囲選択→パネル選択→(未処理なら)lightbox クローズ)。
   if (

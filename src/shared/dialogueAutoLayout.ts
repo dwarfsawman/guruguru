@@ -701,7 +701,13 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
       }
       if (!position) {
         unplacedPlacementIds.push(item.placementId);
-        warnings.push(`「${truncate(item.text)}」: このページにコマが無いため配置できませんでした。`);
+        // preferredPanelId が現在のレイアウトに無い(コマ削除後など)場合は文言を変える
+        // (「コマが無い」だと誤誘導になる)。
+        warnings.push(
+          hasPreferredPanel && orderedPanels.length > 0
+            ? `「${truncate(item.text)}」: 割り当て先のコマが現在のコマ割りに存在しないため配置できませんでした。`
+            : `「${truncate(item.text)}」: このページにコマが無いため配置できませんでした。`
+        );
         continue;
       }
     } else {

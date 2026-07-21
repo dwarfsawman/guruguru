@@ -144,8 +144,12 @@ export function validateProvidedScriptMangaPlan(
   const panelIds = new Set<string>();
   let panelCount = 0;
 
+  // 0始まり/1始まりのどちらも受理するが、先頭ページで基準を確定し全ページ一貫を要求する
+  // (旧実装はページ毎に両方を受理し `[1, 1]` のような並びも通っていた)。
+  const firstPageIndex = isJsonObject(raw.pages[0]) ? (raw.pages[0] as { index?: unknown }).index : undefined;
+  const pageIndexBase = firstPageIndex === 1 ? 1 : 0;
   const pages = raw.pages.flatMap((rawPage, pageIndex) => {
-    if (!isJsonObject(rawPage) || (rawPage.index !== pageIndex && rawPage.index !== pageIndex + 1) || !Array.isArray(rawPage.panels)) return [];
+    if (!isJsonObject(rawPage) || rawPage.index !== pageIndex + pageIndexBase || !Array.isArray(rawPage.panels)) return [];
     const layoutTemplateId = text(rawPage.layoutTemplateId);
     if (resolveLayoutPanelCount(layoutTemplateId) !== rawPage.panels.length) return [];
     const panels: ScriptMangaPanelPlan[] = [];

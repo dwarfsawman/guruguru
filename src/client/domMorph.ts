@@ -53,6 +53,10 @@ function morphChildren(from: Element | DocumentFragment | ShadowRoot, to: Elemen
   for (let child = from.firstElementChild; child; child = child.nextElementSibling) {
     const key = keyOf(child);
     if (key) {
+      if (fromKeyed.has(key)) {
+        // 重複キーは片方の内容が無警告で消える事故につながるため開発時に気づけるようにする。
+        console.warn(`[domMorph] duplicate data-key detected: ${key}`);
+      }
       fromKeyed.set(key, child);
     }
   }
@@ -196,6 +200,10 @@ function syncFormProperties(from: Element, to: Element) {
     const value = selected?.getAttribute("value") ?? selected?.textContent ?? null;
     if (!focused && value !== null && from.value !== value) {
       from.value = value;
+    } else if (!focused && value === null && from.selectedIndex < 0 && from.options.length > 0) {
+      // 新HTMLに option[selected] が無く、現在値が新しい option 集合にも無い(selectedIndex=-1):
+      // innerHTML 全再構築時代の「先頭 option へ初期化」と同じ意味論に合わせる。
+      from.selectedIndex = 0;
     }
     return;
   }

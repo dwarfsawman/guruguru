@@ -60,8 +60,14 @@ const autoCollectIntervalMs = 3_000;
  */
 const recentlyDeletedRoundIds = new Set<string>();
 
+const VALID_GENERATION_MODES: ReadonlyArray<GenerationMode> = [
+  "txt2img", "img2img", "ipadapter", "controlnet", "seed_reuse", "prompt_reuse", "upscale", "detail", "manual_upload"
+];
+const VALID_SEED_MODES: ReadonlyArray<GenerationRequest["seedMode"]> = ["fixed", "random", "increment", "reuse_parent_seed"];
+
 export async function generateRound(parentAsset: Asset | null, overrideMode?: string) {
-  if (!state.currentProjectId) {
+  const projectId = state.currentProjectId;
+  if (!projectId) {
     return;
   }
 
@@ -69,7 +75,11 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   // ブランチング後に親ノードへ戻ったとき、編集途中の内容(プロンプト等)を
   // 復元できるよう、送信前のフォーム内容を現在の Round に記憶しておく。
   rememberActiveRoundDraft();
-  const generationMode = overrideMode ?? form.generationMode ?? "txt2img";
+  const rawMode = overrideMode ?? form.generationMode ?? "txt2img";
+  // フォーム/呼び出し元由来の文字列は無検証キャストせず、既知の値のみ通す。
+  const generationMode = (VALID_GENERATION_MODES as readonly string[]).includes(rawMode)
+    ? rawMode
+    : "txt2img";
   const resolvedParentAsset = resolveParentAssetForGeneration(parentAsset, generationMode, form.parentAssetId);
   const parentAssetId = resolvedParentAsset?.id ?? null;
   const requestedTemplateId = generationMode === "img2img"
@@ -87,7 +97,9 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
     prompt: form.prompt,
     negativePrompt: form.negativePrompt,
     seed: form.seed ? Number(form.seed) : null,
-    seedMode: form.seedMode as GenerationRequest["seedMode"],
+    seedMode: (VALID_SEED_MODES as readonly string[]).includes(form.seedMode ?? "")
+      ? (form.seedMode as GenerationRequest["seedMode"])
+      : "fixed",
     batchSize: Number(form.batchSize || 16),
     steps: Number(form.steps || 20),
     cfg: Number(form.cfg || 6),
@@ -129,7 +141,7 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
 
   state.busy = true;
   requestRender();
-  const response = await api<{ promptId: string; round: Round }>(`/api/projects/${state.currentProjectId}/rounds`, {
+  const response = await api<{ promptId: string; round: Round }>(`/api/projects/${projectId}/rounds`, {
     method: "POST",
     // コマ内生成(Docs/Feature-PanelGeneration.md): targetPanelId は GenerationRequest に含めず
     // pageId と同じ扱いのサイドカーフィールドとしてサーバへ渡す(generation_rounds の別列)。
@@ -150,7 +162,9 @@ export async function generateRound(parentAsset: Asset | null, overrideMode?: st
   await refreshProject(roundId, null);
   requestRender();
   if (roundId) {
-    void pollCollectRound(roundId, state.currentProjectId);
+    // await 中の画面遷移で state.currentProjectId が変わっていても、poll のガード基準は
+    // この round を作った projectId にする(新プロジェクトIDを基準に旧roundのpollが走るのを防ぐ)。
+    void pollCollectRound(roundId, projectId);
   }
 }
 
@@ -231,7 +245,7 @@ export function resetRoundDeletionHistory() {
  * confirm なしで即実行し、トーストの「元に戻す」または Ctrl+Z(やり直しは
  * Ctrl+Y / Ctrl+Shift+Z)で復元できる。プロジェクトを離れると削除が確定する。
  */
-export async function deleteRoundTree(roundId: string) {
+export async function deleteRoundTree(roundId: string, options: { fromRedo?: boolean } = {}) {
   if (!state.currentProjectId) {
     return;
   }
@@ -246,7 +260,10 @@ export async function deleteRoundTree(roundId: string) {
     delete state.roundProgress[deletedRoundId];
   }
   roundDeletionUndoStack.push({ rootId: roundId, roundIds: result.roundIds });
-  roundDeletionRedoStack = [];
+  // redo 経由の再削除では redo スタックを消さない(消すと2件目以降の redo が効かなくなる)。
+  if (!options.fromRedo) {
+    roundDeletionRedoStack = [];
+  }
 
   const keepRoundId = state.activeRoundId && !deletedRoundIds.has(state.activeRoundId) ? state.activeRoundId : null;
   state.activeAssetId = null;
@@ -258,14 +275,23 @@ export async function deleteRoundTree(roundId: string) {
 
 /** 直近の Round 削除を取り消す(ゴミ箱スナップショットからの復元)。 */
 export async function undoRoundDeletion() {
-  const record = roundDeletionUndoStack.pop();
-  if (!record || !state.currentProjectId) {
+  if (!state.currentProjectId || roundDeletionUndoStack.length === 0) {
     return;
   }
-  const result = await api<{ restored: boolean; roundIds: string[]; restoredCount: number }>("/api/rounds/restore", {
-    method: "POST",
-    body: JSON.stringify({ rootId: record.rootId })
-  });
+  const record = roundDeletionUndoStack.pop()!;
+  let result: { restored: boolean; roundIds: string[]; restoredCount: number };
+  try {
+    result = await api<{ restored: boolean; roundIds: string[]; restoredCount: number }>("/api/rounds/restore", {
+      method: "POST",
+      body: JSON.stringify({ rootId: record.rootId })
+    });
+  } catch (error) {
+    // 失敗時は record を戻す(pop したまま消えると undo/redo 両スタックから復元不能になる)。
+    roundDeletionUndoStack.push(record);
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+    requestRender();
+    return;
+  }
   roundDeletionRedoStack.push(record);
   for (const restoredRoundId of result.roundIds) {
     recentlyDeletedRoundIds.delete(restoredRoundId);
@@ -277,11 +303,17 @@ export async function undoRoundDeletion() {
 
 /** 取り消した Round 削除をやり直す(再度削除し、スナップショットも作り直される)。 */
 export async function redoRoundDeletion() {
-  const record = roundDeletionRedoStack.pop();
-  if (!record || !state.currentProjectId) {
+  if (!state.currentProjectId || roundDeletionRedoStack.length === 0) {
     return;
   }
-  await deleteRoundTree(record.rootId);
+  const record = roundDeletionRedoStack.pop()!;
+  try {
+    await deleteRoundTree(record.rootId, { fromRedo: true });
+  } catch (error) {
+    roundDeletionRedoStack.push(record);
+    pushToast(error instanceof Error ? error.message : String(error), "error");
+    requestRender();
+  }
 }
 
 export async function pollCollectRound(roundId: string, projectId: string | null) {
@@ -387,19 +419,30 @@ export function responseRoundAssetCount(round: Round | null | undefined) {
 }
 
 export async function refreshProject(keepRoundId = state.activeRoundId, keepAssetId = state.activeAssetId) {
-  if (!state.currentProjectId) {
+  const projectId = state.currentProjectId;
+  const pageId = state.activePageId;
+  if (!projectId) {
     return;
   }
+  // fetch 中にページ/プロジェクト遷移した場合、古い detail で新しい画面の state を上書きしない。
+  const stillCurrent = () => state.currentProjectId === projectId && state.activePageId === pageId;
   // Book のページを開いている時は、そのページに絞った詳細を再取得する(round/asset id は全体一意なので
   // 下の keepRoundId/keepAssetId reconciliation はそのまま機能する)。
-  if (state.activePageId) {
-    const pageDetail = await api<PageDetail>(`/api/projects/${state.currentProjectId}/pages/${state.activePageId}`);
+  if (pageId) {
+    const pageDetail = await api<PageDetail>(`/api/projects/${projectId}/pages/${pageId}`);
+    if (!stillCurrent()) {
+      return;
+    }
     state.detail = pageDetail;
     // コマ内生成(Docs/Feature-PanelGeneration.md): 生成完了(collect)のたびに割り当てが更新されうる
     // (asset 選択時の自動割り当て)ので、ページ詳細と一緒に取り直す。
     state.pagePanelAssignments = pageDetail.panelAssignments;
   } else {
-    state.detail = await api<ProjectDetail>(`/api/projects/${state.currentProjectId}`);
+    const detail = await api<ProjectDetail>(`/api/projects/${projectId}`);
+    if (!stillCurrent()) {
+      return;
+    }
+    state.detail = detail;
   }
   state.templates = state.detail.templates;
   const visibleRounds = roundsForActivePanelTarget(state.detail.rounds);

@@ -321,9 +321,12 @@ async function savePoseEdit(): Promise<void> {
     });
     const refreshed = await api<NonNullable<typeof run>>(`/api/script-manga-runs/${encodeURIComponent(edit.runId)}`);
     if (state.scriptMangaRun?.id === edit.runId) state.scriptMangaRun = refreshed;
-    poseSession.reset();
-    clearSnapshotHistory(history);
-    state.namePoseEdit = null;
+    // await 中に cancel→新セッション開始が起きていたら、新しいセッションを破壊しない。
+    if (state.namePoseEdit === edit) {
+      poseSession.reset();
+      clearSnapshotHistory(history);
+      state.namePoseEdit = null;
+    }
     pushToast("ポーズを差分適用しました。runは再承認待ちへ戻ります。", "info");
     requestRender();
   } catch (error) {
