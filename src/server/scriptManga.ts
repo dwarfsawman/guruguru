@@ -74,7 +74,7 @@ import {
   recoverSubmittingTasks,
   submitTasks
 } from "./scriptMangaSubmission";
-import { scheduleRunVisualAudit, syncTaskFromRound } from "./scriptMangaAudit";
+import { scheduleRunVisualAudit, syncTaskFromRound, type SyncRoundSnapshot } from "./scriptMangaAudit";
 import { materializeFigureForTask, recordFigureResult } from "./scriptMangaFigure";
 
 // 分割前の公開APIを維持する再export(外部importerは従来どおり ./scriptManga から参照する)。
@@ -1299,8 +1299,29 @@ export function getScriptMangaRun(runId: string): ScriptMangaRunView {
   recoverInheritingTasks(run.id);
   recoverSelectingTasks(run.id);
   const config = parseConfig(run);
-  for (const task of getRows<TaskRow>("SELECT * FROM script_manga_tasks WHERE run_id = ?", [run.id])) {
-    syncTaskFromRound(task, config);
+  // syncTaskFromRound 冒頭の早期returnと同条件をSQL側へ寄せ、対象タスクの round を
+  // IN 1回で先読みして渡す(480コマ級 run のポーリングで全行フェッチ+タスク毎の
+  // round SELECT を避ける。処理順・更新内容は従来と同一)。
+  const syncTargets = getRows<TaskRow>(
+    `SELECT * FROM script_manga_tasks
+      WHERE run_id = ? AND round_id IS NOT NULL
+        AND status NOT IN ('completed', 'failed', 'blocked', 'canceled', 'selecting', 'awaiting_review', 'auditing')`,
+    [run.id]
+  );
+  const roundIds = [...new Set(syncTargets.map((task) => task.round_id!))];
+  const roundById = new Map<string, SyncRoundSnapshot>();
+  const CHUNK = 400;
+  for (let offset = 0; offset < roundIds.length; offset += CHUNK) {
+    const chunk = roundIds.slice(offset, offset + CHUNK);
+    for (const row of getRows<{ id: string } & SyncRoundSnapshot>(
+      `SELECT id, status, last_error_json FROM generation_rounds WHERE id IN (${chunk.map(() => "?").join(", ")})`,
+      chunk
+    )) {
+      roundById.set(row.id, { status: row.status, last_error_json: row.last_error_json });
+    }
+  }
+  for (const task of syncTargets) {
+    syncTaskFromRound(task, config, roundById.get(task.round_id!) ?? null);
   }
   scheduleRunVisualAudit(run.id);
   return runView(refreshRunStatus(run.id));
