@@ -459,6 +459,29 @@ function removeUnusedStarterPage(projectId: string): void {
 }
 
 /**
+ * plan の cast bbox(コマ内正規化)を page 座標の全身ボックスへ写像する共通ヘルパ。
+ * 顔領域(CAST_FACE_HEIGHT_RATIO)への縮小やラベル付与など呼び出し側ごとの差分は
+ * project コールバックで表現する(回避領域と lettering 監査の二重実装を一本化)。
+ */
+function mapPlanCastToPageBoxes<T>(
+  pageSpec: MangaPlanV2["pages"][number],
+  layoutPanels: PageLayout["panels"],
+  project: (bodyBox: { x: number; y: number; width: number; height: number }, layoutPanel: PageLayout["panels"][number]) => T
+): T[] {
+  return pageSpec.panels.flatMap((panel, index) => {
+    const layoutPanel = layoutPanels[index];
+    if (!layoutPanel) return [];
+    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
+    return panel.cast.map((member) => project({
+      x: x0 + member.bbox.x * (x1 - x0),
+      y: y0 + member.bbox.y * (y1 - y0),
+      width: member.bbox.width * (x1 - x0),
+      height: member.bbox.height * (y1 - y0)
+    }, layoutPanel));
+  });
+}
+
+/**
  * plan の cast bbox(コマ内正規化)を page 座標へ写像した回避領域を作る。head=true なら顔領域
  * (bbox 上端から CAST_FACE_HEIGHT_RATIO)、false なら全身。ぶち抜き立ち絵スロット
  * (layoutPanel.role === "figure")は吹き出しで隠したくないため全身を返す。
@@ -467,18 +490,15 @@ function planCastAvoidZones(
   pageSpec: MangaPlanV2["pages"][number],
   layoutPanels: PageLayout["panels"]
 ): Array<{ x: number; y: number; width: number; height: number; label?: string }> {
-  return pageSpec.panels.flatMap((panel, index) => {
-    const layoutPanel = layoutPanels[index];
-    if (!layoutPanel) return [];
-    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
+  return mapPlanCastToPageBoxes(pageSpec, layoutPanels, (bodyBox, layoutPanel) => {
     const fullBody = layoutPanel.role === "figure";
-    return panel.cast.map((member) => ({
-      x: x0 + member.bbox.x * (x1 - x0),
-      y: y0 + member.bbox.y * (y1 - y0),
-      width: member.bbox.width * (x1 - x0),
-      height: member.bbox.height * (y1 - y0) * (fullBody ? 1 : CAST_FACE_HEIGHT_RATIO),
+    return {
+      x: bodyBox.x,
+      y: bodyBox.y,
+      width: bodyBox.width,
+      height: bodyBox.height * (fullBody ? 1 : CAST_FACE_HEIGHT_RATIO),
       label: fullBody ? "立ち絵" : "顔"
-    }));
+    };
   });
 }
 
@@ -1156,17 +1176,12 @@ function ensureDialogueLettering(
   requireReadableBalloonText(pageId);
   const pageRow = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
   const objects = normalizePageObjects(pageRow?.objects_json ? JSON.parse(pageRow.objects_json) : []);
-  const faceBoxes = pageSpec.panels.flatMap((panel, index) => {
-    const layoutPanel = layoutPanels[index];
-    if (!layoutPanel) return [];
-    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
-    return panel.cast.map((member) => ({
-      x: x0 + member.bbox.x * (x1 - x0),
-      y: y0 + member.bbox.y * (y1 - y0),
-      width: member.bbox.width * (x1 - x0),
-      height: member.bbox.height * (y1 - y0) * CAST_FACE_HEIGHT_RATIO
-    }));
-  });
+  const faceBoxes = mapPlanCastToPageBoxes(pageSpec, layoutPanels, (bodyBox) => ({
+    x: bodyBox.x,
+    y: bodyBox.y,
+    width: bodyBox.width,
+    height: bodyBox.height * CAST_FACE_HEIGHT_RATIO
+  }));
   const letteringReport = auditLettering(pageSpec.layoutSnapshot, objects, faceBoxes);
   const evaluation = parseJson<Record<string, unknown>>(requireRun(run.id).evaluation_json, {});
   runSql("UPDATE script_manga_runs SET evaluation_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
@@ -1785,6 +1800,110 @@ function reuseTemplateSnapshot(templateId: string): (ScriptMangaReuseTemplateSna
     : null;
 }
 
+/**
+ * コマ生成の GenerationRequest 組み立て。再利用フィンガープリント計算
+ * (taskReuseFingerprintForTarget)と実生成 submit(submitTasks)の両方がここを通る。
+ * 同一入力から必ず同一構造を生むことが reuse 継承の前提なので、片側だけに分岐を足すことは禁止。
+ *
+ * - poseControlWorkflowJson: ControlNetApplyAdvanced 検査に使う workflow JSON。fingerprint 側は
+ *   reuseTemplateSnapshot(削除済みテンプレを除外)のスナップショットを渡す。省略時は
+ *   templatePromptProfile の workflow JSON(submit 側の従来挙動)を使う。
+ * - providerId: submit 側だけが request へ埋め込む(canonical 化では別入力として扱われるため
+ *   fingerprint には影響しない)。
+ */
+export async function buildPanelGenerationRequest(input: {
+  run: RunRow;
+  plan: MangaPlanV2;
+  config: ScriptMangaRunConfig;
+  panel: PanelSpec;
+  layout: PageLayout;
+  panelId: string;
+  poseControlWorkflowJson?: string;
+  providerId?: string;
+}): Promise<{
+  request: GenerationRequest & { providerId?: string };
+  references: ReturnType<typeof resolvePanelReferences>;
+  conditioning: ReturnType<typeof compilePanelConditioning>;
+  size: { width: number; height: number };
+}> {
+  const { run, plan, config, panel } = input;
+  const promptProfile = templatePromptProfile(config.templateId);
+  const modelFamily = referenceModelFamily(config.templateId);
+  const references = resolvePanelReferences({
+    projectId: run.project_id,
+    providerId: config.providerId,
+    cast: panel.cast,
+    focalSubjectId: panel.shot.focalSubjectId,
+    globalLoras: config.loras,
+    modelFamily: modelFamily ?? "chroma",
+    frozenSnapshot: frozenReferenceSnapshot(run)
+  });
+  const conditioning = compilePanelConditioning({
+    panel,
+    basePrompt: panel.promptBase,
+    entities: plan.narrativeGraph.entities,
+    dialogueById: new Map(),
+    narrativeMetadata: "english-directed",
+    dialect: promptProfile.dialect,
+    qualityTags: promptProfile.qualityTags,
+    negativeBase: promptProfile.negativeBase,
+    sceneBible: plan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === panel.settingId),
+    referenceAppearances: references.appearances
+  });
+  const size = panelGenerationSize(input.layout, input.panelId, config.longEdge, modelFamily ? "chroma" : "sdxl");
+  const request: GenerationRequest & { providerId?: string } = {
+    templateId: config.templateId,
+    prompt: conditioning.positive,
+    negativePrompt: conditioning.negative,
+    seed: null,
+    seedMode: "random",
+    batchSize: 1,
+    steps: config.steps,
+    cfg: config.cfg,
+    sampler: config.sampler,
+    scheduler: config.scheduler,
+    denoise: 1,
+    width: size.width,
+    height: size.height,
+    generationMode: "txt2img",
+    loras: references.loras,
+    reference: references.primaryReferenceSet
+      ? {
+          referenceSet: references.primaryReferenceSet,
+          face: { enabled: modelFamily === "chroma" },
+          animaInContext: { enabled: modelFamily === "anima" },
+          strict: true
+        }
+      : references.primaryCharacterBinding
+        ? {
+            characterBinding: references.primaryCharacterBinding,
+            face: { enabled: true },
+            animaInContext: { enabled: true }
+          }
+        : null,
+    ...(input.providerId !== undefined ? { providerId: input.providerId } : {})
+  };
+  // ネームv4 D4: 棒人間骨格の ControlNet 条件付け(既定OFF)。テンプレに
+  // ControlNetApplyAdvanced が無い場合は黙ってスキップ(prune済み経路と整合)。
+  const poseWorkflowJson = input.poseControlWorkflowJson ?? promptProfile.workflowJson;
+  if (config.poseControl?.enabled && poseWorkflowJson.includes("ControlNetApplyAdvanced")) {
+    try {
+      const attachment = await buildPoseControlAttachment(panel, size.width, size.height, config.poseControl);
+      if (attachment) {
+        request.controlnet = {
+          poseImageDataUrl: attachment.poseImageDataUrl,
+          strength: attachment.strength,
+          startPercent: attachment.startPercent,
+          endPercent: attachment.endPercent
+        };
+      }
+    } catch {
+      // 骨格添付は補助条件。失敗しても生成は止めず、fingerprint 側も同様に ControlNet 無しへフォールバックする。
+    }
+  }
+  return { request, references, conditioning, size };
+}
+
 async function taskReuseFingerprintForTarget(
   run: RunRow,
   plan: MangaPlanV2,
@@ -1796,87 +1915,26 @@ async function taskReuseFingerprintForTarget(
     const context = taskReusePlanContext(run, plan, task, materializedPanels);
     const template = reuseTemplateSnapshot(config.templateId);
     if (!context || !template) return null;
-    const promptProfile = templatePromptProfile(config.templateId);
-    const modelFamily = referenceModelFamily(config.templateId);
-    const references = resolvePanelReferences({
-      projectId: run.project_id,
-      providerId: config.providerId,
-      cast: context.panel.cast,
-      focalSubjectId: context.panel.shot.focalSubjectId,
-      globalLoras: config.loras,
-      modelFamily: modelFamily ?? "chroma",
-      frozenSnapshot: frozenReferenceSnapshot(run)
-    });
-    const conditioning = compilePanelConditioning({
+    const built = await buildPanelGenerationRequest({
+      run,
+      plan,
+      config,
       panel: context.panel,
-      basePrompt: context.panel.promptBase,
-      entities: plan.narrativeGraph.entities,
-      dialogueById: new Map(),
-      narrativeMetadata: "english-directed",
-      dialect: promptProfile.dialect,
-      qualityTags: promptProfile.qualityTags,
-      negativeBase: promptProfile.negativeBase,
-      sceneBible: plan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === context.panel.settingId),
-      referenceAppearances: references.appearances
+      layout: context.layout,
+      panelId: task.panel_id,
+      poseControlWorkflowJson: template.workflowJson
     });
-    const size = panelGenerationSize(context.layout, task.panel_id, config.longEdge, modelFamily ? "chroma" : "sdxl");
-    const request: GenerationRequest = {
-      templateId: config.templateId,
-      prompt: conditioning.positive,
-      negativePrompt: conditioning.negative,
-      seed: null,
-      seedMode: "random",
-      batchSize: 1,
-      steps: config.steps,
-      cfg: config.cfg,
-      sampler: config.sampler,
-      scheduler: config.scheduler,
-      denoise: 1,
-      width: size.width,
-      height: size.height,
-      generationMode: "txt2img",
-      loras: references.loras,
-      reference: references.primaryReferenceSet
-        ? {
-            referenceSet: references.primaryReferenceSet,
-            face: { enabled: modelFamily === "chroma" },
-            animaInContext: { enabled: modelFamily === "anima" },
-            strict: true
-          }
-        : references.primaryCharacterBinding
-          ? {
-              characterBinding: references.primaryCharacterBinding,
-              face: { enabled: true },
-              animaInContext: { enabled: true }
-            }
-          : null
-    };
-    if (config.poseControl?.enabled && template.workflowJson.includes("ControlNetApplyAdvanced")) {
-      try {
-        const attachment = await buildPoseControlAttachment(context.panel, size.width, size.height, config.poseControl);
-        if (attachment) {
-          request.controlnet = {
-            poseImageDataUrl: attachment.poseImageDataUrl,
-            strength: attachment.strength,
-            startPercent: attachment.startPercent,
-            endPercent: attachment.endPercent
-          };
-        }
-      } catch {
-        // Generation also falls back to no ControlNet when pose construction fails.
-      }
-    }
     const generation = await canonicalGenerationMaterial({
       providerId: config.providerId,
       template: { id: template.id, version: template.version, workflowHash: template.workflowHash },
-      request,
+      request: built.request,
       referenceSnapshot: frozenReferenceSnapshot(run)
     });
     if (!generation) return null;
     const normalizedPanel: PanelSpec = {
       ...context.panel,
-      referenceManifest: references.manifest,
-      compiledPrompt: conditioning.positive
+      referenceManifest: built.references.manifest,
+      compiledPrompt: built.conditioning.positive
     };
     return computeTaskReuseFingerprint(run, plan, context, normalizedPanel, generation);
   } catch {
@@ -2459,75 +2517,20 @@ async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
       continue;
     }
     const layout = pageLayout(task.page_id);
-    const promptProfile = templatePromptProfile(config.templateId);
-    const detectedFamily = referenceModelFamily(config.templateId);
-    const size = panelGenerationSize(layout, task.panel_id, config.longEdge, detectedFamily ? "chroma" : "sdxl");
-    const references = resolvePanelReferences({
-      projectId: run.project_id,
-      providerId: config.providerId,
-      cast: panel.cast,
-      focalSubjectId: panel.shot.focalSubjectId,
-      globalLoras: config.loras,
-      modelFamily: detectedFamily ?? "chroma",
-      frozenSnapshot: frozenReferenceSnapshot(run)
-    });
-    panel.referenceManifest = references.manifest;
     const frozenPlan = planFromRow(requirePlan(run.plan_id!));
-    const conditioning = compilePanelConditioning({ panel, basePrompt: panel.promptBase, entities: frozenPlan.narrativeGraph.entities,
-      dialogueById: new Map(), narrativeMetadata: "english-directed", dialect: promptProfile.dialect,
-      qualityTags: promptProfile.qualityTags, negativeBase: promptProfile.negativeBase,
-      sceneBible: frozenPlan.narrativeGraph.sceneBibles?.find((bible) => bible.settingId === panel.settingId),
-      referenceAppearances: references.appearances });
-    panel.compiledPrompt = conditioning.positive;
-    const request: GenerationRequest & { providerId?: string } = {
-      templateId: config.templateId,
-      prompt: panel.compiledPrompt,
-      negativePrompt: conditioning.negative,
-      seed: null,
-      seedMode: "random",
-      batchSize: 1,
-      steps: config.steps,
-      cfg: config.cfg,
-      sampler: config.sampler,
-      scheduler: config.scheduler,
-      denoise: 1,
-      width: size.width,
-      height: size.height,
-      generationMode: "txt2img",
-      loras: references.loras,
-      reference: references.primaryReferenceSet
-        ? {
-            referenceSet: references.primaryReferenceSet,
-            face: { enabled: detectedFamily === "chroma" },
-            animaInContext: { enabled: detectedFamily === "anima" },
-            strict: true
-          }
-        : references.primaryCharacterBinding
-        ? {
-            characterBinding: references.primaryCharacterBinding,
-            face: { enabled: true },
-            animaInContext: { enabled: true }
-          }
-        : null,
+    const built = await buildPanelGenerationRequest({
+      run,
+      plan: frozenPlan,
+      config,
+      panel,
+      layout,
+      panelId: task.panel_id,
       providerId: config.providerId
-    };
-    // ネームv4 D4: 棒人間骨格の ControlNet 条件付け(既定OFF)。テンプレに
-    // ControlNetApplyAdvanced が無い場合は黙ってスキップ(prune済み経路と整合)。
-    if (config.poseControl?.enabled && promptProfile.workflowJson.includes("ControlNetApplyAdvanced")) {
-      try {
-        const attachment = await buildPoseControlAttachment(panel, size.width, size.height, config.poseControl);
-        if (attachment) {
-          request.controlnet = {
-            poseImageDataUrl: attachment.poseImageDataUrl,
-            strength: attachment.strength,
-            startPercent: attachment.startPercent,
-            endPercent: attachment.endPercent
-          };
-        }
-      } catch {
-        // 骨格添付は補助条件。失敗してもコマ生成自体は止めない。
-      }
-    }
+    });
+    const references = built.references;
+    panel.referenceManifest = references.manifest;
+    panel.compiledPrompt = built.conditioning.positive;
+    const request = built.request;
     const claimed = runSql(
       `UPDATE script_manga_tasks SET status = 'submitting', panel_spec_json = ?, reference_manifest_json = ?,
          attempt_count = attempt_count + 1, last_error_json = NULL, updated_at = CURRENT_TIMESTAMP
