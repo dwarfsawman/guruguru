@@ -660,166 +660,100 @@ function bindEvents() {
     handlePaintEditorBlur();
   });
 
-  app.addEventListener("pointerdown", (event) => {
-    const target = event.target as HTMLElement;
-    if (handleSidebarResizePointerDown(event)) {
-      return;
+  // pointer 4イベントの委譲テーブル。**優先順位は配列の並びで表現する**(先頭から順に呼び、
+  // true を返したハンドラで打ち切り)。末尾の maskStroke 系は従来どおり無条件で最後に呼ぶため
+  // 常に true を返すラッパにしてある。down と move/up/cancel で並び・顔ぶれが異なるのは従来の
+  // if チェーンの構造(down はヒットテスト順、move/up/cancel は進行中ジェスチャの解決順)そのまま。
+  type PointerChainHandler = (event: PointerEvent) => boolean;
+  const runPointerChain = (chain: readonly PointerChainHandler[], event: PointerEvent): void => {
+    for (const handler of chain) {
+      if (handler(event)) {
+        return;
+      }
     }
-    if (handlePagePanelCropPointerDown(event)) {
-      return;
-    }
-    if (handlePageObjectsPointerDown(event)) {
-      return;
-    }
-    if (handleNameLayoutEditPointerDown(event)) {
-      return;
-    }
-    if (handleNamePoseEditPointerDown(event)) {
-      return;
-    }
-    if (handlePanelShapePointerDown(event)) {
-      return;
-    }
-    if (handleMosaicPointerDown(event)) {
-      return;
-    }
-    if (handlePoseEditorPointerDown(event)) {
-      return;
-    }
-    if (handleMaskEditorPointerDown(event)) {
-      return;
-    }
-    if (event.button !== 0 && event.button !== 2) {
-      return;
-    }
-    if (handlePastePointerDown(event, target)) {
-      return;
-    }
-    if (handlePaintEditorPointerDown(event, target)) {
-      return;
-    }
-    handleMaskStrokeStartPointerDown(event);
-  });
+  };
 
-  app.addEventListener("pointermove", (event) => {
-    if (handleSidebarResizePointerMove(event)) {
-      return;
+  const pointerDownChain: readonly PointerChainHandler[] = [
+    handleSidebarResizePointerDown,
+    handlePagePanelCropPointerDown,
+    handlePageObjectsPointerDown,
+    handleNameLayoutEditPointerDown,
+    handleNamePoseEditPointerDown,
+    handlePanelShapePointerDown,
+    handleMosaicPointerDown,
+    handlePoseEditorPointerDown,
+    handleMaskEditorPointerDown,
+    // ここから先(paste/paint/maskStroke)は左/右ボタン以外を受け付けない(従来の途中 return を継承)。
+    (event) => event.button !== 0 && event.button !== 2,
+    (event) => handlePastePointerDown(event, event.target as HTMLElement),
+    (event) => handlePaintEditorPointerDown(event, event.target as HTMLElement),
+    (event) => {
+      handleMaskStrokeStartPointerDown(event);
+      return true;
     }
-    if (handlePagePanelCropPointerMove(event)) {
-      return;
-    }
-    if (handlePageObjectsPointerMove(event)) {
-      return;
-    }
-    if (handleNameLayoutEditPointerMove(event)) {
-      return;
-    }
-    if (handleNamePoseEditPointerMove(event)) {
-      return;
-    }
-    if (handlePanelShapePointerMove(event)) {
-      return;
-    }
-    if (handleMosaicPointerMove(event)) {
-      return;
-    }
-    if (handleMaskEditorPointerMove(event)) {
-      return;
-    }
-    if (handleWebSamPointerMove(event)) {
-      return;
-    }
-    if (handlePoseEditorPointerMove(event)) {
-      return;
-    }
-    if (handlePastePointerMove(event)) {
-      return;
-    }
-    if (handlePaintEditorPointerMove(event)) {
-      return;
-    }
-    handleMaskStrokePointerMove(event);
-  });
+  ];
 
-  app.addEventListener("pointerup", (event) => {
-    if (handleSidebarResizePointerUp(event)) {
-      return;
+  const pointerMoveChain: readonly PointerChainHandler[] = [
+    handleSidebarResizePointerMove,
+    handlePagePanelCropPointerMove,
+    handlePageObjectsPointerMove,
+    handleNameLayoutEditPointerMove,
+    handleNamePoseEditPointerMove,
+    handlePanelShapePointerMove,
+    handleMosaicPointerMove,
+    handleMaskEditorPointerMove,
+    handleWebSamPointerMove,
+    handlePoseEditorPointerMove,
+    handlePastePointerMove,
+    handlePaintEditorPointerMove,
+    (event) => {
+      handleMaskStrokePointerMove(event);
+      return true;
     }
-    if (handlePagePanelCropPointerUp(event)) {
-      return;
-    }
-    if (handlePageObjectsPointerUp(event)) {
-      return;
-    }
-    if (handleNameLayoutEditPointerUp(event)) {
-      return;
-    }
-    if (handleNamePoseEditPointerUp(event)) {
-      return;
-    }
-    if (handlePanelShapePointerUp(event)) {
-      return;
-    }
-    if (handleMosaicPointerUp(event)) {
-      return;
-    }
-    if (handleMaskEditorPointerUp(event)) {
-      return;
-    }
-    if (handleWebSamPointerUp(event)) {
-      return;
-    }
-    if (handlePoseEditorPointerUp(event)) {
-      return;
-    }
-    if (handlePastePointerUp(event)) {
-      return;
-    }
-    if (handlePaintEditorPointerUp(event)) {
-      return;
-    }
-    handleMaskStrokePointerUp(event);
-  });
+  ];
 
-  app.addEventListener("pointercancel", (event) => {
-    if (handleSidebarResizePointerCancel(event)) {
-      return;
+  const pointerUpChain: readonly PointerChainHandler[] = [
+    handleSidebarResizePointerUp,
+    handlePagePanelCropPointerUp,
+    handlePageObjectsPointerUp,
+    handleNameLayoutEditPointerUp,
+    handleNamePoseEditPointerUp,
+    handlePanelShapePointerUp,
+    handleMosaicPointerUp,
+    handleMaskEditorPointerUp,
+    handleWebSamPointerUp,
+    handlePoseEditorPointerUp,
+    handlePastePointerUp,
+    handlePaintEditorPointerUp,
+    (event) => {
+      handleMaskStrokePointerUp(event);
+      return true;
     }
-    if (handlePagePanelCropPointerCancel(event)) {
-      return;
+  ];
+
+  const pointerCancelChain: readonly PointerChainHandler[] = [
+    handleSidebarResizePointerCancel,
+    handlePagePanelCropPointerCancel,
+    handlePageObjectsPointerCancel,
+    handleNameLayoutEditPointerCancel,
+    handleNamePoseEditPointerCancel,
+    handlePanelShapePointerCancel,
+    handleMosaicPointerCancel,
+    handleMaskEditorPointerCancel,
+    handleWebSamPointerCancel,
+    handlePoseEditorPointerCancel,
+    handlePastePointerCancel,
+    handlePaintEditorPointerCancel,
+    (event) => {
+      handleMaskStrokePointerCancel(event);
+      return true;
     }
-    if (handlePageObjectsPointerCancel(event)) {
-      return;
-    }
-    if (handleNameLayoutEditPointerCancel(event)) {
-      return;
-    }
-    if (handleNamePoseEditPointerCancel(event)) {
-      return;
-    }
-    if (handlePanelShapePointerCancel(event)) {
-      return;
-    }
-    if (handleMosaicPointerCancel(event)) {
-      return;
-    }
-    if (handleMaskEditorPointerCancel(event)) {
-      return;
-    }
-    if (handleWebSamPointerCancel(event)) {
-      return;
-    }
-    if (handlePoseEditorPointerCancel(event)) {
-      return;
-    }
-    if (handlePastePointerCancel(event)) {
-      return;
-    }
-    if (handlePaintEditorPointerCancel(event)) {
-      return;
-    }
-    handleMaskStrokePointerCancel(event);
-  });
+  ];
+
+  app.addEventListener("pointerdown", (event) => runPointerChain(pointerDownChain, event));
+  app.addEventListener("pointermove", (event) => runPointerChain(pointerMoveChain, event));
+  app.addEventListener("pointerup", (event) => runPointerChain(pointerUpChain, event));
+  app.addEventListener("pointercancel", (event) => runPointerChain(pointerCancelChain, event));
 
   bindRegisteredEvents(app);
 }
