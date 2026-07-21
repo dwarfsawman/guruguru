@@ -594,6 +594,11 @@ export async function importProjectFromArchive(
     runSql("BEGIN");
     try {
       const project = importRewriteRow(data.project, idMap, newProjectRoot);
+      // storage_dir はアーカイブ由来の値を信用せず、必ず新プロジェクト自身の保存領域へ
+      // 再割り当てする。任意パスのまま残ると、後で deleteProject したときに他プロジェクトの
+      // ディレクトリ(や dataRoot 外)を削除し得る。正当なエクスポートでは storage_dir は
+      // `gguru://project/` トークンなので、この上書きは正常系の結果を変えない。
+      project.storage_dir = newProjectRoot;
       insertRow("projects", project);
 
       insertSharedRows("workflow_templates", data.shared?.workflow_templates);
@@ -871,7 +876,14 @@ function fromGguruToken(token: string, newProjectRoot: string): string {
     return newProjectRoot;
   }
   const relOs = rel.split("/").join(sep);
-  return join(newProjectRoot, relOs);
+  const resolved = join(newProjectRoot, relOs);
+  // data.json は信頼できない入力。`..` 連鎖・絶対パス・ドライブレター等で新プロジェクトの
+  // 保存領域外(別プロジェクトの storage_dir 等)を指すトークンは 400 で拒否する。
+  // (正当なエクスポートは projectRoot 配下の相対パスしか gguru:// 化しない。)
+  if (!isPathInsideOrEqual(resolved, newProjectRoot)) {
+    throw new HttpError(400, `data.json に projectRoot 外へ脱出する gguru:// パスを検出しました: ${token}`);
+  }
+  return resolved;
 }
 
 // ---------------------------------------------------------------------------------------------
