@@ -238,16 +238,28 @@ async function uploadImageBytesToComfy(bytes: Buffer<ArrayBuffer>, filename: str
   };
 }
 
+/**
+ * **response.ok 判定 → JSON.parse の順**(llm.ts の llmFetchJson と同じ修正パターン)。
+ * 旧実装は JSON.parse を先に行っていたため、エラー応答が非 JSON(HTML エラーページ等)だと
+ * 本来の HTTP エラーではなく無関係な SyntaxError が飛んでいた。
+ */
 async function comfyFetchJson(path: string, init: RequestInit = {}, timeoutMs?: number) {
   const response = await comfyFetch(path, init, timeoutMs);
   const text = await response.text();
-  const json = text ? JSON.parse(text) : null;
 
   if (!response.ok) {
     throw new Error(`ComfyUI ${path} failed with ${response.status}: ${text}`);
   }
 
-  return json;
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    const truncated = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+    throw new Error(`ComfyUI ${path} returned a non-JSON response: ${truncated}`);
+  }
 }
 
 async function comfyFetch(path: string, init: RequestInit = {}, timeoutMs?: number) {

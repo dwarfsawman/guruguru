@@ -622,6 +622,116 @@ test("guruzip エクスポート: 存在しない project は404", async () => {
   );
 });
 
+test("guruzip インポート: '..' で脱出する gguru:// トークンは400で拒否されstorageを残さない", async () => {
+  const { dataRoot } = await import("./db.ts");
+  const fs = await import("node:fs/promises");
+  const projectsRoot = join(dataRoot, "projects");
+  const before = new Set(await fs.readdir(projectsRoot).catch(() => [] as string[]));
+
+  const zip = new JSZip();
+  zip.file(
+    "manifest.json",
+    JSON.stringify({ app: "guruguru", kind: "project-export", formatVersion: 1, counts: {}, warnings: [] })
+  );
+  zip.file(
+    "data.json",
+    JSON.stringify({
+      project: {
+        id: "project_escape",
+        name: "Escape",
+        mode: "single",
+        storage_dir: "gguru://project/../../project_victim",
+        canvas_width: 1024,
+        canvas_height: 1446
+      },
+      tables: {},
+      shared: {}
+    })
+  );
+  const buffer = await zip.generateAsync({ type: "nodebuffer" });
+
+  const beforeProjectCount = getRow<{ n: number }>("SELECT COUNT(*) AS n FROM projects")!.n;
+  await assert.rejects(
+    () => importProject(buffer),
+    (error: unknown) => error instanceof HttpError && error.statusCode === 400
+  );
+  assert.equal(getRow<{ n: number }>("SELECT COUNT(*) AS n FROM projects")!.n, beforeProjectCount);
+  const after = await fs.readdir(projectsRoot).catch(() => [] as string[]);
+  assert.deepEqual(after.filter((name) => !before.has(name)), []);
+});
+
+test("guruzip インポート: 絶対パス/ドライブレターの gguru:// トークンも400", async () => {
+  const attacks = ["gguru://project//etc/passwd", "gguru://project/C:/Windows/Temp/evil"];
+  for (const storageDir of attacks) {
+    const zip = new JSZip();
+    zip.file(
+      "manifest.json",
+      JSON.stringify({ app: "guruguru", kind: "project-export", formatVersion: 1, counts: {}, warnings: [] })
+    );
+    zip.file(
+      "data.json",
+      JSON.stringify({
+        project: { id: "project_abs", name: "Abs", mode: "single", storage_dir: storageDir, canvas_width: 1024, canvas_height: 1446 },
+        tables: {},
+        shared: {}
+      })
+    );
+    const buffer = await zip.generateAsync({ type: "nodebuffer" });
+    // ドライブレター型はOS差で「脱出」にならず projectRoot 配下へ正規化されることもあるため、
+    // 「拒否される」か「新プロジェクト自身の保存領域に矯正される」のどちらかであれば安全。
+    try {
+      const imported = await importProject(buffer);
+      const row = getRow<{ storage_dir: string }>("SELECT storage_dir FROM projects WHERE id = ?", [String(imported.project.id)]);
+      assert.ok(row);
+      const { isPathInside } = await import("./paths.ts");
+      const { dataRoot } = await import("./db.ts");
+      assert.ok(isPathInside(row.storage_dir, join(dataRoot, "projects")), `storage_dir が保存領域外: ${row.storage_dir}`);
+    } catch (error) {
+      assert.ok(error instanceof HttpError && error.statusCode === 400, `想定外のエラー: ${String(error)}`);
+    }
+  }
+});
+
+test("guruzip インポート: storage_dir は必ず新プロジェクト自身の保存領域へ再割り当てされる", async () => {
+  const fs = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { resolve } = await import("node:path");
+  // gguru:// トークン化されていない生の絶対パス(=他プロジェクト/任意ディレクトリを装う)。
+  const victimDir = resolve(join(tmpdir(), "guruguru-import-victim-dir"));
+  await fs.mkdir(victimDir, { recursive: true });
+  await fs.writeFile(join(victimDir, "victim.txt"), "must survive");
+
+  const zip = new JSZip();
+  zip.file(
+    "manifest.json",
+    JSON.stringify({ app: "guruguru", kind: "project-export", formatVersion: 1, counts: {}, warnings: [] })
+  );
+  zip.file(
+    "data.json",
+    JSON.stringify({
+      project: { id: "project_hijack", name: "Hijack", mode: "single", storage_dir: victimDir, canvas_width: 1024, canvas_height: 1446 },
+      tables: {},
+      shared: {}
+    })
+  );
+  const buffer = await zip.generateAsync({ type: "nodebuffer" });
+
+  const imported = await importProject(buffer);
+  const newProjectId = String(imported.project.id);
+  const row = getRow<{ storage_dir: string }>("SELECT storage_dir FROM projects WHERE id = ?", [newProjectId]);
+  assert.ok(row);
+  assert.notEqual(resolve(row.storage_dir), victimDir, "storage_dir がアーカイブ由来の任意パスのまま残っている");
+  const { isPathInside } = await import("./paths.ts");
+  const { dataRoot } = await import("./db.ts");
+  assert.ok(isPathInside(row.storage_dir, join(dataRoot, "projects")), `storage_dir が保存領域外: ${row.storage_dir}`);
+
+  // このプロジェクトを削除しても任意ディレクトリ側は消えない。
+  const { deleteProject } = await import("./projects.ts");
+  await deleteProject(newProjectId);
+  await assert.doesNotReject(fs.stat(join(victimDir, "victim.txt")));
+  await fs.rm(victimDir, { recursive: true, force: true });
+});
+
 test("guruzip インポート: data.json の files/ 内容が新 projectRoot に展開される(圧縮往復)", async () => {
   const fixture = await buildFixtureProject("files");
   const exportResult = await exportProject(fixture.projectId);

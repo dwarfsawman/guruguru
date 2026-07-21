@@ -1,5 +1,4 @@
 import { mkdirSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -7,16 +6,16 @@ import { Database } from "bun:sqlite";
 import { DEFAULT_WEB_SAM_MODEL_BASE_URL } from "../shared/constants";
 import type { ComfySettings, LlmSettings, VlmAuditSettings } from "../shared/types";
 import { isPathInsideOrEqual } from "./paths";
+import { resolveServerEnvironment } from "./serverEnv";
 
-const isTestDataMode = process.env.GURUGURU_TEST_DB === "1" || process.env.NODE_ENV === "test";
-export const instanceMode = isTestDataMode
-  ? "test"
-  : process.env.GURUGURU_INSTANCE_MODE === "agent"
-    ? "agent"
-    : "user";
+// 環境変数の解決は serverEnv.ts の型付きリゾルバへ集約(テストモード時はテスト用
+// ディレクトリが GURUGURU_DATA_DIR より必ず優先される)。
+const serverEnv = resolveServerEnvironment();
+const isTestDataMode = serverEnv.isTestDataMode;
+export const instanceMode = serverEnv.instanceMode;
 type SqlValue = string | number | bigint | boolean | null | Uint8Array;
 
-export const dataRoot = resolveDataRoot();
+export const dataRoot = serverEnv.dataRoot;
 assertDataRootIsNotProjectLocal(dataRoot);
 mkdirSync(dataRoot, { recursive: true });
 
@@ -93,8 +92,8 @@ export const jsonColumnNames = new Map<string, string>([
 ]);
 
 export const defaultComfySettings: ComfySettings = {
-  baseUrl: process.env.GURUGURU_DEFAULT_COMFY_BASE_URL?.trim() || "http://127.0.0.1:8188",
-  websocketUrl: process.env.GURUGURU_DEFAULT_COMFY_WEBSOCKET_URL?.trim() || "ws://127.0.0.1:8188/ws",
+  baseUrl: serverEnv.defaultComfyBaseUrl,
+  websocketUrl: serverEnv.defaultComfyWebsocketUrl,
   timeoutSeconds: 60,
   imageFetchMode: "view",
   storageDir: dataRoot,
@@ -944,31 +943,6 @@ function parseJsonColumn(value: string): unknown {
   } catch {
     return value;
   }
-}
-
-function resolveDataRoot(): string {
-  const explicitDataDir = process.env.GURUGURU_DATA_DIR?.trim();
-  if (explicitDataDir) {
-    return resolve(explicitDataDir);
-  }
-
-  if (isTestDataMode) {
-    return resolve(process.env.GURUGURU_TEST_DATA_DIR?.trim() || join(tmpdir(), "guruguru-test", `pid-${process.pid}`));
-  }
-
-  return defaultUserDataRoot();
-}
-
-function defaultUserDataRoot(): string {
-  if (process.platform === "win32") {
-    return join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "GURUGURU");
-  }
-
-  if (process.platform === "darwin") {
-    return join(homedir(), "Library", "Application Support", "GURUGURU");
-  }
-
-  return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "guruguru");
 }
 
 function assertDataRootIsNotProjectLocal(root: string) {
