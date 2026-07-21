@@ -331,11 +331,13 @@ export async function pollCollectRound(roundId: string, projectId: string | null
         state.message = collectedCount > 0
           ? `生成画像を自動で取り込みました。${collectedCount}件`
           : "生成画像を自動で更新しました。";
-        await refreshProject(roundId, state.activeAssetId);
+        // ユーザーのラウンド選択(activeRoundId)を維持する。poll中の roundId を渡すと
+        // 生成中3秒毎に選択が強奪される。
+        await refreshProject();
         requestRender();
       } else if (status && !isRoundActiveStatus(status)) {
         state.message = terminalRoundMessage(status);
-        await refreshProject(roundId, state.activeAssetId);
+        await refreshProject();
         requestRender();
         return;
       } else if (progressChanged) {

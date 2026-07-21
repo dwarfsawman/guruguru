@@ -104,6 +104,11 @@ let poseRequestId = 0;
 let latestPoseLoadRequestId = 0;
 let latestPoseDetectRequestId = 0;
 let posePendingDetect = false;
+/**
+ * requestId → 発行時の assetId。worker応答(0.5〜3秒後)を受信時点の activeAssetId でなく
+ * 発行元アセットの draft へ適用する(検出中のアセット切替による取り違え永続化を防ぐ)。
+ */
+const poseRequestAssetIds = new Map<number, string>();
 
 // ---- Pose worker 統合（MediaPipe / CIGPose）----
 // WebSAM worker 統合（ensureWebSamWorker / handleWebSamWorkerResponse）と同型。
@@ -210,6 +215,7 @@ async function loadActivePoseModel() {
   }
   const requestId = nextPoseRequestId();
   latestPoseLoadRequestId = requestId;
+  poseRequestAssetIds.set(requestId, assetId);
   setPoseDraft({
     ...draft,
     modelStatus: "downloading",
@@ -241,8 +247,10 @@ export function probeActivePoseModelCache() {
     return;
   }
   const model = poseModelById(draft.modelId) ?? defaultPoseModel();
+  const requestId = nextPoseRequestId();
+  poseRequestAssetIds.set(requestId, assetId);
   postPoseMessage(
-    { type: "probe-cache", requestId: nextPoseRequestId(), model },
+    { type: "probe-cache", requestId, model },
     isCigposeModel(model) ? "cigpose" : "mediapipe"
   );
 }
@@ -284,6 +292,7 @@ async function sendPoseDetect(assetId: string) {
   const raw = imageToRawData(image);
   const requestId = nextPoseRequestId();
   latestPoseDetectRequestId = requestId;
+  poseRequestAssetIds.set(requestId, assetId);
   setPoseDraft({
     ...draft,
     modelStatus: "detecting",
@@ -310,7 +319,11 @@ async function resetPoseDetection() {
 }
 
 async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
-  const assetId = state.activeAssetId;
+  // 応答は request 発行元アセットの draft へ適用する(受信時点の activeAssetId は使わない)。
+  const assetId = poseRequestAssetIds.get(message.requestId) ?? state.activeAssetId;
+  if (message.type !== "progress") {
+    poseRequestAssetIds.delete(message.requestId);
+  }
   const draft = assetId ? poseDraftForAsset(assetId) : null;
   if (!assetId || !draft) {
     return;
@@ -345,7 +358,8 @@ async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
       modelError: ""
     });
     requestRender();
-    if (posePendingDetect) {
+    // 検出再開は #previewImage(=activeアセットの画像)を使うため、active宛の応答のみ。
+    if (posePendingDetect && assetId === state.activeAssetId) {
       posePendingDetect = false;
       await sendPoseDetect(assetId);
     }
@@ -364,7 +378,7 @@ async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
         draft.modelStatus === "downloading" ||
         draft.modelStatus === "initializing" ||
         draft.modelStatus === "detecting";
-      if (!inFlight) {
+      if (!inFlight && assetId === state.activeAssetId) {
         await loadActivePoseModel();
       }
     } else if (draft.modelStatus === "idle") {

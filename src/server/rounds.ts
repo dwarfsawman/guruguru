@@ -1259,9 +1259,12 @@ export function deleteRoundTree(roundId: string) {
   );
   const roundIds = rows.map((row) => row.id);
   const placeholders = roundIds.map(() => "?").join(", ");
+  // task が既に削除済みのダングリング参照は履歴として保護しない(存在するtaskのみ409対象)。
   const scriptMangaHistory = getRow<{ id: string }>(
-    `SELECT id FROM generation_rounds
-     WHERE id IN (${placeholders}) AND script_manga_task_id IS NOT NULL
+    `SELECT round.id FROM generation_rounds round
+     WHERE round.id IN (${placeholders})
+       AND round.script_manga_task_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM script_manga_tasks task WHERE task.id = round.script_manga_task_id)
      LIMIT 1`,
     roundIds
   );

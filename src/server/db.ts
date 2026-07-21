@@ -783,6 +783,17 @@ export function initializeDb() {
     AFTER DELETE ON script_manga_tasks BEGIN
       UPDATE script_manga_tasks SET inherited_from_task_id = NULL WHERE inherited_from_task_id = OLD.id;
     END;
+    CREATE TRIGGER IF NOT EXISTS trg_script_manga_task_clear_round_link
+    AFTER DELETE ON script_manga_tasks BEGIN
+      UPDATE generation_rounds SET script_manga_task_id = NULL WHERE script_manga_task_id = OLD.id;
+    END;
+  `);
+  // このトリガ導入前に task 削除でダングリングした script_manga_task_id を一括NULL化
+  // (deleteRoundTree の409ガードが恒久的に該当Roundを削除不能にしていた)。
+  db.exec(`
+    UPDATE generation_rounds SET script_manga_task_id = NULL
+    WHERE script_manga_task_id IS NOT NULL
+      AND script_manga_task_id NOT IN (SELECT id FROM script_manga_tasks)
   `);
 
   // A crash before materializeRun's terminal phase update can leave partial run-owned pages/tasks.

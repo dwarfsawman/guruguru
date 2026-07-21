@@ -29,6 +29,12 @@ let activeBoxPrompt: ActiveBoxPrompt | null = null;
 
 let webSamWorker: Worker | null = null;
 let webSamRequestId = 0;
+/**
+ * requestId → 発行時の assetId。worker応答(エンコード/デコードは数秒かかる)を受信時点の
+ * activeAssetId でなく発行元アセットの draft へ適用する(モーダルを閉じた/アセット切替後の
+ * 遅延適用による取り違えを防ぐ)。
+ */
+const webSamRequestAssetIds = new Map<number, string>();
 let latestWebSamLoadRequestId = 0;
 let latestWebSamEncodeRequestId = 0;
 let latestWebSamDecodeRequestId = 0;
@@ -213,11 +219,21 @@ function updateActiveWebSamDraft(patch: Partial<InpaintDraft>) {
 }
 
 async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
-  const assetId = state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null;
+  // 応答は request 発行元アセットの draft へ適用する(受信時点の activeAssetId は使わない)。
+  const assetId =
+    webSamRequestAssetIds.get(message.requestId) ??
+    state.activeAssetId ??
+    state.generationDraft?.inpaint?.parentAssetId ??
+    null;
+  if (message.type !== "progress") {
+    webSamRequestAssetIds.delete(message.requestId);
+  }
   const draft = assetId ? inpaintDraftForAsset(assetId) : null;
   if (!assetId || !draft) {
     return;
   }
+  const isActiveAsset =
+    assetId === (state.activeAssetId ?? state.generationDraft?.inpaint?.parentAssetId ?? null);
 
   if (message.type === "progress") {
     if (message.requestId < latestWebSamLoadRequestId && message.progress.status !== "encoding" && message.progress.status !== "decoding") {
@@ -248,7 +264,10 @@ async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
       webSamError: ""
     });
     requestRender();
-    await encodeActiveImageForWebSam();
+    // エンコードは #previewImage(=activeアセットの画像)を使うため、active宛の応答のみ。
+    if (isActiveAsset) {
+      await encodeActiveImageForWebSam();
+    }
     return;
   }
 
@@ -269,7 +288,7 @@ async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
       webSamError: ""
     });
     requestRender();
-    if (hasWebSamPrompt(current)) {
+    if (isActiveAsset && hasWebSamPrompt(current)) {
       await requestWebSamDecode();
     }
     return;
@@ -294,7 +313,8 @@ async function handleWebSamWorkerResponse(message: WebSamWorkerResponse) {
       ? message.selectedIndex
       : candidates[0]?.index ?? 0;
     const selected = candidates.find((candidate) => candidate.index === selectedIndex) ?? candidates[0] ?? null;
-    if (selected) {
+    // #maskCanvas はactiveアセットの表示。非active宛の遅延応答はcanvasへ描かない(draftのみ更新)。
+    if (selected && isActiveAsset) {
       await drawCandidatePreview(assetId, selected.dataUrl);
     }
     setInpaintDraft({
@@ -378,6 +398,7 @@ async function loadActiveWebSamModel() {
   }
   const requestId = nextWebSamRequestId();
   latestWebSamLoadRequestId = requestId;
+  webSamRequestAssetIds.set(requestId, assetId);
   setInpaintDraft({
     ...draft,
     webSamModelStatus: "downloading",
@@ -405,6 +426,7 @@ async function encodeActiveImageForWebSam() {
   const raw = webSamInputRawData(image, assetId);
   const requestId = nextWebSamRequestId();
   latestWebSamEncodeRequestId = requestId;
+  webSamRequestAssetIds.set(requestId, assetId);
   setInpaintDraft({
     ...draft,
     webSamModelStatus: "encoding",
@@ -467,6 +489,7 @@ export async function requestWebSamDecode() {
   }
   const requestId = nextWebSamRequestId();
   latestWebSamDecodeRequestId = requestId;
+  webSamRequestAssetIds.set(requestId, assetId);
   setInpaintDraft({
     ...draft,
     webSamModelStatus: "decoding",
@@ -501,6 +524,7 @@ export async function requestWebSamReprocess() {
   }
   const requestId = nextWebSamRequestId();
   latestWebSamDecodeRequestId = requestId;
+  webSamRequestAssetIds.set(requestId, assetId);
   postWebSamMessage({
     type: "reprocess",
     requestId,

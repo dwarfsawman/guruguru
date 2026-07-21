@@ -209,6 +209,7 @@ export function closePagePanelLightbox() {
   const flushObjectsPromise = flushPageObjectsSave();
   const flushShapePromise = flushShapeEditSave();
   const flushMosaicPromise = flushMosaicEditSave();
+  const flushCropPromise = flushCropWheelCommit();
   const wasCropDirty = panelPreviewDirty;
   panelPreviewDirty = false;
   state.pagePanelLightbox = null;
@@ -219,8 +220,11 @@ export function closePagePanelLightbox() {
   // 最新化するため再取得する。dirty 判定は flush(クローズ直前1秒以内の編集の PATCH)完了後に
   // 読むこと -- 完了前に読むと false のままスキップされ、PATCH 前の古い `?v=` を拾ってしまう。
   void (async () => {
-    await Promise.all([flushObjectsPromise, flushShapePromise, flushMosaicPromise]);
-    if (wasCropDirty || consumePageObjectsDirtyFlag() || consumeShapeEditDirtyFlag() || consumeMosaicDirtyFlag()) {
+    await Promise.all([flushObjectsPromise, flushShapePromise, flushMosaicPromise, flushCropPromise]);
+    // flushCropPromise の commit 完了で panelPreviewDirty が再セットされることがあるため読み直す。
+    const cropDirtyAfterFlush = panelPreviewDirty;
+    panelPreviewDirty = false;
+    if (wasCropDirty || cropDirtyAfterFlush || consumePageObjectsDirtyFlag() || consumeShapeEditDirtyFlag() || consumeMosaicDirtyFlag()) {
       await reloadBookPages();
     }
   })();
@@ -250,6 +254,7 @@ function closeCropEditor() {
   if (!lightbox) {
     return;
   }
+  void flushCropWheelCommit();
   lightbox.cropPanelId = null;
   lightbox.cropDraft = null;
   requestRender();
@@ -711,14 +716,34 @@ export function handlePagePanelCropWheel(event: WheelEvent): boolean {
 
 // ホイールズームは連続で来るので、止まってから 1 回だけ PATCH 保存する。
 let cropWheelCommitTimer: number | null = null;
+let cropWheelCommitPanelId: string | null = null;
 function scheduleCropWheelCommit(panelId: string) {
   if (cropWheelCommitTimer !== null) {
     window.clearTimeout(cropWheelCommitTimer);
   }
+  cropWheelCommitPanelId = panelId;
   cropWheelCommitTimer = window.setTimeout(() => {
     cropWheelCommitTimer = null;
+    cropWheelCommitPanelId = null;
     void commitCropDraft(panelId);
   }, 400);
+}
+
+/**
+ * 保留中のホイールズーム commit を即時確定する。クロップ編集終了・lightbox クローズなど
+ * どの離脱経路でも呼ぶこと(呼ばないと debounce 400ms 内のズームが保存されず巻き戻る)。
+ * commitCropDraft は呼び出しと同期に cropDraft/送信ボディを確定するため、この直後に
+ * state をクリアしても PATCH 自体は完走する。
+ */
+function flushCropWheelCommit(): Promise<void> | null {
+  if (cropWheelCommitTimer === null) {
+    return null;
+  }
+  window.clearTimeout(cropWheelCommitTimer);
+  cropWheelCommitTimer = null;
+  const panelId = cropWheelCommitPanelId;
+  cropWheelCommitPanelId = null;
+  return panelId ? commitCropDraft(panelId) : null;
 }
 
 /**
