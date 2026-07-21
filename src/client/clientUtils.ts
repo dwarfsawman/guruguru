@@ -1,9 +1,5 @@
-export function clampNumber(value: number, min: number, max: number, fallback: number) {
-  if (!Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.min(max, Math.max(min, value));
-}
+// clampNumber は shared/numbers.ts へ統合(number 入力に対して旧ローカル実装と同一挙動)。
+export { clampNumber } from "../shared/numbers";
 
 export function delay(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));

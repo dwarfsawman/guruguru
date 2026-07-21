@@ -27,14 +27,11 @@ import {
   type PageVec,
   type TextDirection
 } from "./pageObjects";
-
-function fmt(value: number): string {
-  return Number.isFinite(value) ? String(Math.round(value * 1e6) / 1e6) : "0";
-}
-
-function escapeAttr(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+// escapeAttr: 属性値は全て二重引用符で囲むため `'` のエスケープは不要 -- htmlEscape.ts の
+// escapeAttr(`'` も処理)ではなく escapeHtml(旧ローカル実装と同一挙動)を使い、出力バイトを維持する。
+import { escapeHtml as escapeAttr } from "./htmlEscape";
+// fmt: 数値の SVG 属性向け文字列化(`toneSvg.ts` と同じ絶対 6 桁丸め)。
+import { clamp, formatSvgNumber as fmt } from "./numbers";
 
 // --- 本体形状(バンプ/トゲ数はサイズから決める) ---
 
@@ -48,13 +45,6 @@ export function balloonBumpCount(size: PageVec): number {
 export function balloonSpikeCount(size: PageVec): number {
   const scale = Math.max(0, size.x) + Math.max(0, size.y);
   return Math.round(clamp(12 + scale * 10, 12, 24));
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) {
-    return min;
-  }
-  return Math.min(max, Math.max(min, value));
 }
 
 /** 楕円(ベジェ4分割近似)の閉パス。中心=原点。 */

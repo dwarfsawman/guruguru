@@ -44,28 +44,17 @@
  * **id 衝突禁止**: pattern/mask/gradient/filter/clipPath の id は `object.id` を含めて一意化する
  * (サーバは1つの SVG に複数オブジェクトを並べるため必須。`panelClipId`/`image-object-clip-*` の前例踏襲)。
  */
+// escapeAttr: 属性値は全て二重引用符で囲むため `'` のエスケープは不要 -- htmlEscape.ts の
+// escapeAttr(`'` も処理)ではなく escapeHtml(旧ローカル実装と同一挙動)を使い、出力バイトを維持する。
+import { escapeHtml as escapeAttr } from "./htmlEscape";
+// fmt: 数値の SVG 属性向け文字列化(`balloonShape.ts` と同じ絶対 6 桁丸め)。
+import { clamp, formatSvgNumber as fmt } from "./numbers";
 import type { PageVec, ToneKind, ToneObject, ToneParams } from "./pageObjects";
 import { TONE_COUNT_MAX, TONE_NOISE_GRAIN_MAX, TONE_NOISE_GRAIN_MIN, TONE_PITCH_MAX, TONE_PITCH_MIN } from "./pageObjects";
-
-/** 数値の SVG 属性向け文字列化(`balloonShape.ts` と同じ絶対 6 桁丸め)。 */
-function fmt(value: number): string {
-  return Number.isFinite(value) ? String(Math.round(value * 1e6) / 1e6) : "0";
-}
-
-function escapeAttr(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 
 /** defs の id に使えない文字をサニタイズする(`panelClipId` と同じ規約)。 */
 function sanitizeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, "_");
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) {
-    return min;
-  }
-  return Math.min(max, Math.max(min, value));
 }
 
 /** params の欠損に備えたフォールバック取得(正規化を経ない入力からの直接呼び出しへの防御)。 */

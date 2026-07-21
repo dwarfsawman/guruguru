@@ -4,6 +4,7 @@
  * 生成リクエストの pasteComposite.objects 記録)で共用する。
  * DOM・state に依存しない純粋な型と関数のみを持つ。
  */
+import { isFiniteNumber } from "./numbers";
 
 /** 添付オブジェクトの変形。座標・寸法は元画像の natural px、回転はラジアン。アンカーはオブジェクト中心。 */
 export interface PasteTransform {
@@ -32,10 +33,6 @@ export const PASTE_MAX_SOURCE_DIMENSION = 4096;
 export const PASTE_ROTATION_SNAP_DEG = 15;
 /** 1 アセットに添付できるオブジェクト数の上限(暴走 PUT へのサーバ側ガードと共用)。 */
 export const PASTE_MAX_OBJECTS = 64;
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
