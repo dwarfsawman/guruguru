@@ -91,31 +91,9 @@ export async function openPagePanelLightbox(pageId: string) {
     cropDraft: null,
     pageHeight: page.layout?.page.height ?? FALLBACK_PAGE_HEIGHT
   };
-  state.pagePanelAssignments = [];
-  state.pageObjectsDraft = [];
-  state.selectedPageObjectIds = [];
-  state.pageLayerHiddenObjectIds = [];
-  state.pageLayerHiddenPanelIds = [];
-  state.pageLayerHideNonImage = false;
-  state.pagePanelLightboxAssets = [];
-  state.pagePanelLightboxMissingMediaIds = [];
-  state.pageObjectImagePicker = null;
+  resetLightboxSessionState();
+  // open 固有: コマ枠編集ドラフトは book 側 layout の clone から始める(close は null へ戻す)。
   state.pageLayoutDraft = page.layout ? clonePageLayout(page.layout) : null;
-  state.shapeSelectedPanelId = null;
-  state.shapeSelectedVertexIndex = null;
-  state.shapeSplitMode = false;
-  state.shapeSplitDraft = null;
-  state.pageMosaicDraft = [];
-  state.mosaicSelectedRegionId = null;
-  state.mosaicSelectedVertexIndex = null;
-  state.mosaicAddMode = null;
-  state.mosaicRectDraft = null;
-  state.mosaicPolygonDraft = null;
-  state.dialogueDrawerOpen = false;
-  state.pagePanelLightboxDialogueLines = [];
-  state.dialogueProposals = [];
-  state.dialogueProposalBusy = false;
-  state.dialogueProposalRequestPageId = null;
   resetPageObjectsSession();
   resetShapeEditSession();
   resetMosaicEditSession();
@@ -166,16 +144,29 @@ function resolveLightboxPageHeight(detail: PageDetail, pageSummary: PageSummary)
 /** クロップ/オブジェクトを編集(commit)した後 true。lightbox を閉じる時にページ一覧プレビューを最新化する目印。 */
 let panelPreviewDirty = false;
 
-export function closePagePanelLightbox() {
-  // flush は state クリアの前に呼ぶ(persistPageObjects/persistShapeLayout/persistMosaicRegions は
-  // 呼び出しと同期に pageId/送信ボディを確定するので、この後 state をクリアしても PATCH 自体は完走する)。
-  // 完了は下の async ブロックで待つ。
-  const flushObjectsPromise = flushPageObjectsSave();
-  const flushShapePromise = flushShapeEditSave();
-  const flushMosaicPromise = flushMosaicEditSave();
-  const wasCropDirty = panelPreviewDirty;
-  panelPreviewDirty = false;
-  state.pagePanelLightbox = null;
+/**
+ * lightbox セッションが state に持つフィールドを初期値へ戻す。open と close の両方から呼ぶ
+ * **唯一の**リセット定義(以前は open/close に非対称な手書き2連リストがあり、close 側で
+ * freehand/矩形選択/複数頂点選択/ジオメトリプレビュー/平行スナップガイドがリセット漏れしていた
+ * -- 監査 2026-07-21)。open 固有(pagePanelLightbox オブジェクト生成・pageLayoutDraft の clone)と
+ * close 固有(flush・dirty 判定・panelPreviewDirty)は呼び出し側に残す。
+ *
+ * persister(保存タイマー/dirty フラグ)・undo 履歴・ドラッグセッションはここでは触らない --
+ * open 側の resetPageObjectsSession/resetShapeEditSession/resetMosaicEditSession が担う。
+ * close で persister をリセットしてはいけない(close は flush 完了後に dirty フラグを読んで
+ * ページ一覧プレビューを再取得するため、先にリセットすると dirty が失われる)。
+ *
+ * shapeSplitGutter は意図的にリセットしない(分割ガター幅のユーザー好み値として持ち越す)。
+ */
+function resetLightboxSessionState(): void {
+  // このモジュール内のローカルタイマーも残留させない(コマ選択のシングル/ダブル判定 220ms と
+  // ホイールズームの debounce commit 400ms。close 後に発火しても各コールバックはガードで
+  // no-op だが、タイマー自体をここで確実に破棄する)。
+  clearPendingPanelSelect();
+  if (cropWheelCommitTimer !== null) {
+    window.clearTimeout(cropWheelCommitTimer);
+    cropWheelCommitTimer = null;
+  }
   state.pagePanelAssignments = [];
   state.pageObjectsDraft = [];
   state.selectedPageObjectIds = [];
@@ -190,6 +181,12 @@ export function closePagePanelLightbox() {
   state.shapeSelectedVertexIndex = null;
   state.shapeSplitMode = false;
   state.shapeSplitDraft = null;
+  state.shapeGeometryPreview = null;
+  state.shapeParallelSnapGuide = null;
+  state.shapeFreehandMode = false;
+  state.shapeFreehandDraft = null;
+  state.shapeMarquee = null;
+  state.shapeSelectedVertices = [];
   state.shapeAddVertexMode = false;
   state.shapeActiveGeometry = null;
   state.pageMosaicDraft = [];
@@ -203,6 +200,19 @@ export function closePagePanelLightbox() {
   state.dialogueProposals = [];
   state.dialogueProposalBusy = false;
   state.dialogueProposalRequestPageId = null;
+}
+
+export function closePagePanelLightbox() {
+  // flush は state クリアの前に呼ぶ(persistPageObjects/persistShapeLayout/persistMosaicRegions は
+  // 呼び出しと同期に pageId/送信ボディを確定するので、この後 state をクリアしても PATCH 自体は完走する)。
+  // 完了は下の async ブロックで待つ。
+  const flushObjectsPromise = flushPageObjectsSave();
+  const flushShapePromise = flushShapeEditSave();
+  const flushMosaicPromise = flushMosaicEditSave();
+  const wasCropDirty = panelPreviewDirty;
+  panelPreviewDirty = false;
+  state.pagePanelLightbox = null;
+  resetLightboxSessionState();
   closeChronicle();
   requestRender();
   // クロップ/オブジェクト/コマ形状/モザイク編集があった場合だけ、ページ一覧の preview.png?v=... を
