@@ -98,6 +98,7 @@ import {
   type PageObjectHistoryState
 } from "./pageObjectHistory";
 import type { FontSummary } from "../shared/apiTypes";
+import { createDragSession } from "./dragSession";
 import { createDebouncedPersister, type PersistAttemptContext } from "./debouncedPersister";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
@@ -142,7 +143,7 @@ export function resetPageObjectsSession(): void {
     textHistoryDebounceTimer = null;
   }
   textHistoryBaseline = null;
-  objectDrag = null;
+  objectSession.reset();
 }
 
 /** 未保存の変更が保留中なら true を返しつつリセットする(lightbox クローズ判定用)。 */
@@ -194,7 +195,7 @@ async function persistPageObjects(context: PersistAttemptContext): Promise<void>
     // 正規化済み応答をドラフトへ反映するのは「応答時点で新しい編集が何も進行していない」時だけに限定する。
     // 送信〜応答の間にユーザーが編集していた(=保存タイマーが再スケジュール済み or ドラッグ中)場合に
     // 無条件で代入すると、その編集が応答到着時に巻き戻ってしまう。閉じられた/別ページも同様に破棄。
-    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && objectDrag === null) {
+    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && objectSession.data === null) {
       state.pageObjectsDraft = result.objects;
     }
     objectsPersister.markDirty();
@@ -1217,8 +1218,7 @@ const ROTATE_SNAP_RAD = Math.PI / 12;
 const GIZMO_HANDLE_SCREEN_RADIUS_PX = 7;
 const GIZMO_ROTATE_STICK_SCREEN_PX = 30;
 
-interface ObjectDragState {
-  pointerId: number;
+interface ObjectDragData {
   objectId: string;
   kind: ObjectGestureKind;
   /** ジェスチャ開始直前のスナップショット(実際に変化があった時だけ history へ push する)。 */
@@ -1239,7 +1239,17 @@ interface ObjectDragState {
   startAngle: number;
 }
 
-let objectDrag: ObjectDragState | null = null;
+// pointerId 照合・setPointerCapture/release・up/cancel でのクリアは createDragSession(dragSession.ts)へ委譲。
+const objectSession = createDragSession<ObjectDragData>({
+  onMove: (event, drag) => applyObjectDragMove(event, drag),
+  onCommit: (_event, drag) => commitObjectDrag(drag),
+  onCancel: (_event, drag) => {
+    // ポインタキャプチャ喪失等の異常系。ドラッグ開始前の状態へ復元する(commit しない)。
+    state.pageObjectsDraft = drag.startSnapshot.objects;
+    state.selectedPageObjectIds = drag.startSnapshot.selectedIds;
+    requestRender();
+  }
+});
 
 /** オブジェクトモードの `<g transform="scale(1000)">` ルート(回転していない基準要素。svgGizmo.ts 参照)。 */
 function stageRootElement(): SVGGraphicsElement | null {
@@ -1409,8 +1419,7 @@ function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: Obje
     return;
   }
   const center = stage.toScreen(object.position);
-  objectDrag = {
-    pointerId: event.pointerId,
+  objectSession.begin(event, {
     objectId: object.id,
     kind,
     startSnapshot: currentSnapshot(),
@@ -1423,15 +1432,7 @@ function beginObjectDrag(event: PointerEvent, object: EditableObject, kind: Obje
     centerScreenY: center.y,
     startDist: Math.hypot(event.clientX - center.x, event.clientY - center.y),
     startAngle: Math.atan2(event.clientY - center.y, event.clientX - center.x)
-  };
-  const captureTarget = event.target;
-  if (captureTarget instanceof Element && "setPointerCapture" in captureTarget) {
-    try {
-      (captureTarget as unknown as { setPointerCapture(pointerId: number): void }).setPointerCapture(event.pointerId);
-    } catch {
-      // capture に失敗しても pointermove/up は app への委譲で届く。
-    }
-  }
+  });
 }
 
 /** text の拡縮ドラッグ: style.size を factor 倍(クランプ後の実効倍率で maxWidth も同率スケール)。 */
@@ -1478,17 +1479,15 @@ function clampToneCenter(center: { x: number; y: number }): { x: number; y: numb
   };
 }
 
-export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
-  if (!objectDrag || event.pointerId !== objectDrag.pointerId) {
-    return false;
-  }
-  const drag = objectDrag;
-
+/**
+ * ギズモドラッグの pointermove 本体(objectSession.onMove)。`false` を返すとセッションが破棄され、
+ * 委譲チェーン上は「未処理」として扱われる(対象オブジェクト消失時の従来挙動)。
+ */
+function applyObjectDragMove(event: PointerEvent, drag: ObjectDragData): boolean | void {
   if (drag.kind === "move") {
     // 複数選択の移動(C-3): moveGroupStart(単一選択時は1件だけ)へ同じ delta を適用する。
     // 開始位置からの絶対 delta を毎回適用するので、pointermove を何度呼んでも誤差が蓄積しない。
     if (!state.pageObjectsDraft.some((item) => item.id === drag.objectId)) {
-      objectDrag = null;
       return false;
     }
     const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
@@ -1500,7 +1499,6 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
 
   const index = state.pageObjectsDraft.findIndex((item) => item.id === drag.objectId);
   if (index < 0) {
-    objectDrag = null;
     return false;
   }
   const startBox = gizmoBoxForPageObject(drag.startObject);
@@ -1522,7 +1520,6 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   } else if (drag.kind === "tail") {
     if (drag.startObject.kind !== "balloon") {
       // tail ハンドルは balloon にしか出さないので通常到達しない防御分岐。
-      objectDrag = null;
       return false;
     }
     const dxScreen = (event.clientX - drag.startClientX) / drag.pxPerUnit;
@@ -1539,7 +1536,6 @@ export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
   } else if (drag.kind === "tone-center" || drag.kind === "tone-grad-start" || drag.kind === "tone-grad-end") {
     if (drag.startObject.kind !== "tone") {
       // tone-center/tone-grad-* ハンドルは tone にしか出さないので通常到達しない防御分岐。
-      objectDrag = null;
       return false;
     }
     const dxScreen = (event.clientX - drag.startClientX) / drag.pxPerUnit;
@@ -1662,12 +1658,21 @@ function commitObjectMutation(objectId: string, updated: EditableObject): void {
   notifyChroniclePageObjectManualEdit(objectId);
 }
 
+export function handlePageObjectsPointerMove(event: PointerEvent): boolean {
+  return objectSession.handleMove(event);
+}
+
 export function handlePageObjectsPointerUp(event: PointerEvent): boolean {
-  if (!objectDrag || event.pointerId !== objectDrag.pointerId) {
-    return false;
-  }
-  const drag = objectDrag;
-  objectDrag = null;
+  return objectSession.handleUp(event);
+}
+
+/** ポインタキャプチャ喪失等の異常系(objectSession.onCancel)。復元処理はセッション定義側にある。 */
+export function handlePageObjectsPointerCancel(event: PointerEvent): boolean {
+  return objectSession.handleCancel(event);
+}
+
+/** ギズモドラッグ確定(objectSession.onCommit)。実変化があった時だけ history へ push + 保存する。 */
+function commitObjectDrag(drag: ObjectDragData): void {
   const current = state.pageObjectsDraft.find((item) => item.id === drag.objectId);
   // 複数選択の移動でも、全員が同じ delta で動くため primary(drag.objectId)の変化だけ見れば
   // 「何か動いたか」を判定できる(dx=dy=0 なら moveGroupStart の全員も unchanged)。
@@ -1693,20 +1698,6 @@ export function handlePageObjectsPointerUp(event: PointerEvent): boolean {
       notifyChroniclePageObjectManualEdit(current.id);
     }
   }
-  return true;
-}
-
-/** ポインタキャプチャ喪失等の異常系。ドラッグ開始前の状態へ復元する(commit しない)。 */
-export function handlePageObjectsPointerCancel(event: PointerEvent): boolean {
-  if (!objectDrag || event.pointerId !== objectDrag.pointerId) {
-    return false;
-  }
-  const drag = objectDrag;
-  objectDrag = null;
-  state.pageObjectsDraft = drag.startSnapshot.objects;
-  state.selectedPageObjectIds = drag.startSnapshot.selectedIds;
-  requestRender();
-  return true;
 }
 
 /**
