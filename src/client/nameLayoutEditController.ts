@@ -184,7 +184,9 @@ async function saveLayoutEdit(): Promise<void> {
         method: "POST",
         body: JSON.stringify({
           pageIndex: edit.pageIndex,
-          expectedVersion: candidate.editVersion,
+          // セッション開始時に固定した baseVersion を送る(ポーリングで更新される candidate.editVersion を
+          // 送ると、編集中の並行更新が 409 にならずサイレント上書きになる)。namePoseEditController と同型。
+          expectedVersion: edit.baseVersion,
           layout: edit.draftLayout,
           balloonHints: Object.keys(edit.draftHints).length > 0 ? edit.draftHints : null
         })
@@ -201,6 +203,12 @@ async function saveLayoutEdit(): Promise<void> {
     // 409(並行更新・採用中)は候補一覧を取り直す。ドラフトは保持し、人間が再保存できる。
     if (state.nameLayoutEdit === edit) edit.saveBusy = false;
     await refreshScriptMangaCandidates();
+    // 再保存を可能にするため、409を人間へ提示した上で baseVersion を最新へ進める
+    // (進めないと以後の保存が恒久409になる)。
+    if (state.nameLayoutEdit === edit) {
+      const refreshed = state.scriptMangaCandidates.find((entry) => entry.id === candidate.id);
+      if (refreshed) edit.baseVersion = refreshed.editVersion;
+    }
     requestRender();
   }
 }
@@ -219,7 +227,7 @@ async function resetLayoutEdit(): Promise<void> {
         method: "POST",
         body: JSON.stringify({
           pageIndex: edit.pageIndex,
-          expectedVersion: candidate.editVersion,
+          expectedVersion: edit.baseVersion,
           layout: null,
           balloonHints: null
         })

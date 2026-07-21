@@ -33,9 +33,20 @@ function isServableFile(filePath: string): boolean {
 
 export function streamFile(res: ServerResponse, filePath: string) {
   const stream = isPathInside(filePath, dataRoot) ? safeFileStream(filePath) : createReadStream(filePath);
-  stream.on("error", () => sendJson(res, 404, { error: "File was not found" }));
-  res.writeHead(200, { "content-type": contentTypeFor(filePath) });
-  stream.pipe(res);
+  stream.on("error", () => {
+    if (!res.headersSent) {
+      sendJson(res, 404, { error: "File was not found" });
+      return;
+    }
+    // header送信後の失敗はJSONへ切り替えられないため、接続を閉じてクライアントのハングを防ぐ。
+    if (!res.destroyed) {
+      res.destroy();
+    }
+  });
+  stream.once("open", () => {
+    res.writeHead(200, { "content-type": contentTypeFor(filePath) });
+    stream.pipe(res);
+  });
 }
 
 export function contentTypeFor(path: string) {

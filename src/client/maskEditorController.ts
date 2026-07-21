@@ -1166,6 +1166,9 @@ export function closeMaskEditorSession() {
   activeMaskStroke = null;
   activeImagePan = null;
   maskToolbarDrag = null;
+  // Undoスタックはフル解像度canvasを保持する(2048²で1件≒84MB)。モーダルを閉じたら
+  // 全アセット分を破棄しないとGB級のメモリリークになる。
+  maskUndoStacks.clear();
 }
 
 export function handleMaskEditorKeydown(event: KeyboardEvent): boolean {

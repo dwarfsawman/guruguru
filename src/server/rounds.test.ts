@@ -151,13 +151,47 @@ function insertRound(input: {
   return roundId;
 }
 
+/** 実在する script_manga_tasks 行を作る(409ガードは task 実在時のみ働く)。 */
+function insertScriptMangaTask(projectId: string): string {
+  const pageId = createId("page");
+  runSql("INSERT INTO pages (id, project_id, page_index) VALUES (?, ?, 999)", [pageId, projectId]);
+  const scriptId = createId("script");
+  runSql("INSERT INTO manga_scripts (id, project_id, title) VALUES (?, ?, 'Script')", [scriptId, projectId]);
+  const revisionId = createId("rev");
+  runSql(
+    "INSERT INTO script_revisions (id, script_id, revision, fountain_source, parsed_json) VALUES (?, ?, 1, '', '{}')",
+    [revisionId, scriptId]
+  );
+  const planId = createId("manga_plan");
+  runSql(
+    `INSERT INTO script_manga_plans
+       (id, project_id, script_id, script_revision_id, planner_version, prompt_compiler_version, plan_json, validation_json)
+     VALUES (?, ?, ?, ?, 'v1', 'v1', '{}', '{}')`,
+    [planId, projectId, scriptId, revisionId]
+  );
+  const runId = createId("manga");
+  runSql(
+    `INSERT INTO script_manga_runs
+       (id, project_id, script_id, script_revision_id, plan_id, status, phase, config_json)
+     VALUES (?, ?, ?, ?, ?, 'preparing', 'planning', '{}')`,
+    [runId, projectId, scriptId, revisionId, planId]
+  );
+  const taskId = createId("manga_task");
+  runSql(
+    `INSERT INTO script_manga_tasks (id, run_id, page_id, panel_id, prompt, status)
+     VALUES (?, ?, ?, 'panel-1', 'draw', 'pending')`,
+    [taskId, runId, pageId]
+  );
+  return taskId;
+}
+
 test("deleteRoundTree: rejects a tree containing script manga task history", () => {
   const fixture = createRoundDeleteFixture();
   const rootId = insertRound({ ...fixture, roundIndex: 0 });
   const childId = insertRound({
     ...fixture,
     parentRoundId: rootId,
-    scriptMangaTaskId: createId("manga_task"),
+    scriptMangaTaskId: insertScriptMangaTask(fixture.projectId),
     roundIndex: 1
   });
 
@@ -167,6 +201,40 @@ test("deleteRoundTree: rejects a tree containing script manga task history", () 
   );
   assert.ok(getRow("SELECT id FROM generation_rounds WHERE id = ?", [rootId]));
   assert.ok(getRow("SELECT id FROM generation_rounds WHERE id = ?", [childId]));
+});
+
+test("deleteRoundTree: a dangling script_manga_task_id (task already deleted) does not block deletion", () => {
+  const fixture = createRoundDeleteFixture();
+  const rootId = insertRound({ ...fixture, roundIndex: 0 });
+  const childId = insertRound({
+    ...fixture,
+    parentRoundId: rootId,
+    scriptMangaTaskId: createId("manga_task"), // 実在しない task = ダングリング
+    roundIndex: 1
+  });
+
+  const result = deleteRoundTree(rootId);
+  assert.equal(result.deleted, true);
+  assert.equal(getRow("SELECT id FROM generation_rounds WHERE id = ?", [rootId]), null);
+  assert.equal(getRow("SELECT id FROM generation_rounds WHERE id = ?", [childId]), null);
+  removeRoundTrashSnapshot(rootId);
+});
+
+test("deleting a script_manga_task clears generation_rounds.script_manga_task_id (trigger)", () => {
+  const fixture = createRoundDeleteFixture();
+  const taskId = insertScriptMangaTask(fixture.projectId);
+  const roundId = insertRound({ ...fixture, scriptMangaTaskId: taskId, roundIndex: 0 });
+
+  runSql("DELETE FROM script_manga_tasks WHERE id = ?", [taskId]);
+  const row = getRow<{ script_manga_task_id: string | null }>(
+    "SELECT script_manga_task_id FROM generation_rounds WHERE id = ?",
+    [roundId]
+  );
+  assert.equal(row?.script_manga_task_id, null);
+
+  const result = deleteRoundTree(roundId);
+  assert.equal(result.deleted, true);
+  removeRoundTrashSnapshot(roundId);
 });
 
 test("deleteRoundTree: still deletes an unlinked round", () => {

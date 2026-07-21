@@ -319,10 +319,10 @@ function delay(ms: number): Promise<void> {
 async function refreshRunQuietly(runId: string): Promise<void> {
   // V5 D6: 編集ドラフト中は run の適用をskipする(ドラフトの根拠planが差し替わる巻き戻り防止)。
   // ポーズ編集セッション中も同様(Docs/Feature-NamePoseLayer.md)。
-  if (state.nameStudioDraft || state.namePoseEdit) return;
+  if (state.nameStudioDraft || state.namePoseEdit || state.nameLayoutEdit) return;
   try {
     const run = await api<ScriptMangaRunView>(`/api/script-manga-runs/${encodeURIComponent(runId)}`);
-    if (!state.scriptScreenOpen || state.scriptMangaBusy || state.nameStudioDraft || state.namePoseEdit) return;
+    if (!state.scriptScreenOpen || state.scriptMangaBusy || state.nameStudioDraft || state.namePoseEdit || state.nameLayoutEdit) return;
     if (state.scriptMangaRun && state.scriptMangaRun.id !== runId) return;
     if (run.scriptId !== state.activeScriptId) return;
     state.scriptMangaRun = run;
@@ -348,7 +348,9 @@ export function startScriptMangaPolling(): void {
       // 共有ページは「バックグラウンドで開きっぱなし」が主用途なので、hidden でも
       // 完全には止めず低頻度(4周期=20秒毎)で回す。
       if (document.hidden && cycle % 4 !== 0) continue;
-      if (state.scriptMangaBusy || state.scriptMangaCandidatesBusy) continue;
+      // コマ割り修正セッション中(nameLayoutEdit)は候補一覧の差し替えをskipする
+      // (編集根拠の candidate が5秒毎に置き換わり、楽観ロックの意味が失われるため)。
+      if (state.scriptMangaBusy || state.scriptMangaCandidatesBusy || state.nameLayoutEdit) continue;
       await refreshScriptMangaCandidates();
       if (generation !== pollGeneration || !state.scriptScreenOpen) break;
       if (state.scriptMangaRun) {
