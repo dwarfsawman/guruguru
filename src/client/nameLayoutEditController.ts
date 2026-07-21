@@ -136,10 +136,19 @@ function beginLayoutEdit(candidateId: string, target: HTMLElement): void {
   requestRender();
 }
 
+/**
+ * コマ割り修正セッションを破棄する(ドラッグセッション・undo履歴も含めて終了する)。
+ * 脚本画面クローズ/脚本切替のクリア(scriptMangaController.ts)からも呼ぶ。
+ */
+export function resetNameLayoutEditSession(): void {
+  layoutEditSession.reset();
+  clearSnapshotHistory(editHistory);
+  state.nameLayoutEdit = null;
+}
+
 function cancelLayoutEdit(): void {
   if (!state.nameLayoutEdit) return;
-  state.nameLayoutEdit = null;
-  layoutEditSession.reset();
+  resetNameLayoutEditSession();
   requestRender();
 }
 

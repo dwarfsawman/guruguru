@@ -207,8 +207,17 @@ function beginPanelEdit(panelId: string): void {
   requestRender();
 }
 
-function cancelPanelEdit(): void {
+/**
+ * パネル演出編集ドラフトを破棄する(タイマー/履歴を持たないので null 代入で完結する)。
+ * 脚本画面クローズ/脚本切替のクリア(scriptMangaController.ts)からも呼ぶ -- 以前は
+ * `nameStudioDraft` が残留し、run ポーリングが永久 skip していた(監査 C9)。
+ */
+export function resetNameStudioPanelDraft(): void {
   state.nameStudioDraft = null;
+}
+
+function cancelPanelEdit(): void {
+  resetNameStudioPanelDraft();
   requestRender();
 }
 

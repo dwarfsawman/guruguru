@@ -16,6 +16,9 @@ import { api, ApiError } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { DEFAULT_NAME_STUDIO_READER_OPTIONS } from "./nameStudioReader";
+import { resetNameLayoutEditSession } from "./nameLayoutEditController";
+import { resetNamePoseEditSession } from "./namePoseEditController";
+import { resetNameStudioPanelDraft } from "./nameStudioController";
 import { downloadBlob, filenameFromContentDisposition, responseErrorMessage } from "./downloadUtils";
 import { refreshLayoutTemplates } from "./layoutTemplateController";
 import { closeAssetDetail, openAssetDetail } from "./assetDetailController";
@@ -421,7 +424,18 @@ export function clearScriptMangaRunState(): void {
     fullscreen: false,
     ...DEFAULT_NAME_STUDIO_READER_OPTIONS
   };
-  state.nameLayoutEdit = null;
+  resetNameEditSessions();
+}
+
+/**
+ * ネーム編集系3セッション(コマ割り修正/ポーズ編集/演出ドラフト)を破棄する。
+ * 以前は `nameLayoutEdit` しか消しておらず、`namePoseEdit`/`nameStudioDraft` が残留すると
+ * keydown ハンドラの Escape/Ctrl+Z 横取り+run ポーリング永久 skip が起きていた(監査 C9)。
+ */
+function resetNameEditSessions(): void {
+  resetNameLayoutEditSession();
+  resetNamePoseEditSession();
+  resetNameStudioPanelDraft();
 }
 
 /** 脚本画面を閉じる時はプロジェクト固有のテンプレートと設定も破棄する。 */
@@ -446,7 +460,7 @@ export function clearScriptMangaUiState(): void {
   state.scriptMangaCandidateBeatKinds = {};
   state.scriptMangaCandidateDialogueChars = [];
   state.scriptMangaCandidatesBusy = false;
-  state.nameLayoutEdit = null;
+  resetNameEditSessions();
 }
 
 function beginOperation(): number | null {
