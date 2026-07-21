@@ -62,21 +62,18 @@ import { clearSnapshotHistory, createSnapshotHistory, pushSnapshot, redoSnapshot
 
 const shapePersister = createDebouncedPersister({ persist: persistShapeLayout });
 
-/** lightbox を開く直前に呼ぶ(保存タイマー・ドラッグ状態・履歴・選択をリセットする)。 */
+/**
+ * lightbox を開く直前に呼ぶ(保存タイマー・ドラッグ状態・undo 履歴をリセットする)。
+ * shape 系の state フィールド(選択・モード・プレビュー等)のリセットはここでは行わない --
+ * リセット対象フィールドの列挙は pagePanelLightboxController.ts の `resetLightboxSessionState`
+ * に一元化されている(open/close の両方から呼ばれる)。
+ */
 export function resetShapeEditSession(): void {
   shapePersister.reset();
   for (const session of shapeDragSessions) {
     session.reset();
   }
   clearSnapshotHistory(layoutHistory);
-  state.shapeGeometryPreview = null;
-  state.shapeParallelSnapGuide = null;
-  state.shapeFreehandMode = false;
-  state.shapeFreehandDraft = null;
-  state.shapeMarquee = null;
-  state.shapeSelectedVertices = [];
-  state.shapeAddVertexMode = false;
-  state.shapeActiveGeometry = null;
 }
 
 // --- undo/redo(スナップショット2スタック) ---

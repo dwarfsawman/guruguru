@@ -8,16 +8,10 @@ import type { BookPages, PageDetail } from "../shared/apiTypes";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
-import {
-  carryoverFields,
-  commitActivePageDrafts,
-  flushProjectDraftPersist,
-  persistProjectDraft,
-  restoreOrResetProjectDrafts
-} from "./draftStore";
-import { clearPasteCaches } from "./pasteObjectController";
-import { resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
-import { captureGenerationDraft, rememberActiveRoundDraft, restoreGenerationDraftForRound } from "./generationDraft";
+import { carryoverFields, flushProjectDraftPersist, persistProjectDraft, restoreOrResetProjectDrafts } from "./draftStore";
+import { resumeAutoCollectForActiveRounds } from "./generationController";
+import { captureGenerationDraft, restoreGenerationDraftForRound } from "./generationDraft";
+import { resetPageWorkspaceState, resetProjectWorkspaceState, stashActivePageFormDrafts } from "./workspaceSession";
 import { refreshModelCheck, refreshModelCheckForTemplate } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
 import { refreshRecentReferenceImages } from "./referenceController";
@@ -28,37 +22,23 @@ import { clearScriptProjectSession } from "./scriptController";
 
 /** Book を開く（グリッド表示）。単一プロジェクトの openProject に相当するプロジェクトセッション初期化 + ページ一覧取得。 */
 export async function openBook(projectId: string) {
+  stashActivePageFormDrafts();
   state.currentProjectId = projectId;
   const data = await api<BookPages>(`/api/projects/${projectId}/pages`);
+  resetProjectWorkspaceState();
   state.book = data;
-  state.detail = null;
   state.activePageId = null;
   state.bookSelectionMode = false;
   state.selectedBookPageIds = [];
-  state.activeRoundId = null;
-  state.activeAssetId = null;
   state.bookSettingsOpen = false;
   state.imageExportOpen = false;
   state.imageExportPageIds = null;
   state.imageExportBusy = false;
   state.bookReaderOpen = false;
   state.bookReaderSettingsOpen = false;
-  state.sidebarOpen = false;
-  state.pagePanelLightbox = null;
-  state.pagePanelAssignments = [];
-  state.referenceCornerOpen = false;
-  state.referenceCornerCharacterId = null;
-  state.activePanelTarget = null;
+  clearReferenceCorner();
   restoreOrResetProjectDrafts(projectId);
-  clearPasteCaches();
-  state.maskEditMode = false;
-  state.paintEditMode = false;
-  state.maskPanelTab = "mask";
-  state.deletePreviewRoundId = null;
-  resetRoundDeletionHistory();
-  state.roundProgress = {};
   state.recentReferenceImages = [];
-  state.iterationScrollReset = true;
   requestRender();
   // 顔スタイル参照(PuLID)可用性と LoRA 候補を先取りしておく(ページを開いた時に使う)。
   void refreshModelCheck("chroma");
@@ -71,20 +51,20 @@ export async function openPage(pageId: string) {
   if (!state.currentProjectId) {
     return;
   }
-  // 離れるページの参照/LoRA ドラフトを per-page マップへ確定してから切り替える。
-  commitActivePageDrafts();
+  // 離れるページのフォーム編集・参照/LoRA ドラフトを退避してから切り替える(ページ→ページ直行の
+  // 遷移(コマ内生成の generateForPanel 経由)でも rememberActiveRoundDraft が要る -- 以前は
+  // commitActivePageDrafts だけで、旧ページのラウンド別フォーム編集が失われていた)。
+  stashActivePageFormDrafts();
   const detail = await api<PageDetail>(`/api/projects/${state.currentProjectId}/pages/${pageId}`);
+  resetPageWorkspaceState();
   state.detail = detail;
   state.templates = detail.templates;
   state.activePageId = pageId;
   state.activeRoundId = detail.rounds[0]?.id ?? null;
-  state.activeAssetId = null;
-  state.sidebarOpen = false;
-  // コマ内生成(Docs/Feature-PanelGeneration.md): lightbox は閉じ、そのページの割り当てを読み込む。
-  // 対象コマは一旦リセットする(`generateForPanel` はこの後で明示的にセットし直す)。
-  state.pagePanelLightbox = null;
+  // コマ内生成(Docs/Feature-PanelGeneration.md): lightbox は閉じ(resetPageWorkspaceState)、
+  // そのページの割り当てを読み込む。対象コマも一旦リセット済み(`generateForPanel` はこの後で
+  // 明示的にセットし直す)。
   state.pagePanelAssignments = detail.panelAssignments;
-  state.activePanelTarget = null;
   // ページ別の参照画像 / スタイル LoRA を復元する。
   state.referenceDraft = state.referenceDraftsByPage[pageId] ?? { imageDataUrl: null };
   state.loraDraft = state.loraDraftsByPage[pageId] ?? [];
@@ -96,12 +76,6 @@ export async function openPage(pageId: string) {
   } else if (state.pageSettingsByPage[pageId]) {
     state.generationDraft = { ...state.pageSettingsByPage[pageId] };
   }
-  state.maskEditMode = false;
-  state.paintEditMode = false;
-  state.maskPanelTab = "mask";
-  state.deletePreviewRoundId = null;
-  state.roundProgress = {};
-  state.iterationScrollReset = true;
   requestRender();
   resumeAutoCollectForActiveRounds();
   refreshModelCheckForTemplate();
@@ -115,20 +89,11 @@ export async function backToPages() {
   }
   // グリッドへ戻る前に、生成フォームの未保存編集を現ラウンドの draft へ退避する(selectRound と同じ)。
   // #generation-form がまだ DOM にあるこのタイミングで行わないと、ページを開き直した時に編集が失われる。
-  rememberActiveRoundDraft();
-  commitActivePageDrafts();
-  flushProjectDraftPersist();
-  state.detail = null;
+  stashActivePageFormDrafts();
+  resetPageWorkspaceState();
   state.activePageId = null;
   state.bookSelectionMode = false;
   state.selectedBookPageIds = [];
-  state.activeRoundId = null;
-  state.activeAssetId = null;
-  state.deletePreviewRoundId = null;
-  state.maskEditMode = false;
-  state.paintEditMode = false;
-  state.pagePanelAssignments = [];
-  state.activePanelTarget = null;
   await reloadPages();
   requestRender();
 }

@@ -178,11 +178,21 @@ function beginPoseEdit(target: HTMLElement): void {
   requestRender();
 }
 
-function cancelPoseEdit(): void {
-  if (!state.namePoseEdit) return;
+/**
+ * ポーズ編集セッションを破棄する(ドラッグセッション・undo履歴も含めて終了する)。
+ * 脚本画面クローズ/脚本切替のクリア(scriptMangaController.ts)からも呼ぶ -- 以前は
+ * `namePoseEdit` が残留し、keydown ハンドラが Escape/Ctrl+Z を横取りし続け、
+ * run ポーリングも永久 skip していた(監査 C9)。
+ */
+export function resetNamePoseEditSession(): void {
   poseSession.reset();
   clearSnapshotHistory(history);
   state.namePoseEdit = null;
+}
+
+function cancelPoseEdit(): void {
+  if (!state.namePoseEdit) return;
+  resetNamePoseEditSession();
   requestRender();
 }
 
