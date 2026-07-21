@@ -28,6 +28,7 @@ import {
   scaleCropAboutCenter
 } from "../shared/pageLayout";
 import { api } from "./api";
+import { createDragSession } from "./dragSession";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { openPage, reloadBookPages } from "./bookController";
@@ -515,8 +516,7 @@ type CropGestureKind = "pan" | "scale" | "rotate";
 /** 回転の Shift スナップ刻み(15°)。 */
 const ROTATE_SNAP_RAD = Math.PI / 12;
 
-interface CropDragState {
-  pointerId: number;
+interface CropDragData {
   panelId: string;
   kind: CropGestureKind;
   startX: number;
@@ -538,7 +538,44 @@ interface CropDragState {
   startAngle: number;
 }
 
-let cropDrag: CropDragState | null = null;
+// pointerId 照合・setPointerCapture/release・up/cancel でのクリアは createDragSession(dragSession.ts)へ委譲。
+const cropSession = createDragSession<CropDragData>({
+  onMove: (event, drag) => {
+    const lightbox = state.pagePanelLightbox;
+    if (!lightbox || lightbox.cropPanelId !== drag.panelId) {
+      // 対象パネルが変わった: セッションを破棄して「未処理」として後続チェーンへ流す(従来挙動)。
+      return false;
+    }
+    if (drag.kind === "pan") {
+      lightbox.cropDraft = panGestureCrop(drag, event);
+    } else if (drag.kind === "scale") {
+      const dist = Math.hypot(event.clientX - drag.centerScreenX, event.clientY - drag.centerScreenY);
+      // ポインタが中心から遠ざかる = ズームイン = 窓を小さく。factor = startDist / dist。
+      const factor = drag.startDist / Math.max(1, dist);
+      lightbox.cropDraft = scaleCropAboutCenter(drag.startCrop, factor);
+    } else {
+      const angle = Math.atan2(event.clientY - drag.centerScreenY, event.clientX - drag.centerScreenX);
+      let rotation = (drag.startCrop.rotation ?? 0) + (angle - drag.startAngle);
+      if (event.shiftKey) {
+        rotation = Math.round(rotation / ROTATE_SNAP_RAD) * ROTATE_SNAP_RAD;
+      }
+      lightbox.cropDraft = clampPanelCrop({ ...drag.startCrop, rotation: normalizeRotation(rotation) });
+    }
+    requestRender();
+  },
+  onCommit: (_event, drag) => {
+    void commitCropDraft(drag.panelId);
+  },
+  onCancel: (_event, drag) => {
+    // pointercancel はドラッグ開始前のクロップへ復元する(保存しない)。従来は移動後の見た目のまま
+    // 未保存で放置されていた(復元処理の欠落)ため、他コントローラの cancel 規約に合わせて修正。
+    const lightbox = state.pagePanelLightbox;
+    if (lightbox && lightbox.cropPanelId === drag.panelId) {
+      lightbox.cropDraft = { ...drag.startCrop };
+      requestRender();
+    }
+  }
+});
 
 /** クロップ編集中の対象画像レイヤー(getScreenCTM の取得元)。ハンドルでも本体でも同じ座標系。 */
 function cropCtmElement(): SVGGraphicsElement | null {
@@ -585,64 +622,35 @@ export function handlePagePanelCropPointerDown(event: PointerEvent): boolean {
   const centerScreenY = ctm.b * centerX + ctm.d * centerY + ctm.f;
   const dx = event.clientX - centerScreenX;
   const dy = event.clientY - centerScreenY;
-  cropDrag = {
-    pointerId: event.pointerId,
-    panelId: lightbox.cropPanelId,
-    kind,
-    startX: event.clientX,
-    startY: event.clientY,
-    startCrop: { ...lightbox.cropDraft },
-    boxWidth,
-    boxHeight,
-    drawnWidth: drawnRect.width,
-    drawnHeight: drawnRect.height,
-    pxPerUnit: ctm.a,
-    centerScreenX,
-    centerScreenY,
-    startDist: Math.hypot(dx, dy),
-    startAngle: Math.atan2(dy, dx)
-  };
-  const captureTarget = handle ?? (onBody instanceof Element ? onBody : null);
-  if (captureTarget && "setPointerCapture" in captureTarget) {
-    try {
-      (captureTarget as SVGElement).setPointerCapture(event.pointerId);
-    } catch {
-      // capture に失敗しても pointermove/up は app への委譲で届く。
-    }
-  }
+  cropSession.begin(
+    event,
+    {
+      panelId: lightbox.cropPanelId,
+      kind,
+      startX: event.clientX,
+      startY: event.clientY,
+      startCrop: { ...lightbox.cropDraft },
+      boxWidth,
+      boxHeight,
+      drawnWidth: drawnRect.width,
+      drawnHeight: drawnRect.height,
+      pxPerUnit: ctm.a,
+      centerScreenX,
+      centerScreenY,
+      startDist: Math.hypot(dx, dy),
+      startAngle: Math.atan2(dy, dx)
+    },
+    handle ?? (onBody instanceof Element ? onBody : null)
+  );
   return true;
 }
 
 export function handlePagePanelCropPointerMove(event: PointerEvent): boolean {
-  if (!cropDrag || event.pointerId !== cropDrag.pointerId) {
-    return false;
-  }
-  const lightbox = state.pagePanelLightbox;
-  if (!lightbox || lightbox.cropPanelId !== cropDrag.panelId) {
-    cropDrag = null;
-    return false;
-  }
-  if (cropDrag.kind === "pan") {
-    lightbox.cropDraft = panGestureCrop(cropDrag, event);
-  } else if (cropDrag.kind === "scale") {
-    const dist = Math.hypot(event.clientX - cropDrag.centerScreenX, event.clientY - cropDrag.centerScreenY);
-    // ポインタが中心から遠ざかる = ズームイン = 窓を小さく。factor = startDist / dist。
-    const factor = cropDrag.startDist / Math.max(1, dist);
-    lightbox.cropDraft = scaleCropAboutCenter(cropDrag.startCrop, factor);
-  } else {
-    const angle = Math.atan2(event.clientY - cropDrag.centerScreenY, event.clientX - cropDrag.centerScreenX);
-    let rotation = (cropDrag.startCrop.rotation ?? 0) + (angle - cropDrag.startAngle);
-    if (event.shiftKey) {
-      rotation = Math.round(rotation / ROTATE_SNAP_RAD) * ROTATE_SNAP_RAD;
-    }
-    lightbox.cropDraft = clampPanelCrop({ ...cropDrag.startCrop, rotation: normalizeRotation(rotation) });
-  }
-  requestRender();
-  return true;
+  return cropSession.handleMove(event);
 }
 
 /** パン: 画面デルタを画像の回転に合わせて image 軸へ回してから crop の x/y に反映する。 */
-function panGestureCrop(drag: CropDragState, event: PointerEvent): PanelCrop {
+function panGestureCrop(drag: CropDragData, event: PointerEvent): PanelCrop {
   const dxPage = (event.clientX - drag.startX) / drag.pxPerUnit;
   const dyPage = (event.clientY - drag.startY) / drag.pxPerUnit;
   const rotation = drag.startCrop.rotation ?? 0;
@@ -663,24 +671,12 @@ function panGestureCrop(drag: CropDragState, event: PointerEvent): PanelCrop {
   });
 }
 
-function finishCropDrag(event: PointerEvent, commit: boolean): boolean {
-  if (!cropDrag || event.pointerId !== cropDrag.pointerId) {
-    return false;
-  }
-  const panelId = cropDrag.panelId;
-  cropDrag = null;
-  if (commit) {
-    void commitCropDraft(panelId);
-  }
-  return true;
-}
-
 export function handlePagePanelCropPointerUp(event: PointerEvent): boolean {
-  return finishCropDrag(event, true);
+  return cropSession.handleUp(event);
 }
 
 export function handlePagePanelCropPointerCancel(event: PointerEvent): boolean {
-  return finishCropDrag(event, false);
+  return cropSession.handleCancel(event);
 }
 
 /** main.ts の wheel 委譲から呼ばれる。クロップ編集中のホイールでズーム(拡大縮小)する。 */
