@@ -6,10 +6,10 @@ import type { WorkflowTemplate } from "./workflowTypes";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { draftStorageKey, resetProjectDrafts, restoreOrResetProjectDrafts } from "./draftStore";
-import { clearPasteCaches } from "./pasteObjectController";
 import { readForm } from "./formUtils";
 import { applyAssetDimensionsToDraft, generationDraftFromForm } from "./generationDraft";
-import { refreshProject, resetRoundDeletionHistory, resumeAutoCollectForActiveRounds } from "./generationController";
+import { refreshProject, resumeAutoCollectForActiveRounds } from "./generationController";
+import { resetProjectWorkspaceState, stashActivePageFormDrafts } from "./workspaceSession";
 import { refreshComfyStatus, refreshLlmStatus } from "./settingsController";
 import { refreshModelCheckForTemplate } from "./modelCheckController";
 import { refreshLoraChoices } from "./styleLoraController";
@@ -19,21 +19,13 @@ import { confirmDialog } from "./confirmDialogController";
 import { downloadBlob, filenameFromContentDisposition, responseErrorMessage } from "./downloadUtils";
 
 export async function loadHome() {
+  // フォーム編集の退避は state を触る前に(以前は rememberActiveRoundDraft が漏れており、
+  // ページ内のフォーム編集が Home へ戻ると失われていた)。
+  stashActivePageFormDrafts();
   state.currentProjectId = null;
-  state.detail = null;
-  state.activeRoundId = null;
-  state.activeAssetId = null;
-  state.sidebarOpen = false;
+  resetProjectWorkspaceState();
   resetProjectDrafts();
   clearBookSession();
-  clearPasteCaches();
-  state.maskEditMode = false;
-  state.paintEditMode = false;
-  state.maskPanelTab = "mask";
-  state.deletePreviewRoundId = null;
-  resetRoundDeletionHistory();
-  state.roundProgress = {};
-  state.iterationScrollReset = true;
   state.settings = await api<ComfySettings>("/api/settings/comfy");
   state.llmSettings = await api<LlmSettingsView>("/api/settings/llm");
   state.templates = (await api<{ templates: WorkflowTemplate[] }>("/api/templates")).templates;
@@ -44,24 +36,17 @@ export async function loadHome() {
 }
 
 async function openProject(projectId: string) {
+  stashActivePageFormDrafts();
   state.currentProjectId = projectId;
   // single プロジェクトは book 状態を持たない(book から戻ってきた場合の取り残しを防ぐ)。
   state.book = null;
   state.activePageId = null;
-  state.detail = await api<ProjectDetail>(`/api/projects/${projectId}`);
-  state.templates = state.detail.templates;
-  state.activeRoundId = state.detail.rounds[0]?.id ?? null;
-  state.activeAssetId = null;
-  state.sidebarOpen = false;
+  const detail = await api<ProjectDetail>(`/api/projects/${projectId}`);
+  resetProjectWorkspaceState();
+  state.detail = detail;
+  state.templates = detail.templates;
+  state.activeRoundId = detail.rounds[0]?.id ?? null;
   restoreOrResetProjectDrafts(projectId);
-  clearPasteCaches();
-  state.maskEditMode = false;
-  state.paintEditMode = false;
-  state.maskPanelTab = "mask";
-  state.deletePreviewRoundId = null;
-  resetRoundDeletionHistory();
-  state.roundProgress = {};
-  state.iterationScrollReset = true;
   requestRender();
   resumeAutoCollectForActiveRounds();
   // 選択中workflow familyのidentity機能可用性を先取りする。
