@@ -4,6 +4,7 @@
  * UI 文言・HTML 構造・CSS class・data-action・selector は移動前と同一。
  */
 import type { Asset } from "../../shared/apiTypes";
+import { clampNumber } from "../clientUtils";
 import { escapeAttr, escapeHtml, formatCssNumber, formatNumber } from "../format";
 import {
   iconBrush,
@@ -48,13 +49,6 @@ export interface ScriptMangaRepairContext {
   taskId: string;
   assetId: string;
   busy: boolean;
-}
-
-function clampNumber(value: number, min: number, max: number, fallback: number) {
-  if (!Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.min(max, Math.max(min, value));
 }
 
 function assetDimension(asset: Asset | null, key: "width" | "height") {

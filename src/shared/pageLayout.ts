@@ -10,6 +10,7 @@
  * 将来機能(吹き出し追加・翻訳)のために保持だけする。
  */
 import { isJsonObject } from "./json";
+import { isFiniteNumber } from "./numbers";
 import {
   bezierPathData,
   normalizePanelBezierGeometry,
@@ -112,10 +113,6 @@ export const DEFAULT_PANEL_FRAME: PanelFrame = {
 export const PANEL_BLEED_OVERSHOOT = 0.02;
 
 const EPSILON = 1e-9;
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
 
 /** [number, number] の数値ペアを厳密に取り出す(不正なら null)。 */
 function asNumberPair(value: unknown): [number, number] | null {
@@ -363,6 +360,18 @@ export function clampPanelCrop(crop: PanelCrop): PanelCrop {
 }
 
 /**
+ * 中心固定 uniform 拡縮の実効 factor を「両辺(baseX/baseY)が [minSize, maxSize] に収まる」区間へ
+ * クランプする(`scaleCropAboutCenter` と `scaleGizmoBoxAboutCenter` の共通コア)。
+ * factor の非数サニタイズは呼び出し側の責務(crop は非数→1、gizmo は非正・非数→1 と規約が異なるため)。
+ */
+export function clampUniformScaleFactor(factor: number, baseX: number, baseY: number, minSize: number, maxSize: number): number {
+  // どちらの辺も maxSize を超えない上限 / minSize を下回らない下限。両辺共通の factor をこの区間へクランプ。
+  const maxFactor = Math.min(maxSize / baseX, maxSize / baseY);
+  const minFactor = Math.min(maxFactor, Math.max(minSize / baseX, minSize / baseY));
+  return Math.min(maxFactor, Math.max(minFactor, factor));
+}
+
+/**
  * width/height を中心固定で `factor` 倍にズームする(回転は保持)。factor<1=ズームイン。
  * **縦横比を必ず保つ**ため、両辺に同じ factor をかける。片辺だけ `[MIN_CROP_ZOOM_SIZE, 1]` の
  * 境界に当たって縦横比が崩れることが無いよう、実効 factor を「両辺が範囲内に収まる」区間へ丸める。
@@ -372,10 +381,7 @@ export function scaleCropAboutCenter(crop: PanelCrop, factor: number): PanelCrop
   const centerY = crop.y + crop.height / 2;
   const baseWidth = crop.width > 0 ? crop.width : 1;
   const baseHeight = crop.height > 0 ? crop.height : 1;
-  // どちらの辺も 1 を超えない上限 / MIN を下回らない下限。両辺共通の factor をこの区間へクランプ。
-  const maxFactor = Math.min(1 / baseWidth, 1 / baseHeight);
-  const minFactor = Math.min(maxFactor, Math.max(MIN_CROP_ZOOM_SIZE / baseWidth, MIN_CROP_ZOOM_SIZE / baseHeight));
-  const effective = Math.min(maxFactor, Math.max(minFactor, isFiniteNumber(factor) ? factor : 1));
+  const effective = clampUniformScaleFactor(isFiniteNumber(factor) ? factor : 1, baseWidth, baseHeight, MIN_CROP_ZOOM_SIZE, 1);
   return clampPanelCrop({
     x: centerX - (baseWidth * effective) / 2,
     y: centerY - (baseHeight * effective) / 2,

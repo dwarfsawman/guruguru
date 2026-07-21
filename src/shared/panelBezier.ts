@@ -2,6 +2,7 @@
  * 編集可能な閉じた cubic Bezier コマ枠の純ロジック。
  * 座標は PageLayout と同じ width-relative-top-left。
  */
+import { polygonSignedArea as signedArea } from "./polygon";
 
 export interface PanelBezierNode {
   point: [number, number];
@@ -69,16 +70,6 @@ export function normalizePanelBezierGeometry(value: unknown): PanelBezierGeometr
 
 function distance(a: readonly [number, number], b: readonly [number, number]): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
-}
-
-function signedArea(points: readonly [number, number][]): number {
-  let sum = 0;
-  for (let index = 0; index < points.length; index += 1) {
-    const a = points[index]!;
-    const b = points[(index + 1) % points.length]!;
-    sum += a[0] * b[1] - b[0] * a[1];
-  }
-  return sum / 2;
 }
 
 function closedResample(points: readonly [number, number][], count: number): [number, number][] {

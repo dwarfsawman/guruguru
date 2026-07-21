@@ -25,6 +25,7 @@ import {
   type TextObject,
   type ToneObject
 } from "../shared/pageObjects";
+import { escapeHtml } from "../shared/htmlEscape";
 import { mosaicBlockSizePx, regionBoundsPage, type MosaicRegion, type MosaicShape } from "../shared/mosaicRegion";
 import { balloonContentMaxWidth, renderBalloonSvg } from "../shared/balloonShape";
 import { renderTextSvg } from "../shared/textSvg";
@@ -1116,13 +1117,8 @@ export function safeAsciiName(value: string, fallback: string): string {
   return safe || fallback;
 }
 
-export function escapeXml(value: unknown): string {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll("\"", "&quot;");
-}
+/** XML テキスト/属性値のエスケープ。shared/htmlEscape.ts の escapeHtml と同一挙動のため統合(alias 維持)。 */
+export const escapeXml = escapeHtml;
 
 function fmt(value: number): string {
   return Number.isFinite(value) ? String(Math.round(value * 1000) / 1000) : "0";

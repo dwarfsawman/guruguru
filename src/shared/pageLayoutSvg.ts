@@ -14,6 +14,7 @@ import { DEFAULT_PANEL_FRAME, panelBounds } from "./pageLayout";
 import type { MangaPageTurnHook, MangaVisualScale } from "./mangaPlanV2";
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
 import { escapeAttr } from "./htmlEscape";
+import type { BeatKind } from "./preLayoutBeat";
 
 const VIEWBOX_SCALE = 1000;
 
@@ -171,8 +172,8 @@ export interface PageWireframeOptions extends PageLayoutSvgOptions {
   highlight?: boolean;
 }
 
-/** ビートkind → 1文字グリフ。 */
-const BEAT_KIND_GLYPHS: Record<string, string> = {
+/** ビートkind → 1文字グリフ。`Record<BeatKind, string>` 注釈で preLayoutBeat.ts の BEAT_KINDS と型同期する。 */
+const BEAT_KIND_GLYPHS: Record<BeatKind, string> = {
   setup: "S",
   action: "A",
   reaction: "R",
@@ -220,7 +221,7 @@ export function renderPageWireframeSvg(layout: PageLayout, options: PageWirefram
         `<rect x="${num(x1 + panelWidth * 0.07)}" y="${num(barY)}" width="${num(barWidth)}" height="0.016" rx="0.006" fill="var(--wire-dialogue, rgba(37,99,235,0.75))" />`
       );
     }
-    const glyphs = (info.beatKinds ?? []).map((kind) => BEAT_KIND_GLYPHS[kind] ?? "·").join("");
+    const glyphs = (info.beatKinds ?? []).map((kind) => (BEAT_KIND_GLYPHS as Record<string, string | undefined>)[kind] ?? "·").join("");
     if (glyphs) {
       overlays.push(
         `<text x="${num(x1 + 0.018)}" y="${num(y1 + 0.02)}" font-size="0.052" dominant-baseline="hanging" fill="var(--wire-beat, rgba(15,23,42,0.72))">${escapeAttr(glyphs)}</text>`

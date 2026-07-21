@@ -7,6 +7,7 @@
  * 型は将来フェーズ(P2 テキスト・P3 吹き出し)分もここで定義しておく。
  */
 import { isJsonObject } from "./json";
+import { clampNumber, isFiniteNumber } from "./numbers";
 import { normalizeRotation } from "./pageLayout";
 
 export interface PageVec {
@@ -251,18 +252,6 @@ export const DEFAULT_BALLOON_SIZE: PageVec = { x: 0.35, y: 0.22 };
 export const DEFAULT_BALLOON_TAIL_WIDTH = 0.05;
 /** tail.tip(ローカル座標)の取り得る範囲(page-width 単位、± 両方向)。normalize と編集 UI の両方で使う。 */
 export const BALLOON_TAIL_TIP_CLAMP = 2;
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-/** unknown な数値を [min, max] へクランプする。非数は fallback。 */
-function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-  return Math.min(max, Math.max(min, value));
-}
 
 function asColor(value: unknown, fallback: string): string {
   return typeof value === "string" && HEX_COLOR_RE.test(value.trim()) ? value.trim() : fallback;

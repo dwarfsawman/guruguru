@@ -4,6 +4,7 @@
  * `dialogue-layout/preview` API 用に先出しした型のみで、フェーズI では未使用。
  */
 import type { DialogueLineStatus, DialogueSemanticKind } from "./apiTypes";
+import type { DialogueAutoLayoutAssignment } from "./dialogueAutoLayout";
 import type { PageObject } from "./pageObjects";
 
 /**
@@ -128,11 +129,8 @@ export interface DialogueAllocationRemovalResult {
 
 // --- フェーズIII 先出し型(dialogue-layout/preview、未使用) ---
 
-export interface DialogueLayoutAssignment {
-  placementId: string;
-  panelId: string | null;
-  objectId: string;
-}
+/** dialogueAutoLayout.ts の DialogueAutoLayoutAssignment と構造同一のため alias 化(既存利用箇所のため型名は維持)。 */
+export type DialogueLayoutAssignment = DialogueAutoLayoutAssignment;
 
 export interface DialogueLayoutPreview {
   seed: number;

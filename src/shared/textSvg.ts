@@ -8,12 +8,11 @@
  * 「1 page 単位 = N px(または SVG 単位)」の親コンテナに置き、必要ならその親でさらに canvas ピクセルへの
  * (非等方な場合もある)スケールを掛ける -- このモジュール自身は常に等方(1x=1y)の page 単位で完結する。
  */
+// escapeAttr: 属性値は全て二重引用符で囲むため `'` のエスケープは不要 -- htmlEscape.ts の
+// escapeAttr(`'` も処理)ではなく escapeHtml(旧ローカル実装と同一挙動)を使い、出力バイトを維持する。
+import { escapeHtml as escapeAttr } from "./htmlEscape";
 import type { TextStyle } from "./pageObjects";
 import type { PositionedGlyph, TextLayoutResult } from "./textLayout";
-
-function escapeAttr(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 
 /**
  * 数値の SVG 属性向け文字列化。**有効数字8桁ベース**(絶対丸めではない)。

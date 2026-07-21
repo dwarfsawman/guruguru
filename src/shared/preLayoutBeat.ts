@@ -17,7 +17,7 @@ import {
   type MangaVisualScale,
   normalizeLegacyVisualScale
 } from "./mangaPlanV2";
-import { elementVisibleText, elementVisualText } from "./scriptMangaPlan";
+import { elementVisibleText, elementVisualText, sourceElementId } from "./scriptMangaPlan";
 
 export interface PreLayoutUnit {
   id: string;
@@ -75,10 +75,6 @@ export function sentenceSpans(text: string): Array<[number, number]> {
   return spans;
 }
 
-function elementId(sceneIndex: number, elementIndex: number): string {
-  return `scene-${sceneIndex}-element-${elementIndex}`;
-}
-
 /** Fountain 文書を atomic unit 列へ決定的に分割する。 */
 export function buildPreLayoutUnits(doc: FountainDoc): PreLayoutUnit[] {
   const units: PreLayoutUnit[] = [];
@@ -88,7 +84,7 @@ export function buildPreLayoutUnits(doc: FountainDoc): PreLayoutUnit[] {
       if (element.type === "section" || element.type === "transition") continue;
       const visible = elementVisibleText(element);
       if (!visible) continue;
-      const baseId = elementId(sceneIndex, elementIndex);
+      const baseId = sourceElementId(sceneIndex, elementIndex);
       if (element.type === "dialogue") {
         units.push({
           id: baseId,

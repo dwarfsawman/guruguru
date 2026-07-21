@@ -16,6 +16,7 @@
 import { DEFAULT_PANEL_FRAME, PANEL_BLEED_OVERSHOOT, panelBounds, type LayoutPanel, type PageLayout, type PanelShape } from "./pageLayout";
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
 import type { MangaVisualScale } from "./mangaPlanV2";
+import { polygonArea } from "./polygon";
 
 /** 内蔵テンプレの1件。id は `builtin:<slug>` で衝突を避ける。 */
 export interface BuiltinLayoutTemplate {
@@ -695,13 +696,7 @@ const SCRIPT_MANGA_LAYOUT_DESCRIPTIONS: Readonly<Record<string, string>> = {
  */
 export function panelShapeArea(shape: PanelShape): number {
   if (shape.type === "polygon") {
-    let doubled = 0;
-    for (let index = 0; index < shape.points.length; index += 1) {
-      const [x1, y1] = shape.points[index]!;
-      const [x2, y2] = shape.points[(index + 1) % shape.points.length]!;
-      doubled += x1 * y2 - x2 * y1;
-    }
-    return Math.abs(doubled) / 2;
+    return polygonArea(shape.points);
   }
   if (shape.type === "ellipse") {
     return Math.PI * Math.abs(shape.radius[0] * shape.radius[1]);

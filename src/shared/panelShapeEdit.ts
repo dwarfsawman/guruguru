@@ -6,12 +6,9 @@
  * 自己交差する編集の防止は行わない(ユーザー責任)。NaN/範囲外の入力は clamp してフォールバックする。
  */
 import type { PanelShape } from "./pageLayout";
+import { isFiniteNumber } from "./numbers";
 
 const EPS = 1e-7;
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
 
 function clonePoints(points: readonly [number, number][]): [number, number][] {
   return points.map(([x, y]) => [x, y] as [number, number]);
@@ -107,20 +104,8 @@ export function removePolygonVertex(points: readonly [number, number][], index: 
   return points.filter((_, i) => i !== index);
 }
 
-/** shoelace 公式による多角形面積(符号なし)。 */
-export function polygonArea(points: readonly [number, number][]): number {
-  const n = points.length;
-  if (n < 3) {
-    return 0;
-  }
-  let sum = 0;
-  for (let i = 0; i < n; i += 1) {
-    const [x1, y1] = points[i]!;
-    const [x2, y2] = points[(i + 1) % n]!;
-    sum += x1 * y2 - x2 * y1;
-  }
-  return Math.abs(sum) / 2;
-}
+// shoelace 面積は polygon.ts へ統合(既存 import 互換のため再エクスポート)。
+export { polygonArea } from "./polygon";
 
 interface ExtPoint {
   point: [number, number];

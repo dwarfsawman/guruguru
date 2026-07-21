@@ -10,6 +10,8 @@
  * 数学的な骨格(中心距離比での uniform scale・atan2 回転+スナップ)は同じ考え方を踏襲している。
  */
 
+import { clampUniformScaleFactor, normalizeRotation } from "../shared/pageLayout";
+
 export interface GizmoVec {
   x: number;
   y: number;
@@ -137,26 +139,13 @@ export function moveGizmoBox(box: GizmoBox, dx: number, dy: number): GizmoBox {
 export function scaleGizmoBoxAboutCenter(box: GizmoBox, factor: number, minSize: number, maxSize: number): GizmoBox {
   const baseX = box.size.x > 0 ? box.size.x : 1;
   const baseY = box.size.y > 0 ? box.size.y : 1;
-  const maxFactor = Math.min(maxSize / baseX, maxSize / baseY);
-  const minFactor = Math.min(maxFactor, Math.max(minSize / baseX, minSize / baseY));
-  const effective = Math.min(maxFactor, Math.max(minFactor, Number.isFinite(factor) && factor > 0 ? factor : 1));
+  // 非正・非数の factor は 1 に落とす(crop 版と規約が異なるためサニタイズはここで行う)。
+  const effective = clampUniformScaleFactor(Number.isFinite(factor) && factor > 0 ? factor : 1, baseX, baseY, minSize, maxSize);
   return { ...box, size: { x: baseX * effective, y: baseY * effective } };
 }
 
-/** 角度を (-π, π] へ正規化(非数は 0)。 */
-export function normalizeGizmoAngle(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  const twoPi = Math.PI * 2;
-  let r = value % twoPi;
-  if (r <= -Math.PI) {
-    r += twoPi;
-  } else if (r > Math.PI) {
-    r -= twoPi;
-  }
-  return r;
-}
+/** 角度を (-π, π] へ正規化(非数は 0)。`pageLayout.ts` の normalizeRotation と同一のため統合(alias 維持)。 */
+export const normalizeGizmoAngle = normalizeRotation;
 
 /**
  * 回転ジェスチャ(中心周り atan2 差分)。`startAngle`/`currentAngle` は

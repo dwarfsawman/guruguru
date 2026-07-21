@@ -9,6 +9,9 @@
  * -- ユーザーが `granularity`(長辺比)を指定してもこの規定の下限を下回れない(max を取るだけ)。
  */
 import { isJsonObject } from "./json";
+// 旧ローカル clampNumber は有限チェック無しだったが、全呼び出し箇所が isFiniteNumber ガード後の
+// 有限値のみを渡すため、共有 clamp(有限値では同一挙動)への置換で挙動は変わらない。
+import { clamp as clampNumber, isFiniteNumber } from "./numbers";
 
 export type MosaicShape =
   | { type: "rect"; bounds: [number, number, number, number] } // [x, y, w, h]
@@ -50,14 +53,6 @@ export const MOSAIC_MIN_DRAG_SIZE = 0.01;
 
 /** 多角形追加で「始点クリックによる閉包」を認識する距離しきい値(page-width 単位)。 */
 export const MOSAIC_CLOSE_POLYGON_THRESHOLD = 0.02;
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 /**
  * 書き出し解像度でのモザイクブロックサイズ(px)。成人向け規定「1粒 ≧ 画像長辺の1/100 かつ ≧ 4px」を
