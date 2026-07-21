@@ -339,8 +339,73 @@ function preferredCenterBonus(position: PageVec, preferred: PageVec): number {
   return 8 * Math.max(0, 1 - dist / 0.3);
 }
 
+/**
+ * 候補1点のハード制約チェック+ソフト制約スコアリング(グリッド候補・preferredCenter 候補で共通)。
+ * ハード制約(ページ外・コマ外・障害物・avoidHard な回避領域)に触れたら null。
+ * `ty`/`effectiveTx` は探索範囲内の相対位置(0..1)で、呼び出し側の導出方法をそのまま受け取る
+ * (グリッドは行列カウンタから、preferredCenter はクランプ後座標から -- 浮動小数の演算順序を
+ * 変えないため、ここでは再計算しない)。
+ */
+function evaluateCandidate(position: PageVec, ty: number, effectiveTx: number, args: CandidateSearchArgs): Candidate | null {
+  const { size, obstacles, pageBounds, insidePanelCheck, avoidPanelBoxes, anchorHint, preferredCenter, avoidZones, avoidHard } = args;
+  if (position.x - size.x / 2 < pageBounds[0] || position.x + size.x / 2 > pageBounds[2]) {
+    return null;
+  }
+  if (position.y - size.y / 2 < pageBounds[1] || position.y + size.y / 2 > pageBounds[3]) {
+    return null;
+  }
+  if (insidePanelCheck && !insidePanelCheck([position.x, position.y])) {
+    return null;
+  }
+  const candidateBox = boxFromCenterSize(position, size, 0);
+  if (obstacles.some((obstacle) => boxesOverlap(candidateBox, obstacle))) {
+    return null;
+  }
+  // 回避領域(顔・立ち絵): strict パスでは重なる候補を候補から外す。relax パスでは
+  // 重なり面積比に応じた強い減点(上部優先スコアの振れ幅 2 を上回る 6)で「なるべく外す」。
+  let avoidPenalty = 0;
+  if (avoidZones && avoidZones.length > 0) {
+    const candidateArea = Math.max(1e-9, size.x * size.y);
+    let overlapped = 0;
+    for (const zone of avoidZones) {
+      overlapped += overlapArea(candidateBox, zone);
+    }
+    if (overlapped > 0) {
+      if (avoidHard) {
+        return null;
+      }
+      avoidPenalty = 6 * Math.min(1, overlapped / candidateArea);
+    }
+  }
+
+  // ソフト制約スコア: コマ上部優先(y が小さいほど高得点)、reading direction 優先方向、
+  // avoidPanelBoxes との重なり回避(narration)、話者近接ボーナス、preferredCenter 近傍ボーナス、
+  // サイズが大きいほど微減点。
+  let score = 0;
+  score -= avoidPenalty;
+  score -= ty * 2; // 上部優先(row=0 が最上段)
+  score -= effectiveTx * 0.3; // 走査方向を弱くスコアにも反映(同点になりすぎないように)
+  if (avoidPanelBoxes) {
+    for (const panelBox of avoidPanelBoxes) {
+      if (position.x >= panelBox[0] && position.x <= panelBox[2] && position.y >= panelBox[1] && position.y <= panelBox[3]) {
+        score -= 3;
+        break;
+      }
+    }
+  }
+  if (anchorHint) {
+    const dist = Math.hypot(position.x - anchorHint.x, position.y - anchorHint.y);
+    score += Math.max(0, 0.5 - dist);
+  }
+  if (preferredCenter) {
+    score += preferredCenterBonus(position, preferredCenter);
+  }
+  score -= size.x * size.y * 0.1;
+  return { position, score };
+}
+
 function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
-  const { bounds, size, direction, obstacles, pageBounds, insidePanelCheck, avoidPanelBoxes, anchorHint, preferredCenter, avoidZones, avoidHard, random } = args;
+  const { bounds, size, direction, preferredCenter, random } = args;
   const margin = Math.max(0.006, Math.min(bounds[2] - bounds[0], bounds[3] - bounds[1]) * 0.04);
   const minX = bounds[0] + margin + size.x / 2;
   const maxX = bounds[2] - margin - size.x / 2;
@@ -359,62 +424,10 @@ function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
       // RTL は右寄り(x が大きい方)から、LTR は左寄りから優先して走査する。
       const effectiveTx = direction === "rtl" ? 1 - tx : tx;
       const x = minX + effectiveTx * (maxX - minX);
-      const position: PageVec = { x, y };
-
-      if (position.x - size.x / 2 < pageBounds[0] || position.x + size.x / 2 > pageBounds[2]) {
-        continue;
+      const candidate = evaluateCandidate({ x, y }, ty, effectiveTx, args);
+      if (candidate) {
+        candidates.push(candidate);
       }
-      if (position.y - size.y / 2 < pageBounds[1] || position.y + size.y / 2 > pageBounds[3]) {
-        continue;
-      }
-      if (insidePanelCheck && !insidePanelCheck([x, y])) {
-        continue;
-      }
-      const candidateBox = boxFromCenterSize(position, size, 0);
-      if (obstacles.some((obstacle) => boxesOverlap(candidateBox, obstacle))) {
-        continue;
-      }
-      // 回避領域(顔・立ち絵): strict パスでは重なる候補を候補から外す。relax パスでは
-      // 重なり面積比に応じた強い減点(上部優先スコアの振れ幅 2 を上回る 6)で「なるべく外す」。
-      let avoidPenalty = 0;
-      if (avoidZones && avoidZones.length > 0) {
-        const candidateArea = Math.max(1e-9, size.x * size.y);
-        let overlapped = 0;
-        for (const zone of avoidZones) {
-          overlapped += overlapArea(candidateBox, zone);
-        }
-        if (overlapped > 0) {
-          if (avoidHard) {
-            continue;
-          }
-          avoidPenalty = 6 * Math.min(1, overlapped / candidateArea);
-        }
-      }
-
-      // ソフト制約スコア: コマ上部優先(y が小さいほど高得点)、reading direction 優先方向、
-      // avoidPanelBoxes との重なり回避(narration)、話者近接ボーナス、サイズが大きいほど微減点。
-      let score = 0;
-      score -= avoidPenalty;
-      score -= ty * 2; // 上部優先(row=0 が最上段)
-      score -= effectiveTx * 0.3; // 走査方向を弱くスコアにも反映(同点になりすぎないように)
-      if (avoidPanelBoxes) {
-        for (const panelBox of avoidPanelBoxes) {
-          if (x >= panelBox[0] && x <= panelBox[2] && y >= panelBox[1] && y <= panelBox[3]) {
-            score -= 3;
-            break;
-          }
-        }
-      }
-      if (anchorHint) {
-        const dist = Math.hypot(position.x - anchorHint.x, position.y - anchorHint.y);
-        score += Math.max(0, 0.5 - dist);
-      }
-      if (preferredCenter) {
-        score += preferredCenterBonus(position, preferredCenter);
-      }
-      score -= size.x * size.y * 0.1;
-
-      candidates.push({ position, score });
     }
   }
 
@@ -424,51 +437,11 @@ function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
       x: Math.min(maxX, Math.max(minX, preferredCenter.x)),
       y: Math.min(maxY, Math.max(minY, preferredCenter.y))
     };
-    const withinPage =
-      position.x - size.x / 2 >= pageBounds[0] && position.x + size.x / 2 <= pageBounds[2] &&
-      position.y - size.y / 2 >= pageBounds[1] && position.y + size.y / 2 <= pageBounds[3];
-    if (withinPage && (!insidePanelCheck || insidePanelCheck([position.x, position.y]))) {
-      const candidateBox = boxFromCenterSize(position, size, 0);
-      if (!obstacles.some((obstacle) => boxesOverlap(candidateBox, obstacle))) {
-        let avoidPenalty = 0;
-        let blocked = false;
-        if (avoidZones && avoidZones.length > 0) {
-          const candidateArea = Math.max(1e-9, size.x * size.y);
-          let overlapped = 0;
-          for (const zone of avoidZones) {
-            overlapped += overlapArea(candidateBox, zone);
-          }
-          if (overlapped > 0) {
-            if (avoidHard) blocked = true;
-            else avoidPenalty = 6 * Math.min(1, overlapped / candidateArea);
-          }
-        }
-        if (!blocked) {
-          const spanX = Math.max(1e-9, maxX - minX);
-          const spanY = Math.max(1e-9, maxY - minY);
-          const ty = (position.y - minY) / spanY;
-          const effectiveTx = (position.x - minX) / spanX;
-          let score = 0;
-          score -= avoidPenalty;
-          score -= ty * 2;
-          score -= effectiveTx * 0.3;
-          if (avoidPanelBoxes) {
-            for (const panelBox of avoidPanelBoxes) {
-              if (position.x >= panelBox[0] && position.x <= panelBox[2] && position.y >= panelBox[1] && position.y <= panelBox[3]) {
-                score -= 3;
-                break;
-              }
-            }
-          }
-          if (anchorHint) {
-            const dist = Math.hypot(position.x - anchorHint.x, position.y - anchorHint.y);
-            score += Math.max(0, 0.5 - dist);
-          }
-          score += preferredCenterBonus(position, preferredCenter);
-          score -= size.x * size.y * 0.1;
-          candidates.push({ position, score });
-        }
-      }
+    const spanX = Math.max(1e-9, maxX - minX);
+    const spanY = Math.max(1e-9, maxY - minY);
+    const candidate = evaluateCandidate(position, (position.y - minY) / spanY, (position.x - minX) / spanX, args);
+    if (candidate) {
+      candidates.push(candidate);
     }
   }
 
@@ -480,6 +453,45 @@ function searchBestCandidate(args: CandidateSearchArgs): PageVec | null {
   const tied = candidates.filter((candidate) => Math.abs(candidate.score - bestScore) < SCORE_EPSILON);
   const pickIndex = tied.length > 1 ? Math.floor(random() * tied.length) : 0;
   return tied[Math.min(pickIndex, tied.length - 1)]!.position;
+}
+
+interface PageWideSearchArgs {
+  variants: PageVec[];
+  direction: "rtl" | "ltr";
+  obstacles: Box[];
+  pageBounds: [number, number, number, number];
+  avoidPanelBoxes?: [number, number, number, number][];
+  anchorHint: PageVec | null;
+  preferredCenter: PageVec | null;
+  avoidZones: Box[];
+  relaxed: boolean;
+  random: () => number;
+}
+
+/**
+ * ページ全体(コマ非依存)を variants 順で探すループ(narration / sfx フォールバック共通)。
+ * 最初に見つかった候補を返す(打ち切り条件・PRNG 消費順は従来の逐次ループと同一)。
+ */
+function searchPageWideVariants(args: PageWideSearchArgs): { position: PageVec; size: PageVec } | null {
+  for (const variant of args.variants) {
+    const found = searchBestCandidate({
+      bounds: args.pageBounds,
+      size: variant,
+      direction: args.direction,
+      obstacles: args.obstacles,
+      pageBounds: args.pageBounds,
+      avoidPanelBoxes: args.avoidPanelBoxes,
+      anchorHint: args.anchorHint,
+      preferredCenter: args.preferredCenter,
+      avoidZones: args.avoidZones,
+      avoidHard: !args.relaxed,
+      random: args.random
+    });
+    if (found) {
+      return { position: found, size: variant };
+    }
+  }
+  return null;
 }
 
 // --- PageObject 生成 ---
@@ -644,10 +656,31 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
     if (item.semanticKind === "narration") {
       // ページ全体候補(コマ非依存)。コマの上に極力被らないようスコアで回避する。
       for (const relaxed of passes) {
-        for (const variant of variants) {
-          const found = searchBestCandidate({
-            bounds: pageBounds,
-            size: variant,
+        const found = searchPageWideVariants({
+          variants,
+          direction: layout.readingDirection,
+          obstacles,
+          pageBounds,
+          avoidPanelBoxes: panelBoundsList,
+          anchorHint,
+          preferredCenter: item.preferredCenter ?? null,
+          avoidZones: avoidZoneBoxes,
+          relaxed,
+          random
+        });
+        if (found) {
+          position = found.position;
+          size = found.size;
+          relaxedUsed = relaxed;
+          break;
+        }
+      }
+    } else if (panelIndex === null || orderedPanels.length === 0) {
+      // dialogue/monologue はコマが無ければ配置不能。sfx はページ全体候補へフォールバックする。
+      if (allowsPageWideFallback) {
+        for (const relaxed of passes) {
+          const found = searchPageWideVariants({
+            variants,
             direction: layout.readingDirection,
             obstacles,
             pageBounds,
@@ -655,44 +688,15 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
             anchorHint,
             preferredCenter: item.preferredCenter ?? null,
             avoidZones: avoidZoneBoxes,
-            avoidHard: !relaxed,
+            relaxed,
             random
           });
           if (found) {
-            position = found;
-            size = variant;
+            position = found.position;
+            size = found.size;
             relaxedUsed = relaxed;
             break;
           }
-        }
-        if (position) break;
-      }
-    } else if (panelIndex === null || orderedPanels.length === 0) {
-      // dialogue/monologue はコマが無ければ配置不能。sfx はページ全体候補へフォールバックする。
-      if (allowsPageWideFallback) {
-        for (const relaxed of passes) {
-          for (const variant of variants) {
-            const found = searchBestCandidate({
-              bounds: pageBounds,
-              size: variant,
-              direction: layout.readingDirection,
-              obstacles,
-              pageBounds,
-              avoidPanelBoxes: panelBoundsList,
-              anchorHint,
-              preferredCenter: item.preferredCenter ?? null,
-              avoidZones: avoidZoneBoxes,
-              avoidHard: !relaxed,
-              random
-            });
-            if (found) {
-              position = found;
-              size = variant;
-              relaxedUsed = relaxed;
-              break;
-            }
-          }
-          if (position) break;
         }
       }
       if (!position) {
@@ -800,26 +804,22 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
         if (!position && allowsPageWideFallback) {
           // コマ内に入らなかった sfx は、担当コマ近傍を優先しつつページ全体から探す。
           const panelCenter: PageVec = { x: (bx0 + bx1) / 2, y: (by0 + by1) / 2 };
-          for (const variant of variants) {
-            const found = searchBestCandidate({
-              bounds: pageBounds,
-              size: variant,
-              direction: layout.readingDirection,
-              obstacles,
-              pageBounds,
-              anchorHint: panelCenter,
-              preferredCenter: item.preferredCenter ?? null,
-              avoidZones: avoidZoneBoxes,
-              avoidHard: !relaxed,
-              random
-            });
-            if (found) {
-              position = found;
-              size = variant;
-              targetPanel = null; // ページ全体配置扱い(コマ非依存)。
-              relaxedUsed = relaxed;
-              break;
-            }
+          const found = searchPageWideVariants({
+            variants,
+            direction: layout.readingDirection,
+            obstacles,
+            pageBounds,
+            anchorHint: panelCenter,
+            preferredCenter: item.preferredCenter ?? null,
+            avoidZones: avoidZoneBoxes,
+            relaxed,
+            random
+          });
+          if (found) {
+            position = found.position;
+            size = found.size;
+            targetPanel = null; // ページ全体配置扱い(コマ非依存)。
+            relaxedUsed = relaxed;
           }
         }
 
