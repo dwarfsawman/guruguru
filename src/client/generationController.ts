@@ -48,6 +48,7 @@ import {
 import { composePaintResultCanvas } from "./paintCanvas";
 import { buildPasteCompositeForGeneration, pasteLayersForAsset } from "./pasteObjectController";
 import { clearActiveImagePan } from "./maskEditorController";
+import { downloadBlob } from "./downloadUtils";
 import { setFormValue } from "./formUtils";
 
 const pendingAutoCollectRoundIds = new Set<string>();
@@ -536,11 +537,28 @@ export async function resetActiveRoundMarks() {
   requestRender();
 }
 
-export function exportSelected() {
-  const count = getActiveRoundAssets().some((asset) => asset.status === "selected") ? 1 : 0;
-  state.message = count > 0
-    ? "選択画像を保存対象にしました。保存先はComfyUI接続設定の保存先です。"
-    : "保存対象の選択画像がありません。";
+/** ギャラリーの「保存」ボタン。選択中(selected)の画像をブラウザダウンロードとして保存する。 */
+export async function exportSelected() {
+  const selected = getActiveRoundAssets().filter((asset) => asset.status === "selected");
+  if (selected.length === 0) {
+    state.message = "保存対象の選択画像がありません。";
+    requestRender();
+    return;
+  }
+  try {
+    for (const asset of selected) {
+      const response = await fetch(asset.imageUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const extension = blob.type === "image/jpeg" ? "jpg" : blob.type === "image/webp" ? "webp" : "png";
+      downloadBlob(blob, `${asset.id}.${extension}`);
+    }
+    state.message = selected.length > 1 ? `選択画像${selected.length}件を保存しました。` : "選択画像を保存しました。";
+  } catch (error) {
+    pushToast(`選択画像の保存に失敗しました: ${error instanceof Error ? error.message : String(error)}`, "error");
+  }
   requestRender();
 }
 

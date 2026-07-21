@@ -480,6 +480,9 @@ function clearPanelTarget() {
   requestRender();
 }
 
+/** crop PATCH の応答順序ガード(panelIdごとの世代)。古い応答が最新の割り当てを上書きしないように。 */
+const cropCommitSerials = new Map<string, number>();
+
 async function commitCropDraft(panelId: string) {
   const lightbox = state.pagePanelLightbox;
   if (!lightbox || lightbox.cropPanelId !== panelId || !lightbox.cropDraft || !state.currentProjectId) {
@@ -490,12 +493,15 @@ async function commitCropDraft(panelId: string) {
     return;
   }
   const crop = lightbox.cropDraft;
+  const serial = (cropCommitSerials.get(panelId) ?? 0) + 1;
+  cropCommitSerials.set(panelId, serial);
   try {
     const result = await api<{ assignment: PagePanelAssignment | null }>(
       `/api/projects/${state.currentProjectId}/pages/${lightbox.pageId}/panels/${panelId}/assignment`,
       { method: "PATCH", body: JSON.stringify({ assetId: assignment.assetId, crop }) }
     );
-    if (result.assignment) {
+    // 後発の commit が既に走っていたら、この(古い)応答で state を巻き戻さない。
+    if (result.assignment && cropCommitSerials.get(panelId) === serial) {
       state.pagePanelAssignments = state.pagePanelAssignments.map((item) => (item.panelId === panelId ? result.assignment! : item));
     }
     // 保存できたので、閉じる時にページ一覧のコマ割りプレビューを最新化する。

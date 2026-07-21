@@ -136,8 +136,18 @@ function ensureAttachmentsLoaded(assetId: string) {
         return;
       }
       const draft = ensurePaintDraft(assetId);
-      // このセッションで既に編集が始まっている場合はクライアント状態を優先する。
       if (draft.pasteObjects.length > 0) {
+        // GET応答前に編集が始まっていた場合: クライアント状態を優先しつつ、クライアントが
+        // まだ見ていないサーバー既存添付はマージで残す(returnで捨てると、直後の全量置換PUTが
+        // サーバーの既存添付を消してしまう)。
+        const knownIds = new Set(draft.pasteObjects.map((object) => object.id));
+        const missing = response.objects.filter((object) => !knownIds.has(object.id));
+        if (missing.length === 0) {
+          return;
+        }
+        setPaintDraft({ ...draft, pasteObjects: [...missing, ...draft.pasteObjects] });
+        schedulePasteAttachmentsPut(assetId);
+        requestRender();
         return;
       }
       setPaintDraft({ ...draft, pasteObjects: response.objects, pasteEnabled: response.enabled });
@@ -1020,10 +1030,11 @@ export async function importPasteImageBlob(
   // 切替前の client 座標が切替後の canvas rect と対応しないため、
   // ドロップ位置はペイント編集中のドロップでのみ尊重する(それ以外は中央配置)。
   const honorDropPoint = state.paintEditMode;
-  const loadingToastTimer = window.setTimeout(() => {
-    pushToast("画像を読み込んでいます…");
-  }, PASTE_LOADING_TOAST_DELAY_MS);
   let loadingToastId: string | null = null;
+  const loadingToastTimer = window.setTimeout(() => {
+    // id を控えておかないと finally の dismiss が効かず、トーストが消えない。
+    loadingToastId = pushToast("画像を読み込んでいます…");
+  }, PASTE_LOADING_TOAST_DELAY_MS);
   try {
     const canvas = await decodeBlobToCanvas(blob);
     // キャップ後のビットマップを永続ソースとして保存する(クライアント表示と同一内容)。

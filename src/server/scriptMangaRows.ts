@@ -292,6 +292,19 @@ export function parseConfig(run: RunRow): ScriptMangaRunConfig {
   } as ScriptMangaRunConfig;
 }
 
+/**
+ * 生成系の入口で config の必須フィールドを検証する。壊れた config_json のまま生成要求へ進むと
+ * templateId: undefined で不可解に失敗するため、ここで明示エラーにする(表示系 parseConfig は
+ * レガシーrunの閲覧を壊さないよう lenient のまま)。
+ */
+export function requireGenerationConfig(run: RunRow): ScriptMangaRunConfig {
+  const config = parseConfig(run);
+  if (typeof config.templateId !== "string" || !config.templateId) {
+    throw new HttpError(422, `Run ${run.id} has a corrupt config_json (missing templateId)`);
+  }
+  return config;
+}
+
 export function pageLayout(pageId: string): PageLayout {
   const row = getRow<{ layout_json: string | null }>("SELECT layout_json FROM pages WHERE id = ?", [pageId]);
   const layout = normalizeEditedPageLayout(row?.layout_json ? JSON.parse(row.layout_json) : null);

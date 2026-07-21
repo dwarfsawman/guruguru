@@ -572,6 +572,25 @@ export function handleMosaicKeydown(event: KeyboardEvent): boolean {
   if (!lightbox || lightbox.mode !== "mosaic") {
     return false;
   }
+  // Esc カスケード: 追加モード(描画中の draft 含む)→ 選択解除。ここで処理しないと
+  // lightbox の Escape(閉じる)まで素通りする(コマ枠モードと同じ「Esc は lightbox より前に」)。
+  if (event.key === "Escape") {
+    if (state.mosaicAddMode !== null || state.mosaicRectDraft || state.mosaicPolygonDraft) {
+      event.preventDefault();
+      state.mosaicAddMode = null;
+      state.mosaicRectDraft = null;
+      state.mosaicPolygonDraft = null;
+      requestRender();
+      return true;
+    }
+    if (state.mosaicSelectedRegionId !== null || state.mosaicSelectedVertexIndex !== null) {
+      event.preventDefault();
+      state.mosaicSelectedRegionId = null;
+      state.mosaicSelectedVertexIndex = null;
+      requestRender();
+      return true;
+    }
+  }
   if ((event.key === "Delete" || event.key === "Backspace") && !isTextEntryTarget(event.target)) {
     if (state.mosaicSelectedRegionId && state.mosaicSelectedVertexIndex !== null) {
       event.preventDefault();

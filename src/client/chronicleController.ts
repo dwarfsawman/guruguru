@@ -111,6 +111,14 @@ function fetchChronicleData(projectId: string, scriptId: string): Promise<Chroni
 }
 
 function applyChronicleData(result: ChronicleApiResponse, pageId: string): void {
+  // 脚本が切り替わったら、旧脚本の Beat 選択・プレビューを残さない(残すと旧脚本の placement を
+  // 現ページへ apply できてしまう)。同一脚本の再取得(assign/apply 後)では選択を維持する。
+  if (state.chronicle.scriptId !== result.scriptId) {
+    state.chronicle.selectedBeatIds = [];
+    state.chronicle.preview = null;
+    state.chronicle.previewBeatId = null;
+    selectionAnchorBeatId = null;
+  }
   state.chronicle.status = "ready";
   state.chronicle.scriptId = result.scriptId;
   state.chronicle.revisionId = result.revisionId;
@@ -214,6 +222,14 @@ function selectChronicleAllocationPolicy(policy: string): void {
   requestRender();
 }
 
+/**
+ * await 後の完了ガード: ページが変わっていないことに加えて脚本も同一かを確認する
+ * (pageId だけだと脚本切替の狭間で旧脚本の結果が現ページへ混入する)。
+ */
+function chronicleContextStillCurrent(context: { pageId: string; scriptId: string }): boolean {
+  return state.pagePanelLightbox?.pageId === context.pageId && state.chronicle.scriptId === context.scriptId;
+}
+
 /** 現在の lightbox / Chronicle が有効な状態かをまとめて確認する(非同期完了ガードの土台)。 */
 function currentAllocationContext(): { projectId: string; pageId: string; scriptId: string } | null {
   const projectId = state.currentProjectId;
@@ -288,7 +304,7 @@ async function previewChronicleLayout(): Promise<void> {
       `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/preview`,
       { method: "POST", body: JSON.stringify({ placementIds }) }
     );
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     state.chronicle.preview = result;
@@ -331,7 +347,7 @@ async function applyChronicleLayoutPreview(): Promise<void> {
   requestRender();
   try {
     await flushPageObjectsSave();
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     const previousSnapshot = currentPageObjectsSnapshot();
@@ -340,12 +356,12 @@ async function applyChronicleLayoutPreview(): Promise<void> {
       `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/apply`,
       { method: "POST", body: JSON.stringify({ placementIds, seed: preview.seed }) }
     );
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     pushPageObjectHistorySnapshotExternal(previousSnapshot);
     const detail = await api<PageDetail>(`/api/projects/${context.projectId}/pages/${context.pageId}`);
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     state.pageObjectsDraft = detail.page.objects ?? [];
@@ -379,7 +395,7 @@ async function reflowChronicleLayout(): Promise<void> {
   requestRender();
   try {
     await flushPageObjectsSave();
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     const previousSnapshot = currentPageObjectsSnapshot();
@@ -387,7 +403,7 @@ async function reflowChronicleLayout(): Promise<void> {
       `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/reflow`,
       { method: "POST", body: JSON.stringify({}) }
     );
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     if (result.objects.length === 0) {
@@ -398,7 +414,7 @@ async function reflowChronicleLayout(): Promise<void> {
     }
     pushPageObjectHistorySnapshotExternal(previousSnapshot);
     const detail = await api<PageDetail>(`/api/projects/${context.projectId}/pages/${context.pageId}`);
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     state.pageObjectsDraft = detail.page.objects ?? [];
@@ -438,7 +454,7 @@ async function unlockAllChroniclePlacementsForCurrentPage(): Promise<void> {
       `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-layout/unlock`,
       { method: "POST", body: JSON.stringify({}) }
     );
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     pushToast(`${result.unlocked}件のロックを解除しました。`, "info");
@@ -462,7 +478,7 @@ async function unlockChroniclePlacement(placementId: string): Promise<void> {
       method: "PATCH",
       body: JSON.stringify({ autoLayoutLocked: false })
     });
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     await loadChronicleData(context.projectId, context.scriptId, context.pageId);
@@ -552,7 +568,7 @@ async function assignSelectionToCurrentPage(): Promise<void> {
       `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-allocation`,
       { method: "POST", body: JSON.stringify({ lineIds, existingPlacementPolicy: state.chronicle.allocationPolicy }) }
     );
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     reportAllocationResult(result);
@@ -598,7 +614,7 @@ async function removeSelectionFromCurrentPage(): Promise<void> {
       `/api/projects/${context.projectId}/pages/${context.pageId}/dialogue-allocation/remove`,
       { method: "POST", body: JSON.stringify({ lineIds }) }
     );
-    if (state.pagePanelLightbox?.pageId !== context.pageId) {
+    if (!chronicleContextStillCurrent(context)) {
       return;
     }
     for (const warning of result.warnings) {

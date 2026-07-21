@@ -246,7 +246,10 @@ export function ensureDialogueLettering(
          (id, project_id, script_id, character_id, speaker_label, text, semantic_kind, balloon_style,
           order_index, scene_index, source_hash, status, source)
        VALUES (?, ?, ?, NULL, '', ?, ?, ?, ?, NULL, ?, 'active', 'llm')`,
-      [unit.id, run.project_id, run.script_id, unit.text, unit.semanticKind, unit.balloonStyle, 1_000_000 + fillUnits.size,
+      // order_index はスナップショット(下)と同じ per-unit 値にする(旧実装は全 unit 同値
+      // `1_000_000 + fillUnits.size` で並び順が不定だった)。fill 由来行(source='llm')は
+      // loadActiveDialogues が通常台詞として拾わないよう除外される。
+      [unit.id, run.project_id, run.script_id, unit.text, unit.semanticKind, unit.balloonStyle, 1_000_000 + unit.part,
         unit.sourceElementId ?? unit.id]
     );
     dialogueSnapshots.set(unit.id, {
@@ -395,7 +398,10 @@ export function reflowLetteringAroundFigure(run: RunRow, task: TaskRow): void {
       "SELECT page_index FROM script_manga_run_pages WHERE run_id = ? AND page_id = ?",
       [run.id, task.page_id]
     )?.page_index;
-    const pageSpec = typeof pageIndex === "number" ? plan.pages[pageIndex] : undefined;
+    // successorPlan では PageSpec.index と配列位置が一致しないことがあるため、位置アクセスでなく
+    // index フィールドで探す(位置アクセスだと別ページの回避領域を適用してしまう)。
+    const pageSpec =
+      typeof pageIndex === "number" ? plan.pages.find((page) => page.index === pageIndex) : undefined;
     if (!pageSpec) return;
     const layout = pageLayout(task.page_id);
     const layoutPanels = orderPanelsByReadingDirection(layout.panels, layout.readingDirection);

@@ -124,7 +124,9 @@ function loadActiveDialogues(scriptId: string): StoryGraphDialogueInput[] {
     balloon_style: string;
   }>(
     `SELECT id, order_index, scene_index, character_id, speaker_label, text, semantic_kind, balloon_style
-     FROM dialogue_lines WHERE script_id = ? AND status = 'active' ORDER BY order_index ASC`,
+     FROM dialogue_lines
+     WHERE script_id = ? AND status = 'active' AND source != 'llm'
+     ORDER BY order_index ASC`,
     [scriptId]
   ).map((row) => ({
     id: row.id,

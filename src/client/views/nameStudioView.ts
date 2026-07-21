@@ -204,7 +204,15 @@ export function distinctNameStudioCandidates(
     return 0;
   };
   for (const candidate of candidates) {
-    const signature = candidatePlanStructureSignature(candidate);
+    // 構造署名は customLayouts/balloonHints(人間のコマ割り修正)を含まないため、署名へ併記する。
+    // 含めないと「人間が修正した候補」が未修正の同構造候補と同一視され一覧から隠される。
+    const customLayouts = candidate.customLayouts && Object.keys(candidate.customLayouts).length > 0
+      ? `|cl:${JSON.stringify(candidate.customLayouts)}`
+      : "";
+    const balloonHints = candidate.balloonHints && Object.keys(candidate.balloonHints).length > 0
+      ? `|bh:${JSON.stringify(candidate.balloonHints)}`
+      : "";
+    const signature = candidatePlanStructureSignature(candidate) + customLayouts + balloonHints;
     const current = groups.get(signature);
     if (!current || priority(candidate) > priority(current)) groups.set(signature, candidate);
   }

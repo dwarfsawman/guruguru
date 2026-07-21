@@ -352,8 +352,9 @@ export function defaultCoverCrop(assetWidth: number, assetHeight: number, boxWid
 
 /** crop を有効範囲([0,1] かつ x+width<=1 等)へ丸める。回転は保持し (-π, π] へ正規化する。 */
 export function clampPanelCrop(crop: PanelCrop): PanelCrop {
-  const width = Math.min(1, Math.max(0.01, isFiniteNumber(crop.width) ? crop.width : 1));
-  const height = Math.min(1, Math.max(0.01, isFiniteNumber(crop.height) ? crop.height : 1));
+  // 最小窓はホイールズームの下限(MIN_CROP_ZOOM_SIZE)と揃える(旧: 0.01 で経路により下限が不一致だった)。
+  const width = Math.min(1, Math.max(MIN_CROP_ZOOM_SIZE, isFiniteNumber(crop.width) ? crop.width : 1));
+  const height = Math.min(1, Math.max(MIN_CROP_ZOOM_SIZE, isFiniteNumber(crop.height) ? crop.height : 1));
   const x = Math.min(1 - width, Math.max(0, isFiniteNumber(crop.x) ? crop.x : 0));
   const y = Math.min(1 - height, Math.max(0, isFiniteNumber(crop.y) ? crop.y : 0));
   return { x, y, width, height, rotation: normalizeRotation(crop.rotation) };
@@ -619,7 +620,8 @@ function resolveAspectRatio(firstPage: Record<string, unknown> | null): [number,
   // aspectRatio 無し: width/height から。width 未指定は 1 とみなす。
   const width = firstPage && isFiniteNumber(firstPage.width) ? firstPage.width : 1;
   const height = firstPage && isFiniteNumber(firstPage.height) ? firstPage.height : 1.4142;
-  return [width > EPSILON ? width : 1, height > EPSILON ? height : 1];
+  // 非正の height のフォールバックも既定(1.4142=A判縦)に揃える(旧: 1 で正方形になっていた)。
+  return [width > EPSILON ? width : 1, height > EPSILON ? height : 1.4142];
 }
 
 function resolveHeight(

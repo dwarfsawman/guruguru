@@ -899,16 +899,39 @@ async function serveReleaseAsset(res: ServerResponse, filename: string, label: s
     return;
   }
 
+  const contentLength = response.headers.get("content-length");
   res.writeHead(200, {
     "content-type": response.headers.get("content-type") || "application/octet-stream",
-    "content-length": response.headers.get("content-length") ?? "",
+    // content-length 欠損時に空文字ヘッダを送らない(chunked に任せる)。
+    ...(contentLength ? { "content-length": contentLength } : {}),
     "cache-control": "public, max-age=86400"
   });
 
-  for await (const chunk of response.body) {
-    res.write(chunk);
+  // 巨大onnxモデル配信で write の戻り値を無視するとバッファがメモリへ積み上がるため、
+  // backpressure を尊重して drain を待つ。header送信後の失敗は destroy で接続を閉じる。
+  try {
+    for await (const chunk of response.body) {
+      if (!res.write(chunk)) {
+        await new Promise<void>((resolve, reject) => {
+          const onDrain = () => {
+            res.off("error", onError);
+            resolve();
+          };
+          const onError = (error: Error) => {
+            res.off("drain", onDrain);
+            reject(error);
+          };
+          res.once("drain", onDrain);
+          res.once("error", onError);
+        });
+      }
+    }
+    res.end();
+  } catch {
+    if (!res.destroyed) {
+      res.destroy();
+    }
   }
-  res.end();
 }
 
 function setupShutdownHandlers() {

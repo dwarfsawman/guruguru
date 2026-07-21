@@ -115,9 +115,10 @@ export function ensureAssetThumbnail(
     return existing;
   }
 
-  const task = repairAssetThumbnail(resolvedImagePath, resolvedThumbnailPath, size).catch((error) => {
+  // dedup は in-flight の間だけ。成功エントリを残すと Map が無制限成長する上、
+  // 修復後にファイルが再消失しても再修復されなくなる(次回は metadata 再チェックで軽い)。
+  const task = repairAssetThumbnail(resolvedImagePath, resolvedThumbnailPath, size).finally(() => {
     thumbnailRepairTasks.delete(key);
-    throw error;
   });
   thumbnailRepairTasks.set(key, task);
   return task;

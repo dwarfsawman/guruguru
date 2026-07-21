@@ -20,6 +20,7 @@ import {
   parseJson,
   planFromRow,
   referenceModelFamily,
+  requireGenerationConfig,
   requirePlan,
   requireRun,
   requireTask,
@@ -241,7 +242,7 @@ export async function buildPanelGenerationRequest(input: {
 
 export async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
   const run = requireRun(runId);
-  const config = parseConfig(run);
+  const config = requireGenerationConfig(run);
   const params: unknown[] = [run.id];
   const taskFilter = taskIds && taskIds.length > 0 ? ` AND id IN (${taskIds.map(() => "?").join(", ")})` : "";
   if (taskIds) params.push(...taskIds);

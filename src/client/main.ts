@@ -569,16 +569,17 @@ function bindEvents() {
     if (handlePanelShapeKeydown(event)) {
       return;
     }
+    // モザイク編集(モザイクモード)の Escape(描画/選択の段階的解除)・Delete/Backspace。
+    // Escape を扱うため lightbox の Escape(閉じる)より先に処理する。
+    if (handleMosaicKeydown(event)) {
+      return;
+    }
     // コマ選択 lightbox も detail とは排他(book grid の上に開く)なので同様に早期処理する。
     if (handlePagePanelLightboxKeydown(event)) {
       return;
     }
     // ページオブジェクト編集(オブジェクトモード)の Ctrl+Z/Ctrl+Shift+Z(undo/redo)・Delete。
     if (handlePageObjectsKeydown(event)) {
-      return;
-    }
-    // モザイク編集(モザイクモード)の選択中頂点/リージョンの Delete/Backspace。
-    if (handleMosaicKeydown(event)) {
       return;
     }
 

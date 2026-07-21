@@ -155,8 +155,8 @@ export function restoreProjectDraft(projectId: string): {
     return {
       generationDraft: parsed.generationDraft ?? null,
       generationDraftsByRound: parsed.generationDraftsByRound ?? {},
-      inpaintDrafts: parsed.inpaintDrafts ?? {},
-      poseDrafts: parsed.poseDrafts ?? {},
+      inpaintDrafts: resetWebSamSessionStatus(parsed.inpaintDrafts ?? {}),
+      poseDrafts: resetPoseSessionStatus(parsed.poseDrafts ?? {}),
       referenceDraft: parsed.referenceDraft ?? null,
       loraDraft: parsed.loraDraft ?? [],
       referenceDraftsByPage: parsed.referenceDraftsByPage ?? {},
@@ -168,6 +168,33 @@ export function restoreProjectDraft(projectId: string): {
   } catch {
     return null;
   }
+}
+
+/**
+ * worker のモデル status はプロセス内限りのセッション状態。localStorage から復元した draft に
+ * "ready"/"detecting" 等が残っていると、再オープン初回の検出が「ready なのに worker セッション無し」で
+ * 必ず1回エラーになるため、復元時に未取得状態へ戻す(キャッシュ有無は probe が改めて確認する)。
+ */
+function resetPoseSessionStatus(drafts: Record<string, PoseDraft>): Record<string, PoseDraft> {
+  for (const draft of Object.values(drafts)) {
+    draft.modelStatus = "idle";
+    draft.modelDownloadProgress = 0;
+    draft.modelStatusText = "未取得";
+    draft.modelError = "";
+  }
+  return drafts;
+}
+
+function resetWebSamSessionStatus(drafts: Record<string, InpaintDraft>): Record<string, InpaintDraft> {
+  for (const draft of Object.values(drafts)) {
+    if (draft.selectedSmartMaskProvider !== "manual") {
+      draft.webSamModelStatus = "idle";
+      draft.webSamDownloadProgress = 0;
+      draft.webSamStatusText = "未取得";
+      draft.webSamError = "";
+    }
+  }
+  return drafts;
 }
 
 /** Project を離れる際(ホームへ戻る等)の draft リセット。永続化済みの draft には触れない。 */

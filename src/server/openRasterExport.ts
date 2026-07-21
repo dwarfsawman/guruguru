@@ -342,7 +342,8 @@ export async function createPageLayers(
     });
   }
 
-  if (layers.length === 0) {
+  // layers は [paperLayer] 始まりなので「コマ画像が1枚も無い」判定は長さ1(=== 0 は恒偽で到達不能だった)。
+  if (layers.length === 1) {
     const representative = representativeAsset(page.id);
     if (representative) {
       layers.push({ name: "Page image", src: "", png: await renderFullImageLayer(representative, canvas, assetSource) });
@@ -357,7 +358,7 @@ export async function createPageLayers(
   if (frameLayer) {
     layers.push({ name: "Panels", src: "", png: frameLayer });
   }
-  if (layers.length === 0) {
+  if (layers.length === 1) {
     layers.push({ name: "Blank page", src: "", png: await transparentPng(canvas) });
   }
   // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1)。コマ枠より前面、配列順(先頭=背面)。
