@@ -164,6 +164,11 @@ function scheduleSave(): void {
   objectsPersister.schedule();
 }
 
+/** モジュール外(セリフ配置のマージ経路など)から debounce 保存を予約する。 */
+export function schedulePageObjectsSave(): void {
+  scheduleSave();
+}
+
 /**
  * lightbox クローズ時に呼ぶ。保留中の debounce があれば即座に保存を実行し、その完了を返す。
  * 保留が無くても実行中の PATCH があればその完了を返す(どちらも無ければ即 resolve)。
@@ -201,6 +206,11 @@ async function persistPageObjects(context: PersistAttemptContext): Promise<void>
     objectsPersister.markDirty();
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
+    // 失敗を放置するとローカル編集がサーバへ永久に載らない(クローズ時のプレビュー再取得判定
+    // からも漏れる)。lightbox が開いている間は debounce で再試行する。
+    if (state.pagePanelLightbox?.pageId === pageId) {
+      objectsPersister.schedule();
+    }
   }
 }
 
@@ -853,6 +863,10 @@ function updateBoxContentField(box: BoxObject, field: string, target: HTMLInputE
     return null;
   }
   const nextStyle = applyTextStyleField(box.content.style, field, target);
+  // no-op 変更で履歴エントリ+PATCH を発生させない(updateTextOwnField と同じ同一性比較)。
+  if (nextStyle === box.content.style) {
+    return null;
+  }
   return { ...box, content: { ...box.content, style: nextStyle } };
 }
 
@@ -898,6 +912,9 @@ function updateBalloonContentField(balloon: BalloonObject, field: string, target
     return null;
   }
   const nextStyle = applyTextStyleField(balloon.content.style, field, target);
+  if (nextStyle === balloon.content.style) {
+    return null;
+  }
   return { ...balloon, content: { ...balloon.content, style: nextStyle } };
 }
 

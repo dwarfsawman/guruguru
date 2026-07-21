@@ -20,6 +20,7 @@ import {
   parseJson,
   planFromRow,
   referenceModelFamily,
+  requireGenerationConfig,
   requirePlan,
   requireRun,
   requireTask,
@@ -125,6 +126,8 @@ export function panelGenerationSize(layout: PageLayout, panelId: string, longEdg
   if (panelWidth <= 0 || panelHeight <= 0) return { width: edge, height: edge };
   const ratio = panelWidth / panelHeight;
   if (family === "sdxl") {
+    // 意図的仕様: SDXL は学習済み解像度バケット固定が最も安定するため、config.longEdge は無視する
+    // (longEdge が効くのは chroma 系のみ。監査 SL7 の仕様確認に対する明文化)。
     const bucket = SDXL_BUCKETS.reduce((best, candidate) =>
       Math.abs(Math.log(candidate[0] / candidate[1]) - Math.log(ratio)) < Math.abs(Math.log(best[0] / best[1]) - Math.log(ratio)) ? candidate : best
     );
@@ -241,7 +244,7 @@ export async function buildPanelGenerationRequest(input: {
 
 export async function submitTasks(runId: string, taskIds?: string[]): Promise<void> {
   const run = requireRun(runId);
-  const config = parseConfig(run);
+  const config = requireGenerationConfig(run);
   const params: unknown[] = [run.id];
   const taskFilter = taskIds && taskIds.length > 0 ? ` AND id IN (${taskIds.map(() => "?").join(", ")})` : "";
   if (taskIds) params.push(...taskIds);

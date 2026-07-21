@@ -33,6 +33,8 @@ let paintAltEyedropperActive = false;
 const PAINT_WHEEL_ZOOM_IDLE_MS = 150;
 let paintWheelZoomIdleTimer: number | null = null;
 let paintWheelZoomPendingScale: number | null = null;
+/** pending がどのアセットのものか(アセット切替をまたいだ持ち越しを防ぐ)。 */
+let paintWheelZoomPendingAssetId: string | null = null;
 
 /** Paint-mode analogue of `handleMaskWheelZoom`, persisting to `PaintDraft.zoomScale` instead. */
 export function handlePaintWheelZoom(event: WheelEvent) {
@@ -41,6 +43,10 @@ export function handlePaintWheelZoom(event: WheelEvent) {
     return;
   }
   const draft = ensurePaintDraft(assetId);
+  if (paintWheelZoomPendingAssetId !== assetId) {
+    paintWheelZoomPendingScale = null;
+    paintWheelZoomPendingAssetId = assetId;
+  }
   const currentScale = paintWheelZoomPendingScale ?? draft.zoomScale;
   const direction = event.deltaY < 0 ? 1 : -1;
   const nextScale = clampNumber(currentScale + direction * 0.12, 0.25, 4, 1);
@@ -171,8 +177,18 @@ function beginPaintStroke(event: PointerEvent, canvas: HTMLCanvasElement) {
     // (選択/変形は pasteObjectController が pointer チェーンの手前で処理する)。
     return;
   }
+  // 画像 load 完了前は canvas が既定サイズ(300x150)のまま。この状態で描くと load 後の
+  // sync でレイヤーごと消える(undo も積まれない)ため、ストロークを開始しない。
+  const image = document.querySelector<HTMLImageElement>("#previewImage");
+  if (!image || !image.complete || image.naturalWidth <= 0 || canvas.width !== image.naturalWidth) {
+    return;
+  }
   pushPaintUndoSnapshot(assetId);
-  canvas.setPointerCapture(event.pointerId);
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch {
+    // capture 失敗でもストロークは委譲イベントで継続する。
+  }
   const point = pointerToMaskCanvasPoint(canvas, event);
   activePaintStroke = {
     pointerId: event.pointerId,
@@ -501,7 +517,7 @@ export function handlePaintEditorKeydown(event: KeyboardEvent): boolean {
   if (!state.paintEditMode) {
     return false;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z") {
     event.preventDefault();
     undoPaintStroke();
     return true;
@@ -530,6 +546,13 @@ export function handlePaintEditorBlur() {
 export function closePaintEditorSession() {
   cancelPendingPaintStrokeFlush();
   activePaintStroke = null;
+  // 保留中の wheel zoom タイマーを破棄する(閉じた後に draft へ書き込まない)。
+  if (paintWheelZoomIdleTimer !== null) {
+    window.clearTimeout(paintWheelZoomIdleTimer);
+    paintWheelZoomIdleTimer = null;
+  }
+  paintWheelZoomPendingScale = null;
+  paintWheelZoomPendingAssetId = null;
 }
 
 registerActions({

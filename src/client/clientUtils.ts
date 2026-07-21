@@ -16,6 +16,35 @@ export function isTextEntryTarget(target: EventTarget | null) {
   return target.isContentEditable || !!target.closest("[contenteditable=''], [contenteditable='true']");
 }
 
+/**
+ * `#previewImage` 等のロード完了を待つ。morph による要素差し替えで load/error が二度と発火しない
+ * ことがあるため、タイムアウト付き(既定10秒)で必ず決着させる(pose/WebSAM の検出前待ちで使用)。
+ */
+export function waitForImageLoad(image: HTMLImageElement, timeoutMs = 10_000): Promise<void> {
+  if (image.complete && image.naturalWidth > 0) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error("画像の読み込み完了を待てませんでした。")), timeoutMs);
+    image.addEventListener(
+      "load",
+      () => {
+        window.clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+    image.addEventListener(
+      "error",
+      () => {
+        window.clearTimeout(timer);
+        reject(new Error("画像を読み込めませんでした。"));
+      },
+      { once: true }
+    );
+  });
+}
+
 export function imageToRawData(image: HTMLImageElement) {
   const canvas = document.createElement("canvas");
   canvas.width = image.naturalWidth;

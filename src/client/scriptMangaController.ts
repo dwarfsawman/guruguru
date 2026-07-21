@@ -233,10 +233,11 @@ async function generateCandidates(groupId?: string): Promise<void> {
   } catch (error) {
     if (serial === candidateOperationSerial) pushToast(error instanceof Error ? error.message : String(error), "error");
   } finally {
-    if (serial === candidateOperationSerial) {
-      state.scriptMangaCandidatesBusy = false;
-      requestRender();
-    }
+    // busy は「この関数の in-flight」フラグなので無条件で戻す。serial ガード付きだと、
+    // in-flight 中に別経路(画面初期化/脚本切替/refresh)が serial を進めた場合に
+    // busy=true が固着し「候補を生成」が恒久 disabled になる。
+    state.scriptMangaCandidatesBusy = false;
+    requestRender();
   }
 }
 
@@ -252,10 +253,11 @@ async function archiveCandidate(candidateId: string): Promise<void> {
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
   } finally {
-    if (serial === candidateOperationSerial) {
-      state.scriptMangaCandidatesBusy = false;
-      requestRender();
-    }
+    // busy は「この関数の in-flight」フラグなので無条件で戻す。serial ガード付きだと、
+    // in-flight 中に別経路(画面初期化/脚本切替/refresh)が serial を進めた場合に
+    // busy=true が固着し「候補を生成」が恒久 disabled になる。
+    state.scriptMangaCandidatesBusy = false;
+    requestRender();
   }
 }
 

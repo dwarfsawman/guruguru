@@ -212,11 +212,12 @@ test("clampPanelCrop: はみ出す offset は width/height を保ったまま境
 });
 
 test("clampPanelCrop: width/height は (0,1] へ丸め、不正値(NaN等)は 1 にフォールバック", () => {
+  // 最小窓はホイールズームの下限 MIN_CROP_ZOOM_SIZE(0.05)と共通。
   assert.deepEqual(clampPanelCrop({ x: 0, y: 0, width: 1.5, height: 0 }), {
     x: 0,
     y: 0,
     width: 1,
-    height: 0.01,
+    height: 0.05,
     rotation: 0
   });
   assert.deepEqual(clampPanelCrop({ x: 0, y: 0, width: Number.NaN, height: 0.5 }), {

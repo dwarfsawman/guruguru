@@ -16,6 +16,7 @@ import {
   type PanelShape
 } from "./pageLayout";
 import type { BalloonObject, TextObject } from "./pageObjects";
+import { estimateTextObjectSize } from "./dialogueAutoLayout";
 
 export const GURUGURU_LAYOUT_SCHEMA_VERSION = "0.3.0";
 const EXPORT_PAGE_ID = "page_1";
@@ -202,12 +203,20 @@ export function guruguruLayoutFromPage(
     });
   });
   texts.forEach((object, index) => {
+    // TextObject は size を持たないため概算 bbox を出す(旧: [x,y,x,y] の退化矩形で範囲情報が
+    // 失われていた。balloons 側は外接矩形を出しており不揃いだった)。
+    const estimated = estimateTextObjectSize(object);
     specTexts.push({
       id: `txt_free_${String(index + 1).padStart(3, "0")}`,
       role: "note",
       language: "ja",
       writingMode: textWritingMode(object.content.style.direction),
-      box: [object.position.x, object.position.y, object.position.x, object.position.y],
+      box: [
+        object.position.x - estimated.x / 2,
+        object.position.y - estimated.y / 2,
+        object.position.x + estimated.x / 2,
+        object.position.y + estimated.y / 2
+      ],
       plainText: object.content.text
     });
   });

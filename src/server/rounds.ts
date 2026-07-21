@@ -646,8 +646,14 @@ async function parentAssetDimensions(parentAsset: Record<string, unknown>): Prom
   if (!imagePath) {
     return null;
   }
-  const size = readImageSize(await readFile(imagePath));
-  return size ? { width: size.width, height: size.height } : null;
+  // width/height 未記録の旧アセットでファイルが欠損していると ENOENT が生の500になるため、
+  // 読み取り失敗は「寸法不明」として扱う(呼び出し側がフォールバックする)。
+  try {
+    const size = readImageSize(await readFile(imagePath));
+    return size ? { width: size.width, height: size.height } : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function collectRound(roundId: string): Promise<CollectRoundResult> {

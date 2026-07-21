@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  estimateTextObjectSize,
   orderPanelsByReadingDirection,
   runDialogueAutoLayout,
   type DialogueAutoLayoutItem
 } from "./dialogueAutoLayout.ts";
 import type { LayoutPanel, PageLayout } from "./pageLayout.ts";
-import type { PageObject, PageVec } from "./pageObjects.ts";
+import type { PageObject, PageVec, TextObject } from "./pageObjects.ts";
 
 function rectPanel(id: string, order: number, bounds: [number, number, number, number]): LayoutPanel {
   return { id, order, shape: { type: "rect", bounds } };
@@ -541,4 +542,47 @@ test("runDialogueAutoLayout: preferredCenter が障害物と衝突する場合�
   const placed = result.objects.find((object) => object.id !== "existing")!;
   // 障害物のあるヒント位置には置かれない。
   assert.ok(Math.hypot(placed.position.x - preferred.x, placed.position.y - preferred.y) > 0.1);
+});
+
+// --- estimateTextObjectSize(maxWidth 解釈は textLayout.ts の仕様: 横書き=行の最大幅、縦書き=列の最大高さ) ---
+
+function textObject(overrides: { text: string; direction: "horizontal" | "vertical"; maxWidth?: number }): TextObject {
+  return {
+    id: "text_1",
+    kind: "text",
+    position: { x: 0.5, y: 0.5 },
+    rotation: 0,
+    maxWidth: overrides.maxWidth,
+    content: {
+      text: overrides.text,
+      style: { fontId: "default", size: 0.03, direction: overrides.direction, color: "#000000" }
+    }
+  };
+}
+
+test("estimateTextObjectSize: 横書きは maxWidth を行幅(x)として折り返し、行数ぶん y が伸びる", () => {
+  const long = textObject({ text: "あ".repeat(40), direction: "horizontal", maxWidth: 0.2 });
+  const size = estimateTextObjectSize(long);
+  // 走行長 0.03*40*0.6 = 0.72 → 0.2 幅で 4 行
+  assert.equal(size.x, 0.2);
+  assert.ok(size.y > 0.03 * 1.6 * 3.5, `y should span ~4 lines, got ${size.y}`);
+});
+
+test("estimateTextObjectSize: 縦書きは maxWidth を列高さ(y)として折り返し、列数ぶん x が伸びる", () => {
+  const long = textObject({ text: "あ".repeat(40), direction: "vertical", maxWidth: 0.2 });
+  const size = estimateTextObjectSize(long);
+  assert.equal(size.y, 0.2);
+  assert.ok(size.x > 0.03 * 1.6 * 3.5, `x should span ~4 columns, got ${size.x}`);
+});
+
+test("estimateTextObjectSize: maxWidth 未指定は単一行/単一列", () => {
+  const horizontal = estimateTextObjectSize(textObject({ text: "テスト", direction: "horizontal" }));
+  assert.ok(horizontal.y <= 0.03 * 1.6 + 1e-9);
+  const vertical = estimateTextObjectSize(textObject({ text: "テスト", direction: "vertical" }));
+  assert.ok(vertical.x <= Math.max(0.03 * 1.6, 0.02) + 1e-9);
+});
+
+test("estimateTextObjectSize: 短文は maxWidth まで膨らまない(走行長でクランプ)", () => {
+  const short = estimateTextObjectSize(textObject({ text: "あ", direction: "horizontal", maxWidth: 0.5 }));
+  assert.ok(short.x < 0.5, `short text should not occupy full maxWidth, got ${short.x}`);
 });

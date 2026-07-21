@@ -326,13 +326,17 @@ const apiRoutes: ApiRoute[] = [
   ["PUT", "/api/settings/vlm-audit", async (req, res) => {
     const body = await readJson<Partial<VlmAuditSettings>>(req);
     const current = getVlmAuditSettings();
+    const model = stringOr(body.model, current.model).trim();
+    // modelKey 未送信で model だけ変更された場合、旧 model 名が modelKey に固着しないよう新 model へ追従させる。
+    // ユーザーが modelKey を明示的に別名へ変えていた(現在値が model と異なる)場合のみ現在値を維持する。
+    const modelKeyFallback = current.modelKey && current.modelKey !== current.model ? current.modelKey : model;
     const settings: VlmAuditSettings = {
       baseUrl: stringOr(body.baseUrl, current.baseUrl).trim().replace(/\/+$/, ""),
-      model: stringOr(body.model, current.model).trim(),
+      model,
       transport: body.transport === "openai-compatible" || body.transport === "lmstudio-native"
         ? body.transport
         : current.transport ?? "lmstudio-native",
-      modelKey: stringOr(body.modelKey, current.modelKey ?? current.model).trim(),
+      modelKey: stringOr(body.modelKey, modelKeyFallback).trim(),
       temperature: Math.min(2, Math.max(0, numberOr(body.temperature, current.temperature))),
       timeoutSeconds: Math.min(600, Math.max(5, numberOr(body.timeoutSeconds, current.timeoutSeconds))),
       maxReferenceImages: Math.min(6, Math.max(0, Math.trunc(numberOr(body.maxReferenceImages, current.maxReferenceImages)))),
@@ -899,16 +903,39 @@ async function serveReleaseAsset(res: ServerResponse, filename: string, label: s
     return;
   }
 
+  const contentLength = response.headers.get("content-length");
   res.writeHead(200, {
     "content-type": response.headers.get("content-type") || "application/octet-stream",
-    "content-length": response.headers.get("content-length") ?? "",
+    // content-length 欠損時に空文字ヘッダを送らない(chunked に任せる)。
+    ...(contentLength ? { "content-length": contentLength } : {}),
     "cache-control": "public, max-age=86400"
   });
 
-  for await (const chunk of response.body) {
-    res.write(chunk);
+  // 巨大onnxモデル配信で write の戻り値を無視するとバッファがメモリへ積み上がるため、
+  // backpressure を尊重して drain を待つ。header送信後の失敗は destroy で接続を閉じる。
+  try {
+    for await (const chunk of response.body) {
+      if (!res.write(chunk)) {
+        await new Promise<void>((resolve, reject) => {
+          const onDrain = () => {
+            res.off("error", onError);
+            resolve();
+          };
+          const onError = (error: Error) => {
+            res.off("drain", onDrain);
+            reject(error);
+          };
+          res.once("drain", onDrain);
+          res.once("error", onError);
+        });
+      }
+    }
+    res.end();
+  } catch {
+    if (!res.destroyed) {
+      res.destroy();
+    }
   }
-  res.end();
 }
 
 function setupShutdownHandlers() {

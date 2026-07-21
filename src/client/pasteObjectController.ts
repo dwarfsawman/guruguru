@@ -64,8 +64,10 @@ import {
 
 /** sourceId → デコード済みビットマップ(offscreen canvas)。morph の外に置く。 */
 export const pasteBitmapCache = new Map<string, HTMLCanvasElement>();
-/** サーバから添付を復元済みの assetId(セッション中はクライアント状態が真実)。 */
+/** サーバからの添付復元を開始済みの assetId(多重GET防止)。 */
 const loadedAttachmentAssetIds = new Set<string>();
+/** 復元GETが完了した assetId(以降はクライアント状態が真実)。in-flight とは区別する。 */
+const restoredAttachmentAssetIds = new Set<string>();
 /** 取得中の sourceId(多重 fetch 防止)。 */
 const loadingSourceIds = new Set<string>();
 /** モード自動切替直後で #paintCanvas が未サイズだった場合の配置持ち越し。 */
@@ -107,18 +109,33 @@ export function flushPasteAttachmentsPut(assetId?: string | null) {
   }
 }
 
+/** assetId 毎の PUT 直列化チェーン。全量置換 PUT が逆順着弾すると古い内容で上書きされるため。 */
+const pastePutChains = new Map<string, Promise<void>>();
+
 async function putPasteAttachments(assetId: string) {
-  const draft = paintDraftForAsset(assetId);
-  if (!draft) {
-    return;
-  }
+  const previous = pastePutChains.get(assetId) ?? Promise.resolve();
+  // 送信ボディは先行 PUT の完了後(送信直前)に読む -- 直列化と同時に常に最新 draft を送る。
+  const task = previous.then(async () => {
+    const draft = paintDraftForAsset(assetId);
+    if (!draft) {
+      return;
+    }
+    try {
+      await api(`/api/assets/${assetId}/paste-attachments`, {
+        method: "PUT",
+        body: JSON.stringify({ objects: draft.pasteObjects, enabled: draft.pasteEnabled })
+      });
+    } catch (error) {
+      pushToast(`貼り付けの保存に失敗しました: ${error instanceof Error ? error.message : String(error)}`, "error");
+    }
+  });
+  pastePutChains.set(assetId, task);
   try {
-    await api(`/api/assets/${assetId}/paste-attachments`, {
-      method: "PUT",
-      body: JSON.stringify({ objects: draft.pasteObjects, enabled: draft.pasteEnabled })
-    });
-  } catch (error) {
-    pushToast(`貼り付けの保存に失敗しました: ${error instanceof Error ? error.message : String(error)}`, "error");
+    await task;
+  } finally {
+    if (pastePutChains.get(assetId) === task) {
+      pastePutChains.delete(assetId);
+    }
   }
 }
 
@@ -132,12 +149,23 @@ function ensureAttachmentsLoaded(assetId: string) {
   void (async () => {
     try {
       const response = await api<{ objects: PastedObject[]; enabled: boolean }>(`/api/assets/${assetId}/paste-attachments`);
+      restoredAttachmentAssetIds.add(assetId);
       if (response.objects.length === 0) {
         return;
       }
       const draft = ensurePaintDraft(assetId);
-      // このセッションで既に編集が始まっている場合はクライアント状態を優先する。
       if (draft.pasteObjects.length > 0) {
+        // GET応答前に編集が始まっていた場合: クライアント状態を優先しつつ、クライアントが
+        // まだ見ていないサーバー既存添付はマージで残す(returnで捨てると、直後の全量置換PUTが
+        // サーバーの既存添付を消してしまう)。
+        const knownIds = new Set(draft.pasteObjects.map((object) => object.id));
+        const missing = response.objects.filter((object) => !knownIds.has(object.id));
+        if (missing.length === 0) {
+          return;
+        }
+        setPaintDraft({ ...draft, pasteObjects: [...missing, ...draft.pasteObjects] });
+        schedulePasteAttachmentsPut(assetId);
+        requestRender();
         return;
       }
       setPaintDraft({ ...draft, pasteObjects: response.objects, pasteEnabled: response.enabled });
@@ -162,7 +190,7 @@ function ensureSourceBitmap(sourceId: string) {
         throw new Error(`HTTP ${response.status}`);
       }
       const blob = await response.blob();
-      const canvas = await decodeBlobToCanvas(blob);
+      const { canvas } = await decodeBlobToCanvas(blob);
       pasteBitmapCache.set(sourceId, canvas);
       requestRender();
     } catch (error) {
@@ -213,9 +241,24 @@ export function syncAssetModalPasteObjects() {
   if (image.complete && image.naturalWidth > 0) {
     sync();
   } else {
-    image.addEventListener("load", sync, { once: true });
+    // 未ロード毎に新クロージャを once 登録すると累積し、アセット切替直後に旧アセットの
+    // sync が一瞬走る。保留は常に1件だけ残す(古い保留は解除)。
+    if (pendingPasteSyncListener) {
+      pendingPasteSyncListener.image.removeEventListener("load", pendingPasteSyncListener.handler);
+    }
+    const handler = () => {
+      if (pendingPasteSyncListener?.handler === handler) {
+        pendingPasteSyncListener = null;
+      }
+      sync();
+    };
+    pendingPasteSyncListener = { image, handler };
+    image.addEventListener("load", handler, { once: true });
   }
 }
+
+/** 画像 load 待ちの sync 保留(常に最新1件のみ。L42: リスナー累積防止)。 */
+let pendingPasteSyncListener: { image: HTMLImageElement; handler: () => void } | null = null;
 
 function applyPendingPlacement(canvas: HTMLCanvasElement, assetId: string) {
   if (!pendingPlacement || pendingPlacement.assetId !== assetId) {
@@ -229,12 +272,14 @@ function applyPendingPlacement(canvas: HTMLCanvasElement, assetId: string) {
     return;
   }
   const point = pointerToMaskCanvasPoint(canvas, { clientX, clientY } as PointerEvent);
-  const transform = clampPasteTransform(
-    { ...target.transform, x: point.x, y: point.y },
+  // 保留時の transform は canvas 未サイズ(1×1基準)で計算されているため、位置だけでなく
+  // スケールも実寸で fit し直す(位置のみ再配置だと極小 scale が残る)。
+  const transform = fitInitialPasteTransform(
     target.sourceWidth,
     target.sourceHeight,
     canvas.width,
-    canvas.height
+    canvas.height,
+    point
   );
   setPaintDraft({
     ...draft,
@@ -780,14 +825,14 @@ export function deleteSelectedPastedObject(assetId: string) {
   requestRender();
 }
 
-/** 矢印キー連打で undo エントリが溢れないよう、1 秒空いた最初のナッジだけ履歴に積む。 */
-let lastNudgeHistoryAt = 0;
+/** 矢印キー連打で undo エントリが溢れないよう、1 秒空いた最初のナッジだけ履歴に積む(assetId 別)。 */
+const lastNudgeHistoryAt = new Map<string, number>();
 function pushNudgeHistoryOncePerBurst(assetId: string, draft: NonNullable<ReturnType<typeof paintDraftForAsset>>) {
   const now = Date.now();
-  if (now - lastNudgeHistoryAt > 1000) {
+  if (now - (lastNudgeHistoryAt.get(assetId) ?? 0) > 1000) {
     pushPaintObjectsHistory(assetId, draft.pasteObjects, draft.selectedPasteObjectId);
   }
-  lastNudgeHistoryAt = now;
+  lastNudgeHistoryAt.set(assetId, now);
 }
 
 // --- オブジェクト操作(パネルの操作行) ---------------------------------------
@@ -922,8 +967,12 @@ function isAcceptedImageBlob(blob: Blob): boolean {
   return PASTE_ACCEPTED_MIME.includes(blob.type);
 }
 
-/** blob をデコードし、長辺 PASTE_MAX_SOURCE_DIMENSION へキャップした offscreen canvas を返す。 */
-async function decodeBlobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
+/**
+ * blob をデコードし、長辺 PASTE_MAX_SOURCE_DIMENSION へキャップした offscreen canvas を返す。
+ * `downscaled` は実際に縮小が起きたか(元寸法との比較。長辺ちょうど上限は縮小なし、
+ * <img> フォールバック経路でも正しく判定される)。
+ */
+async function decodeBlobToCanvas(blob: Blob): Promise<{ canvas: HTMLCanvasElement; downscaled: boolean }> {
   const draw = (source: CanvasImageSource, width: number, height: number) => {
     const scale = Math.min(1, PASTE_MAX_SOURCE_DIMENSION / Math.max(width, height));
     const canvas = document.createElement("canvas");
@@ -935,15 +984,15 @@ async function decodeBlobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
     }
     context.imageSmoothingQuality = "high";
     context.drawImage(source, 0, 0, canvas.width, canvas.height);
-    return canvas;
+    return { canvas, downscaled: scale < 1 };
   };
 
   if (typeof createImageBitmap === "function") {
     try {
       const bitmap = await createImageBitmap(blob);
-      const canvas = draw(bitmap, bitmap.width, bitmap.height);
+      const result = draw(bitmap, bitmap.width, bitmap.height);
       bitmap.close();
-      return canvas;
+      return result;
     } catch {
       // 一部形式で createImageBitmap が失敗する環境向けに <img> フォールバックへ。
     }
@@ -1020,17 +1069,15 @@ export async function importPasteImageBlob(
   // 切替前の client 座標が切替後の canvas rect と対応しないため、
   // ドロップ位置はペイント編集中のドロップでのみ尊重する(それ以外は中央配置)。
   const honorDropPoint = state.paintEditMode;
-  const loadingToastTimer = window.setTimeout(() => {
-    pushToast("画像を読み込んでいます…");
-  }, PASTE_LOADING_TOAST_DELAY_MS);
   let loadingToastId: string | null = null;
+  const loadingToastTimer = window.setTimeout(() => {
+    // id を控えておかないと finally の dismiss が効かず、トーストが消えない。
+    loadingToastId = pushToast("画像を読み込んでいます…");
+  }, PASTE_LOADING_TOAST_DELAY_MS);
   try {
-    const canvas = await decodeBlobToCanvas(blob);
+    const { canvas, downscaled: wasDownscaled } = await decodeBlobToCanvas(blob);
     // キャップ後のビットマップを永続ソースとして保存する(クライアント表示と同一内容)。
     // ダウンスケール不要ならオリジナルのバイト列をそのまま保存する(再エンコードなし)。
-    const wasDownscaled = typeof createImageBitmap === "function"
-      ? Math.max(canvas.width, canvas.height) >= PASTE_MAX_SOURCE_DIMENSION
-      : false;
     const dataUrl = wasDownscaled
       ? canvas.toDataURL(blob.type === "image/jpeg" ? "image/jpeg" : blob.type === "image/webp" ? "image/webp" : "image/png")
       : await blobToDataUrl(blob);
@@ -1125,13 +1172,18 @@ function assetIdFromUriList(uriList: string): string | null {
  * サムネイル縮小版を貼ってしまうため行わない。
  */
 async function importPasteFromAssetId(sourceAssetId: string) {
-  const response = await fetch(`/api/assets/${sourceAssetId}/image`);
-  if (!response.ok) {
-    pushToast(`アセット画像の取得に失敗しました(HTTP ${response.status})`, "error");
-    return;
+  try {
+    const response = await fetch(`/api/assets/${sourceAssetId}/image`);
+    if (!response.ok) {
+      pushToast(`アセット画像の取得に失敗しました(HTTP ${response.status})`, "error");
+      return;
+    }
+    const blob = await response.blob();
+    await importPasteImageBlob(blob);
+  } catch (error) {
+    // ネットワーク断は fetch が reject する。unhandled rejection にせずトースト化する。
+    pushToast(`アセット画像の取得に失敗しました: ${error instanceof Error ? error.message : String(error)}`, "error");
   }
-  const blob = await response.blob();
-  await importPasteImageBlob(blob);
 }
 
 function setDropHighlight(active: boolean) {
@@ -1264,10 +1316,14 @@ function openPasteFilePicker() {
 
 // --- 生成・保存との合流 -------------------------------------------------------
 
-/** 貼り付けオブジェクトを合成入力(z順)へ変換する。bitmap 未ロード分は含めない。 */
+/**
+ * 貼り付けオブジェクトを合成入力(z順)へ変換する。bitmap 未ロード分は含めない。
+ * `pasteEnabled=false`(PASTE OFF)は他経路(生成合成/eyedropper)と同じく含めない
+ * -- OFF のまま「ペイント結果を素材として保存」しても焼き込まない。
+ */
 export function pasteLayersForAsset(assetId: string): ComposedPasteLayer[] {
   const draft = paintDraftForAsset(assetId);
-  if (!draft) {
+  if (!draft || !draft.pasteEnabled) {
     return [];
   }
   const layers: ComposedPasteLayer[] = [];
@@ -1300,12 +1356,21 @@ export async function buildPasteCompositeForGeneration(
   let objects: PastedObject[];
   let enabled: boolean;
   const draft = paintDraftForAsset(assetId);
-  if (draft && loadedAttachmentAssetIds.has(assetId)) {
+  if (draft && restoredAttachmentAssetIds.has(assetId)) {
     objects = draft.pasteObjects;
     enabled = draft.pasteEnabled;
   } else if (draft && draft.pasteObjects.length > 0) {
+    // 復元GETが未完了のままローカル編集だけがある: サーバの永続添付を取り寄せてマージしないと
+    // 「永続添付抜き」の合成になる(ensureAttachmentsLoaded のマージと同じ規則)。
     objects = draft.pasteObjects;
     enabled = draft.pasteEnabled;
+    try {
+      const response = await api<{ objects: PastedObject[]; enabled: boolean }>(`/api/assets/${assetId}/paste-attachments`);
+      const knownIds = new Set(objects.map((object) => object.id));
+      objects = [...response.objects.filter((object) => !knownIds.has(object.id)), ...objects];
+    } catch {
+      // 取得失敗時はローカル分のみで続行(生成自体は止めない)。
+    }
   } else {
     const response = await api<{ objects: PastedObject[]; enabled: boolean }>(`/api/assets/${assetId}/paste-attachments`);
     objects = response.objects;
@@ -1333,7 +1398,7 @@ export async function buildPasteCompositeForGeneration(
     if (!response.ok) {
       throw new Error(`貼り付け画像の取得に失敗しました(${sourceId}: HTTP ${response.status})`);
     }
-    pasteBitmapCache.set(sourceId, await decodeBlobToCanvas(await response.blob()));
+    pasteBitmapCache.set(sourceId, (await decodeBlobToCanvas(await response.blob())).canvas);
   }
 
   // 元画像は same-origin fetch → decode(モーダル非表示でも合成できるように)。

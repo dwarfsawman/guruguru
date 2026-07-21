@@ -55,6 +55,22 @@ export function resetPageWorkspaceState(): void {
   state.iterationScrollReset = true;
 }
 
+/**
+ * 画面遷移の世代カウンタ。遷移系 async 関数(openProject/openBook/openPage)は冒頭で
+ * `beginNavigation()` を取得し、await 後に `isCurrentNavigation()` で検証してから state へ
+ * 書き込む -- 遅いレスポンスの旧遷移が新しい画面を上書きする out-of-order レースを防ぐ。
+ */
+let navigationSerial = 0;
+
+export function beginNavigation(): number {
+  navigationSerial += 1;
+  return navigationSerial;
+}
+
+export function isCurrentNavigation(serial: number): boolean {
+  return serial === navigationSerial;
+}
+
 /** プロジェクトを開く/離れる時のリセット(ページスコープ+プロジェクトスコープ)。 */
 export function resetProjectWorkspaceState(): void {
   resetPageWorkspaceState();

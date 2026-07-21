@@ -16,6 +16,7 @@ import {
 } from "./bookReader";
 import { isTextEntryTarget } from "./clientUtils";
 import { mapNameStudioPage, type ComparableNameStudioPlan } from "./nameStudioPageMapping";
+import { resetNamePoseEditSession } from "./namePoseEditController";
 import { nameStudioReaderSettings, type NameStudioFitMode } from "./nameStudioReader";
 import { refreshScriptMangaCandidates } from "./scriptMangaController";
 import { activeStudioTake, DIRECTED_TAKE_ID, directedPlanEditable, effectiveCandidatePlan } from "./views/nameStudioView";
@@ -185,6 +186,11 @@ function beginPanelEdit(panelId: string): void {
   const run = state.scriptMangaRun;
   const plan = run?.plan;
   if (!run || !plan || !directedPlanEditable(run)) return;
+  // 逆方向(ポーズ編集開始)は演出ドラフトを閉じる。こちらも同様に閉じないと見開き表示で
+  // 両セッションが同時成立し、保存時に pose 側 baseVersion が陳腐化する。
+  if (state.namePoseEdit) {
+    resetNamePoseEditSession();
+  }
   const page = plan.pages.find((candidatePage) => candidatePage.panels.some((panel) => panel.id === panelId));
   const panel = page?.panels.find((candidatePanel) => candidatePanel.id === panelId);
   if (!page || !panel) return;
@@ -231,7 +237,11 @@ export function buildNamePlanEdits(
   if (!page || !panel) return [];
   const edits: NamePlanEdit[] = [];
   const panelEdit: Extract<NamePlanEdit, { kind: "panel" }> = { kind: "panel", panelId: draft.panelId };
-  if (draft.shotSize !== panel.shot.size) panelEdit.shotSize = draft.shotSize as NonNullable<Extract<NamePlanEdit, { kind: "panel" }>["shotSize"]>;
+  const validShotSizes: ReadonlyArray<NonNullable<Extract<NamePlanEdit, { kind: "panel" }>["shotSize"]>> =
+    ["extreme-wide", "wide", "medium", "close-up", "insert"];
+  if (draft.shotSize !== panel.shot.size && (validShotSizes as readonly string[]).includes(draft.shotSize)) {
+    panelEdit.shotSize = draft.shotSize as (typeof validShotSizes)[number];
+  }
   if (draft.shotAngle !== panel.shot.angle) panelEdit.shotAngle = draft.shotAngle;
   if (draft.compositionIntent !== panel.shot.compositionIntent) panelEdit.compositionIntent = draft.compositionIntent;
   if (draft.promptBase !== panel.promptBase) panelEdit.promptBase = draft.promptBase;
@@ -269,7 +279,8 @@ async function saveEdits(): Promise<void> {
     // 再materializeは同期。runの状態(preparing→prepared/再承認待ち)はGETで取り直す。
     const refreshed = await api<typeof run>(`/api/script-manga-runs/${encodeURIComponent(run.id)}`);
     if (state.scriptMangaRun?.id === run.id) state.scriptMangaRun = refreshed;
-    state.nameStudioDraft = null;
+    // await 中に cancel→新セッション開始が起きていたら、新しいドラフトを破壊しない。
+    if (state.nameStudioDraft === draft) state.nameStudioDraft = null;
     pushToast("演出を差分適用しました。runは再承認待ちへ戻ります。", "info");
     requestRender();
   } catch (error) {
@@ -340,6 +351,9 @@ export function handleNameStudioKeydown(event: KeyboardEvent): boolean {
     return false;
   }
   if (state.nameStudio.selectedPanelId || isTextEntryTarget(event.target)) return false;
+  // 編集セッション(コマ割り修正/ポーズ/演出ドラフト)中はページ送りしない。送ると編集UIだけ
+  // 消えて不可視セッション(Escape/Ctrl+Z の横取り)が残る。
+  if (state.nameLayoutEdit || state.namePoseEdit || state.nameStudioDraft) return false;
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
 
   if (event.key === "ArrowRight") {

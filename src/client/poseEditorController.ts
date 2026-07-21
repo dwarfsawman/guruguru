@@ -2,7 +2,7 @@ import { DEFAULT_POSE_MODEL_BASE_URL } from "../shared/constants";
 import { requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
 import { persistProjectDraft } from "./draftStore";
-import { clampNumber, imageToRawData } from "./clientUtils";
+import { clampNumber, imageToRawData, waitForImageLoad } from "./clientUtils";
 import { formatModelBytes } from "./websam/models";
 import { formatCssNumber } from "./format";
 import { pointerToSvgViewBoxPoint } from "./maskCanvas";
@@ -283,11 +283,17 @@ async function sendPoseDetect(assetId: string) {
   if (!image || !draft) {
     return;
   }
-  if (!image.complete || image.naturalWidth <= 0 || image.naturalHeight <= 0) {
-    await new Promise<void>((resolve, reject) => {
-      image.addEventListener("load", () => resolve(), { once: true });
-      image.addEventListener("error", () => reject(new Error("画像を読み込めませんでした。")), { once: true });
+  try {
+    await waitForImageLoad(image);
+  } catch (error) {
+    setPoseDraft({
+      ...draft,
+      modelStatus: "error",
+      modelError: error instanceof Error ? error.message : String(error),
+      modelStatusText: "Error"
     });
+    requestRender();
+    return;
   }
   const raw = imageToRawData(image);
   const requestId = nextPoseRequestId();
@@ -390,6 +396,8 @@ async function handlePoseWorkerResponse(message: PoseWorkerResponse) {
   }
 
   if (message.type === "detected") {
+    // 検出が完了したら保留フラグも降ろす(残すと後日のモデルロード完了時に意図しない自動検出が走る)。
+    posePendingDetect = false;
     if (message.requestId !== latestPoseDetectRequestId) {
       return;
     }
@@ -886,20 +894,30 @@ function beginPoseSelectionDrag(event: PointerEvent, svg: SVGSVGElement, seedEdg
   if (!assetId) {
     return;
   }
+  // seedEdge の反映は検証をすべて通ってから確定する(early return で選択だけが差し替わり、
+  // 再renderもされない不整合を防ぐ)。selectedJointIndices が selectedPoseEdges を読むため、
+  // 一時的に差し替えて失敗時に戻す。
+  const previousSelection = selectedPoseEdges;
   if (seedEdge) {
     selectedPoseEdges = [seedEdge];
   }
+  const restoreSelection = () => {
+    selectedPoseEdges = previousSelection;
+  };
   const poseIndex = selectedPoseIndex();
   if (poseIndex === null) {
+    restoreSelection();
     return;
   }
   const draft = poseDraftForAsset(assetId);
   const points = draft?.poses?.[poseIndex];
   if (!draft || !points) {
+    restoreSelection();
     return;
   }
   const moveIndices = selectedJointIndices(poseIndex);
   if (moveIndices.length === 0) {
+    restoreSelection();
     return;
   }
   const startPoints = points.map((point) => ({ ...point }));
@@ -1160,6 +1178,8 @@ export function closePoseEditorSession() {
   void destroyPoseWorkerSession();
   posePendingDetect = false;
   selectedPoseEdges = [];
+  // Undo スタックはモーダルセッション限り(mask 側 closeMaskEditorSession と同じ後始末)。
+  poseUndoStacks.clear();
 }
 
 export function handlePoseEditorKeydown(event: KeyboardEvent): boolean {
@@ -1284,7 +1304,16 @@ export function handlePoseEditorPointerUp(event: PointerEvent): boolean {
 
 export function handlePoseEditorPointerCancel(event: PointerEvent): boolean {
   if (activePoseJointDrag && event.pointerId === activePoseJointDrag.pointerId) {
+    // キャンセル: dragging クラスを残さず、SVG を draft の正しい位置へ戻すため再renderする
+    // (selection drag のキャンセルと同じ後始末)。
+    const drag = activePoseJointDrag;
     activePoseJointDrag = null;
+    document
+      .querySelector<SVGCircleElement>(
+        `.pose-joint[data-pose-index="${drag.poseIndex}"][data-joint-index="${drag.jointIndex}"]`
+      )
+      ?.classList.remove("dragging");
+    requestRender();
     return true;
   }
   if (activePoseSelectionDrag && event.pointerId === activePoseSelectionDrag.pointerId) {

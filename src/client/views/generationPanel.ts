@@ -128,8 +128,10 @@ export function renderGenerationPanel(
   const request = activeRound?.request;
   const requestMode = request?.generationMode === "manual_upload" ? "img2img" : request?.generationMode;
   const selectedTemplateId = draft?.templateId ?? request?.templateId ?? detail.project.defaultTemplateId ?? detail.templates[0]?.id ?? "";
+  // txt2img 後の draft は img2imgTemplateId: ""(未設定)になる。?? だと空文字が素通りして
+  // select が先頭テンプレートに落ちるため、|| でフォールバックする。
   const selectedImg2ImgTemplateId =
-    draft?.img2imgTemplateId ??
+    draft?.img2imgTemplateId ||
     (request?.generationMode === "img2img" ? request.templateId : selectedTemplateId);
   const selectedTemplate = detail.templates.find((template) => template.id === selectedTemplateId) ?? null;
   const selectedMode = draft?.generationMode ?? requestMode ?? defaultModeForTemplate(selectedTemplate);

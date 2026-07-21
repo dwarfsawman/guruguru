@@ -45,6 +45,11 @@ export interface DragSession<T> {
   handleCancel(event: PointerEvent): boolean;
   /** コールバックを呼ばずに破棄(セッションリセット・モード離脱用)。capture は解放する。 */
   reset(): void;
+  /**
+   * 進行中セッションを onCancel(復元)を呼んで中断する(Esc などキーボード起点用)。
+   * 進行中でなければ何もせず false。
+   */
+  abort(): boolean;
 }
 
 interface ActiveDrag<T> {
@@ -138,6 +143,18 @@ export function createDragSession<T>(options: DragSessionOptions<T> = {}): DragS
     reset() {
       releaseCapture(active);
       active = null;
+    },
+    abort() {
+      if (!active) {
+        return false;
+      }
+      const taken = active;
+      active = null;
+      releaseCapture(taken);
+      // キーボード起点のため PointerEvent は無い。onCancel 実装は event を参照しない規約
+      // (復元は開始スナップショット data から行う)なので、pointerId だけ持つ擬似イベントを渡す。
+      options.onCancel?.({ pointerId: taken.pointerId } as PointerEvent, taken.data);
+      return true;
     }
   };
 }

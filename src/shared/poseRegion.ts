@@ -24,7 +24,9 @@ export function poseBodyScale(joints: readonly PosePoint[]): number {
   const neck = joints[NECK];
   const rHip = joints[R_HIP];
   const lHip = joints[L_HIP];
-  if (neck && rHip && lHip) {
+  // 不可視関節の座標を混ぜない(back-view プリセット等で不可視座標が体格スケールを歪める)。
+  // フォールバック側(下)と同じ visible 規則。
+  if (neck?.visible && rHip?.visible && lHip?.visible) {
     const torso = Math.hypot((rHip.x + lHip.x) / 2 - neck.x, (rHip.y + lHip.y) / 2 - neck.y);
     if (torso > 1e-6) return torso;
   }

@@ -46,6 +46,8 @@ export function splitDialogueUnits(input: {
   }
   if (current || parts.length === 0) parts.push(current);
   if (normalized(parts.join("")) !== normalized(input.text)) throw new Error(`Dialogue adaptation changed source text: ${input.lineId}`);
+  // 空文字入力は parts=[""] になり空吹き出しが1件生まれるため、空 unit は返さない。
+  if (parts.length === 1 && parts[0] === "") return [];
   return parts.map((text, index) => ({
     id: `unit:${input.lineId}:${index + 1}`,
     sourceLineId: input.lineId,

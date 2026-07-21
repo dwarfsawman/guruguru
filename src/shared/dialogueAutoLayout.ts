@@ -701,7 +701,13 @@ export function runDialogueAutoLayout(input: DialogueAutoLayoutInput): DialogueA
       }
       if (!position) {
         unplacedPlacementIds.push(item.placementId);
-        warnings.push(`「${truncate(item.text)}」: このページにコマが無いため配置できませんでした。`);
+        // preferredPanelId が現在のレイアウトに無い(コマ削除後など)場合は文言を変える
+        // (「コマが無い」だと誤誘導になる)。
+        warnings.push(
+          hasPreferredPanel && orderedPanels.length > 0
+            ? `「${truncate(item.text)}」: 割り当て先のコマが現在のコマ割りに存在しないため配置できませんでした。`
+            : `「${truncate(item.text)}」: このページにコマが無いため配置できませんでした。`
+        );
         continue;
       }
     } else {
@@ -889,20 +895,29 @@ function truncate(text: string, max = 16): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-/** TextObject は size を持たないため、文字数・スタイルから概算 bbox を出す(既存オブジェクト回避の近似)。 */
-function estimateTextObjectSize(object: TextObject): PageVec {
+/**
+ * TextObject は size を持たないため、文字数・スタイルから概算 bbox を出す(既存オブジェクト回避の近似)。
+ * `maxWidth` の解釈は textLayout.ts の仕様に合わせる: 折り返し幅(横書き=行の最大幅、縦書き=列の最大高さ)。
+ * 折り返しが起きる長さなら行(列)数ぶん直交方向へ伸びる。export はテスト用。
+ */
+export function estimateTextObjectSize(object: TextObject): PageVec {
   const style = object.content.style;
   const length = Math.max(1, object.content.text.length);
   const lineExtent = style.size * (style.lineSpacing ?? 1.6);
-  const crossExtent = Math.max(style.size, style.size * (style.letterSpacing ?? 1) * length * 0.6);
+  const runExtent = Math.max(style.size, style.size * (style.letterSpacing ?? 1) * length * 0.6);
+  const wrapExtent = object.maxWidth && object.maxWidth > 0 ? object.maxWidth : null;
+  const lineCount = wrapExtent ? Math.max(1, Math.ceil(runExtent / wrapExtent)) : 1;
+  const alongExtent = wrapExtent ? Math.min(wrapExtent, runExtent) : runExtent;
   if (style.direction === "vertical") {
+    // 縦書き: maxWidth は列の最大高さ(y)。列数ぶん横(x)へ伸びる。
     return {
-      x: object.maxWidth ?? Math.max(PAGE_OBJECT_MIN_SIZE, lineExtent),
-      y: object.maxWidth ? Math.min(object.maxWidth, crossExtent) : Math.max(PAGE_OBJECT_MIN_SIZE, crossExtent)
+      x: Math.max(PAGE_OBJECT_MIN_SIZE, lineExtent * lineCount),
+      y: Math.max(PAGE_OBJECT_MIN_SIZE, alongExtent)
     };
   }
+  // 横書き: maxWidth は行の最大幅(x)。行数ぶん縦(y)へ伸びる。
   return {
-    x: object.maxWidth ?? Math.max(PAGE_OBJECT_MIN_SIZE, crossExtent),
-    y: Math.max(PAGE_OBJECT_MIN_SIZE, lineExtent)
+    x: Math.max(PAGE_OBJECT_MIN_SIZE, alongExtent),
+    y: Math.max(PAGE_OBJECT_MIN_SIZE, lineExtent * lineCount)
   };
 }

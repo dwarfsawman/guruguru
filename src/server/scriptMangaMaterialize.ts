@@ -26,10 +26,10 @@ import {
   clonePageLayout,
   frozenReferenceSnapshot,
   pageLayout,
-  parseConfig,
   parseJson,
   planFromRow,
   referenceModelFamily,
+  requireGenerationConfig,
   requirePlan,
   requireRun,
   templatePromptProfile,
@@ -308,7 +308,7 @@ export function materializeRun(runId: string): void {
   if (!run.plan_id) throw new HttpError(409, "Run has no persisted MangaPlanV2");
   const planRow = requirePlan(run.plan_id);
   const plan = planFromRow(planRow);
-  const config = parseConfig(run);
+  const config = requireGenerationConfig(run);
   const liveDialogueRows = loadDialoguesByIds(plan.sourceDialogueLineIds, run.project_id, run.script_id);
   if (liveDialogueRows.length !== plan.sourceDialogueLineIds.length) {
     throw new HttpError(422, "One or more frozen dialogue lines no longer belong to this project/script");

@@ -368,8 +368,9 @@ function validBox(box: NormalizedBox): boolean {
     Number.isFinite(box.y) &&
     Number.isFinite(box.width) &&
     Number.isFinite(box.height) &&
-    box.x >= 0 &&
-    box.y >= 0 &&
+    // 下限側にも上限側と同じ許容誤差を認める(浮動小数ノイズで -1e-9 になった bbox を reject しない)。
+    box.x >= -0.000001 &&
+    box.y >= -0.000001 &&
     box.width > 0 &&
     box.height > 0 &&
     box.x + box.width <= 1.000001 &&
