@@ -39,6 +39,10 @@ import { objectBody, requiredString } from "./validate";
 import { readCachedBeatAnnotation } from "./scriptBeatAnnotator";
 import { generateScriptMangaN1Plan } from "./scriptMangaDirector";
 import { resolveLayoutTemplate } from "./layoutTemplates";
+// 循環import(scriptManga → 本ファイル → scriptManga)になるが、双方とも参照は関数呼び出し
+// 時のみ(モジュール初期化時に相手の束縛を評価しない)ため ESM 的に安全。
+import { createScriptMangaRun, getScriptMangaRun } from "./scriptManga";
+import { preflightScriptMangaCandidate } from "./scriptMangaCandidatePreflight";
 
 export interface PlanCandidateRow {
   id: string;
@@ -840,4 +844,85 @@ export function setCandidateCustomLayout(candidateId: string, body: unknown): Se
     ]
   );
   return { version, candidate: candidateView(requirePlanCandidate(row.id)) };
+}
+
+/** adoptScriptMangaPlanCandidate の応答(routeApi がそのまま status/body を返す)。 */
+export interface AdoptScriptMangaPlanCandidateResult {
+  status: number;
+  body: unknown;
+}
+
+/**
+ * 候補採用(POST /api/script-manga-plan-candidates/:candidateId/adopt)の本体。
+ * full preflight → run 作成の順で進み、途中どの段階でも「既に採用済み」を検出したら
+ * 既存の candidate+run を 200 で再送する(リトライ・並行採用の冪等リプレイ)。
+ * リクエストボディは「未採用と確定した後」に初めて readBody で読む(採用済みリプレイは
+ * ボディを読まずに応答する従来挙動を維持)。
+ */
+export async function adoptScriptMangaPlanCandidate(
+  candidateId: string,
+  readBody: () => Promise<unknown>
+): Promise<AdoptScriptMangaPlanCandidateResult> {
+  const adoptedReplay = () => {
+    const row = requirePlanCandidate(candidateId);
+    return row.status === "adopted" && row.adopted_run_id
+      ? { candidate: getScriptMangaPlanCandidate(candidateId), run: getScriptMangaRun(row.adopted_run_id) }
+      : null;
+  };
+  const candidateRow = requirePlanCandidate(candidateId);
+  const initialReplay = adoptedReplay();
+  if (initialReplay) {
+    return { status: 200, body: initialReplay };
+  }
+  const body = await readBody();
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "Request body must be an object");
+  }
+  const input = body as Record<string, unknown>;
+  if (input.predecessorRunId !== undefined || input.successorPlan !== undefined) {
+    throw new HttpError(400, "Candidate adoption cannot be combined with a successor run");
+  }
+  let preflight: Awaited<ReturnType<typeof preflightScriptMangaCandidate>>;
+  try {
+    preflight = await preflightScriptMangaCandidate(candidateRow.project_id, candidateId, input);
+  } catch (error) {
+    const concurrentReplay = adoptedReplay();
+    if (concurrentReplay) {
+      return { status: 200, body: concurrentReplay };
+    }
+    throw error;
+  }
+  if (!preflight.ok) {
+    return {
+      status: 422,
+      body: {
+        error: "Candidate failed full preflight and was not adopted",
+        preflight
+      }
+    };
+  }
+  const afterPreflightReplay = adoptedReplay();
+  if (afterPreflightReplay) {
+    return { status: 200, body: afterPreflightReplay };
+  }
+  let run;
+  try {
+    run = await createScriptMangaRun(candidateRow.project_id, {
+      ...input,
+      scriptId: candidateRow.script_id,
+      planCandidateId: candidateId,
+      expectedCandidateVersion: preflight.candidateEditVersion,
+      generateImages: false,
+      candidateSelectionPolicy: "review",
+      requireReferenceSets: true,
+      allowReferenceFallback: false
+    });
+  } catch (error) {
+    const concurrentReplay = adoptedReplay();
+    if (concurrentReplay) {
+      return { status: 200, body: concurrentReplay };
+    }
+    throw error;
+  }
+  return { status: 201, body: { candidate: getScriptMangaPlanCandidate(candidateId), run, preflight } };
 }
