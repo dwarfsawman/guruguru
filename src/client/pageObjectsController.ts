@@ -98,6 +98,7 @@ import {
   type PageObjectHistoryState
 } from "./pageObjectHistory";
 import type { FontSummary } from "../shared/apiTypes";
+import { createDebouncedPersister, type PersistAttemptContext } from "./debouncedPersister";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions, registerEventBinder } from "./actionRegistry";
@@ -126,21 +127,12 @@ function isEditableObject(object: PageObject): object is EditableObject {
 
 // --- 保存(debounce PATCH + flush) ---
 
-const SAVE_DEBOUNCE_MS = 1000;
-let saveDebounceTimer: number | null = null;
-/** 実行中の PATCH(flush が「全保存の完了」を待てるように保持する)。無ければ null。 */
-let inflightSave: Promise<void> | null = null;
-/** 直近の保存試行が成功したら true(閉じる時にページ一覧プレビューを最新化する目印)。 */
-let objectsDirty = false;
+const objectsPersister = createDebouncedPersister({ persist: persistPageObjects });
 
 /** lightbox を開く直前に呼ぶ(履歴・保存タイマー・dirty フラグをリセットする)。 */
 export function resetPageObjectsSession(): void {
   objectHistory = createPageObjectHistory();
-  objectsDirty = false;
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-    saveDebounceTimer = null;
-  }
+  objectsPersister.reset();
   if (textLayoutDebounceTimer !== null) {
     window.clearTimeout(textLayoutDebounceTimer);
     textLayoutDebounceTimer = null;
@@ -155,9 +147,7 @@ export function resetPageObjectsSession(): void {
 
 /** 未保存の変更が保留中なら true を返しつつリセットする(lightbox クローズ判定用)。 */
 export function consumePageObjectsDirtyFlag(): boolean {
-  const value = objectsDirty;
-  objectsDirty = false;
-  return value;
+  return objectsPersister.consumeDirtyFlag();
 }
 
 /**
@@ -166,28 +156,11 @@ export function consumePageObjectsDirtyFlag(): boolean {
  * pages.objects_json を直接更新するため)。lightbox クローズ時のページ一覧プレビュー再取得判定に乗せる。
  */
 export function markPageObjectsDirty(): void {
-  objectsDirty = true;
+  objectsPersister.markDirty();
 }
 
 function scheduleSave(): void {
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-  }
-  saveDebounceTimer = window.setTimeout(() => {
-    saveDebounceTimer = null;
-    void startPersist();
-  }, SAVE_DEBOUNCE_MS);
-}
-
-/** persistPageObjects を実行し、flush が完了を待てるよう in-flight として記録する。 */
-function startPersist(): Promise<void> {
-  const promise = persistPageObjects().finally(() => {
-    if (inflightSave === promise) {
-      inflightSave = null;
-    }
-  });
-  inflightSave = promise;
-  return promise;
+  objectsPersister.schedule();
 }
 
 /**
@@ -201,15 +174,10 @@ function startPersist(): Promise<void> {
  */
 export function flushPageObjectsSave(): Promise<void> {
   flushTextHistoryCommit();
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-    saveDebounceTimer = null;
-    return startPersist();
-  }
-  return inflightSave ?? Promise.resolve();
+  return objectsPersister.flush();
 }
 
-async function persistPageObjects(): Promise<void> {
+async function persistPageObjects(context: PersistAttemptContext): Promise<void> {
   // pageId/projectId/送信ボディは await より前(同期)に確定する。以降 state が
   // クリアされても(クローズ時 flush)この PATCH 自体は最後まで飛ぶ。
   const lightbox = state.pagePanelLightbox;
@@ -226,10 +194,10 @@ async function persistPageObjects(): Promise<void> {
     // 正規化済み応答をドラフトへ反映するのは「応答時点で新しい編集が何も進行していない」時だけに限定する。
     // 送信〜応答の間にユーザーが編集していた(=保存タイマーが再スケジュール済み or ドラッグ中)場合に
     // 無条件で代入すると、その編集が応答到着時に巻き戻ってしまう。閉じられた/別ページも同様に破棄。
-    if (state.pagePanelLightbox?.pageId === pageId && saveDebounceTimer === null && objectDrag === null) {
+    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && objectDrag === null) {
       state.pageObjectsDraft = result.objects;
     }
-    objectsDirty = true;
+    objectsPersister.markDirty();
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
   }

@@ -50,6 +50,7 @@ import {
 } from "../shared/nameLayoutEdit";
 import type { PagePanelAssignment } from "../shared/apiTypes";
 import { getInverseStageTransform, getStageTransform } from "./svgGizmo";
+import { createDebouncedPersister, type PersistAttemptContext } from "./debouncedPersister";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
@@ -58,18 +59,11 @@ import { clearSnapshotHistory, createSnapshotHistory, pushSnapshot, redoSnapshot
 
 // --- 保存(debounce PATCH + flush、分割だけは即時) ---
 
-const SAVE_DEBOUNCE_MS = 1000;
-let saveDebounceTimer: number | null = null;
-let inflightSave: Promise<void> | null = null;
-let shapesDirty = false;
+const shapePersister = createDebouncedPersister({ persist: persistShapeLayout });
 
 /** lightbox を開く直前に呼ぶ(保存タイマー・ドラッグ状態・履歴・選択をリセットする)。 */
 export function resetShapeEditSession(): void {
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-    saveDebounceTimer = null;
-  }
-  shapesDirty = false;
+  shapePersister.reset();
   vertexDrag = null;
   bezierDrag = null;
   freehandDrag = null;
@@ -131,51 +125,24 @@ function redoShapeLayout(): void {
 
 /** 未保存の変更が保留中なら true を返しつつリセットする(lightbox クローズ判定用)。 */
 export function consumeShapeEditDirtyFlag(): boolean {
-  const value = shapesDirty;
-  shapesDirty = false;
-  return value;
+  return shapePersister.consumeDirtyFlag();
 }
 
 function scheduleSave(): void {
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-  }
-  saveDebounceTimer = window.setTimeout(() => {
-    saveDebounceTimer = null;
-    void startPersist();
-  }, SAVE_DEBOUNCE_MS);
-}
-
-function startPersist(): Promise<void> {
-  const promise = persistShapeLayout().finally(() => {
-    if (inflightSave === promise) {
-      inflightSave = null;
-    }
-  });
-  inflightSave = promise;
-  return promise;
+  shapePersister.schedule();
 }
 
 /** lightbox クローズ時に呼ぶ。保留中の debounce があれば即座に保存を実行し、その完了を返す。 */
 export function flushShapeEditSave(): Promise<void> {
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-    saveDebounceTimer = null;
-    return startPersist();
-  }
-  return inflightSave ?? Promise.resolve();
+  return shapePersister.flush();
 }
 
 /** 分割用: debounce をキャンセルして即座に保存し、その完了を待つ(パネル id 移行の前に必要)。 */
 function persistShapeLayoutNow(): Promise<void> {
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-    saveDebounceTimer = null;
-  }
-  return startPersist();
+  return shapePersister.persistNow();
 }
 
-async function persistShapeLayout(): Promise<void> {
+async function persistShapeLayout(context: PersistAttemptContext): Promise<void> {
   // pageId/projectId/送信ボディは await より前(同期)に確定する(オブジェクト保存と同じ理由)。
   const lightbox = state.pagePanelLightbox;
   const projectId = state.currentProjectId;
@@ -190,7 +157,8 @@ async function persistShapeLayout(): Promise<void> {
       body: JSON.stringify({ layout: draft })
     });
     // 応答時点で新しい編集が進行していない時だけドラフトへ反映する(pageObjectsController と同じ配慮)。
-    if (state.pagePanelLightbox?.pageId === pageId && saveDebounceTimer === null && !vertexDrag && !bezierDrag && !freehandDrag && !splitDrag && !geometryDrag && !multiVertexDrag && !marqueeDrag && !panelMoveDrag) {
+    // isStale はより新しい保存の予約/発射を検知する(旧実装の saveDebounceTimer チェック相当+世代ガード)。
+    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && !vertexDrag && !bezierDrag && !freehandDrag && !splitDrag && !geometryDrag && !multiVertexDrag && !marqueeDrag && !panelMoveDrag) {
       state.pageLayoutDraft = result.layout;
     }
     // サーバ側で消えたパネルへの割り当ては削除済みなので、ローカルの一覧からも落とす。
@@ -201,7 +169,7 @@ async function persistShapeLayout(): Promise<void> {
     if (bookPage) {
       bookPage.layout = result.layout;
     }
-    shapesDirty = true;
+    shapePersister.markDirty();
     // 保存完了時点でレイヤモード等が book 側 layout を表示していても最新化されるよう再描画する
     // (これが無いと、保存前にタブを切り替えた場合に次の操作まで古いレイアウトが残る)。
     requestRender();

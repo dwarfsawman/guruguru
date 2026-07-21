@@ -32,6 +32,7 @@ import {
 } from "../shared/mosaicRegion";
 import { insertPolygonVertex, movePolygonVertex, removePolygonVertex } from "../shared/panelShapeEdit";
 import { getInverseStageTransform } from "./svgGizmo";
+import { createDebouncedPersister, type PersistAttemptContext } from "./debouncedPersister";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
 import { registerActions } from "./actionRegistry";
@@ -39,18 +40,11 @@ import { clampNumber, isTextEntryTarget } from "./clientUtils";
 
 // --- 保存(debounce PATCH + flush、パターンは panelShapeController と同型) ---
 
-const SAVE_DEBOUNCE_MS = 1000;
-let saveDebounceTimer: number | null = null;
-let inflightSave: Promise<void> | null = null;
-let mosaicDirty = false;
+const mosaicPersister = createDebouncedPersister({ persist: persistMosaicRegions });
 
 /** lightbox を開く直前に呼ぶ(保存タイマー・ドラッグ/追加作業状態をリセットする)。 */
 export function resetMosaicEditSession(): void {
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-    saveDebounceTimer = null;
-  }
-  mosaicDirty = false;
+  mosaicPersister.reset();
   vertexDrag = null;
   rectHandleDrag = null;
   rectAddDrag = null;
@@ -58,42 +52,19 @@ export function resetMosaicEditSession(): void {
 
 /** 未保存の変更が保留中なら true を返しつつリセットする(lightbox クローズ判定用)。 */
 export function consumeMosaicDirtyFlag(): boolean {
-  const value = mosaicDirty;
-  mosaicDirty = false;
-  return value;
+  return mosaicPersister.consumeDirtyFlag();
 }
 
 function scheduleSave(): void {
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-  }
-  saveDebounceTimer = window.setTimeout(() => {
-    saveDebounceTimer = null;
-    void startPersist();
-  }, SAVE_DEBOUNCE_MS);
-}
-
-function startPersist(): Promise<void> {
-  const promise = persistMosaicRegions().finally(() => {
-    if (inflightSave === promise) {
-      inflightSave = null;
-    }
-  });
-  inflightSave = promise;
-  return promise;
+  mosaicPersister.schedule();
 }
 
 /** lightbox クローズ時に呼ぶ。保留中の debounce があれば即座に保存を実行し、その完了を返す。 */
 export function flushMosaicEditSave(): Promise<void> {
-  if (saveDebounceTimer !== null) {
-    window.clearTimeout(saveDebounceTimer);
-    saveDebounceTimer = null;
-    return startPersist();
-  }
-  return inflightSave ?? Promise.resolve();
+  return mosaicPersister.flush();
 }
 
-async function persistMosaicRegions(): Promise<void> {
+async function persistMosaicRegions(context: PersistAttemptContext): Promise<void> {
   // pageId/projectId/送信ボディは await より前(同期)に確定する(オブジェクト/コマ枠保存と同じ理由)。
   const lightbox = state.pagePanelLightbox;
   const projectId = state.currentProjectId;
@@ -107,10 +78,10 @@ async function persistMosaicRegions(): Promise<void> {
       body: JSON.stringify({ regions: state.pageMosaicDraft })
     });
     // 応答時点で新しい編集が進行していない時だけドラフトへ反映する(他モードと同じ配慮)。
-    if (state.pagePanelLightbox?.pageId === pageId && saveDebounceTimer === null && !vertexDrag && !rectHandleDrag && !rectAddDrag) {
+    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && !vertexDrag && !rectHandleDrag && !rectAddDrag) {
       state.pageMosaicDraft = result.regions;
     }
-    mosaicDirty = true;
+    mosaicPersister.markDirty();
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");
   }
