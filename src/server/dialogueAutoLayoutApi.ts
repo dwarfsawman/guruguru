@@ -12,6 +12,7 @@ import {
   runDialogueAutoLayout,
   AUTO_LAYOUT_SFX_FONT_SCALE,
   type DialogueAutoLayoutItem,
+  type DialogueAutoLayoutResult,
   type DialogueAvoidZone
 } from "../shared/dialogueAutoLayout";
 import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
@@ -92,6 +93,109 @@ interface LoadedContext {
 }
 
 /**
+ * apply/reflow 共通の規約: fontScale を明示指定した呼び出し(自動漫画)は吹き出し内フォントを
+ * 保持する前提でサイズ候補を逆算する。未指定(手動UI)は従来どおり既定サイズ(fontScale=1)。
+ */
+function parseItemFontOptions(input: Record<string, unknown>): { fontScale: number; preserveBalloonFontSize: boolean } {
+  const preserveBalloonFontSize = typeof input.fontScale === "number" && Number.isFinite(input.fontScale);
+  const fontScale = preserveBalloonFontSize ? Math.min(1, Math.max(0.35, input.fontScale as number)) : 1;
+  return { fontScale, preserveBalloonFontSize };
+}
+
+/** placement 行のうちソルバー入力の組み立てに使う共通カラム(apply の PlacementRow / reflow 対象行で共通)。 */
+interface PlacementLikeRow {
+  id: string;
+  line_id: string;
+  text_override: string | null;
+  semantic_kind_override: DialogueSemanticKind | null;
+  speaker_label_override: string | null;
+  order_index_override: number | null;
+}
+
+/**
+ * placement/reflow 対象行から `DialogueAutoLayoutItem` 群を組む(dialogue_lines の一括取得+override 解決)。
+ * `extras` は apply 側だけが持つ preferredPanelId / preferredCenter の付与に使う。
+ */
+function buildAutoLayoutItems<Row extends PlacementLikeRow>(
+  rows: Row[],
+  fontScale: number,
+  preserveBalloonFontSize: boolean,
+  extras?: (row: Row) => Partial<DialogueAutoLayoutItem>
+): DialogueAutoLayoutItem[] {
+  const lineIds = rows.map((row) => row.line_id);
+  const linePlaceholders = lineIds.map(() => "?").join(",");
+  const lineRows = getRows<LineRow>(
+    `SELECT id, text, semantic_kind, balloon_style, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
+    lineIds
+  );
+  const lineById = new Map(lineRows.map((row) => [row.id, row]));
+
+  return rows.map((row) => {
+    const line = lineById.get(row.line_id);
+    if (!line) {
+      throw new HttpError(404, `Dialogue line was not found for placement ${row.id}`);
+    }
+    const text = row.text_override ?? line.text;
+    const semanticKind = row.semantic_kind_override ?? line.semantic_kind;
+    return {
+      placementId: row.id,
+      lineId: line.id,
+      text,
+      semanticKind,
+      balloonStyle: line.balloon_style,
+      speakerLabel: row.speaker_label_override ?? line.speaker_label,
+      orderIndex: row.order_index_override ?? line.order_index,
+      ...(extras ? extras(row) : {}),
+      fontScale,
+      sizeVariants: requiredSizeVariantsFor(text, semanticKind, fontScale, preserveBalloonFontSize)
+    };
+  });
+}
+
+/**
+ * apply/reflow 共通のトランザクション確定処理: objects 上限検査 → pages.objects_json 更新 →
+ * 各 placement の balloon_object_id/panel_id/auto_layout_seed/auto_layout_version 更新。
+ * SAVEPOINT で全件成功か全件無効か(部分書き込みを残さない)。
+ */
+function commitLayoutResult(args: {
+  savepoint: string;
+  projectId: string;
+  pageId: string;
+  /** ソルバー実行時に障害物とした既存オブジェクト(この後ろへ新規分を追記する)。 */
+  baseObjects: PageObject[];
+  result: Pick<DialogueAutoLayoutResult, "objects" | "assignments">;
+  seed: number;
+  overLimitMessage: string;
+}): void {
+  const { savepoint, projectId, pageId, baseObjects, result, seed, overLimitMessage } = args;
+  runSql(`SAVEPOINT ${savepoint}`);
+  try {
+    const nextObjects = normalizePageObjects([...baseObjects, ...result.objects]);
+    if (nextObjects.length > PAGE_OBJECTS_MAX_COUNT || nextObjects.length !== baseObjects.length + result.objects.length) {
+      throw new HttpError(422, overLimitMessage);
+    }
+    runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
+      JSON.stringify(nextObjects),
+      pageId,
+      projectId
+    ]);
+    for (const assignment of result.assignments) {
+      runSql(
+        `UPDATE dialogue_placements
+         SET balloon_object_id = ?, panel_id = ?, auto_layout_seed = ?, auto_layout_version = 1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [assignment.objectId, assignment.panelId, seed, assignment.placementId]
+      );
+    }
+    runSql(`RELEASE ${savepoint}`);
+  } catch (error) {
+    runSql(`ROLLBACK TO ${savepoint}`);
+    runSql(`RELEASE ${savepoint}`);
+    throw error;
+  }
+}
+
+/**
  * placementIds の実在・当該ページ所属・未吹き出し化(balloon_object_id=NULL)を検証し、ソルバー入力を組む。
  * サイズ計算(§2.5): 各行の既定バルーンスタイルで `computeTextLayoutForContent` を呼び、
  * `CONTENT_PADDING_RATIO` の逆数でパディング込みの必要サイズへ換算する。
@@ -108,10 +212,7 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
   }
 
   const input = objectBody(body);
-  const fontScale = typeof input.fontScale === "number" && Number.isFinite(input.fontScale)
-    ? Math.min(1, Math.max(0.35, input.fontScale))
-    : 1;
-  const preserveBalloonFontSize = typeof input.fontScale === "number" && Number.isFinite(input.fontScale);
+  const { fontScale, preserveBalloonFontSize } = parseItemFontOptions(input);
   const preferredCenters = parsePreferredCenters(input);
   const placementIds = parsePlacementIds(input);
   const placeholders = placementIds.map(() => "?").join(",");
@@ -138,37 +239,12 @@ function loadContext(projectId: string, pageId: string, body: unknown): LoadedCo
     );
   }
 
-  const lineIds = placements.map((row) => row.line_id);
-  const linePlaceholders = lineIds.map(() => "?").join(",");
-  const lineRows = getRows<LineRow>(
-    `SELECT id, text, semantic_kind, balloon_style, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
-    lineIds
-  );
-  const lineById = new Map(lineRows.map((row) => [row.id, row]));
-
   const existingObjects = normalizePageObjects(page.objects_json ? JSON.parse(page.objects_json) : []);
 
-  const items: DialogueAutoLayoutItem[] = placements.map((placement) => {
-    const line = lineById.get(placement.line_id);
-    if (!line) {
-      throw new HttpError(404, `Dialogue line was not found for placement ${placement.id}`);
-    }
-    const text = placement.text_override ?? line.text;
-    const semanticKind = placement.semantic_kind_override ?? line.semantic_kind;
-    return {
-      placementId: placement.id,
-      lineId: line.id,
-      text,
-      semanticKind,
-      balloonStyle: line.balloon_style,
-      speakerLabel: placement.speaker_label_override ?? line.speaker_label,
-      orderIndex: placement.order_index_override ?? line.order_index,
-      preferredPanelId: placement.panel_id,
-      preferredCenter: preferredCenters?.[line.id] ?? null,
-      fontScale,
-      sizeVariants: requiredSizeVariantsFor(text, semanticKind, fontScale, preserveBalloonFontSize)
-    };
-  });
+  const items = buildAutoLayoutItems(placements, fontScale, preserveBalloonFontSize, (placement) => ({
+    preferredPanelId: placement.panel_id,
+    preferredCenter: preferredCenters?.[placement.line_id] ?? null
+  }));
 
   return { page, layout, existingObjects, placements, items };
 }
@@ -359,31 +435,15 @@ export function applyDialogueLayout(projectId: string, pageId: string, body: unk
     );
   }
 
-  runSql("SAVEPOINT dialogue_layout_apply");
-  try {
-    const nextObjects = normalizePageObjects([...context.existingObjects, ...result.objects]);
-    if (nextObjects.length > PAGE_OBJECTS_MAX_COUNT || nextObjects.length !== context.existingObjects.length + result.objects.length) {
-      throw new HttpError(422, `ページオブジェクトの上限(${PAGE_OBJECTS_MAX_COUNT})を超えるため確定できません。`);
-    }
-    runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
-      JSON.stringify(nextObjects),
-      pageId,
-      projectId
-    ]);
-    for (const assignment of result.assignments) {
-      runSql(
-        `UPDATE dialogue_placements
-         SET balloon_object_id = ?, panel_id = ?, auto_layout_seed = ?, auto_layout_version = 1, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [assignment.objectId, assignment.panelId, seed, assignment.placementId]
-      );
-    }
-    runSql("RELEASE dialogue_layout_apply");
-  } catch (error) {
-    runSql("ROLLBACK TO dialogue_layout_apply");
-    runSql("RELEASE dialogue_layout_apply");
-    throw error;
-  }
+  commitLayoutResult({
+    savepoint: "dialogue_layout_apply",
+    projectId,
+    pageId,
+    baseObjects: context.existingObjects,
+    result,
+    seed,
+    overLimitMessage: `ページオブジェクトの上限(${PAGE_OBJECTS_MAX_COUNT})を超えるため確定できません。`
+  });
 
   return { seed, objects: result.objects, assignments: result.assignments, warnings: result.warnings, unplacedPlacementIds: [] };
 }
@@ -420,12 +480,7 @@ function loadReflowContext(projectId: string, pageId: string, body: unknown): Re
     throw new HttpError(400, "このページにはコマ割りが無いため、再配置は使えません。");
   }
   const input = objectBody(body);
-  // apply と同じ規約: fontScale を明示指定した呼び出し(自動漫画)は吹き出し内フォントを保持する
-  // 前提でサイズ候補を逆算する。未指定(手動UI)は従来どおり既定サイズで組む。
-  const fontScale = typeof input.fontScale === "number" && Number.isFinite(input.fontScale)
-    ? Math.min(1, Math.max(0.35, input.fontScale))
-    : 1;
-  const preserveBalloonFontSize = typeof input.fontScale === "number" && Number.isFinite(input.fontScale);
+  const { fontScale, preserveBalloonFontSize } = parseItemFontOptions(input);
   const layout = normalizeEditedPageLayout(JSON.parse(page.layout_json));
   if (!layout) {
     throw new HttpError(400, "このページのレイアウトが不正です。");
@@ -444,33 +499,7 @@ function loadReflowContext(projectId: string, pageId: string, body: unknown): Re
   const targetObjectIds = new Set(targets.map((row) => row.balloon_object_id));
   const remainingObjects = allObjects.filter((object) => !targetObjectIds.has(object.id));
 
-  const lineIds = targets.map((row) => row.line_id);
-  const linePlaceholders = lineIds.map(() => "?").join(",");
-  const lineRows = getRows<LineRow>(
-    `SELECT id, text, semantic_kind, balloon_style, speaker_label, order_index FROM dialogue_lines WHERE id IN (${linePlaceholders})`,
-    lineIds
-  );
-  const lineById = new Map(lineRows.map((row) => [row.id, row]));
-
-  const items: DialogueAutoLayoutItem[] = targets.map((row) => {
-    const line = lineById.get(row.line_id);
-    if (!line) {
-      throw new HttpError(404, `Dialogue line was not found for placement ${row.id}`);
-    }
-    const text = row.text_override ?? line.text;
-    const semanticKind = row.semantic_kind_override ?? line.semantic_kind;
-    return {
-      placementId: row.id,
-      lineId: line.id,
-      text,
-      semanticKind,
-      balloonStyle: line.balloon_style,
-      speakerLabel: row.speaker_label_override ?? line.speaker_label,
-      orderIndex: row.order_index_override ?? line.order_index,
-      fontScale,
-      sizeVariants: requiredSizeVariantsFor(text, semanticKind, fontScale, preserveBalloonFontSize)
-    };
-  });
+  const items = buildAutoLayoutItems(targets, fontScale, preserveBalloonFontSize);
 
   return { layout, remainingObjects, targets, items };
 }
@@ -512,31 +541,15 @@ export function reflowDialogueLayout(projectId: string, pageId: string, body: un
     );
   }
 
-  runSql("SAVEPOINT dialogue_layout_reflow");
-  try {
-    const nextObjects = normalizePageObjects([...context.remainingObjects, ...result.objects]);
-    if (nextObjects.length > PAGE_OBJECTS_MAX_COUNT || nextObjects.length !== context.remainingObjects.length + result.objects.length) {
-      throw new HttpError(422, `ページオブジェクトの上限(${PAGE_OBJECTS_MAX_COUNT})を超えるため再配置できません。`);
-    }
-    runSql("UPDATE pages SET objects_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND project_id = ?", [
-      JSON.stringify(nextObjects),
-      pageId,
-      projectId
-    ]);
-    for (const assignment of result.assignments) {
-      runSql(
-        `UPDATE dialogue_placements
-         SET balloon_object_id = ?, panel_id = ?, auto_layout_seed = ?, auto_layout_version = 1, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [assignment.objectId, assignment.panelId, seed, assignment.placementId]
-      );
-    }
-    runSql("RELEASE dialogue_layout_reflow");
-  } catch (error) {
-    runSql("ROLLBACK TO dialogue_layout_reflow");
-    runSql("RELEASE dialogue_layout_reflow");
-    throw error;
-  }
+  commitLayoutResult({
+    savepoint: "dialogue_layout_reflow",
+    projectId,
+    pageId,
+    baseObjects: context.remainingObjects,
+    result,
+    seed,
+    overLimitMessage: `ページオブジェクトの上限(${PAGE_OBJECTS_MAX_COUNT})を超えるため再配置できません。`
+  });
 
   return { seed, objects: result.objects, assignments: result.assignments, warnings: result.warnings, unplacedPlacementIds: [] };
 }
