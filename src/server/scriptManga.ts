@@ -459,6 +459,29 @@ function removeUnusedStarterPage(projectId: string): void {
 }
 
 /**
+ * plan の cast bbox(コマ内正規化)を page 座標の全身ボックスへ写像する共通ヘルパ。
+ * 顔領域(CAST_FACE_HEIGHT_RATIO)への縮小やラベル付与など呼び出し側ごとの差分は
+ * project コールバックで表現する(回避領域と lettering 監査の二重実装を一本化)。
+ */
+function mapPlanCastToPageBoxes<T>(
+  pageSpec: MangaPlanV2["pages"][number],
+  layoutPanels: PageLayout["panels"],
+  project: (bodyBox: { x: number; y: number; width: number; height: number }, layoutPanel: PageLayout["panels"][number]) => T
+): T[] {
+  return pageSpec.panels.flatMap((panel, index) => {
+    const layoutPanel = layoutPanels[index];
+    if (!layoutPanel) return [];
+    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
+    return panel.cast.map((member) => project({
+      x: x0 + member.bbox.x * (x1 - x0),
+      y: y0 + member.bbox.y * (y1 - y0),
+      width: member.bbox.width * (x1 - x0),
+      height: member.bbox.height * (y1 - y0)
+    }, layoutPanel));
+  });
+}
+
+/**
  * plan の cast bbox(コマ内正規化)を page 座標へ写像した回避領域を作る。head=true なら顔領域
  * (bbox 上端から CAST_FACE_HEIGHT_RATIO)、false なら全身。ぶち抜き立ち絵スロット
  * (layoutPanel.role === "figure")は吹き出しで隠したくないため全身を返す。
@@ -467,18 +490,15 @@ function planCastAvoidZones(
   pageSpec: MangaPlanV2["pages"][number],
   layoutPanels: PageLayout["panels"]
 ): Array<{ x: number; y: number; width: number; height: number; label?: string }> {
-  return pageSpec.panels.flatMap((panel, index) => {
-    const layoutPanel = layoutPanels[index];
-    if (!layoutPanel) return [];
-    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
+  return mapPlanCastToPageBoxes(pageSpec, layoutPanels, (bodyBox, layoutPanel) => {
     const fullBody = layoutPanel.role === "figure";
-    return panel.cast.map((member) => ({
-      x: x0 + member.bbox.x * (x1 - x0),
-      y: y0 + member.bbox.y * (y1 - y0),
-      width: member.bbox.width * (x1 - x0),
-      height: member.bbox.height * (y1 - y0) * (fullBody ? 1 : CAST_FACE_HEIGHT_RATIO),
+    return {
+      x: bodyBox.x,
+      y: bodyBox.y,
+      width: bodyBox.width,
+      height: bodyBox.height * (fullBody ? 1 : CAST_FACE_HEIGHT_RATIO),
       label: fullBody ? "立ち絵" : "顔"
-    }));
+    };
   });
 }
 
@@ -1156,17 +1176,12 @@ function ensureDialogueLettering(
   requireReadableBalloonText(pageId);
   const pageRow = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
   const objects = normalizePageObjects(pageRow?.objects_json ? JSON.parse(pageRow.objects_json) : []);
-  const faceBoxes = pageSpec.panels.flatMap((panel, index) => {
-    const layoutPanel = layoutPanels[index];
-    if (!layoutPanel) return [];
-    const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
-    return panel.cast.map((member) => ({
-      x: x0 + member.bbox.x * (x1 - x0),
-      y: y0 + member.bbox.y * (y1 - y0),
-      width: member.bbox.width * (x1 - x0),
-      height: member.bbox.height * (y1 - y0) * CAST_FACE_HEIGHT_RATIO
-    }));
-  });
+  const faceBoxes = mapPlanCastToPageBoxes(pageSpec, layoutPanels, (bodyBox) => ({
+    x: bodyBox.x,
+    y: bodyBox.y,
+    width: bodyBox.width,
+    height: bodyBox.height * CAST_FACE_HEIGHT_RATIO
+  }));
   const letteringReport = auditLettering(pageSpec.layoutSnapshot, objects, faceBoxes);
   const evaluation = parseJson<Record<string, unknown>>(requireRun(run.id).evaluation_json, {});
   runSql("UPDATE script_manga_runs SET evaluation_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
