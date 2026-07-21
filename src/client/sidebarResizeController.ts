@@ -5,16 +5,35 @@
  * main.ts の pointer ハンドラ連鎖(mask/paste/paint と同じ場所)から呼ばれる。
  */
 import { clampSidebarWidth, requestRender, setSidebarWidth, state } from "./appState";
+import { createDragSession } from "./dragSession";
 
-type SidebarResize = {
-  pointerId: number;
+type SidebarResizeData = {
   startX: number;
   startWidth: number;
   pendingWidth: number;
   sidebar: HTMLElement;
 };
 
-let sidebarResize: SidebarResize | null = null;
+// pointerId 照合・setPointerCapture/release・up/cancel でのクリアは createDragSession(dragSession.ts)へ委譲。
+const sidebarResizeSession = createDragSession<SidebarResizeData>({
+  onMove: (event, resize) => {
+    event.preventDefault();
+    const width = clampSidebarWidth(resize.startWidth + (event.clientX - resize.startX));
+    resize.pendingWidth = width;
+    resize.sidebar.style.setProperty("--studio-sidebar-width", `${width}px`);
+  },
+  onCommit: (event, resize) => {
+    event.preventDefault();
+    setSidebarWidth(resize.pendingWidth);
+    finishSidebarResize();
+    requestRender();
+  },
+  onCancel: (_event, resize) => {
+    // 変更を破棄し、確定済みの state.sidebarWidth に戻す。
+    resize.sidebar.style.setProperty("--studio-sidebar-width", `${state.sidebarWidth}px`);
+    finishSidebarResize();
+  }
+});
 
 export function handleSidebarResizePointerDown(event: PointerEvent): boolean {
   if (event.button !== 0) {
@@ -30,54 +49,31 @@ export function handleSidebarResizePointerDown(event: PointerEvent): boolean {
   }
   event.preventDefault();
   handle.classList.add("resizing");
-  sidebarResize = {
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startWidth: state.sidebarWidth,
-    pendingWidth: state.sidebarWidth,
-    sidebar
-  };
-  try {
-    handle.setPointerCapture(event.pointerId);
-  } catch {
-    // setPointerCapture 未対応でも document レベルの move/up で追従できる。
-  }
+  sidebarResizeSession.begin(
+    event,
+    {
+      startX: event.clientX,
+      startWidth: state.sidebarWidth,
+      pendingWidth: state.sidebarWidth,
+      sidebar
+    },
+    handle
+  );
   return true;
 }
 
 export function handleSidebarResizePointerMove(event: PointerEvent): boolean {
-  if (!sidebarResize || event.pointerId !== sidebarResize.pointerId) {
-    return false;
-  }
-  event.preventDefault();
-  const width = clampSidebarWidth(sidebarResize.startWidth + (event.clientX - sidebarResize.startX));
-  sidebarResize.pendingWidth = width;
-  sidebarResize.sidebar.style.setProperty("--studio-sidebar-width", `${width}px`);
-  return true;
+  return sidebarResizeSession.handleMove(event);
 }
 
 export function handleSidebarResizePointerUp(event: PointerEvent): boolean {
-  if (!sidebarResize || event.pointerId !== sidebarResize.pointerId) {
-    return false;
-  }
-  event.preventDefault();
-  setSidebarWidth(sidebarResize.pendingWidth);
-  finishSidebarResize();
-  requestRender();
-  return true;
+  return sidebarResizeSession.handleUp(event);
 }
 
 export function handleSidebarResizePointerCancel(event: PointerEvent): boolean {
-  if (!sidebarResize || event.pointerId !== sidebarResize.pointerId) {
-    return false;
-  }
-  // 変更を破棄し、確定済みの state.sidebarWidth に戻す。
-  sidebarResize.sidebar.style.setProperty("--studio-sidebar-width", `${state.sidebarWidth}px`);
-  finishSidebarResize();
-  return true;
+  return sidebarResizeSession.handleCancel(event);
 }
 
 function finishSidebarResize() {
   document.querySelector<HTMLElement>("[data-sidebar-resizer].resizing")?.classList.remove("resizing");
-  sidebarResize = null;
 }

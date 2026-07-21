@@ -32,6 +32,7 @@ import {
 } from "../shared/mosaicRegion";
 import { insertPolygonVertex, movePolygonVertex, removePolygonVertex } from "../shared/panelShapeEdit";
 import { getInverseStageTransform } from "./svgGizmo";
+import { createDragSession } from "./dragSession";
 import { createDebouncedPersister, type PersistAttemptContext } from "./debouncedPersister";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
@@ -45,9 +46,9 @@ const mosaicPersister = createDebouncedPersister({ persist: persistMosaicRegions
 /** lightbox を開く直前に呼ぶ(保存タイマー・ドラッグ/追加作業状態をリセットする)。 */
 export function resetMosaicEditSession(): void {
   mosaicPersister.reset();
-  vertexDrag = null;
-  rectHandleDrag = null;
-  rectAddDrag = null;
+  for (const session of mosaicDragSessions) {
+    session.reset();
+  }
 }
 
 /** 未保存の変更が保留中なら true を返しつつリセットする(lightbox クローズ判定用)。 */
@@ -78,7 +79,7 @@ async function persistMosaicRegions(context: PersistAttemptContext): Promise<voi
       body: JSON.stringify({ regions: state.pageMosaicDraft })
     });
     // 応答時点で新しい編集が進行していない時だけドラフトへ反映する(他モードと同じ配慮)。
-    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && !vertexDrag && !rectHandleDrag && !rectAddDrag) {
+    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && !mosaicDragActive()) {
       state.pageMosaicDraft = result.regions;
     }
     mosaicPersister.markDirty();
@@ -303,29 +304,95 @@ function distance(a: readonly [number, number], b: readonly [number, number]): n
   return Math.hypot(a[0] - b[0], a[1] - b[1]);
 }
 
-interface VertexDragState {
-  pointerId: number;
+// 各ドラッグは createDragSession(dragSession.ts)へ委譲する(pointerId 照合・setPointerCapture/release・
+// up/cancel でのセッションクリアを共通化。capture 導入でウィンドウ外リリース時の張り付きも解消)。
+
+interface VertexDragData {
   regionId: string;
   vertexIndex: number;
   startPoint: [number, number];
 }
 
-let vertexDrag: VertexDragState | null = null;
+const vertexSession = createDragSession<VertexDragData>({
+  onMove: (event, drag) => {
+    const point = pointFromEvent(event);
+    if (point) {
+      applyVertexMove(drag.regionId, drag.vertexIndex, point);
+    }
+  },
+  onCommit: (_event, drag) => {
+    const shape = shapeOf(drag.regionId);
+    const current = shape && shape.type === "polygon" ? shape.points[drag.vertexIndex] : null;
+    if (current && (current[0] !== drag.startPoint[0] || current[1] !== drag.startPoint[1])) {
+      scheduleSave();
+    }
+  },
+  onCancel: (_event, drag) => {
+    // ドラッグ開始前の位置へ復元する(保存しない)。
+    applyVertexMove(drag.regionId, drag.vertexIndex, drag.startPoint);
+  }
+});
 
-interface RectHandleDragState {
-  pointerId: number;
+interface RectHandleDragData {
   regionId: string;
   handle: { kind: MosaicRectHandleKind; index: number };
   startBounds: [number, number, number, number];
 }
 
-let rectHandleDrag: RectHandleDragState | null = null;
+const rectHandleSession = createDragSession<RectHandleDragData>({
+  onMove: (event, drag) => {
+    const point = pointFromEvent(event);
+    if (point) {
+      applyRectHandleMove(drag.regionId, drag.handle, point);
+    }
+  },
+  onCommit: (_event, drag) => {
+    const shape = shapeOf(drag.regionId);
+    const current = shape && shape.type === "rect" ? shape.bounds : null;
+    if (current && current.some((value, i) => value !== drag.startBounds[i])) {
+      scheduleSave();
+    }
+  },
+  onCancel: (_event, drag) => {
+    // ドラッグ開始前の bounds へそのまま復元する(保存しない)。
+    const index = findDraftIndex(drag.regionId);
+    if (index >= 0) {
+      const region = state.pageMosaicDraft[index]!;
+      if (region.shape.type === "rect") {
+        const next = [...state.pageMosaicDraft];
+        next[index] = { ...region, shape: { type: "rect", bounds: drag.startBounds } };
+        state.pageMosaicDraft = next;
+        requestRender();
+      }
+    }
+  }
+});
 
-interface RectAddDragState {
-  pointerId: number;
+const rectAddSession = createDragSession<Record<string, never>>({
+  onMove: (event) => {
+    if (!state.mosaicRectDraft) return;
+    const point = pointFromEvent(event);
+    if (point) {
+      state.mosaicRectDraft = { start: state.mosaicRectDraft.start, current: point };
+      requestRender();
+    }
+  },
+  onCommit: () => {
+    commitRectAdd();
+  },
+  onCancel: () => {
+    state.mosaicRectDraft = null;
+    requestRender();
+  }
+});
+
+/** move/up/cancel の委譲順。従来の if チェーン順をそのまま配列で表現する。 */
+const mosaicDragSessions = [vertexSession, rectHandleSession, rectAddSession] as const;
+
+/** いずれかのモザイクドラッグが進行中か(保存応答でドラフトを上書きしない判定に使う)。 */
+function mosaicDragActive(): boolean {
+  return mosaicDragSessions.some((session) => session.data !== null);
 }
-
-let rectAddDrag: RectAddDragState | null = null;
 
 function shapeOf(regionId: string): MosaicShape | null {
   return state.pageMosaicDraft.find((region) => region.id === regionId)?.shape ?? null;
@@ -349,7 +416,7 @@ export function handleMosaicPointerDown(event: PointerEvent): boolean {
     }
     event.preventDefault();
     state.mosaicRectDraft = { start: point, current: point };
-    rectAddDrag = { pointerId: event.pointerId };
+    rectAddSession.begin(event, {});
     requestRender();
     return true;
   }
@@ -384,12 +451,11 @@ export function handleMosaicPointerDown(event: PointerEvent): boolean {
     }
     event.preventDefault();
     state.mosaicSelectedVertexIndex = vertexIndex;
-    vertexDrag = {
-      pointerId: event.pointerId,
+    vertexSession.begin(event, {
       regionId: state.mosaicSelectedRegionId,
       vertexIndex,
       startPoint: [...shape.points[vertexIndex]!] as [number, number]
-    };
+    });
     requestRender();
     return true;
   }
@@ -415,12 +481,11 @@ export function handleMosaicPointerDown(event: PointerEvent): boolean {
       return true;
     }
     event.preventDefault();
-    rectHandleDrag = {
-      pointerId: event.pointerId,
+    rectHandleSession.begin(event, {
       regionId: state.mosaicSelectedRegionId,
       handle: { kind, index },
       startBounds: [...shape.bounds] as [number, number, number, number]
-    };
+    });
     requestRender();
     return true;
   }
@@ -438,58 +503,11 @@ export function handleMosaicPointerDown(event: PointerEvent): boolean {
 }
 
 export function handleMosaicPointerMove(event: PointerEvent): boolean {
-  if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
-    const point = pointFromEvent(event);
-    if (point) {
-      applyVertexMove(vertexDrag.regionId, vertexDrag.vertexIndex, point);
-    }
-    return true;
-  }
-  if (rectHandleDrag && event.pointerId === rectHandleDrag.pointerId) {
-    const point = pointFromEvent(event);
-    if (point) {
-      applyRectHandleMove(rectHandleDrag.regionId, rectHandleDrag.handle, point);
-    }
-    return true;
-  }
-  if (rectAddDrag && event.pointerId === rectAddDrag.pointerId && state.mosaicRectDraft) {
-    const point = pointFromEvent(event);
-    if (point) {
-      state.mosaicRectDraft = { start: state.mosaicRectDraft.start, current: point };
-      requestRender();
-    }
-    return true;
-  }
-  return false;
+  return mosaicDragSessions.some((session) => session.handleMove(event));
 }
 
 export function handleMosaicPointerUp(event: PointerEvent): boolean {
-  if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
-    const drag = vertexDrag;
-    vertexDrag = null;
-    const shape = shapeOf(drag.regionId);
-    const current = shape && shape.type === "polygon" ? shape.points[drag.vertexIndex] : null;
-    if (current && (current[0] !== drag.startPoint[0] || current[1] !== drag.startPoint[1])) {
-      scheduleSave();
-    }
-    return true;
-  }
-  if (rectHandleDrag && event.pointerId === rectHandleDrag.pointerId) {
-    const drag = rectHandleDrag;
-    rectHandleDrag = null;
-    const shape = shapeOf(drag.regionId);
-    const current = shape && shape.type === "rect" ? shape.bounds : null;
-    if (current && current.some((value, i) => value !== drag.startBounds[i])) {
-      scheduleSave();
-    }
-    return true;
-  }
-  if (rectAddDrag && event.pointerId === rectAddDrag.pointerId) {
-    rectAddDrag = null;
-    commitRectAdd();
-    return true;
-  }
-  return false;
+  return mosaicDragSessions.some((session) => session.handleUp(event));
 }
 
 function commitRectAdd(): void {
@@ -517,36 +535,7 @@ function commitRectAdd(): void {
 }
 
 export function handleMosaicPointerCancel(event: PointerEvent): boolean {
-  if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
-    const drag = vertexDrag;
-    vertexDrag = null;
-    // ドラッグ開始前の位置へ復元する(保存しない)。
-    applyVertexMove(drag.regionId, drag.vertexIndex, drag.startPoint);
-    return true;
-  }
-  if (rectHandleDrag && event.pointerId === rectHandleDrag.pointerId) {
-    const drag = rectHandleDrag;
-    rectHandleDrag = null;
-    // ドラッグ開始前の bounds へそのまま復元する(保存しない)。
-    const index = findDraftIndex(drag.regionId);
-    if (index >= 0) {
-      const region = state.pageMosaicDraft[index]!;
-      if (region.shape.type === "rect") {
-        const next = [...state.pageMosaicDraft];
-        next[index] = { ...region, shape: { type: "rect", bounds: drag.startBounds } };
-        state.pageMosaicDraft = next;
-        requestRender();
-      }
-    }
-    return true;
-  }
-  if (rectAddDrag && event.pointerId === rectAddDrag.pointerId) {
-    rectAddDrag = null;
-    state.mosaicRectDraft = null;
-    requestRender();
-    return true;
-  }
-  return false;
+  return mosaicDragSessions.some((session) => session.handleCancel(event));
 }
 
 /** main.ts の dblclick 委譲から呼ばれる。多角形追加モード中は現在の頂点列で確定する。 */

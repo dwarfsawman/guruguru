@@ -10,6 +10,7 @@ import { OPENPOSE_BONES } from "../shared/poseTypes";
 import type { NamePlanEdit, ScriptMangaPlanView } from "../shared/scriptMangaApi";
 import { api } from "./api";
 import { registerActions } from "./actionRegistry";
+import { createDragSession } from "./dragSession";
 import { pushToast, requestRender, state, type NamePoseEditState } from "./appState";
 import {
   clearSnapshotHistory,
@@ -26,9 +27,8 @@ type PoseDraftRecord = Record<string, PanelCastPose[]>;
 
 const history = createSnapshotHistory<PoseDraftRecord>();
 
-interface PoseDrag {
+interface PoseDragData {
   kind: "joint" | "skeleton";
-  pointerId: number;
   panelId: string;
   characterId: string;
   jointIndex: number;
@@ -44,7 +44,70 @@ interface PoseDrag {
   moved: boolean;
 }
 
-let drag: PoseDrag | null = null;
+// pointerId 照合・setPointerCapture/release・up/cancel でのクリアは createDragSession(dragSession.ts)へ委譲。
+const poseSession = createDragSession<PoseDragData>({
+  onMove: (event, drag) => {
+    const edit = state.namePoseEdit;
+    if (!edit) return false;
+    const pose = draftPose(edit, drag.panelId, drag.characterId);
+    if (!pose) return;
+    const dx = event.clientX - drag.startClientX;
+    const dy = event.clientY - drag.startClientY;
+    if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+    drag.moved = true;
+    const width = Math.max(1e-6, drag.bounds[2] - drag.bounds[0]);
+    const height = Math.max(1e-6, drag.bounds[3] - drag.bounds[1]);
+    const clampCoord = (value: number): number => Math.min(2, Math.max(-1, value));
+    if (drag.kind === "joint") {
+      const stagePoint = drag.invert({ x: event.clientX, y: event.clientY });
+      const joint = pose.joints[drag.jointIndex];
+      if (!joint) return;
+      joint.x = clampCoord((stagePoint.x - drag.bounds[0]) / width);
+      joint.y = clampCoord((stagePoint.y - drag.bounds[1]) / height);
+    } else {
+      // 骨格全体の平行移動: 画面pxデルタをステージ単位→パネルローカルへ。
+      const origin = drag.invert({ x: drag.startClientX, y: drag.startClientY });
+      const current = drag.invert({ x: event.clientX, y: event.clientY });
+      const deltaX = (current.x - origin.x) / width;
+      const deltaY = (current.y - origin.y) / height;
+      pose.joints.forEach((joint, index) => {
+        const start = drag.startJoints[index]!;
+        joint.x = clampCoord(start.x + deltaX);
+        joint.y = clampCoord(start.y + deltaY);
+      });
+    }
+    applyPoseToSvg(drag.panelId, drag.characterId, pose.joints, drag.bounds);
+  },
+  onCommit: (_event, finished) => {
+    const edit = state.namePoseEdit;
+    if (!edit) return;
+    const pose = draftPose(edit, finished.panelId, finished.characterId);
+    if (!pose) return;
+    if (finished.moved) {
+      pose.source = "human";
+      commitDraftChange(edit, finished.startDraft);
+      return;
+    }
+    if (finished.kind === "joint") {
+      // クリック(移動なし)= 可視トグル。
+      const joint = pose.joints[finished.jointIndex];
+      if (joint) {
+        const before = cloneDraft(edit.draft);
+        joint.visible = !joint.visible;
+        pose.source = "human";
+        commitDraftChange(edit, before);
+      }
+      return;
+    }
+    // ボーン/ラベルのクリックは選択のみ(pointerdown で処理済み)。
+  },
+  onCancel: (_event, drag) => {
+    const edit = state.namePoseEdit;
+    if (!edit) return;
+    edit.draft = drag.startDraft;
+    requestRender();
+  }
+});
 
 function cloneDraft(record: PoseDraftRecord): PoseDraftRecord {
   return structuredClone(record);
@@ -117,7 +180,7 @@ function beginPoseEdit(target: HTMLElement): void {
 
 function cancelPoseEdit(): void {
   if (!state.namePoseEdit) return;
-  drag = null;
+  poseSession.reset();
   clearSnapshotHistory(history);
   state.namePoseEdit = null;
   requestRender();
@@ -248,7 +311,7 @@ async function savePoseEdit(): Promise<void> {
     });
     const refreshed = await api<NonNullable<typeof run>>(`/api/script-manga-runs/${encodeURIComponent(edit.runId)}`);
     if (state.scriptMangaRun?.id === edit.runId) state.scriptMangaRun = refreshed;
-    drag = null;
+    poseSession.reset();
     clearSnapshotHistory(history);
     state.namePoseEdit = null;
     pushToast("ポーズを差分適用しました。runは再承認待ちへ戻ります。", "info");
@@ -336,9 +399,8 @@ export function handleNamePoseEditPointerDown(event: PointerEvent): boolean {
   const bounds = panelBoundsById(edit.pageIndex).get(panelId);
   if (!pose || !bounds) return true;
   const isJoint = handle.dataset.poseEl === "joint";
-  drag = {
+  poseSession.begin(event, {
     kind: isJoint ? "joint" : "skeleton",
-    pointerId: event.pointerId,
     panelId,
     characterId,
     jointIndex: isJoint ? Number(handle.dataset.jointIndex) : -1,
@@ -349,7 +411,7 @@ export function handleNamePoseEditPointerDown(event: PointerEvent): boolean {
     bounds,
     invert,
     moved: false
-  };
+  });
   if (edit.selected?.panelId !== panelId || edit.selected.characterId !== characterId) {
     edit.selected = { panelId, characterId };
     requestRender();
@@ -359,73 +421,15 @@ export function handleNamePoseEditPointerDown(event: PointerEvent): boolean {
 }
 
 export function handleNamePoseEditPointerMove(event: PointerEvent): boolean {
-  const edit = state.namePoseEdit;
-  if (!edit || !drag || event.pointerId !== drag.pointerId) return false;
-  const pose = draftPose(edit, drag.panelId, drag.characterId);
-  if (!pose) return true;
-  const dx = event.clientX - drag.startClientX;
-  const dy = event.clientY - drag.startClientY;
-  if (!drag.moved && Math.hypot(dx, dy) < 3) return true;
-  drag.moved = true;
-  const width = Math.max(1e-6, drag.bounds[2] - drag.bounds[0]);
-  const height = Math.max(1e-6, drag.bounds[3] - drag.bounds[1]);
-  const clampCoord = (value: number): number => Math.min(2, Math.max(-1, value));
-  if (drag.kind === "joint") {
-    const stagePoint = drag.invert({ x: event.clientX, y: event.clientY });
-    const joint = pose.joints[drag.jointIndex];
-    if (!joint) return true;
-    joint.x = clampCoord((stagePoint.x - drag.bounds[0]) / width);
-    joint.y = clampCoord((stagePoint.y - drag.bounds[1]) / height);
-  } else {
-    // 骨格全体の平行移動: 画面pxデルタをステージ単位→パネルローカルへ。
-    const origin = drag.invert({ x: drag.startClientX, y: drag.startClientY });
-    const current = drag.invert({ x: event.clientX, y: event.clientY });
-    const deltaX = (current.x - origin.x) / width;
-    const deltaY = (current.y - origin.y) / height;
-    pose.joints.forEach((joint, index) => {
-      const start = drag!.startJoints[index]!;
-      joint.x = clampCoord(start.x + deltaX);
-      joint.y = clampCoord(start.y + deltaY);
-    });
-  }
-  applyPoseToSvg(drag.panelId, drag.characterId, pose.joints, drag.bounds);
-  return true;
+  return poseSession.handleMove(event);
 }
 
 export function handleNamePoseEditPointerUp(event: PointerEvent): boolean {
-  const edit = state.namePoseEdit;
-  if (!edit || !drag || event.pointerId !== drag.pointerId) return false;
-  const finished = drag;
-  drag = null;
-  const pose = draftPose(edit, finished.panelId, finished.characterId);
-  if (!pose) return true;
-  if (finished.moved) {
-    pose.source = "human";
-    commitDraftChange(edit, finished.startDraft);
-    return true;
-  }
-  if (finished.kind === "joint") {
-    // クリック(移動なし)= 可視トグル。
-    const joint = pose.joints[finished.jointIndex];
-    if (joint) {
-      const before = cloneDraft(edit.draft);
-      joint.visible = !joint.visible;
-      pose.source = "human";
-      commitDraftChange(edit, before);
-    }
-    return true;
-  }
-  // ボーン/ラベルのクリックは選択のみ(pointerdown で処理済み)。
-  return true;
+  return poseSession.handleUp(event);
 }
 
 export function handleNamePoseEditPointerCancel(event: PointerEvent): boolean {
-  const edit = state.namePoseEdit;
-  if (!edit || !drag || event.pointerId !== drag.pointerId) return false;
-  edit.draft = drag.startDraft;
-  drag = null;
-  requestRender();
-  return true;
+  return poseSession.handleCancel(event);
 }
 
 /** Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y / Escape。lightbox 等より先に呼ぶこと(既知の教訓)。 */

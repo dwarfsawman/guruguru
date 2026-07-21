@@ -50,6 +50,7 @@ import {
 } from "../shared/nameLayoutEdit";
 import type { PagePanelAssignment } from "../shared/apiTypes";
 import { getInverseStageTransform, getStageTransform } from "./svgGizmo";
+import { createDragSession } from "./dragSession";
 import { createDebouncedPersister, type PersistAttemptContext } from "./debouncedPersister";
 import { api } from "./api";
 import { pushToast, requestRender, state } from "./appState";
@@ -64,14 +65,9 @@ const shapePersister = createDebouncedPersister({ persist: persistShapeLayout })
 /** lightbox を開く直前に呼ぶ(保存タイマー・ドラッグ状態・履歴・選択をリセットする)。 */
 export function resetShapeEditSession(): void {
   shapePersister.reset();
-  vertexDrag = null;
-  bezierDrag = null;
-  freehandDrag = null;
-  splitDrag = null;
-  geometryDrag = null;
-  marqueeDrag = null;
-  multiVertexDrag = null;
-  panelMoveDrag = null;
+  for (const session of shapeDragSessions) {
+    session.reset();
+  }
   clearSnapshotHistory(layoutHistory);
   state.shapeGeometryPreview = null;
   state.shapeParallelSnapGuide = null;
@@ -158,7 +154,7 @@ async function persistShapeLayout(context: PersistAttemptContext): Promise<void>
     });
     // 応答時点で新しい編集が進行していない時だけドラフトへ反映する(pageObjectsController と同じ配慮)。
     // isStale はより新しい保存の予約/発射を検知する(旧実装の saveDebounceTimer チェック相当+世代ガード)。
-    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && !vertexDrag && !bezierDrag && !freehandDrag && !splitDrag && !geometryDrag && !multiVertexDrag && !marqueeDrag && !panelMoveDrag) {
+    if (state.pagePanelLightbox?.pageId === pageId && !context.isStale() && !shapeDragActive()) {
       state.pageLayoutDraft = result.layout;
     }
     // サーバ側で消えたパネルへの割り当ては削除済みなので、ローカルの一覧からも落とす。
@@ -512,8 +508,11 @@ function stageRootElement(): SVGGraphicsElement | null {
   return el instanceof SVGGraphicsElement ? el : null;
 }
 
-interface VertexDragState {
-  pointerId: number;
+// 各ドラッグは createDragSession(dragSession.ts)へ委譲する。pointerId 照合・setPointerCapture/release・
+// up/cancel でのセッションクリアは共通化され、ここには「開始状態の形」と move/commit/cancel の中身だけ残る。
+// capture 導入で、ウィンドウ外でボタンを離した時の張り付きドラッグが構造的に直っている。
+
+interface VertexDragData {
   panelId: string;
   vertexIndex: number;
   pxPerUnit: number;
@@ -525,10 +524,34 @@ interface VertexDragState {
   startLayout: PageLayout;
 }
 
-let vertexDrag: VertexDragState | null = null;
+const vertexSession = createDragSession<VertexDragData>({
+  onMove: (event, drag) => {
+    const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+    const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+    const candidate: [number, number] = [drag.startPoint[0] + dx, drag.startPoint[1] + dy];
+    const snapped = snapPolygonVertexParallel(drag.startLayout, drag.panelId, drag.vertexIndex, candidate);
+    state.shapeParallelSnapGuide = snapped.guide;
+    applyVertexMove(drag.panelId, drag.vertexIndex, snapped.point, drag.pageHeight);
+  },
+  onCommit: (_event, drag) => {
+    state.shapeParallelSnapGuide = null;
+    const draft = state.pageLayoutDraft;
+    const panel = draft?.panels.find((item) => item.id === drag.panelId);
+    const current = panel && panel.shape.type === "polygon" ? panel.shape.points[drag.vertexIndex] : null;
+    if (current && (current[0] !== drag.startPoint[0] || current[1] !== drag.startPoint[1])) {
+      pushLayoutHistory(drag.startLayout);
+      scheduleSave();
+    }
+    requestRender();
+  },
+  onCancel: (_event, drag) => {
+    state.shapeParallelSnapGuide = null;
+    // ドラッグ開始前の位置へ復元する(保存しない)。
+    applyVertexMove(drag.panelId, drag.vertexIndex, drag.startPoint, drag.pageHeight);
+  }
+});
 
-interface BezierDragState {
-  pointerId: number;
+interface BezierDragData {
   panelId: string;
   nodeIndex: number;
   part: "anchor" | "in" | "out";
@@ -540,18 +563,88 @@ interface BezierDragState {
   startLayout: PageLayout;
 }
 
-let bezierDrag: BezierDragState | null = null;
+const bezierSession = createDragSession<BezierDragData>({
+  onMove: (event, drag) => {
+    const panel = drag.startLayout.panels.find((item) => item.id === drag.panelId);
+    if (!panel || panel.shape.type !== "path" || !panel.shape.bezier) return;
+    const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+    const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+    const limit = PANEL_BLEED_OVERSHOOT;
+    const point: [number, number] = [
+      clampNumber(drag.startPoint[0] + dx, -limit, 1 + limit, drag.startPoint[0]),
+      clampNumber(drag.startPoint[1] + dy, -limit, drag.pageHeight + limit, drag.startPoint[1])
+    ];
+    const bezier = drag.part === "anchor"
+      ? moveBezierAnchor(panel.shape.bezier, drag.nodeIndex, point)
+      : moveBezierHandle(panel.shape.bezier, drag.nodeIndex, drag.part, point, !event.altKey);
+    applyBezierGeometry(drag.panelId, bezier);
+  },
+  onCommit: (_event, drag) => {
+    if (JSON.stringify(drag.startLayout) !== JSON.stringify(state.pageLayoutDraft)) {
+      pushLayoutHistory(drag.startLayout);
+      scheduleSave();
+    }
+    requestRender();
+  },
+  onCancel: (_event, drag) => {
+    state.pageLayoutDraft = drag.startLayout;
+    requestRender();
+  }
+});
 
-interface FreehandDragState {
-  pointerId: number;
+interface FreehandDragData {
   startLayout: PageLayout;
 }
 
-let freehandDrag: FreehandDragState | null = null;
+const freehandSession = createDragSession<FreehandDragData>({
+  onMove: (event) => {
+    const root = stageRootElement();
+    const inverse = root ? getInverseStageTransform(root) : null;
+    const draft = state.pageLayoutDraft;
+    if (inverse && draft && state.shapeFreehandDraft) {
+      const local = inverse({ x: event.clientX, y: event.clientY });
+      const point: [number, number] = [
+        clampNumber(local.x, 0, 1, 0),
+        clampNumber(local.y, 0, draft.page.height, 0)
+      ];
+      const last = state.shapeFreehandDraft[state.shapeFreehandDraft.length - 1];
+      if (!last || Math.hypot(point[0] - last[0], point[1] - last[1]) >= 0.003) {
+        state.shapeFreehandDraft = [...state.shapeFreehandDraft, point];
+        requestRender();
+      }
+    }
+  },
+  onCommit: (_event, drag) => {
+    const points = state.shapeFreehandDraft ?? [];
+    state.shapeFreehandDraft = null;
+    const bezier = fitClosedFreehandBezier(points);
+    if (!bezier) {
+      pushToast("閉じた領域になるよう、もう少し大きく一周描いてください。", "error");
+      requestRender();
+      return;
+    }
+    const draft = state.pageLayoutDraft;
+    if (!draft) return;
+    const id = createPanelIdAllocator(draft.panels)();
+    const order = draft.panels.reduce((max, panel) => Math.max(max, panel.order), 0) + 1;
+    const panel: LayoutPanel = { id, order, shape: { type: "path", d: bezierPathData(bezier), bezier } };
+    pushLayoutHistory(drag.startLayout);
+    state.pageLayoutDraft = { ...draft, panels: [...draft.panels, panel] };
+    state.shapeSelectedPanelId = id;
+    state.shapeSelectedVertexIndex = null;
+    state.shapeFreehandMode = false;
+    requestRender();
+    scheduleSave();
+  },
+  onCancel: (_event, drag) => {
+    state.pageLayoutDraft = drag.startLayout;
+    state.shapeFreehandDraft = null;
+    requestRender();
+  }
+});
 
 /** ドラッグ範囲選択(クリックと区別するため 4px 動くまでは選択矩形を出さない)。 */
-interface MarqueeDragState {
-  pointerId: number;
+interface MarqueeDragData {
   startClientX: number;
   startClientY: number;
   startLocal: [number, number];
@@ -559,11 +652,65 @@ interface MarqueeDragState {
   clickPanelId: string | null;
 }
 
-let marqueeDrag: MarqueeDragState | null = null;
+const marqueeSession = createDragSession<MarqueeDragData>({
+  onMove: (event, drag) => {
+    if (!drag.moved) {
+      const dist = Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY);
+      if (dist > 4) drag.moved = true;
+    }
+    if (drag.moved) {
+      const root = stageRootElement();
+      const inverse = root ? getInverseStageTransform(root) : null;
+      if (inverse) {
+        const point = inverse({ x: event.clientX, y: event.clientY });
+        state.shapeMarquee = { start: drag.startLocal, current: [point.x, point.y] };
+        requestRender();
+      }
+    }
+  },
+  onCommit: (_event, drag) => {
+    if (!drag.moved) {
+      // クリック: 従来どおりパネル選択/背景で解除。範囲選択は解除する。
+      state.shapeMarquee = null;
+      state.shapeSelectedVertices = [];
+      selectShapePanel(drag.clickPanelId);
+      requestRender();
+      return;
+    }
+    const rect = state.shapeMarquee;
+    state.shapeMarquee = null;
+    const draft = state.pageLayoutDraft;
+    if (!rect || !draft) {
+      requestRender();
+      return;
+    }
+    // 頂点 index を確定させるため、範囲選択の確定時に polygon 化する(幾何ドラッグと同じ規約)。
+    const editable = toEditableNameLayout(draft);
+    state.pageLayoutDraft = editable;
+    const x0 = Math.min(rect.start[0], rect.current[0]);
+    const x1 = Math.max(rect.start[0], rect.current[0]);
+    const y0 = Math.min(rect.start[1], rect.current[1]);
+    const y1 = Math.max(rect.start[1], rect.current[1]);
+    const selected: Array<{ panelIndex: number; vertexIndex: number }> = [];
+    editable.panels.forEach((panel, panelIndex) => {
+      if (panel.shape.type !== "polygon") return;
+      panel.shape.points.forEach(([x, y], vertexIndex) => {
+        if (x >= x0 && x <= x1 && y >= y0 && y <= y1) selected.push({ panelIndex, vertexIndex });
+      });
+    });
+    state.shapeSelectedVertices = selected;
+    state.shapeSelectedPanelId = null;
+    state.shapeSelectedVertexIndex = null;
+    requestRender();
+  },
+  onCancel: () => {
+    state.shapeMarquee = null;
+    requestRender();
+  }
+});
 
 /** 範囲選択済み頂点集合の一括移動ドラッグ。 */
-interface MultiVertexDragState {
-  pointerId: number;
+interface MultiVertexDragData {
   startClientX: number;
   startClientY: number;
   pxPerUnit: number;
@@ -571,34 +718,74 @@ interface MultiVertexDragState {
   refs: Array<{ panelIndex: number; vertexIndex: number }>;
 }
 
-let multiVertexDrag: MultiVertexDragState | null = null;
+const multiVertexSession = createDragSession<MultiVertexDragData>({
+  onMove: (event, drag) => {
+    const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+    const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+    state.pageLayoutDraft = movePanelVertices(drag.startLayout, drag.refs, [dx, dy]);
+    requestRender();
+  },
+  onCommit: (_event, drag) => {
+    if (JSON.stringify(drag.startLayout) !== JSON.stringify(state.pageLayoutDraft)) {
+      pushLayoutHistory(drag.startLayout);
+      scheduleSave();
+    }
+    requestRender();
+  },
+  onCancel: (_event, drag) => {
+    // ドラッグ開始前の状態へ復元する(保存しない)。
+    state.pageLayoutDraft = drag.startLayout;
+    requestRender();
+  }
+});
 
-interface SplitDragState {
-  pointerId: number;
-}
-
-let splitDrag: SplitDragState | null = null;
+const splitSession = createDragSession<Record<string, never>>({
+  onMove: (event) => {
+    if (!state.shapeSplitDraft) return;
+    const root = stageRootElement();
+    const inverse = root ? getInverseStageTransform(root) : null;
+    if (!inverse) return;
+    const point = inverse({ x: event.clientX, y: event.clientY });
+    state.shapeSplitDraft = { start: state.shapeSplitDraft.start, current: [point.x, point.y] };
+    requestRender();
+  },
+  onCommit: () => {
+    void commitSplit();
+  },
+  onCancel: () => {
+    state.shapeSplitDraft = null;
+    requestRender();
+  }
+});
 
 /** 幾何編集ドラッグ(人間ゲートのコマ割り修正と同じ操作系)。純関数は開始時スナップショットへ適用する。 */
 interface GeometryDragBase {
-  pointerId: number;
   startClientX: number;
   startClientY: number;
   pxPerUnit: number;
   startLayout: PageLayout;
 }
 
-type GeometryDragState =
+type GeometryDragData =
   | (GeometryDragBase & { kind: "edge"; panelIndex: number; edgeIndex: number; outward: [number, number]; outerSide: PageSide | null })
   | (GeometryDragBase & { kind: "boundary"; boundary: SharedBoundary })
   | (GeometryDragBase & { kind: "gutter"; boundary: SharedBoundary; dir: 1 | -1 })
   | (GeometryDragBase & { kind: "junction"; junction: LayoutJunction });
 
-let geometryDrag: GeometryDragState | null = null;
+const geometrySession = createDragSession<GeometryDragData>({
+  onMove: (event, drag) => moveGeometryDrag(event, drag),
+  onCommit: (_event, drag) => finishGeometryDrag(drag),
+  onCancel: (_event, drag) => {
+    // ドラッグ開始前の状態へ復元する(保存しない)。
+    state.pageLayoutDraft = drag.startLayout;
+    state.shapeGeometryPreview = null;
+    state.shapeActiveGeometry = null;
+    requestRender();
+  }
+});
 
 /** コマ番号バッジのドラッグでコマ全体を平行移動する。delta は形が歪まないよう外接矩形から事前クランプする。 */
-interface PanelMoveDragState {
-  pointerId: number;
+interface PanelMoveDragData {
   panelId: string;
   pxPerUnit: number;
   startClientX: number;
@@ -611,7 +798,50 @@ interface PanelMoveDragState {
   maxDy: number;
 }
 
-let panelMoveDrag: PanelMoveDragState | null = null;
+const panelMoveSession = createDragSession<PanelMoveDragData>({
+  onMove: (event, drag) => {
+    const dxRaw = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+    const dyRaw = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+    if (!drag.moved && Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY) > 3) {
+      drag.moved = true;
+    }
+    if (drag.moved) {
+      const dx = clampNumber(dxRaw, drag.minDx, drag.maxDx, 0);
+      const dy = clampNumber(dyRaw, drag.minDy, drag.maxDy, 0);
+      state.pageLayoutDraft = translatePanelById(drag.startLayout, drag.panelId, [dx, dy]);
+      requestRender();
+    }
+  },
+  onCommit: (_event, drag) => {
+    if (drag.moved && JSON.stringify(drag.startLayout) !== JSON.stringify(state.pageLayoutDraft)) {
+      pushLayoutHistory(drag.startLayout);
+      scheduleSave();
+    }
+    requestRender();
+  },
+  onCancel: (_event, drag) => {
+    // ドラッグ開始前の状態へ復元する(保存しない)。
+    state.pageLayoutDraft = drag.startLayout;
+    requestRender();
+  }
+});
+
+/** move/up/cancel の委譲順。従来の if チェーン順をそのまま配列で表現する。 */
+const shapeDragSessions = [
+  freehandSession,
+  bezierSession,
+  geometrySession,
+  panelMoveSession,
+  multiVertexSession,
+  marqueeSession,
+  vertexSession,
+  splitSession
+] as const;
+
+/** いずれかの形状ドラッグが進行中か(保存応答でドラフトを上書きしない判定に使う)。 */
+function shapeDragActive(): boolean {
+  return shapeDragSessions.some((session) => session.data !== null);
+}
 
 /** パネル全体を delta だけ平行移動する(polygon は全頂点、bezier はアンカー+制御点)。 */
 function translatePanelById(layout: PageLayout, panelId: string, delta: readonly [number, number]): PageLayout {
@@ -661,7 +891,6 @@ function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
   state.pageLayoutDraft = editable;
   const startLayout = clonePageLayout(editable);
   const base: GeometryDragBase = {
-    pointerId: event.pointerId,
     startClientX: event.clientX,
     startClientY: event.clientY,
     pxPerUnit: stage.pxPerUnit,
@@ -671,7 +900,7 @@ function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
   if (junctionEl) {
     const junction = detectJunctions(startLayout).find((entry) => entry.id === junctionEl.getAttribute("data-shape-junction"));
     if (junction) {
-      geometryDrag = { ...base, kind: "junction", junction };
+      geometrySession.begin(event, { ...base, kind: "junction", junction });
       state.shapeActiveGeometry = { kind: "junction", id: junction.id };
       requestRender();
     }
@@ -682,12 +911,12 @@ function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
     const boundary = detectSharedBoundaries(startLayout).find((entry) => entry.id === id);
     if (boundary) {
       if (boundaryEl) {
-        geometryDrag = { ...base, kind: "boundary", boundary };
+        geometrySession.begin(event, { ...base, kind: "boundary", boundary });
         state.shapeActiveGeometry = { kind: "boundary", id: boundary.id };
       } else {
         // シェブロンは境界の両側にあり、どちらも「外向きドラッグで広げる」。向きは data-gutter-dir で受け取る。
         const dir = Number(gutterEl!.getAttribute("data-gutter-dir")) === -1 ? -1 : 1;
-        geometryDrag = { ...base, kind: "gutter", boundary, dir };
+        geometrySession.begin(event, { ...base, kind: "gutter", boundary, dir });
         state.shapeActiveGeometry = { kind: "gutter", id: boundary.id };
         state.shapeGeometryPreview = { kind: "gutter", edges: boundary.edges.map((entry) => entry.ref) };
       }
@@ -700,22 +929,20 @@ function beginGeometryDrag(event: PointerEvent, target: Element): boolean {
   const outward = edgeOutwardNormal(startLayout, ref);
   if (!outward) return true;
   const outer = outerEdgeInfo(startLayout, ref, detectSharedBoundaries(startLayout));
-  geometryDrag = {
+  geometrySession.begin(event, {
     ...base,
     kind: "edge",
     panelIndex: ref.panelIndex,
     edgeIndex: ref.edgeIndex,
     outward,
     outerSide: outer.isOuter ? outer.side : null
-  };
+  });
   state.shapeActiveGeometry = { kind: "edge", id: `${ref.panelIndex}:${ref.edgeIndex}` };
   requestRender();
   return true;
 }
 
-function moveGeometryDrag(event: PointerEvent): void {
-  const drag = geometryDrag;
-  if (!drag) return;
+function moveGeometryDrag(event: PointerEvent, drag: GeometryDragData): void {
   const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
   const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
   if (drag.kind === "junction") {
@@ -740,10 +967,7 @@ function moveGeometryDrag(event: PointerEvent): void {
   requestRender();
 }
 
-function finishGeometryDrag(): void {
-  const drag = geometryDrag;
-  geometryDrag = null;
-  if (!drag) return;
+function finishGeometryDrag(drag: GeometryDragData): void {
   if (drag.kind === "edge" && state.shapeGeometryPreview?.kind === "bleed" && drag.outerSide) {
     // 余白帯で離した外周辺は裁ち切り(page外 0.015)へスナップする。
     state.pageLayoutDraft = state.pageLayoutDraft
@@ -784,7 +1008,7 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
       clampNumber(point.x, 0, 1, 0),
       clampNumber(point.y, 0, draft.page.height, 0)
     ]];
-    freehandDrag = { pointerId: event.pointerId, startLayout: clonePageLayout(draft) };
+    freehandSession.begin(event, { startLayout: clonePageLayout(draft) });
     requestRender();
     return true;
   }
@@ -798,7 +1022,7 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
     event.preventDefault();
     const point = inverse({ x: event.clientX, y: event.clientY });
     state.shapeSplitDraft = { start: [point.x, point.y], current: [point.x, point.y] };
-    splitDrag = { pointerId: event.pointerId };
+    splitSession.begin(event, {});
     requestRender();
     return true;
   }
@@ -826,14 +1050,13 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
       return true;
     }
     event.preventDefault();
-    multiVertexDrag = {
-      pointerId: event.pointerId,
+    multiVertexSession.begin(event, {
       startClientX: event.clientX,
       startClientY: event.clientY,
       pxPerUnit: stage.pxPerUnit,
       startLayout: clonePageLayout(draft),
       refs: [...state.shapeSelectedVertices]
-    };
+    });
     return true;
   }
 
@@ -847,15 +1070,14 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
       ?? "";
     const [indexText, sideText] = raw.split(":");
     const nodeIndex = Number(indexText);
-    const part: BezierDragState["part"] = bezierAnchorEl ? "anchor" : sideText === "in" ? "in" : "out";
+    const part: BezierDragData["part"] = bezierAnchorEl ? "anchor" : sideText === "in" ? "in" : "out";
     const node = panel.shape.bezier.nodes[nodeIndex];
     const root = stageRootElement();
     const stage = root ? getStageTransform(root) : null;
     if (!node || !stage) return true;
     event.preventDefault();
     state.shapeSelectedVertexIndex = nodeIndex;
-    bezierDrag = {
-      pointerId: event.pointerId,
+    bezierSession.begin(event, {
       panelId: panel.id,
       nodeIndex,
       part,
@@ -865,7 +1087,7 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
       startPoint: [...(part === "anchor" ? node.point : node[part])] as [number, number],
       pageHeight: draft.page.height,
       startLayout: clonePageLayout(draft)
-    };
+    });
     requestRender();
     return true;
   }
@@ -885,8 +1107,7 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
     event.preventDefault();
     state.shapeSelectedVertexIndex = vertexIndex;
     state.shapeParallelSnapGuide = null;
-    vertexDrag = {
-      pointerId: event.pointerId,
+    vertexSession.begin(event, {
       panelId: state.shapeSelectedPanelId,
       vertexIndex,
       pxPerUnit: stage.pxPerUnit,
@@ -895,7 +1116,7 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
       startPoint: [...panel.shape.points[vertexIndex]!] as [number, number],
       pageHeight: draft.page.height,
       startLayout: clonePageLayout(draft)
-    };
+    });
     requestRender();
     return true;
   }
@@ -920,8 +1141,7 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
     state.pageLayoutDraft = editable;
     const [x0, y0, x1, y1] = panelBounds(panel.shape);
     const bleed = LAYOUT_PANEL_BLEED;
-    panelMoveDrag = {
-      pointerId: event.pointerId,
+    panelMoveSession.begin(event, {
       panelId,
       pxPerUnit: stage.pxPerUnit,
       startClientX: event.clientX,
@@ -932,7 +1152,7 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
       maxDx: Math.max(0, 1 + bleed - x1),
       minDy: Math.min(0, -bleed - y0),
       maxDy: Math.max(0, editable.page.height + bleed - y1)
-    };
+    });
     // バッジは選択ハンドルとしても働く(クリック=選択、ドラッグ=移動)。
     state.shapeSelectedPanelId = panelId;
     state.shapeSelectedVertexIndex = null;
@@ -956,296 +1176,26 @@ export function handlePanelShapePointerDown(event: PointerEvent): boolean {
   }
   event.preventDefault();
   const marqueeStart = inverseForMarquee({ x: event.clientX, y: event.clientY });
-  marqueeDrag = {
-    pointerId: event.pointerId,
+  marqueeSession.begin(event, {
     startClientX: event.clientX,
     startClientY: event.clientY,
     startLocal: [marqueeStart.x, marqueeStart.y],
     moved: false,
     clickPanelId: panelEl?.getAttribute("data-shape-panel-id") ?? null
-  };
+  });
   return true;
 }
 
 export function handlePanelShapePointerMove(event: PointerEvent): boolean {
-  if (freehandDrag && event.pointerId === freehandDrag.pointerId) {
-    const root = stageRootElement();
-    const inverse = root ? getInverseStageTransform(root) : null;
-    const draft = state.pageLayoutDraft;
-    if (inverse && draft && state.shapeFreehandDraft) {
-      const local = inverse({ x: event.clientX, y: event.clientY });
-      const point: [number, number] = [
-        clampNumber(local.x, 0, 1, 0),
-        clampNumber(local.y, 0, draft.page.height, 0)
-      ];
-      const last = state.shapeFreehandDraft[state.shapeFreehandDraft.length - 1];
-      if (!last || Math.hypot(point[0] - last[0], point[1] - last[1]) >= 0.003) {
-        state.shapeFreehandDraft = [...state.shapeFreehandDraft, point];
-        requestRender();
-      }
-    }
-    return true;
-  }
-  if (bezierDrag && event.pointerId === bezierDrag.pointerId) {
-    const drag = bezierDrag;
-    const panel = drag.startLayout.panels.find((item) => item.id === drag.panelId);
-    if (!panel || panel.shape.type !== "path" || !panel.shape.bezier) return true;
-    const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
-    const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
-    const limit = PANEL_BLEED_OVERSHOOT;
-    const point: [number, number] = [
-      clampNumber(drag.startPoint[0] + dx, -limit, 1 + limit, drag.startPoint[0]),
-      clampNumber(drag.startPoint[1] + dy, -limit, drag.pageHeight + limit, drag.startPoint[1])
-    ];
-    const bezier = drag.part === "anchor"
-      ? moveBezierAnchor(panel.shape.bezier, drag.nodeIndex, point)
-      : moveBezierHandle(panel.shape.bezier, drag.nodeIndex, drag.part, point, !event.altKey);
-    applyBezierGeometry(drag.panelId, bezier);
-    return true;
-  }
-  if (geometryDrag && event.pointerId === geometryDrag.pointerId) {
-    moveGeometryDrag(event);
-    return true;
-  }
-  if (panelMoveDrag && event.pointerId === panelMoveDrag.pointerId) {
-    const drag = panelMoveDrag;
-    const dxRaw = (event.clientX - drag.startClientX) / drag.pxPerUnit;
-    const dyRaw = (event.clientY - drag.startClientY) / drag.pxPerUnit;
-    if (!drag.moved && Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY) > 3) {
-      drag.moved = true;
-    }
-    if (drag.moved) {
-      const dx = clampNumber(dxRaw, drag.minDx, drag.maxDx, 0);
-      const dy = clampNumber(dyRaw, drag.minDy, drag.maxDy, 0);
-      state.pageLayoutDraft = translatePanelById(drag.startLayout, drag.panelId, [dx, dy]);
-      requestRender();
-    }
-    return true;
-  }
-  if (multiVertexDrag && event.pointerId === multiVertexDrag.pointerId) {
-    const dx = (event.clientX - multiVertexDrag.startClientX) / multiVertexDrag.pxPerUnit;
-    const dy = (event.clientY - multiVertexDrag.startClientY) / multiVertexDrag.pxPerUnit;
-    state.pageLayoutDraft = movePanelVertices(multiVertexDrag.startLayout, multiVertexDrag.refs, [dx, dy]);
-    requestRender();
-    return true;
-  }
-  if (marqueeDrag && event.pointerId === marqueeDrag.pointerId) {
-    if (!marqueeDrag.moved) {
-      const dist = Math.hypot(event.clientX - marqueeDrag.startClientX, event.clientY - marqueeDrag.startClientY);
-      if (dist > 4) marqueeDrag.moved = true;
-    }
-    if (marqueeDrag.moved) {
-      const root = stageRootElement();
-      const inverse = root ? getInverseStageTransform(root) : null;
-      if (inverse) {
-        const point = inverse({ x: event.clientX, y: event.clientY });
-        state.shapeMarquee = { start: marqueeDrag.startLocal, current: [point.x, point.y] };
-        requestRender();
-      }
-    }
-    return true;
-  }
-  if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
-    const dx = (event.clientX - vertexDrag.startClientX) / vertexDrag.pxPerUnit;
-    const dy = (event.clientY - vertexDrag.startClientY) / vertexDrag.pxPerUnit;
-    const candidate: [number, number] = [vertexDrag.startPoint[0] + dx, vertexDrag.startPoint[1] + dy];
-    const snapped = snapPolygonVertexParallel(vertexDrag.startLayout, vertexDrag.panelId, vertexDrag.vertexIndex, candidate);
-    state.shapeParallelSnapGuide = snapped.guide;
-    applyVertexMove(vertexDrag.panelId, vertexDrag.vertexIndex, snapped.point, vertexDrag.pageHeight);
-    return true;
-  }
-  if (splitDrag && event.pointerId === splitDrag.pointerId && state.shapeSplitDraft) {
-    const root = stageRootElement();
-    const inverse = root ? getInverseStageTransform(root) : null;
-    if (!inverse) {
-      return true;
-    }
-    const point = inverse({ x: event.clientX, y: event.clientY });
-    state.shapeSplitDraft = { start: state.shapeSplitDraft.start, current: [point.x, point.y] };
-    requestRender();
-    return true;
-  }
-  return false;
+  return shapeDragSessions.some((session) => session.handleMove(event));
 }
 
 export function handlePanelShapePointerUp(event: PointerEvent): boolean {
-  if (freehandDrag && event.pointerId === freehandDrag.pointerId) {
-    const drag = freehandDrag;
-    freehandDrag = null;
-    const points = state.shapeFreehandDraft ?? [];
-    state.shapeFreehandDraft = null;
-    const bezier = fitClosedFreehandBezier(points);
-    if (!bezier) {
-      pushToast("閉じた領域になるよう、もう少し大きく一周描いてください。", "error");
-      requestRender();
-      return true;
-    }
-    const draft = state.pageLayoutDraft;
-    if (!draft) return true;
-    const id = createPanelIdAllocator(draft.panels)();
-    const order = draft.panels.reduce((max, panel) => Math.max(max, panel.order), 0) + 1;
-    const panel: LayoutPanel = { id, order, shape: { type: "path", d: bezierPathData(bezier), bezier } };
-    pushLayoutHistory(drag.startLayout);
-    state.pageLayoutDraft = { ...draft, panels: [...draft.panels, panel] };
-    state.shapeSelectedPanelId = id;
-    state.shapeSelectedVertexIndex = null;
-    state.shapeFreehandMode = false;
-    requestRender();
-    scheduleSave();
-    return true;
-  }
-  if (bezierDrag && event.pointerId === bezierDrag.pointerId) {
-    const drag = bezierDrag;
-    bezierDrag = null;
-    if (JSON.stringify(drag.startLayout) !== JSON.stringify(state.pageLayoutDraft)) {
-      pushLayoutHistory(drag.startLayout);
-      scheduleSave();
-    }
-    requestRender();
-    return true;
-  }
-  if (geometryDrag && event.pointerId === geometryDrag.pointerId) {
-    finishGeometryDrag();
-    return true;
-  }
-  if (panelMoveDrag && event.pointerId === panelMoveDrag.pointerId) {
-    const drag = panelMoveDrag;
-    panelMoveDrag = null;
-    if (drag.moved && JSON.stringify(drag.startLayout) !== JSON.stringify(state.pageLayoutDraft)) {
-      pushLayoutHistory(drag.startLayout);
-      scheduleSave();
-    }
-    requestRender();
-    return true;
-  }
-  if (multiVertexDrag && event.pointerId === multiVertexDrag.pointerId) {
-    const drag = multiVertexDrag;
-    multiVertexDrag = null;
-    if (JSON.stringify(drag.startLayout) !== JSON.stringify(state.pageLayoutDraft)) {
-      pushLayoutHistory(drag.startLayout);
-      scheduleSave();
-    }
-    requestRender();
-    return true;
-  }
-  if (marqueeDrag && event.pointerId === marqueeDrag.pointerId) {
-    const drag = marqueeDrag;
-    marqueeDrag = null;
-    if (!drag.moved) {
-      // クリック: 従来どおりパネル選択/背景で解除。範囲選択は解除する。
-      state.shapeMarquee = null;
-      state.shapeSelectedVertices = [];
-      selectShapePanel(drag.clickPanelId);
-      requestRender();
-      return true;
-    }
-    const rect = state.shapeMarquee;
-    state.shapeMarquee = null;
-    const draft = state.pageLayoutDraft;
-    if (!rect || !draft) {
-      requestRender();
-      return true;
-    }
-    // 頂点 index を確定させるため、範囲選択の確定時に polygon 化する(幾何ドラッグと同じ規約)。
-    const editable = toEditableNameLayout(draft);
-    state.pageLayoutDraft = editable;
-    const x0 = Math.min(rect.start[0], rect.current[0]);
-    const x1 = Math.max(rect.start[0], rect.current[0]);
-    const y0 = Math.min(rect.start[1], rect.current[1]);
-    const y1 = Math.max(rect.start[1], rect.current[1]);
-    const selected: Array<{ panelIndex: number; vertexIndex: number }> = [];
-    editable.panels.forEach((panel, panelIndex) => {
-      if (panel.shape.type !== "polygon") return;
-      panel.shape.points.forEach(([x, y], vertexIndex) => {
-        if (x >= x0 && x <= x1 && y >= y0 && y <= y1) selected.push({ panelIndex, vertexIndex });
-      });
-    });
-    state.shapeSelectedVertices = selected;
-    state.shapeSelectedPanelId = null;
-    state.shapeSelectedVertexIndex = null;
-    requestRender();
-    return true;
-  }
-  if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
-    const drag = vertexDrag;
-    vertexDrag = null;
-    state.shapeParallelSnapGuide = null;
-    const draft = state.pageLayoutDraft;
-    const panel = draft?.panels.find((item) => item.id === drag.panelId);
-    const current = panel && panel.shape.type === "polygon" ? panel.shape.points[drag.vertexIndex] : null;
-    if (current && (current[0] !== drag.startPoint[0] || current[1] !== drag.startPoint[1])) {
-      pushLayoutHistory(drag.startLayout);
-      scheduleSave();
-    }
-    requestRender();
-    return true;
-  }
-  if (splitDrag && event.pointerId === splitDrag.pointerId) {
-    splitDrag = null;
-    void commitSplit();
-    return true;
-  }
-  return false;
+  return shapeDragSessions.some((session) => session.handleUp(event));
 }
 
 export function handlePanelShapePointerCancel(event: PointerEvent): boolean {
-  if (freehandDrag && event.pointerId === freehandDrag.pointerId) {
-    state.pageLayoutDraft = freehandDrag.startLayout;
-    freehandDrag = null;
-    state.shapeFreehandDraft = null;
-    requestRender();
-    return true;
-  }
-  if (bezierDrag && event.pointerId === bezierDrag.pointerId) {
-    state.pageLayoutDraft = bezierDrag.startLayout;
-    bezierDrag = null;
-    requestRender();
-    return true;
-  }
-  if (geometryDrag && event.pointerId === geometryDrag.pointerId) {
-    // ドラッグ開始前の状態へ復元する(保存しない)。
-    state.pageLayoutDraft = geometryDrag.startLayout;
-    geometryDrag = null;
-    state.shapeGeometryPreview = null;
-    state.shapeActiveGeometry = null;
-    requestRender();
-    return true;
-  }
-  if (panelMoveDrag && event.pointerId === panelMoveDrag.pointerId) {
-    // ドラッグ開始前の状態へ復元する(保存しない)。
-    state.pageLayoutDraft = panelMoveDrag.startLayout;
-    panelMoveDrag = null;
-    requestRender();
-    return true;
-  }
-  if (multiVertexDrag && event.pointerId === multiVertexDrag.pointerId) {
-    // ドラッグ開始前の状態へ復元する(保存しない)。
-    state.pageLayoutDraft = multiVertexDrag.startLayout;
-    multiVertexDrag = null;
-    requestRender();
-    return true;
-  }
-  if (marqueeDrag && event.pointerId === marqueeDrag.pointerId) {
-    marqueeDrag = null;
-    state.shapeMarquee = null;
-    requestRender();
-    return true;
-  }
-  if (vertexDrag && event.pointerId === vertexDrag.pointerId) {
-    const drag = vertexDrag;
-    vertexDrag = null;
-    state.shapeParallelSnapGuide = null;
-    // ドラッグ開始前の位置へ復元する(保存しない)。
-    applyVertexMove(drag.panelId, drag.vertexIndex, drag.startPoint, drag.pageHeight);
-    return true;
-  }
-  if (splitDrag && event.pointerId === splitDrag.pointerId) {
-    splitDrag = null;
-    state.shapeSplitDraft = null;
-    requestRender();
-    return true;
-  }
-  return false;
+  return shapeDragSessions.some((session) => session.handleCancel(event));
 }
 
 /** main.ts の dblclick 委譲から呼ばれる。頂点ダブルクリック = 削除。 */
@@ -1302,14 +1252,14 @@ export function handlePanelShapeKeydown(event: KeyboardEvent): boolean {
     event.preventDefault();
     state.shapeFreehandMode = false;
     state.shapeFreehandDraft = null;
-    freehandDrag = null;
+    freehandSession.reset();
     state.shapeSplitMode = false;
     state.shapeSplitDraft = null;
-    splitDrag = null;
+    splitSession.reset();
     state.shapeAddVertexMode = false;
     state.shapeSelectedVertices = [];
     state.shapeMarquee = null;
-    marqueeDrag = null;
+    marqueeSession.reset();
     requestRender();
     return true;
   }
