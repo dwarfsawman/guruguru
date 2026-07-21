@@ -31,6 +31,7 @@ import type { SetCandidateCustomLayoutResponse } from "../shared/scriptMangaApi"
 import { api } from "./api";
 import { pushToast, requestRender, state, type NameLayoutEditState } from "./appState";
 import { registerActions } from "./actionRegistry";
+import { createDragSession } from "./dragSession";
 import { getInverseStageTransform, getStageTransform } from "./svgGizmo";
 import { refreshScriptMangaCandidates } from "./scriptMangaController";
 import { isTextEntryTarget } from "./clientUtils";
@@ -138,7 +139,7 @@ function beginLayoutEdit(candidateId: string, target: HTMLElement): void {
 function cancelLayoutEdit(): void {
   if (!state.nameLayoutEdit) return;
   state.nameLayoutEdit = null;
-  drag = null;
+  layoutEditSession.reset();
   requestRender();
 }
 
@@ -237,7 +238,6 @@ async function resetLayoutEdit(): Promise<void> {
 // --- ポインタ操作 ---
 
 interface DragBase {
-  pointerId: number;
   startClientX: number;
   startClientY: number;
   pxPerUnit: number;
@@ -245,7 +245,7 @@ interface DragBase {
   startHints: Record<number, { x: number; y: number }>;
 }
 
-type DragState =
+type DragData =
   | (DragBase & { kind: "vertex"; panelIndex: number; vertexIndex: number })
   | (DragBase & { kind: "edge"; panelIndex: number; edgeIndex: number; outward: [number, number]; outerSide: PageSide | null })
   | (DragBase & { kind: "boundary"; boundary: SharedBoundary })
@@ -253,7 +253,78 @@ type DragState =
   | (DragBase & { kind: "junction"; junction: LayoutJunction })
   | (DragBase & { kind: "balloon"; orderIndex: number });
 
-let drag: DragState | null = null;
+// pointerId 照合・setPointerCapture/release・up/cancel でのクリアは createDragSession(dragSession.ts)へ委譲。
+const layoutEditSession = createDragSession<DragData>({
+  onMove: (event, drag) => {
+    const edit = state.nameLayoutEdit;
+    if (!edit) return false;
+    const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
+    const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
+    if (drag.kind === "vertex") {
+      edit.draftLayout = movePanelVertices(
+        drag.startLayout,
+        [{ panelIndex: drag.panelIndex, vertexIndex: drag.vertexIndex }],
+        [dx, dy]
+      );
+    } else if (drag.kind === "junction") {
+      edit.draftLayout = moveJunction(drag.startLayout, drag.junction, [dx, dy]);
+    } else if (drag.kind === "boundary") {
+      const offset = dx * drag.boundary.normal[0] + dy * drag.boundary.normal[1];
+      edit.draftLayout = moveBoundaryAlongNormal(drag.startLayout, drag.boundary, offset);
+    } else if (drag.kind === "gutter") {
+      const along = dx * drag.boundary.normal[0] + dy * drag.boundary.normal[1];
+      edit.draftLayout = setBoundaryGutter(drag.startLayout, drag.boundary, Math.max(0, drag.boundary.gutterWidth + along * 2));
+    } else if (drag.kind === "edge") {
+      const ref = { panelIndex: drag.panelIndex, edgeIndex: drag.edgeIndex };
+      const offset = dx * drag.outward[0] + dy * drag.outward[1];
+      edit.draftLayout = translateEdgeAlongNormal(drag.startLayout, ref, offset);
+      // 外周辺が余白帯へ出たら裁ち切りプレビュー(線が半透明になる)。
+      edit.preview = drag.outerSide && edgeInMarginBand(edit.draftLayout, ref, drag.outerSide)
+        ? { kind: "bleed", panelIndex: ref.panelIndex, edgeIndex: ref.edgeIndex }
+        : null;
+    } else {
+      const root = stageRootElement();
+      const inverse = root ? getInverseStageTransform(root) : null;
+      if (inverse) {
+        const point = inverse({ x: event.clientX, y: event.clientY });
+        const height = edit.draftLayout.page.height;
+        edit.draftHints = {
+          ...drag.startHints,
+          [drag.orderIndex]: {
+            x: Math.min(1, Math.max(0, point.x)),
+            y: Math.min(height, Math.max(0, point.y))
+          }
+        };
+      }
+    }
+    requestRender();
+  },
+  onCommit: (_event, drag) => {
+    const edit = state.nameLayoutEdit;
+    if (!edit) return;
+    if (drag.kind === "edge" && edit.preview?.kind === "bleed" && drag.outerSide) {
+      // 余白帯で離した外周辺は裁ち切りへスナップする。
+      edit.draftLayout = snapEdgeToBleed(edit.draftLayout, { panelIndex: drag.panelIndex, edgeIndex: drag.edgeIndex }, drag.outerSide);
+    }
+    edit.preview = null;
+    if (drag.kind !== "balloon") validateDraft(edit);
+    // 実際に変化したドラッグだけを履歴へ積む(開始時スナップショットは drag が所有しているので再cloneしない)。
+    const changed =
+      JSON.stringify(drag.startLayout) !== JSON.stringify(edit.draftLayout) ||
+      JSON.stringify(drag.startHints) !== JSON.stringify(edit.draftHints);
+    if (changed) pushEditHistory(edit, { layout: drag.startLayout, hints: drag.startHints });
+    requestRender();
+  },
+  onCancel: (_event, drag) => {
+    const edit = state.nameLayoutEdit;
+    if (!edit) return;
+    // ドラッグ開始前の状態へ復元する。
+    edit.draftLayout = drag.startLayout;
+    edit.draftHints = drag.startHints;
+    edit.preview = null;
+    requestRender();
+  }
+});
 
 function parsePairRef(value: string | null | undefined): { a: number; b: number } | null {
   if (!value) return null;
@@ -300,7 +371,6 @@ export function handleNameLayoutEditPointerDown(event: PointerEvent): boolean {
   if (!stage) return true;
 
   const base: Omit<DragBase, "startLayout" | "startHints"> = {
-    pointerId: event.pointerId,
     startClientX: event.clientX,
     startClientY: event.clientY,
     pxPerUnit: stage.pxPerUnit
@@ -324,7 +394,7 @@ export function handleNameLayoutEditPointerDown(event: PointerEvent): boolean {
     const ref = parsePairRef(vertexEl.getAttribute("data-nle-vertex"));
     if (!ref) return true;
     event.preventDefault();
-    drag = { ...base, ...snapshot(), kind: "vertex", panelIndex: ref.a, vertexIndex: ref.b };
+    layoutEditSession.begin(event, { ...base, ...snapshot(), kind: "vertex", panelIndex: ref.a, vertexIndex: ref.b });
     return true;
   }
   const junctionEl = target.closest<SVGElement>("[data-nle-junction]");
@@ -334,7 +404,7 @@ export function handleNameLayoutEditPointerDown(event: PointerEvent): boolean {
     const junction = detectJunctions(start.startLayout).find((entry) => entry.id === id);
     if (!junction) return true;
     event.preventDefault();
-    drag = { ...base, ...start, kind: "junction", junction };
+    layoutEditSession.begin(event, { ...base, ...start, kind: "junction", junction });
     return true;
   }
   const boundaryEl = target.closest<SVGElement>("[data-nle-boundary]");
@@ -345,7 +415,7 @@ export function handleNameLayoutEditPointerDown(event: PointerEvent): boolean {
     const boundary = detectSharedBoundaries(start.startLayout).find((entry) => entry.id === id);
     if (!boundary) return true;
     event.preventDefault();
-    drag = { ...base, ...start, kind: boundaryEl ? "boundary" : "gutter", boundary };
+    layoutEditSession.begin(event, { ...base, ...start, kind: boundaryEl ? "boundary" : "gutter", boundary });
     if (!boundaryEl) {
       edit.preview = { kind: "gutter", edges: boundary.edges.map((entry) => entry.ref) };
       requestRender();
@@ -357,7 +427,7 @@ export function handleNameLayoutEditPointerDown(event: PointerEvent): boolean {
     const orderIndex = Number(balloonEl.getAttribute("data-nle-balloon"));
     if (!Number.isInteger(orderIndex)) return true;
     event.preventDefault();
-    drag = { ...base, ...snapshot(), kind: "balloon", orderIndex };
+    layoutEditSession.begin(event, { ...base, ...snapshot(), kind: "balloon", orderIndex });
     return true;
   }
   const edgeEl = target.closest<SVGElement>("[data-nle-edge]");
@@ -370,7 +440,7 @@ export function handleNameLayoutEditPointerDown(event: PointerEvent): boolean {
     const boundaries = detectSharedBoundaries(start.startLayout);
     const outer = outerEdgeInfo(start.startLayout, { panelIndex: ref.a, edgeIndex: ref.b }, boundaries);
     event.preventDefault();
-    drag = {
+    layoutEditSession.begin(event, {
       ...base,
       ...start,
       kind: "edge",
@@ -378,7 +448,7 @@ export function handleNameLayoutEditPointerDown(event: PointerEvent): boolean {
       edgeIndex: ref.b,
       outward,
       outerSide: outer.isOuter ? outer.side : null
-    };
+    });
     return true;
   }
   // 背景クリックは何もしない(選択状態を持たないため)。
@@ -386,68 +456,15 @@ export function handleNameLayoutEditPointerDown(event: PointerEvent): boolean {
 }
 
 export function handleNameLayoutEditPointerMove(event: PointerEvent): boolean {
-  const edit = state.nameLayoutEdit;
-  if (!edit || !drag || event.pointerId !== drag.pointerId) return false;
-  const dx = (event.clientX - drag.startClientX) / drag.pxPerUnit;
-  const dy = (event.clientY - drag.startClientY) / drag.pxPerUnit;
-  if (drag.kind === "vertex") {
-    edit.draftLayout = movePanelVertices(
-      drag.startLayout,
-      [{ panelIndex: drag.panelIndex, vertexIndex: drag.vertexIndex }],
-      [dx, dy]
-    );
-  } else if (drag.kind === "junction") {
-    edit.draftLayout = moveJunction(drag.startLayout, drag.junction, [dx, dy]);
-  } else if (drag.kind === "boundary") {
-    const offset = dx * drag.boundary.normal[0] + dy * drag.boundary.normal[1];
-    edit.draftLayout = moveBoundaryAlongNormal(drag.startLayout, drag.boundary, offset);
-  } else if (drag.kind === "gutter") {
-    const along = dx * drag.boundary.normal[0] + dy * drag.boundary.normal[1];
-    edit.draftLayout = setBoundaryGutter(drag.startLayout, drag.boundary, Math.max(0, drag.boundary.gutterWidth + along * 2));
-  } else if (drag.kind === "edge") {
-    const ref = { panelIndex: drag.panelIndex, edgeIndex: drag.edgeIndex };
-    const offset = dx * drag.outward[0] + dy * drag.outward[1];
-    edit.draftLayout = translateEdgeAlongNormal(drag.startLayout, ref, offset);
-    // 外周辺が余白帯へ出たら裁ち切りプレビュー(線が半透明になる)。
-    edit.preview = drag.outerSide && edgeInMarginBand(edit.draftLayout, ref, drag.outerSide)
-      ? { kind: "bleed", panelIndex: ref.panelIndex, edgeIndex: ref.edgeIndex }
-      : null;
-  } else {
-    const root = stageRootElement();
-    const inverse = root ? getInverseStageTransform(root) : null;
-    if (inverse) {
-      const point = inverse({ x: event.clientX, y: event.clientY });
-      const height = edit.draftLayout.page.height;
-      edit.draftHints = {
-        ...drag.startHints,
-        [drag.orderIndex]: {
-          x: Math.min(1, Math.max(0, point.x)),
-          y: Math.min(height, Math.max(0, point.y))
-        }
-      };
-    }
-  }
-  requestRender();
-  return true;
+  return layoutEditSession.handleMove(event);
 }
 
 export function handleNameLayoutEditPointerUp(event: PointerEvent): boolean {
-  const edit = state.nameLayoutEdit;
-  if (!edit || !drag || event.pointerId !== drag.pointerId) return false;
-  if (drag.kind === "edge" && edit.preview?.kind === "bleed" && drag.outerSide) {
-    // 余白帯で離した外周辺は裁ち切りへスナップする。
-    edit.draftLayout = snapEdgeToBleed(edit.draftLayout, { panelIndex: drag.panelIndex, edgeIndex: drag.edgeIndex }, drag.outerSide);
-  }
-  edit.preview = null;
-  if (drag.kind !== "balloon") validateDraft(edit);
-  // 実際に変化したドラッグだけを履歴へ積む(開始時スナップショットは drag が所有しているので再cloneしない)。
-  const changed =
-    JSON.stringify(drag.startLayout) !== JSON.stringify(edit.draftLayout) ||
-    JSON.stringify(drag.startHints) !== JSON.stringify(edit.draftHints);
-  if (changed) pushEditHistory(edit, { layout: drag.startLayout, hints: drag.startHints });
-  drag = null;
-  requestRender();
-  return true;
+  return layoutEditSession.handleUp(event);
+}
+
+export function handleNameLayoutEditPointerCancel(event: PointerEvent): boolean {
+  return layoutEditSession.handleCancel(event);
 }
 
 /** main.ts の keydown 委譲から呼ばれる。編集セッション中の Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y。 */
@@ -468,18 +485,6 @@ export function handleNameLayoutEditKeydown(event: KeyboardEvent): boolean {
     }
   }
   return false;
-}
-
-export function handleNameLayoutEditPointerCancel(event: PointerEvent): boolean {
-  const edit = state.nameLayoutEdit;
-  if (!edit || !drag || event.pointerId !== drag.pointerId) return false;
-  // ドラッグ開始前の状態へ復元する。
-  edit.draftLayout = drag.startLayout;
-  edit.draftHints = drag.startHints;
-  edit.preview = null;
-  drag = null;
-  requestRender();
-  return true;
 }
 
 /** 頂点ダブルクリック=削除(panelShapeController と同じ操作系)。 */
