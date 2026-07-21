@@ -14,6 +14,7 @@
  * 本 module は `main.ts` を import しない(circular import なし)。
  */
 import { pushToast, dismissToast, requestRender, state } from "./appState";
+import { createDragSession } from "./dragSession";
 import { registerActions, registerEventBinder } from "./actionRegistry";
 import { api } from "./api";
 import {
@@ -407,8 +408,7 @@ export function syncGridPasteCanvases() {
 const PASTE_DRAG_THRESHOLD_PX = 3;
 const PASTE_DIRTY_RECT_MARGIN = 4;
 
-interface ActivePasteGesture {
-  pointerId: number;
+interface PasteGestureData {
   kind: PasteGestureKind;
   assetId: string;
   objectId: string;
@@ -418,10 +418,22 @@ interface ActivePasteGesture {
   currentTransform: PasteTransform;
   shiftKey: boolean;
   moved: boolean;
-  captureTarget: Element | null;
 }
 
-let activePasteGesture: ActivePasteGesture | null = null;
+// pointerId 照合・setPointerCapture/release・up/cancel でのクリアは createDragSession(dragSession.ts)へ委譲。
+const pasteSession = createDragSession<PasteGestureData>({
+  onMove: (event, gesture) => {
+    event.preventDefault();
+    updatePasteGestureTransform(event, gesture);
+  },
+  onCommit: (event, gesture) => {
+    event.preventDefault();
+    endPasteGesture(gesture, true);
+  },
+  onCancel: (_event, gesture) => {
+    endPasteGesture(gesture, false);
+  }
+});
 let pasteGestureRafHandle: number | null = null;
 let pasteGesturePrevBounds: PasteBounds | null = null;
 
@@ -450,33 +462,27 @@ function beginPasteGesture(
   captureTarget: Element | null
 ) {
   const point = pointerToMaskCanvasPoint(paintCanvas, event);
-  activePasteGesture = {
-    pointerId: event.pointerId,
-    kind,
-    assetId,
-    objectId: object.id,
-    startPoint: point,
-    startClient: { x: event.clientX, y: event.clientY },
-    startTransform: { ...object.transform },
-    currentTransform: { ...object.transform },
-    shiftKey: event.shiftKey,
-    moved: false,
+  pasteSession.begin(
+    event,
+    {
+      kind,
+      assetId,
+      objectId: object.id,
+      startPoint: point,
+      startClient: { x: event.clientX, y: event.clientY },
+      startTransform: { ...object.transform },
+      currentTransform: { ...object.transform },
+      shiftKey: event.shiftKey,
+      moved: false
+    },
     captureTarget
-  };
+  );
   pasteGesturePrevBounds = pastedObjectBounds(object, PASTE_DIRTY_RECT_MARGIN);
-  if (captureTarget && "setPointerCapture" in captureTarget) {
-    try {
-      (captureTarget as HTMLElement).setPointerCapture(event.pointerId);
-    } catch {
-      // Pointer capture may fail; document-level listeners still finish the gesture.
-    }
-  }
 }
 
-function updatePasteGestureTransform(event: PointerEvent) {
-  const gesture = activePasteGesture;
+function updatePasteGestureTransform(event: PointerEvent, gesture: PasteGestureData) {
   const canvases = activePasteCanvases();
-  if (!gesture || !canvases) {
+  if (!canvases) {
     return;
   }
   const draft = paintDraftForAsset(gesture.assetId);
@@ -523,7 +529,7 @@ function schedulePasteGestureFlush() {
 
 /** ジェスチャ中の 1 フレーム描画。render() を経由せず canvas dirtyRect + SVG 属性を直接更新する。 */
 function flushPasteGestureFrame() {
-  const gesture = activePasteGesture;
+  const gesture = pasteSession.data;
   const canvases = activePasteCanvases();
   if (!gesture || !canvases) {
     return;
@@ -545,24 +551,28 @@ function flushPasteGestureFrame() {
   updatePasteReadout(gesture.currentTransform);
 }
 
+/** モード離脱等、pointer イベント外からの強制終了(commit=false が基本)。capture 解放はセッション側。 */
 function finishPasteGesture(commit: boolean) {
-  const gesture = activePasteGesture;
-  activePasteGesture = null;
+  const gesture = pasteSession.data;
+  pasteSession.reset();
+  if (!gesture) {
+    if (pasteGestureRafHandle !== null) {
+      cancelAnimationFrame(pasteGestureRafHandle);
+      pasteGestureRafHandle = null;
+    }
+    pasteGesturePrevBounds = null;
+    return;
+  }
+  endPasteGesture(gesture, commit);
+}
+
+/** ジェスチャ終了の実体(up=commit / cancel・強制終了=破棄)。セッションはクリア済みで呼ばれる。 */
+function endPasteGesture(gesture: PasteGestureData, commit: boolean) {
   if (pasteGestureRafHandle !== null) {
     cancelAnimationFrame(pasteGestureRafHandle);
     pasteGestureRafHandle = null;
   }
   pasteGesturePrevBounds = null;
-  if (!gesture) {
-    return;
-  }
-  if (gesture.captureTarget && "releasePointerCapture" in gesture.captureTarget) {
-    try {
-      (gesture.captureTarget as HTMLElement).releasePointerCapture(gesture.pointerId);
-    } catch {
-      // Capture may already be released.
-    }
-  }
   const draft = paintDraftForAsset(gesture.assetId);
   if (!draft) {
     return;
@@ -675,32 +685,19 @@ export function handlePastePointerDown(event: PointerEvent, target: HTMLElement)
 }
 
 export function handlePastePointerMove(event: PointerEvent): boolean {
-  if (!activePasteGesture) {
-    return false;
-  }
-  if (event.pointerId !== activePasteGesture.pointerId) {
+  if (pasteSession.handleMove(event)) {
     return true;
   }
-  event.preventDefault();
-  updatePasteGestureTransform(event);
-  return true;
+  // ジェスチャ進行中は別ポインタの move も飲み込む(従来挙動を維持)。
+  return pasteSession.data !== null;
 }
 
 export function handlePastePointerUp(event: PointerEvent): boolean {
-  if (!activePasteGesture || event.pointerId !== activePasteGesture.pointerId) {
-    return false;
-  }
-  event.preventDefault();
-  finishPasteGesture(true);
-  return true;
+  return pasteSession.handleUp(event);
 }
 
 export function handlePastePointerCancel(event: PointerEvent): boolean {
-  if (!activePasteGesture || event.pointerId !== activePasteGesture.pointerId) {
-    return false;
-  }
-  finishPasteGesture(false);
-  return true;
+  return pasteSession.handleCancel(event);
 }
 
 /**
@@ -859,8 +856,9 @@ export function syncPasteGizmo() {
   if (!object) {
     return;
   }
-  if (activePasteGesture && activePasteGesture.objectId === object.id) {
-    updatePasteGizmoGeometry({ ...object, transform: activePasteGesture.currentTransform });
+  const gesture = pasteSession.data;
+  if (gesture && gesture.objectId === object.id) {
+    updatePasteGizmoGeometry({ ...object, transform: gesture.currentTransform });
   } else {
     updatePasteGizmoGeometry(object);
   }
