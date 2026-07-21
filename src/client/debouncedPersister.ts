@@ -8,12 +8,22 @@
  * 旧実装からの修正(直列化バグ): 旧 `startPersist` は in-flight PATCH を待たずに新規発射していたため、
  * (a) debounce 保存と即時保存(`persistNow`)が並走してサーバ側で後着の古いボディが新しい保存を
  * 上書きし得る、(b) 古い応答が新しいドラフトを巻き戻し得る、という競合があった。本実装では
- * - in-flight 中に次の保存要求が来たら**完了を待ってから最新 state で1回だけ**発射する(コアレス)。
+ * - in-flight 中に次の保存要求(schedule/persistNow)が来たら**完了を待ってから最新 state で
+ *   1回だけ**発射する(コアレス)。
  * - 各発射に世代番号を振り、`context.isStale()` で「この応答はもう最新ではない」を判定できるようにする
  *   (persist コールバックは応答適用前に isStale を確認する。ドラッグ中スキップ等の追加条件は
  *   コールバック側で従来どおり併用する)。
  * - `flush` は「保留中の debounce・実行中/待機中の PATCH がすべて完了した後」に resolve するので、
  *   lightbox クローズ時に最後の状態が必ずサーバへ届く。
+ *
+ * 発射タイミングの不変条件(クローズ時の編集消失リグレッション対策 -- 2026-07-21):
+ * - `persist` は launch を決めた**その同期実行内で**呼ぶ(マイクロタスクへ遅延しない)。
+ *   persist コールバックは冒頭で state から pageId/送信ボディを同期確定する規約なので、
+ *   遅延すると `closePagePanelLightbox` が state をクリアした後に走って early return
+ *   → クローズ直前1秒以内の編集が失われる。
+ * - `flush` は保留(debounce タイマー or コアレス待ち)があれば、in-flight の完了を**待たずに**
+ *   その場で発射する(旧実装のクローズ時挙動と同じ並走を flush に限り許容する。並走した旧発射の
+ *   応答は世代ガードで stale になり state を巻き戻さない)。schedule/persistNow の直列化は維持。
  */
 
 export interface PersistAttemptContext {
@@ -65,6 +75,10 @@ export function createDebouncedPersister(options: DebouncedPersisterOptions): De
   let inflight: Promise<void> | null = null;
   /** in-flight 完了後に発射する「次の1回」(コアレス済み)。無ければ null。 */
   let queued: Promise<void> | null = null;
+  /** コアレス待ちがまだ launch していない(=保存すべき内容が未送信)間 true。 */
+  let queuedPending = false;
+  /** flush がコアレス待ちを先取りしたとき、待ち側を新発射の完了へ相乗りさせる。 */
+  let queuedPreemptedBy: Promise<void> | null = null;
   /** 発射世代。応答適用は最新発射分のみ許可する。 */
   let generation = 0;
   /** reset で待機中発射を無効化するためのセッション番号。 */
@@ -75,15 +89,21 @@ export function createDebouncedPersister(options: DebouncedPersisterOptions): De
     generation += 1;
     const gen = generation;
     const context: PersistAttemptContext = {
-      isStale: () => gen !== generation || debounceTimer !== null || queued !== null
+      isStale: () => gen !== generation || debounceTimer !== null || queuedPending
     };
-    const promise = Promise.resolve()
-      .then(() => options.persist(context))
-      .finally(() => {
-        if (inflight === promise) {
-          inflight = null;
-        }
-      });
+    // persist はこの同期実行内で呼ぶ(ファイルヘッダの不変条件)。同期 throw も
+    // reject 済み Promise に変換してチェーンを壊さない。
+    let promise: Promise<void>;
+    try {
+      promise = Promise.resolve(options.persist(context));
+    } catch (error) {
+      promise = Promise.reject(error);
+    }
+    promise = promise.finally(() => {
+      if (inflight === promise) {
+        inflight = null;
+      }
+    });
     inflight = promise;
     return promise;
   }
@@ -96,10 +116,21 @@ export function createDebouncedPersister(options: DebouncedPersisterOptions): De
     }
     if (!queued) {
       const requestSession = session;
+      queuedPending = true;
       queued = current
         .catch(() => {})
         .then(() => {
           queued = null;
+          // flush が先取り発射済みなら、その完了を待つだけでよい(二重発射しない)。
+          if (queuedPreemptedBy) {
+            const preempted = queuedPreemptedBy;
+            queuedPreemptedBy = null;
+            return preempted.catch(() => {});
+          }
+          if (!queuedPending) {
+            return;
+          }
+          queuedPending = false;
           // reset 済みセッションの待機発射は破棄する(タイマー破棄と同じ扱い)。
           if (requestSession !== session) {
             return;
@@ -126,9 +157,21 @@ export function createDebouncedPersister(options: DebouncedPersisterOptions): De
       }, debounceMs);
     },
     flush(): Promise<void> {
-      if (debounceTimer !== null) {
-        cancelTimer();
-        return requestPersist();
+      // 未送信の内容(debounce タイマー or 未launchのコアレス待ち)があれば、in-flight を
+      // 待たずにその場で発射する -- persist が state をクリアされる前に同期でボディを確定
+      // できるようにするため(ファイルヘッダの不変条件)。並走した旧 in-flight の応答は
+      // 世代ガードにより stale となり state へは反映されない。
+      const hasUnsent = debounceTimer !== null || queuedPending;
+      cancelTimer();
+      if (hasUnsent) {
+        queuedPending = false;
+        const previous = inflight;
+        const launched = launch();
+        if (queued) {
+          // コアレス待ちの Promise を持っている呼び出し元(persistNow 等)は新発射の完了へ相乗り。
+          queuedPreemptedBy = launched;
+        }
+        return previous ? Promise.allSettled([previous, launched]).then(() => {}) : launched;
       }
       return queued ?? inflight ?? Promise.resolve();
     },
@@ -139,6 +182,7 @@ export function createDebouncedPersister(options: DebouncedPersisterOptions): De
     reset(): void {
       cancelTimer();
       session += 1;
+      queuedPending = false;
       dirty = false;
     },
     markDirty(): void {
