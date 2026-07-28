@@ -46,7 +46,8 @@ test("applyBeatPageNaming: ビート由来のvisualScale/turnHookを保持し、
   assert.ok(result);
   assert.deepEqual(result!.pages[0]!.panels.map((panel) => panel.visualScale), ["large", "medium", "medium"]);
   assert.equal(result!.pages[0]!.turnHook, "cliffhanger");
-  assert.equal(result!.pages[0]!.layoutTemplateId, "builtin:three-hero-top");
+  // large は裁ち切りを希望するので、強調スロット付きの裁ち切りレイアウトが選ばれる。
+  assert.equal(result!.pages[0]!.layoutTemplateId, "builtin:three-bleed-hero-top");
 });
 
 test("applyBeatPageNaming: splash は splash-bleed、全normal単独は候補先頭(既定互換)", () => {
@@ -234,4 +235,42 @@ test("packer: 1ページのlargeコマは2つまで、targetPageCountは密度�
 
 test("packer: 空入力は明示エラー(上流の空スクリプト縮退経路が扱う)", () => {
   assert.throws(() => packAnnotatedBeatsDeterministically({ units: [], beats: [], title: "T" }));
+});
+
+test("applyBeatPageNaming: 誰もスケールを主張しないページは最終コマを見せ場へ引き上げ、均一グリッドに固定されない", () => {
+  // 監督LLM無しの heuristic 経路では全ビートが medium になる。ページ内が完全に均一だと
+  // 面積コスト最小の均一グリッドが必ず勝ち、裁ち切り・大ゴマ・斜め・ぶち抜きが候補に
+  // 入っていても一度も選ばれない。
+  const doc = parseFountain("INT. A - DAY\n\nOne.\n\nTwo.\n\nThree.").doc;
+  const units = buildPreLayoutUnits(doc);
+  const beats = units.map((unit, index) => mkBeat(`b${index}`, [unit.id]));
+  const result = applyBeatPageNaming({ pages: [{
+    index: 0, pageIntent: "beat", turnHook: "none",
+    panels: beats.map((beat, index) => ({ id: `p${index}`, sourceBeatIds: [beat.id] }))
+  }] }, { title: "T", units, beats, targetPageCount: 1 });
+
+  assert.ok(result);
+  const scales = result!.pages[0]!.panels.map((panel) => panel.visualScale);
+  assert.deepEqual(scales, ["medium", "medium", "large"], "最終コマだけが見せ場になる");
+  // 均一グリッドから外れ、最終コマを強調するレイアウトが選ばれる。
+  // 現在のライブラリに下段強調の裁ち切り版が無いので枠付きの hero-bottom になる。
+  assert.notEqual(result!.pages[0]!.layoutTemplateId, "builtin:three-horizontal");
+  assert.equal(result!.pages[0]!.layoutTemplateId, "builtin:three-hero-bottom");
+});
+
+test("applyBeatPageNaming: ビートがスケールを主張していれば最終コマを勝手に引き上げない", () => {
+  const doc = parseFountain("INT. A - DAY\n\nOne.\n\nTwo.\n\nThree.").doc;
+  const units = buildPreLayoutUnits(doc);
+  const beats = [
+    mkBeat("b0", [units[0]!.id], { preferredScale: "large" }),
+    mkBeat("b1", [units[1]!.id]),
+    mkBeat("b2", [units[2]!.id])
+  ];
+  const result = applyBeatPageNaming({ pages: [{
+    index: 0, pageIntent: "beat", turnHook: "none",
+    panels: beats.map((beat, index) => ({ id: `p${index}`, sourceBeatIds: [beat.id] }))
+  }] }, { title: "T", units, beats, targetPageCount: 1 });
+
+  assert.ok(result);
+  assert.deepEqual(result!.pages[0]!.panels.map((panel) => panel.visualScale), ["large", "medium", "medium"]);
 });

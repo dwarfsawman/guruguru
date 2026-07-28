@@ -75,8 +75,12 @@ export function buildPanelDemand(input: {
     }),
     preferredAspect: "any",
     ...(input.requiredRole ? { requiredRole: input.requiredRole } : {}),
-    // splash は裁ち切りを希望(旧 selectScriptMangaLayoutId の splash→bleed 優先の継承)。
-    ...(visualScale === "splash" ? { preferredPresentation: "bleed" as const } : {})
+    // 見せ場は裁ち切りを希望する。商業誌では大ゴマを裁ち切りで抜くのが普通で、
+    // splash だけを bleed 希望にしていると large のページが常に枠付きグリッドになる。
+    // soft cost なので、収容や面積が破綻する場合は従来どおり枠付きが選ばれる。
+    ...(visualScale === "splash" || visualScale === "large"
+      ? { preferredPresentation: "bleed" as const }
+      : {})
   };
 }
 

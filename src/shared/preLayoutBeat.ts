@@ -268,8 +268,8 @@ const VISUAL_SCALE_RANK: Record<MangaVisualScale, number> = { small: 0, medium: 
 /**
  * コマへ束ねたビート列から、コマの解決スケール(visualScale)を決定的に導出する。
  * 基本は含有ビートの preferredScale の最大値。空ビート(想定外)は medium。
- * pageContext はソフト規則(turnHook=reveal の最終コマ引き上げ等、未決#3)用の予約で、
- * 初期実装では未使用。
+ * pageContext はソフト規則用の予約で、この関数では未使用。ページ全体を見ないと
+ * 決められない規則(最終コマの引き上げ等)は promotePageAnchorScale が担当する。
  */
 export function derivePanelVisualScale(
   beats: readonly AnnotatedBeat[],
@@ -285,4 +285,29 @@ export function derivePanelVisualScale(
     }
   }
   return best;
+}
+
+/**
+ * ページ内の誰もスケールを主張しなかったときだけ、最終コマを見せ場へ引き上げる。
+ *
+ * 監督LLM無しの heuristic 経路では全ビートが medium になるため、ページ内のコマ重みが
+ * 完全に均一になる。均一な要求に対しては面積コスト最小の均一グリッドが必ず勝つので、
+ * 裁ち切り・大ゴマ・斜め・ぶち抜きのレイアウトは候補に入っていても一度も選ばれない。
+ *
+ * 日本の商業誌では、ページ最終コマがめくりを受ける着地として大きく取られる。
+ * turnHook が reveal のページはその最終コマが明かしなので splash まで上げる。
+ * 作品固有の語彙は使わない。
+ *
+ * 1コマページには適用しない(1コマ=必ず見せ場とは限らず、splash を主張するかどうかは
+ * ビート側の判断だから)。誰かが medium より上を主張していればページ全体をそのまま返す。
+ */
+export function promotePageAnchorScale(
+  scales: readonly MangaVisualScale[],
+  turnHook?: MangaPageTurnHook
+): MangaVisualScale[] {
+  const result = [...scales];
+  if (result.length <= 1) return result;
+  if (result.some((scale) => VISUAL_SCALE_RANK[scale] > VISUAL_SCALE_RANK.medium)) return result;
+  result[result.length - 1] = turnHook === "reveal" ? "splash" : "large";
+  return result;
 }

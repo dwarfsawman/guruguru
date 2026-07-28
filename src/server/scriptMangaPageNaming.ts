@@ -1,7 +1,7 @@
 import { buildPanelDemand, feasibleLayouts, type PanelDemand } from "../shared/layoutMatcher";
 import { scriptMangaLayoutCandidates } from "../shared/layoutPresets";
 import type { MangaPageTurnHook, MangaVisualScale } from "../shared/mangaPlanV2";
-import { type AnnotatedBeat, derivePanelVisualScale, type PreLayoutUnit } from "../shared/preLayoutBeat";
+import { type AnnotatedBeat, derivePanelVisualScale, promotePageAnchorScale, type PreLayoutUnit } from "../shared/preLayoutBeat";
 import {
   DEFAULT_MAX_DIALOGUES_PER_PANEL,
   DEFAULT_SCRIPT_MANGA_STYLE,
@@ -96,6 +96,7 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
     if (page.turnHook !== undefined && !["reveal", "cliffhanger", "none"].includes(page.turnHook)) return null;
     const panels: ScriptMangaPanelPlan[] = [];
     const demands: PanelDemand[] = [];
+    const panelStats: Array<{ totalCharacters: number; balloonCount: number }> = [];
     for (const namedPanel of page.panels) {
       if (!namedPanel?.id || panelIds.has(namedPanel.id)) return null;
       if (!Array.isArray(namedPanel.sourceBeatIds) || namedPanel.sourceBeatIds.length === 0) return null;
@@ -134,12 +135,21 @@ export function applyBeatPageNaming(raw: unknown, context: BeatPageNamingContext
         stylePrompt,
         visualScale
       }));
+      panelStats.push({ totalCharacters: dialogueCharacters, balloonCount: dialogueUnits.length });
       demands.push(buildPanelDemand({
         visualScale,
         totalCharacters: dialogueCharacters,
         balloonCount: dialogueUnits.length
       }));
     }
+    // ページ内の誰もスケールを主張しなかった場合だけ、最終コマを見せ場へ引き上げる
+    // (均一なページはレイアウト選択が均一グリッドへ固定されるため)。
+    const promoted = promotePageAnchorScale(panels.map((panel) => panel.visualScale ?? "medium"), page.turnHook);
+    promoted.forEach((scale, index) => {
+      if (panels[index]!.visualScale === scale) return;
+      panels[index]!.visualScale = scale;
+      demands[index] = buildPanelDemand({ visualScale: scale, ...panelStats[index]! });
+    });
     // V5 D1 hard規則: 1ページの large コマは2つまで(プロンプトの "one or two" を決定的に固定)。
     if (panels.filter((panel) => panel.visualScale === "large").length > 2) return null;
     // V5 D3 実現可能性ゲート: hard constraint を全て満たすレイアウトが1件も無いページ構成は

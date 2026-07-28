@@ -24,18 +24,20 @@ function top(scales: MangaVisualScale[]): string | undefined {
   return feasibleLayouts(demands(scales))[0]?.layoutId;
 }
 
-test("feasibleLayouts top-1: 旧selectScriptMangaLayoutIdの選択を継承する(splash→裁ち切り、large×強調スロット、全medium→候補先頭)", () => {
+test("feasibleLayouts top-1: splash/largeは裁ち切り強調スロット、全mediumは候補先頭", () => {
+  // 見せ場(splash/large)は裁ち切りを希望する。商業誌では大ゴマを裁ち切りで抜くのが普通で、
+  // splash だけを bleed 希望にしていると large のページが常に枠付きグリッドになる。
   assert.equal(top(["splash"]), "builtin:splash-bleed");
   assert.equal(top(["medium"]), "builtin:splash");
   assert.equal(top(["medium", "medium", "medium"]), "builtin:three-horizontal");
   assert.equal(top(["large", "medium"]), "builtin:two-bleed-hero-top");
-  assert.equal(top(["large", "medium", "medium"]), "builtin:three-hero-top");
+  assert.equal(top(["large", "medium", "medium"]), "builtin:three-bleed-hero-top");
   assert.equal(top(["medium", "large", "medium"]), "builtin:three-side-hero");
   assert.equal(top(["medium", "medium", "large"]), "builtin:three-hero-bottom",
     "figureレイアウトはfigure-slot-unwanted違反として実現可能集合から除外される");
   assert.equal(top(["medium", "large", "medium", "medium"]), "builtin:four-vertical-hero");
   assert.equal(top(["medium", "medium", "medium", "large"]), "builtin:four-hero-bottom");
-  assert.equal(top(["large", "medium", "medium", "medium", "medium"]), "builtin:five-hero-top");
+  assert.equal(top(["large", "medium", "medium", "medium", "medium"]), "builtin:five-bleed-hero-top");
   assert.equal(top(["medium", "medium", "medium", "medium", "large"]), "builtin:five-panel");
   assert.equal(top(["medium", "medium", "large", "medium", "medium", "medium"]), "builtin:six-hero-right");
   assert.deepEqual(rankLayouts([]), []);

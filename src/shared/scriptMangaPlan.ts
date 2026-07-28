@@ -71,6 +71,11 @@ export interface ScriptMangaPanelPlan {
   prompt: string;
   sourceText: string;
   dialogueOrderIndexes: number[];
+  /**
+   * このコマの台詞本文の合計文字数。レイアウト選択の収容見積もりに使う。
+   * 旧プラン(DBに永続化済み)には無いので optional。
+   */
+  dialogueCharacters?: number;
   direction?: ScriptMangaPanelDirection;
   /** 解決済みコマスケール(ネームスタジオV5 D1)。旧 importance enum の後継。旧経路では未設定。 */
   visualScale?: MangaVisualScale;
@@ -258,6 +263,25 @@ function layoutForPanelCount(count: number): string {
 }
 
 /**
+ * ページのコマ列からレイアウトを選ぶ。現状は候補配列の先頭を返す。
+ *
+ * 既知の制限: これにより脚本全体が `two-horizontal` / `three-horizontal` だけになり、
+ * ライブラリにある裁ち切り・大ゴマ・斜め・ぶち抜きのレイアウトが一度も選ばれない。
+ *
+ * `feasibleLayouts` によるランキング(ビート注釈経路と同じ機構)へ差し替える実験を行ったが、
+ * この経路には演出スケールの情報が無く、最終コマを見せ場として引き上げる規則を入れると
+ * 他のコマが縮み、面積ヒューリスティック(`estimateMinimumPanelArea`)を通っても実際の
+ * 吹き出し配置ソルバーが「配置できなかった」で run 作成ごと失敗するページが出た。
+ * 収容見積もりを実ソルバーと一致させるまでは、確実に組めることを優先して先頭固定のままにする。
+ *
+ * レイアウトの多様性が要るときは、監督LLM か provided plan で `visualScale` を与える
+ * (その経路は `applyBeatPageNaming` がランキングを使い、裁ち切り・大ゴマを選ぶ)。
+ */
+function selectPageLayout(pagePanels: readonly ScriptMangaPanelPlan[]): string {
+  return layoutForPanelCount(pagePanels.length);
+}
+
+/**
  * Fountain の連続要素を、画像生成可能な視覚的コマへ決定的に束ねる。
  * シーン境界は跨がず、発話数・文字量にも上限を置くことで、長編脚本でも
  * 1 action = 1 image の過剰生成を避けつつ、全発話を必ずいずれかのコマへ割り当てる。
@@ -350,7 +374,7 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
     pages.push({
       index: pages.length,
       title: first?.sceneHeading || `Page ${pages.length + 1}`,
-      layoutTemplateId: layoutForPanelCount(pagePanels.length),
+      layoutTemplateId: selectPageLayout(pagePanels),
       panels: pagePanels
     });
     offset += count;

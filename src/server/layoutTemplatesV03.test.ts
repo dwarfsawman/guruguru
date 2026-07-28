@@ -154,7 +154,8 @@ test("候補プール参加: candidate:true の取り込みテンプレが候補
         buildPanelDemand({ visualScale, totalCharacters: 0, balloonCount: 0 })
       )
     );
-    assert.equal(feasible[0]!.layoutId, "builtin:three-hero-top");
+    // large は裁ち切りを希望するので、枠付き hero ではなく裁ち切り hero が先頭になる。
+    assert.equal(feasible[0]!.layoutId, "builtin:three-bleed-hero-top");
     assert.ok(!feasible.some((entry: { layoutId: string }) => entry.layoutId === imported.template.id),
       "figureスロット付き取り込みテンプレは要求なしでは実現可能集合に入らない");
   } finally {
