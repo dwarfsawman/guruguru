@@ -697,6 +697,9 @@ export function initializeDb() {
   // Book / OpenRaster export の既定キャンバスサイズ(px)。既存プロジェクトは B5 縦比率へ丸める。
   ensureColumn("projects", "canvas_width", "INTEGER NOT NULL DEFAULT 1024");
   ensureColumn("projects", "canvas_height", "INTEGER NOT NULL DEFAULT 1446");
+  // 取り込んだ production packet の物語文脈(StoryBible/関係/アウトライン/アーク/characterBible)。
+  // 上流ツールの内部形式ではなく、公開パケット形式から写した値だけを保持する。
+  ensureColumn("projects", "story_context_json", "TEXT");
   // コマ割りテンプレから追加したページの `PageLayout`(JSON)。通常ページは NULL。
   ensureColumn("pages", "layout_json", "TEXT");
   // ページオブジェクト(Docs/Feature-CGCollectionSuite.md P1): テキスト/吹き出し/ボックスの配列(JSON)。

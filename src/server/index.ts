@@ -10,7 +10,8 @@ import { getLlmSettings, getLlmStatus, improvePromptWithLlm, testLlmConnection, 
 import { getVlmAuditSettings, getVlmAuditStatus } from "./vlmAudit";
 import { serveStatic } from "./files";
 import { HttpError, readJson, sendJson } from "./http";
-import { nonEmptyStringOr, numberOr, stringOr } from "./validate";
+import { nonEmptyStringOr, numberOr, requiredString, stringOr } from "./validate";
+import { bundledFiles, importProductionPacket, readPacket, readStoryContext } from "./productionPacket";
 import { createTemplate, deleteTemplate, listTemplates, updateTemplatePromptProfile } from "./templates";
 import { adoptCharacterSheetAsset, createCharacterSheetRun } from "./characterSheets";
 import {
@@ -227,6 +228,9 @@ const apiRoutes: ApiRoute[] = [
       endpoints: {
         installAnimaPreset: "POST /api/model-presets/anima",
         modelCheck: "GET /api/comfy/model-check?family=anima",
+        verifyProductionPacket: "POST /api/production-packets/verify",
+        importProductionPacket: "POST /api/production-packets/import",
+        readStoryContext: "GET /api/projects/:projectId/story-context",
         importSourceAsset: "POST /api/projects/:projectId/source-assets",
         generate: "POST /api/projects/:projectId/rounds",
         collect: "POST /api/rounds/:roundId/collect",
@@ -737,6 +741,30 @@ const apiRoutes: ApiRoute[] = [
   }],
   ["DELETE", /^\/api\/characters\/([^/]+)$/, (_req, res, _url, p) => {
     sendJson(res, 200, deleteCharacter(p[0]!));
+  }],
+
+  // --- production packet(上流の作品管理ツールからの検証つき取り込み) ---
+  ["POST", "/api/production-packets/import", async (req, res) => {
+    sendJson(res, 201, await importProductionPacket(await readJson(req)));
+  }],
+  ["POST", "/api/production-packets/verify", async (req, res) => {
+    const input = await readJson(req);
+    const packetPath = requiredString((input as Record<string, unknown>).packetPath, "packetPath");
+    const manifest = readPacket(packetPath);
+    sendJson(res, 200, {
+      ok: true,
+      formatVersion: manifest.formatVersion,
+      generator: manifest.generator,
+      source: manifest.source,
+      work: manifest.work,
+      episode: manifest.episode,
+      castCount: manifest.cast.length,
+      bundledFileCount: bundledFiles(manifest).length,
+      hasScript: Boolean(manifest.script)
+    });
+  }],
+  ["GET", /^\/api\/projects\/([^/]+)\/story-context$/, (_req, res, _url, p) => {
+    sendJson(res, 200, readStoryContext(p[0]!));
   }],
 
   // --- 脚本(Script / Revision) ---

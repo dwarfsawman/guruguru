@@ -25,6 +25,13 @@ invocation or export GURUGURU_BASE_URL. No command reads the runtime database.
   bun run agent:cli -- --base-url URL candidate adopt --candidate-id CANDIDATE
     [--template-id TEMPLATE] [--json-file config.json]
 
+  bun run agent:cli -- --base-url URL packet verify --packet-path DIRECTORY
+
+  bun run agent:cli -- --base-url URL packet import --packet-path DIRECTORY
+    [--project-id PROJECT] [--project-name NAME]
+
+  bun run agent:cli -- --base-url URL packet context --project-id PROJECT
+
   bun run agent:cli -- --base-url URL audit record --task-id TASK --json-file audit.json
 
   bun run agent:cli -- --base-url URL wait candidates --project-id PROJECT --script-id SCRIPT [--status adopted] [--interval 15] [--timeout 30]
@@ -33,6 +40,12 @@ invocation or export GURUGURU_BASE_URL. No command reads the runtime database.
 
 The context command verifies project/script/fixed revision/candidate/run/plan/task relations
 against the API and prints the canonical GUI URL for a human gate. Agents should not open it.
+
+The packet commands take a production packet directory written by an upstream story tool.
+verify checks its kind, formatVersion, and every bundled file's size and SHA-256 without
+writing anything; import does the same checks first and only then creates or updates the
+project, cast, script, and story context. packet context prints the imported story bible,
+outline, arcs, and the suggested characterBible for script-manga runs.
 
 The route command checks the configured LLM/VLM services and selects the embedded or external
 agent path. candidate create follows that decision: it uses embedded candidates when available,
@@ -553,6 +566,36 @@ async function waitLoop({ intervalSeconds, timeoutSeconds, read, match }) {
   }
 }
 
+/**
+ * production packet の検証・取り込み・物語文脈の確認。
+ *
+ * --packet-path はこの CLI を動かしているマシンから見たディレクトリではなく、
+ * API サーバーから見えるパスである(通常は同一マシン)。サーバー側が kind /
+ * formatVersion / 同梱ファイルの長さと SHA-256 を検証し、1つでも合わなければ
+ * 何も書き込まない。
+ */
+async function runPacketCommand(baseUrl, positional, options) {
+  const action = positional[1];
+  if (action === "verify" || action === "import") {
+    const packetPath = resolve(requiredOption(options, "packet-path"));
+    const body = { packetPath };
+    if (action === "import") {
+      const projectId = stringOption(options, "project-id");
+      const projectName = stringOption(options, "project-name");
+      if (projectId) body.projectId = projectId;
+      if (projectName) body.projectName = projectName;
+    }
+    writeJson(await postJson(baseUrl, `/api/production-packets/${action}`, body));
+    return;
+  }
+  if (action === "context") {
+    const projectId = requiredOption(options, "project-id");
+    writeJson(await fetchJson(baseUrl, `/api/projects/${encodeURIComponent(projectId)}/story-context`));
+    return;
+  }
+  throw new Error("packet action must be verify, import, or context");
+}
+
 async function runWaitCommand(baseUrl, positional, options) {
   const target = positional[1];
   const intervalSeconds = numberOption(options, "interval", 15, { minimum: 0.1 });
@@ -624,6 +667,10 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (command === "audit") {
     await runAuditCommand(baseUrl, positional, options);
+    return;
+  }
+  if (command === "packet") {
+    await runPacketCommand(baseUrl, positional, options);
     return;
   }
   throw new Error(`unknown command: ${command}`);
