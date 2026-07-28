@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseFountain } from "../shared/fountain.ts";
-import { buildStoryGraph, fountainSourceElementId, type StoryGraphCharacterInput } from "./storyGraphBuilder.ts";
+import { buildStoryGraph, deriveSceneBibles, fountainSourceElementId, type StoryGraphCharacterInput } from "./storyGraphBuilder.ts";
 
 function graphFor(source: string, characters: StoryGraphCharacterInput[] = []) {
   return buildStoryGraph({
@@ -80,7 +80,44 @@ test("story graph freezes deterministic set/lighting/palette scene bibles", () =
   const bible = result.graph.sceneBibles![0]!;
   assert.match(bible.set, /COCKPIT/);
   assert.match(bible.lighting, /night lighting/);
-  assert.match(bible.palette, /deep blue/);
+  // palette は色相ではなく階調で書く(既定出力がモノクロ漫画のため)。
+  assert.match(bible.palette, /high-contrast tonal range/);
   const setting = result.graph.entities.find((entity) => entity.id === bible.settingId);
   assert.equal(setting?.attributes.palette, bible.palette);
+});
+
+test("deriveSceneBibles: palette は色相ではなく階調で書く(既定出力がモノクロ漫画のため)", () => {
+  // 同じ prompt に "Japanese monochrome manga" が入るので、palette が色名を含むと
+  // 矛盾する。CFG を下げた蒸留モデルでは negative が効かず、そのまま着色される。
+  const doc = parseFountain(
+    [
+      "INT. 整理室 - 夜明け前",
+      "",
+      "窓の外はまだ暗い。",
+      "",
+      "INT. 教室 - 朝",
+      "",
+      "斜めの光が机を横切る。",
+      "",
+      "INT. 廊下 - CONTINUOUS",
+      "",
+      "誰もいない。"
+    ].join("\n")
+  ).doc;
+
+  const bibles = deriveSceneBibles(doc, "rev-test");
+  assert.equal(bibles.length, 3);
+
+  const HUES = /\b(blue|red|green|yellow|orange|purple|pink|brown|cyan|magenta|teal|gold|silver|sepia|amber|crimson|azure|color(?:ed|ful)?)\b/i;
+  for (const bible of bibles) {
+    assert.ok(!HUES.test(bible.palette), `palette に色相が入っている: ${bible.palette}`);
+    assert.ok(bible.palette.trim().length > 0, "palette は非空(validation が要求する)");
+    assert.ok(bible.lighting.trim().length > 0, "lighting は非空");
+    assert.ok(bible.set.trim().length > 0, "set は非空");
+  }
+
+  // 夜と昼で階調が変わることは維持する(場面ごとの気分は palette の役目)。
+  assert.notEqual(bibles[0]!.palette, bibles[1]!.palette);
+  assert.match(bibles[0]!.palette, /dark|black|high-contrast/i);
+  assert.match(bibles[1]!.palette, /bright|white/i);
 });

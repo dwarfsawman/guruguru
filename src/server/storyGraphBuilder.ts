@@ -56,7 +56,16 @@ export function deriveSceneBibles(doc: FountainDoc, scriptRevisionId: string): S
       settingId,
       set: [heading, action.split(/[。.!?]/u)[0]?.trim()].filter(Boolean).join(", ").slice(0, 240),
       lighting: night ? "low-key night lighting with controlled practical lights" : day ? "consistent daylight with stable key direction" : "consistent cinematic lighting with stable key direction",
-      palette: night ? "deep blue and charcoal palette with restrained accent colors" : "coherent neutral palette with restrained accent colors"
+      // 既定の出力はモノクロ日本漫画なので、palette は色相ではなく階調で書く。
+      // 以前は "deep blue and charcoal palette with restrained accent colors" のように
+      // 色名を入れており、同じ prompt 内の "Japanese monochrome manga" と矛盾していた。
+      // CFG を下げた蒸留モデル(Anima Turbo は CFG 1 が推奨)では negative prompt が
+      // 効かないため、この矛盾がそのまま着色された絵になっていた。
+      palette: night
+        ? "high-contrast tonal range, deep blacks with sparse highlights"
+        : day
+          ? "bright tonal range, clean whites with light screentone"
+          : "balanced tonal range with even screentone"
     };
   });
 }
