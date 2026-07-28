@@ -269,13 +269,22 @@ function layoutForPanelCount(count: number): string {
  * ライブラリにある裁ち切り・大ゴマ・斜め・ぶち抜きのレイアウトが一度も選ばれない。
  *
  * `feasibleLayouts` によるランキング(ビート注釈経路と同じ機構)へ差し替える実験を行ったが、
- * この経路には演出スケールの情報が無く、最終コマを見せ場として引き上げる規則を入れると
- * 他のコマが縮み、面積ヒューリスティック(`estimateMinimumPanelArea`)を通っても実際の
- * 吹き出し配置ソルバーが「配置できなかった」で run 作成ごと失敗するページが出た。
- * 収容見積もりを実ソルバーと一致させるまでは、確実に組めることを優先して先頭固定のままにする。
+ * 最終コマを見せ場へ引き上げると、実際の吹き出し配置で「配置できなかった」が出て
+ * run 作成ごと失敗するページが残った。`applyDialogueLayoutWithFallback` は既に
+ * 16 seed 再試行と fontScale 0.35 までの縮小を行っているので、seed の問題ではない。
  *
- * レイアウトの多様性が要るときは、監督LLM か provided plan で `visualScale` を与える
- * (その経路は `applyBeatPageNaming` がランキングを使い、裁ち切り・大ゴマを選ぶ)。
+ * 真因は `estimateMinimumPanelArea` が**面積だけ**を見ていること。吹き出し1つの要求は
+ * `BALLOON_AREA_SHARE = 0.015`(ページ面積の1.5%)しかなく、面積の hard check はまず通る。
+ * しかし縦書き日本語の吹き出しは**高さ**を要求する。下段大ゴマのレイアウトは上の段を
+ * 横長の帯にするため、面積は足りていても縦書きが入らない。均等段組はどの段も
+ * 1/N の高さがあるので入る。これが「均等段組だけが成立する」の正体である。
+ *
+ * したがって修正は面積係数の調整ではなく、スロットの**最小高さ**(縦書き行長に対する
+ * hard constraint)を `PanelDemand` / `rankOne` へ足すこと。それが入るまでは確実に
+ * 組めることを優先し、先頭固定のままにする。
+ *
+ * レイアウトの多様性が要るときは、監督LLM か provided plan で `visualScale` を与えたうえで、
+ * 縦に十分な高さを持つスロットのレイアウト(側面大ゴマ等)を選ぶ。
  */
 function selectPageLayout(pagePanels: readonly ScriptMangaPanelPlan[]): string {
   return layoutForPanelCount(pagePanels.length);
