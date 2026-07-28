@@ -195,7 +195,7 @@ export async function buildPanelGenerationRequest(input: {
     negativePrompt: conditioning.negative,
     seed: null,
     seedMode: "random",
-    batchSize: 1,
+    batchSize: config.batchSize,
     steps: config.steps,
     cfg: config.cfg,
     sampler: config.sampler,

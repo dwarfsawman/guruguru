@@ -4,6 +4,7 @@ import { normalizeEditedPageLayout } from "../shared/pageLayout.ts";
 import { normalizeMangaPlanV2Scales } from "../shared/mangaPlanV2.ts";
 import { createId, getRow, initializeDb, runSql } from "./db.ts";
 import { createProject } from "./projects.ts";
+import { parseConfig } from "./scriptMangaRows.ts";
 import { createScript } from "./scripts.ts";
 import { buildPanelGenerationRequest, createScriptMangaRun } from "./scriptManga.ts";
 import { fakeProvider, resetFakeProvider } from "./providers/fakeProvider.ts";
@@ -88,4 +89,25 @@ test("buildPanelGenerationRequest: fingerprint用とsubmit用が同一入力で�
   assert.deepEqual(forSubmit.references.manifest, forFingerprint.references.manifest);
   assert.equal(forSubmit.conditioning.positive, forFingerprint.conditioning.positive);
   assert.deepEqual(forSubmit.size, forFingerprint.size);
+});
+
+test("run config: batchSize は指定できて、欠けている古い config は 1 に落ちる", () => {
+  // 蒸留モデルでは1枚が安価なので、偽文字や指の破綻を retry の繰り返しではなく
+  // 複数候補から選ぶことで潰せるようにしている。
+  const withBatch = parseConfig({
+    config_json: JSON.stringify({ templateId: "t", batchSize: 4 })
+  } as never);
+  assert.equal(withBatch.batchSize, 4);
+
+  // batchSize を持たない古い run。undefined のまま生成要求へ渡すと正規化の既定値
+  // (16)へ落ちて1コマに16枚出てしまうので、1 に固定する。
+  const legacy = parseConfig({ config_json: JSON.stringify({ templateId: "t" }) } as never);
+  assert.equal(legacy.batchSize, 1);
+
+  for (const bad of [0, -3, 1.7, "4", null]) {
+    const parsed = parseConfig({
+      config_json: JSON.stringify({ templateId: "t", batchSize: bad })
+    } as never);
+    assert.ok(parsed.batchSize >= 1 && Number.isInteger(parsed.batchSize), `batchSize=${String(bad)} -> ${parsed.batchSize}`);
+  }
 });

@@ -574,7 +574,7 @@ async function createScriptMangaRunInternal(
   const config: ScriptMangaRunConfig = {
     templateId,
     providerId,
-    batchSize: 1,
+    batchSize: boundedInteger(input.batchSize, predecessorConfig?.batchSize ?? 1, 1, 8),
     // 外部agentが演出済みの候補は、そのdirectionを固定して組み込み監督を重ねない。
     planningMode: predecessor
       ? "provided"

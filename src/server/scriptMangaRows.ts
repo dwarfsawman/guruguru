@@ -96,7 +96,12 @@ export interface PoseControlConfig {
 export interface ScriptMangaRunConfig {
   templateId: string;
   providerId: string;
-  batchSize: 1;
+  /**
+   * 1コマあたりの候補枚数。既定 1。蒸留モデル(Anima Turbo 等)は1枚が安価なので、
+   * 偽文字や指の破綻を「retry を繰り返す」のではなく「同じ生成で複数枚出して選ぶ」で
+   * 潰せる。レビュー側は元から candidateAssetIds を配列で扱う。
+   */
+  batchSize: number;
   planningMode: "heuristic" | "llm" | "provided";
   pageLimit: number;
   maxPanelCount: number;
@@ -288,7 +293,10 @@ export function parseConfig(run: RunRow): ScriptMangaRunConfig {
   return {
     ...parsed,
     auditMode: parsed.auditMode === "vlm" ? "vlm" : "manual",
-    maxPanelCount: typeof parsed.maxPanelCount === "number" ? parsed.maxPanelCount : 0
+    maxPanelCount: typeof parsed.maxPanelCount === "number" ? parsed.maxPanelCount : 0,
+    // batchSize が無い古い config を undefined のまま渡すと、生成要求の正規化が
+    // 既定値(16)へ落ちて1コマに16枚出てしまう。ここで 1 に固定する。
+    batchSize: typeof parsed.batchSize === "number" && parsed.batchSize >= 1 ? Math.trunc(parsed.batchSize) : 1
   } as ScriptMangaRunConfig;
 }
 
