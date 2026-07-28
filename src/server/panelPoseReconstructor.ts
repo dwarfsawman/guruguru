@@ -244,11 +244,25 @@ export function reconstructCastPoses(
     characterId: result.characterId,
     depth,
     joints: result.points.map((point) => ({
-      x: point.x / widthPx,
-      y: point.y / heightPx,
+      x: clampJoint(point.x / widthPx),
+      y: clampJoint(point.y / heightPx),
       visible: point.visible
     })),
     source: result.source,
     presetId: result.presetId
   }));
+}
+
+/**
+ * 保存する骨格座標を PanelCastPose の有効域 [-1, 2] へ収める。
+ *
+ * `fitPointsToBbox` は**可視**関節の外接箱を cast.bbox へ合わせるため、可視集合が小さい
+ * ショット(close-up は頭部8点のみ)ほど拡大率が大きくなり、非可視の脚関節がコマから遥かに
+ * 外れる。非可視関節は ControlNet へ描かないので座標そのものに意味は無いが、規格の範囲を
+ * 外れた値を plan へ焼くと validation が `cast-pose-joints` で落ちる。可視関節は構成上
+ * cast.bbox(⊂ 0..1)の内側にあるため、このクランプで動くことはない。
+ */
+function clampJoint(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(2, Math.max(-1, value));
 }

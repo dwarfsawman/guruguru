@@ -98,6 +98,46 @@ function shotSize(value: string | undefined): MangaShotSize {
   return "medium";
 }
 
+/** 単独キャラのコマを寄りにしてよい台詞量の上限(文字)。これを超えると引きに戻す。 */
+const REACTION_DIALOGUE_CHARS = 24;
+
+/** 見出しの比較用正規化。大小文字・前後空白・連続空白の揺れだけを吸収する。 */
+function normalizedHeading(heading: string): string {
+  return heading.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * 監督が shot を指定しなかったコマの寄り引きを、コマの構造から決める。
+ *
+ * 監督LLM無し(heuristic)では `direction.shot` が常に空で、全コマが `medium` になっていた。
+ * 同じ画角が何十コマも続くのは漫画として読めないので、言語や作品に依存しない構造だけを
+ * 手がかりにして散らす。単語マッチはしない(作品固有辞書を作らないため)。
+ *
+ * - 場所が変わった最初のコマ: 場所を見せる引き
+ * - 人物なし: 小道具があれば insert、無ければ引き
+ * - 3人以上: 全員入る引き
+ * - 単独 + 短い台詞: 反応を見せる寄り
+ * - それ以外: medium
+ */
+export function inferredShotSize(input: {
+  castCount: number;
+  propCount: number;
+  dialogueChars: number;
+  dialogueCount: number;
+  /** 直前のコマから場所が変わったか。同じ見出しが続く場合は false。 */
+  isNewSetting: boolean;
+}): MangaShotSize {
+  if (input.castCount === 0) {
+    if (input.isNewSetting) return "wide";
+    return input.propCount > 0 ? "insert" : "wide";
+  }
+  if (input.isNewSetting) return "wide";
+  if (input.castCount >= 3) return "wide";
+  if (input.castCount === 2) return "medium";
+  if (input.dialogueCount > 0 && input.dialogueChars <= REACTION_DIALOGUE_CHARS) return "close-up";
+  return "medium";
+}
+
 function castBoxes(count: number): NormalizedBox[] {
   if (count <= 1) return [{ x: 0.14, y: 0.18, width: 0.72, height: 0.78 }];
   if (count === 2) {
@@ -217,6 +257,8 @@ export function buildMangaPlanV2(input: {
   let previousPanelId: string | null = null;
   let previousSummary = "";
   let flatPanelIndex = 0;
+  /** 場所が変わった最初のコマを引きにするための、直前コマの正規化済み見出し。 */
+  let previousSceneHeading: string | null = null;
   const captionedScenes = new Set<number>();
 
   // ネームv4 D2: ビート注釈がある場合、beats は後付け生成ではなく注釈からの引き継ぎにする。
@@ -440,7 +482,19 @@ export function buildMangaPlanV2(input: {
         cast: effectiveCast,
         props,
         shot: {
-          size: shotSize(direction.shot),
+          // 監督が指定した shot を最優先し、無い場合だけ構造から推定する。
+          size: direction.shot?.trim()
+            ? shotSize(direction.shot)
+            : inferredShotSize({
+                castCount: effectiveCast.length,
+                propCount: props.length,
+                dialogueChars: dialogueLines.reduce((total, line) => total + line.text.length, 0),
+                dialogueCount: dialogueLines.length,
+                // 手書き Fountain では同じ見出しが連続することが多く、scene index の
+                // 変化だけを見ると同じ場所に何度も establishing shot が入る。見出しの
+                // 文字列で比べ、場所が実際に変わったときだけ引きにする。
+                isNewSetting: normalizedHeading(legacyPanel.sceneHeading) !== previousSceneHeading
+              }),
           angle: direction.angle?.trim() || direction.shot?.trim() || "eye-level",
           focalSubjectId,
           compositionIntent: direction.composition?.trim() || "single clear action with readable silhouettes"
@@ -508,6 +562,7 @@ export function buildMangaPlanV2(input: {
       }
       previousPanelId = provisional.id;
       previousSummary = action;
+      previousSceneHeading = normalizedHeading(legacyPanel.sceneHeading);
       flatPanelIndex += 1;
         return provisional;
       })

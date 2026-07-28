@@ -239,3 +239,45 @@ test("renderPoseSkeletonSvg: 黒背景+可視関節ぶんの line/circle を出�
   const empty = renderPoseSkeletonSvg([], 512, 512);
   assert.ok(!empty.includes("<line") && !empty.includes("<circle"));
 });
+
+test("reconstructCastPoses: close-up でも保存骨格は規格の [-1, 2] に収まる", () => {
+  // close-up は頭部8点だけを可視にするため、bbox フィットの拡大率が大きくなり、
+  // 非可視の脚関節がコマの遥か外へ出る。規格外の値を plan へ焼くと validation が
+  // cast-pose-joints で落ちるので、保存時にクランプする。
+  const closeUp = panel({
+    shot: { size: "close-up", angle: "eye-level", focalSubjectId: "char:a", compositionIntent: "reaction" },
+    cast: [{
+      characterId: "char:a",
+      variantId: "char:a:default",
+      // castBoxes(1) が単独キャラへ実際に与える枠。
+      bbox: { x: 0.14, y: 0.18, width: 0.72, height: 0.78 },
+      pose: "standing tall",
+      expression: "shocked",
+      action: "reacts",
+      speakingLineIds: []
+    }]
+  });
+
+  const poses = reconstructCastPoses(closeUp, { aspect: 1.4 });
+  assert.ok(poses, "close-up でも骨格を返す");
+  const joints = poses![0]!.joints;
+  assert.equal(joints.length, 18, "18関節を保つ");
+  for (const [index, joint] of joints.entries()) {
+    assert.ok(
+      Number.isFinite(joint.x) && joint.x >= -1 && joint.x <= 2,
+      `joint[${index}].x=${joint.x} は [-1,2] の外`
+    );
+    assert.ok(
+      Number.isFinite(joint.y) && joint.y >= -1 && joint.y <= 2,
+      `joint[${index}].y=${joint.y} は [-1,2] の外`
+    );
+  }
+
+  // 可視関節(頭部)は cast.bbox の内側にあるので、クランプで動かない。
+  const visible = joints.filter((joint) => joint.visible);
+  assert.ok(visible.length > 0, "close-up でも可視関節がある");
+  for (const joint of visible) {
+    assert.ok(joint.x >= 0.13 && joint.x <= 0.87, `可視関節 x=${joint.x} が bbox の外`);
+    assert.ok(joint.y >= 0.17 && joint.y <= 0.97, `可視関節 y=${joint.y} が bbox の外`);
+  }
+});
