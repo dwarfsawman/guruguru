@@ -49,12 +49,19 @@ export function deriveSceneBibles(doc: FountainDoc, scriptRevisionId: string): S
   return doc.scenes.map((scene, sceneIndex) => {
     const settingId = `setting:${scriptRevisionId}:scene-${sceneIndex}`;
     const heading = (scene.heading || `Scene ${sceneIndex + 1}`).replace(/^(?:INT\.?|EXT\.?|I\/E\.?)\s*/iu, "").trim();
-    const action = scene.elements.find((element) => element.type === "action")?.text ?? "";
     const night = /(?:NIGHT|夜|深夜|夕)/iu.test(scene.heading);
     const day = /(?:DAY|昼|朝)/iu.test(scene.heading);
     return {
       settingId,
-      set: [heading, action.split(/[。.!?]/u)[0]?.trim()].filter(Boolean).join(", ").slice(0, 240),
+      // `set` は**場所**の記述に限る。以前はそのシーン最初の action 行の1文目を足していたが、
+      // action 行は「The elderly woman in a dark apron and round glasses enters …」のように
+      // 人物の外見と動作を書く。それをシーン全コマの prompt へ配ると、
+      //  - そのコマに居ない人物の外見が混入する(実測: 単独コマの主人公に別人物の丸眼鏡が付いた)
+      //  - 過去の一瞬が全コマへ重なる(実測: 人物が2体に複製された)
+      // という壊れ方をする。蒸留モデル(CFG 1)では negative prompt が効かないため、
+      // 混入した描写はそのまま絵に出る。人物名を書かない規約下では名前による除去も効かない。
+      // コマ固有の視覚的事実は、そのコマ自身の action(basePrompt)から入るので重複は不要。
+      set: heading.slice(0, 240),
       lighting: night ? "low-key night lighting with controlled practical lights" : day ? "consistent daylight with stable key direction" : "consistent cinematic lighting with stable key direction",
       // 既定の出力はモノクロ日本漫画なので、palette は色相ではなく階調で書く。
       // 以前は "deep blue and charcoal palette with restrained accent colors" のように

@@ -214,12 +214,31 @@ interface PanelConditioningInput {
   referenceAppearances?: ReferenceSetSnapshot[];
 }
 
+/**
+ * このコマのプロンプトから消すべき人物ラベル。
+ *
+ * 対象は2種類ある。
+ *
+ * 1. `mustNotShow` で明示的に不在指定された人物。
+ * 2. **このコマのキャストに入っていない人物すべて。**
+ *
+ * 2 が要る理由: シーンバイブルの `set` や `basePrompt` には、そのシーンの他のコマの
+ * action 行が入り込む。action 行は「The elderly woman in a dark apron and round glasses …」の
+ * ように人物の外見を含むので、そのコマに居ない人物の描写がプロンプトへ残る。
+ * 蒸留モデル(CFG 1)では negative prompt が効かないため、残った描写はそのまま絵に出る
+ * ——実測では単独コマの主人公に別人物の丸眼鏡が付き、人物が2体に複製された。
+ *
+ * キャストが空のコマ(小道具・背景のみ)は人物描写を一切残さない。
+ */
 function excludedIdentityLabels(input: Pick<PanelConditioningInput, "panel" | "entities">): string[] {
   const excludedIds = new Set(input.panel.mustNotShow
     .filter((constraint) => constraint.kind === "entity-absent" && constraint.entityId)
     .map((constraint) => constraint.entityId!));
+  const presentIds = new Set(input.panel.cast.map((member) => member.characterId));
   return input.entities
-    .filter((entity) => excludedIds.has(entity.id))
+    .filter((entity) =>
+      excludedIds.has(entity.id) ||
+      (entity.kind === "character" && !presentIds.has(entity.id)))
     .flatMap((entity) => [entity.name, ...entity.aliases]);
 }
 

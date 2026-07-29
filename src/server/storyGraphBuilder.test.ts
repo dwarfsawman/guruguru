@@ -121,3 +121,25 @@ test("deriveSceneBibles: palette は色相ではなく階調で書く(既定出�
   assert.match(bibles[0]!.palette, /dark|black|high-contrast/i);
   assert.match(bibles[1]!.palette, /bright|white/i);
 });
+
+test("deriveSceneBibles: set は場所だけを書き、action 行の人物描写を混ぜない", () => {
+  // action 行は規約どおり固有名を書かず、人物を外見で指す。これがシーン全コマへ
+  // 配られると、そのコマに居ない人物の外見が prompt に残って絵に出てしまう。
+  const doc = parseFountain([
+    "INT. 鶴の湯 浴室 - 朝",
+    "",
+    "The elderly woman in a dark apron and round glasses enters the tiled bath hall holding a bucket.",
+    "",
+    "The young woman in paint-stained overalls holds the brush up beside her own face."
+  ].join("\n")).doc;
+
+  const bibles = deriveSceneBibles(doc, "rev-1");
+  assert.equal(bibles.length, 1);
+  const bible = bibles[0]!;
+  assert.equal(bible.set, "鶴の湯 浴室 - 朝");
+  assert.ok(!/elderly woman|round glasses|apron/i.test(bible.set), bible.set);
+  assert.ok(!/overalls|brush/i.test(bible.set), bible.set);
+  // 照明と階調はシーン単位の継続情報なので残す。
+  assert.match(bible.lighting, /daylight/);
+  assert.match(bible.palette, /tonal range/);
+});
