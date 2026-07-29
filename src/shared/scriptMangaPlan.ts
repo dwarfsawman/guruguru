@@ -1,4 +1,5 @@
 import type { FountainDoc, FountainElement } from "./fountain";
+import { buildPanelDemand, feasibleLayouts } from "./layoutMatcher";
 import { scriptMangaLayoutCandidates } from "./layoutPresets";
 import { type MangaPageTurnHook, type MangaVisualScale, normalizeLegacyVisualScale } from "./mangaPlanV2";
 import type { PageLayout } from "./pageLayout";
@@ -263,31 +264,53 @@ function layoutForPanelCount(count: number): string {
 }
 
 /**
- * ページのコマ列からレイアウトを選ぶ。現状は候補配列の先頭を返す。
+ * ページ末尾のコマを「めくりの着地」として見せ場へ引き上げる決定的規則。
  *
- * 既知の制限: これにより脚本全体が `two-horizontal` / `three-horizontal` だけになり、
- * ライブラリにある裁ち切り・大ゴマ・斜め・ぶち抜きのレイアウトが一度も選ばれない。
- *
- * `feasibleLayouts` によるランキング(ビート注釈経路と同じ機構)へ差し替える実験を行ったが、
- * 最終コマを見せ場へ引き上げると、実際の吹き出し配置で「配置できなかった」が出て
- * run 作成ごと失敗するページが残った。`applyDialogueLayoutWithFallback` は既に
- * 16 seed 再試行と fontScale 0.35 までの縮小を行っているので、seed の問題ではない。
- *
- * 真因は `estimateMinimumPanelArea` が**面積だけ**を見ていること。吹き出し1つの要求は
- * `BALLOON_AREA_SHARE = 0.015`(ページ面積の1.5%)しかなく、面積の hard check はまず通る。
- * しかし縦書き日本語の吹き出しは**高さ**を要求する。下段大ゴマのレイアウトは上の段を
- * 横長の帯にするため、面積は足りていても縦書きが入らない。均等段組はどの段も
- * 1/N の高さがあるので入る。これが「均等段組だけが成立する」の正体である。
- *
- * したがって修正は面積係数の調整ではなく、スロットの**最小高さ**(縦書き行長に対する
- * hard constraint)を `PanelDemand` / `rankOne` へ足すこと。それが入るまでは確実に
- * 組めることを優先し、先頭固定のままにする。
- *
- * レイアウトの多様性が要るときは、監督LLM か provided plan で `visualScale` を与えたうえで、
- * 縦に十分な高さを持つスロットのレイアウト(側面大ゴマ等)を選ぶ。
+ * 監督LLMが無い経路でも `visualScale` を必ず一様(=未設定)にしないための最小限の演出。
+ * 台詞を多く抱えるコマを大きくしても絵は強くならないので、ページ内で相対的に台詞が
+ * 軽い末尾コマだけを large にする。これが無いと rankLayouts の面積コストが均一配分を
+ * 常に最小にしてしまい、均等段組しか選ばれない。
  */
-function selectPageLayout(pagePanels: readonly ScriptMangaPanelPlan[]): string {
-  return layoutForPanelCount(pagePanels.length);
+const TURN_PANEL_DIALOGUE_SHARE_CAP = 0.4;
+
+function assignDeterministicVisualScales(pagePanels: readonly ScriptMangaPanelPlan[]): MangaVisualScale[] {
+  const scales: MangaVisualScale[] = pagePanels.map(() => "medium");
+  if (pagePanels.length < 2) return scales;
+  const total = pagePanels.reduce((sum, panel) => sum + (panel.dialogueCharacters ?? 0), 0);
+  const lastIndex = pagePanels.length - 1;
+  const lastShare = total > 0 ? (pagePanels[lastIndex]!.dialogueCharacters ?? 0) / total : 0;
+  if (lastShare <= TURN_PANEL_DIALOGUE_SHARE_CAP) scales[lastIndex] = "large";
+  return scales;
+}
+
+/**
+ * ページのコマ列からレイアウトを選ぶ。
+ *
+ * かつては候補配列の先頭固定で、脚本全体が `two-horizontal` / `three-horizontal` だけになり、
+ * ライブラリの裁ち切り・大ゴマ・斜め・ぶち抜きが一度も選ばれなかった。`feasibleLayouts` へ
+ * 差し替える実験は、実際の吹き出し配置が「配置できなかった」で run 作成ごと失敗して頓挫した。
+ *
+ * 真因は `estimateMinimumPanelArea` が**面積だけ**を見ていたこと。縦書き日本語の吹き出しは
+ * **高さ**を要求するのに、下段大ゴマのレイアウトは上段を横長の帯にする。面積は足りていても
+ * 縦書きが入らない。均等段組はどの段も 1/N の高さがあるので入る ——「均等段組だけが成立する」
+ * の正体はこれだった。`estimateMinimumPanelHeight` を hard constraint として足したことで
+ * 実現不能なレイアウトが実現可能集合から落ちるようになったので、ランキングへ移行した。
+ *
+ * 実現可能な候補が1つも無い場合(見積もりが実挙動より厳しいケース)は、確実に組めることを
+ * 優先して従来どおり候補先頭へフォールバックする。
+ */
+function selectPageLayout(pagePanels: readonly ScriptMangaPanelPlan[], recentLayoutIds: readonly string[] = []): string {
+  const scales = assignDeterministicVisualScales(pagePanels);
+  const demands = pagePanels.map((panel, index) => {
+    const balloonCount = panel.dialogueOrderIndexes.length;
+    return buildPanelDemand({
+      visualScale: panel.visualScale ?? scales[index],
+      totalCharacters: panel.dialogueCharacters ?? 0,
+      balloonCount
+    });
+  });
+  const feasible = feasibleLayouts(demands, { recentLayoutIds });
+  return feasible[0]?.layoutId ?? layoutForPanelCount(pagePanels.length);
 }
 
 /**
@@ -319,6 +342,12 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
         characterCount = 0;
         return;
       }
+      // レイアウト選択(収容の hard constraint)は台詞量を必要とする。ここで数えておかないと
+      // 決定的パッカー経路では常に0字扱いになり、実現可能性の判定が効かない。
+      const dialogueCharacters = elements.reduce(
+        (sum, { element }) => sum + (element.type === "dialogue" ? visibleText(element).length : 0),
+        0
+      );
       const panelIndex = panels.length;
       const sceneContext = scene.heading ? `Scene: ${scene.heading}.` : "";
       panels.push({
@@ -328,7 +357,8 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
         sourceElementIds: elements.map((entry) => entry.sourceElementId),
         prompt: `${stylePrompt}. ${sceneContext} ${visualParts.join(" ")}`.replace(/\s+/g, " ").trim(),
         sourceText: sourceParts.join("\n"),
-        dialogueOrderIndexes: [...dialogueIndexes]
+        dialogueOrderIndexes: [...dialogueIndexes],
+        dialogueCharacters
       });
       elements = [];
       dialogueIndexes = [];
@@ -383,7 +413,11 @@ export function planScriptManga(doc: FountainDoc, options: ScriptMangaPlanOption
     pages.push({
       index: pages.length,
       title: first?.sceneHeading || `Page ${pages.length + 1}`,
-      layoutTemplateId: selectPageLayout(pagePanels),
+      // 直近3ページを反復ペナルティの対象にする(同構造のページが続いても形が並ばない)。
+      layoutTemplateId: selectPageLayout(
+        pagePanels,
+        pages.slice(-3).reverse().map((page) => page.layoutTemplateId)
+      ),
       panels: pagePanels
     });
     offset += count;

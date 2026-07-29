@@ -4,6 +4,7 @@ import { extractLayoutFeatures } from "./layoutFeatures.ts";
 import {
   buildPanelDemand,
   estimateMinimumPanelArea,
+  estimateMinimumPanelHeight,
   feasibleLayouts,
   rankLayouts,
   selectDiverseLayouts
@@ -49,6 +50,40 @@ test("estimateMinimumPanelArea: 文字量+風船数から必要面積割合、�
   const fourBalloons = estimateMinimumPanelArea({ totalCharacters: 90, balloonCount: 4 });
   assert.ok(fourBalloons > one, "同じ文字数でも風船が多いほど必要面積が大きい");
   assert.equal(estimateMinimumPanelArea({ totalCharacters: 5000, balloonCount: 8 }), 0.8, "cap 0.8");
+});
+
+test("estimateMinimumPanelHeight: 縦書きは文字数で高さを要求し、幅が狭いほど列が減って高くなる", () => {
+  assert.equal(estimateMinimumPanelHeight({ maxBalloonCharacters: 0, balloonCount: 0 }, 1), 0);
+  assert.equal(estimateMinimumPanelHeight({ maxBalloonCharacters: 30, balloonCount: 0 }, 1), 0);
+  const short = estimateMinimumPanelHeight({ maxBalloonCharacters: 12, balloonCount: 1 }, 0.9);
+  const long = estimateMinimumPanelHeight({ maxBalloonCharacters: 60, balloonCount: 1 }, 0.9);
+  assert.ok(long > short, "長い台詞ほど高さを要求する");
+  const wide = estimateMinimumPanelHeight({ maxBalloonCharacters: 90, balloonCount: 1 }, 0.9);
+  const narrow = estimateMinimumPanelHeight({ maxBalloonCharacters: 90, balloonCount: 1 }, 0.1);
+  assert.ok(narrow > wide * 2, "細いスロットは列が取れず縦に伸びる");
+  const stacked = estimateMinimumPanelHeight({ maxBalloonCharacters: 60, balloonCount: 3 }, 0.9);
+  assert.ok(stacked > long, "吹き出しが複数なら積み重ね分を要求する");
+});
+
+test("実現可能性ゲート: 横長の帯スロットは面積が足りていても縦書きの高さで除外される", () => {
+  // builtin:four-hero-bottom の読み順3コマ目は 0.92 x 0.22 の帯。面積(areaFraction)は
+  // 足りるが、縦書き90字は 0.24 の高さを要求するので実現不能になる。
+  // 均一段組ばかりが選ばれていた真因(面積だけの hard check)への回帰テスト。
+  const demandsWithBand = [0, 0, 90, 0].map((chars) => buildPanelDemand({
+    visualScale: "medium",
+    totalCharacters: chars,
+    balloonCount: chars > 0 ? 1 : 0,
+    ...(chars > 0 ? { maxBalloonCharacters: chars } : {})
+  }));
+  const ranked = rankLayouts(demandsWithBand);
+  const heroBottom = ranked.find((entry) => entry.layoutId === "builtin:four-hero-bottom");
+  assert.ok(heroBottom);
+  assert.ok(heroBottom!.hardViolations.includes("height:2"), heroBottom!.hardViolations.join(","));
+  assert.ok(!heroBottom!.hardViolations.some((violation) => violation.startsWith("capacity:")),
+    "面積は足りている(高さだけが理由)");
+  const feasible = feasibleLayouts(demandsWithBand);
+  assert.ok(feasible.length > 0, "縦に余裕のあるレイアウトは残る");
+  assert.ok(!feasible.some((entry) => entry.layoutId === "builtin:four-hero-bottom"));
 });
 
 test("実現可能性ゲート: 台詞収容の絶対下限を満たさないレイアウトはhardViolationsで除外される", () => {

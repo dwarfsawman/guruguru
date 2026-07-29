@@ -44,6 +44,51 @@ export function estimateMinimumPanelArea(demand: TextDemand): number {
   return Math.min(MIN_AREA_SHARE_CAP, textShare + demand.balloonCount * BALLOON_AREA_SHARE);
 }
 
+// --- 縦書きの高さ下限(MinHeightDemand) ---
+//
+// 面積だけの hard check では「下段大ゴマ+上段が横長の帯」というレイアウトが通ってしまい、
+// 実際の applyDialogueLayout が「一部の行を配置できなかった」で 422 になる。原因は
+// 縦書き日本語の吹き出しが **高さ** を要求すること(面積は足りていても列が入らない)。
+// ここでは「最小可読サイズまで縮めてもなお入らない」= 実現不能、という下限だけを見る。
+// 縮小で救える範囲は applyDialogueLayoutWithFallback の fontScale 縮小に任せる。
+
+/** 最小可読フォントサイズ(page-width 相対)。scriptMangaLettering の下限と同値。 */
+const MIN_LEGIBLE_FONT_SIZE = 0.014;
+/** 縦書きの字送り(行方向)。 */
+const VERTICAL_CHARACTER_ADVANCE = MIN_LEGIBLE_FONT_SIZE * 1.15;
+/** 縦書きの列送り(行間を含む)。 */
+const VERTICAL_COLUMN_ADVANCE = MIN_LEGIBLE_FONT_SIZE * 1.6;
+/** 楕円吹き出しの内接率(外接矩形のうち実際に文字を置ける割合)。balloonInscribedFactor 相当。 */
+const BALLOON_INSCRIBED_RATIO = 0.72;
+/** 吹き出し外接矩形がスロット高さを占有してよい上限。 */
+const BALLOON_HEIGHT_SHARE = 0.92;
+/** 2つ目以降の吹き出しがスロット高さへ追加で要求する割合(部分的な積み重ね)。 */
+const ADDITIONAL_BALLOON_HEIGHT_SHARE = 0.35;
+
+/**
+ * 縦書き吹き出しが要求するスロット最小高さ(page-width 相対)を見積もる。
+ *
+ * 吹き出しは文字組みが概ね正方形になる列数を選ぶ、という近似を置く(日本語の吹き出しは
+ * 極端な横長・縦長にはしない)。列数の上限はスロット幅から決まるので、幅の狭いスロットでは
+ * 自動的に列が減り、必要高さが増える。
+ */
+export function estimateMinimumPanelHeight(
+  demand: { maxBalloonCharacters: number; balloonCount: number },
+  slotWidth: number
+): number {
+  const characters = Math.max(0, Math.floor(demand.maxBalloonCharacters));
+  if (characters <= 0 || demand.balloonCount <= 0) return 0;
+  const usableWidth = Math.max(0, slotWidth) * BALLOON_INSCRIBED_RATIO;
+  // 正方形に近い組みになる列数。スロット幅で頭打ちにする。
+  const squarishColumns = Math.ceil(Math.sqrt((characters * VERTICAL_CHARACTER_ADVANCE) / VERTICAL_COLUMN_ADVANCE));
+  const widthLimitedColumns = Math.max(1, Math.floor(usableWidth / VERTICAL_COLUMN_ADVANCE));
+  const columns = Math.max(1, Math.min(squarishColumns, widthLimitedColumns));
+  const charactersPerColumn = Math.ceil(characters / columns);
+  const balloonHeight = (charactersPerColumn * VERTICAL_CHARACTER_ADVANCE) / BALLOON_INSCRIBED_RATIO;
+  const stacking = 1 + ADDITIONAL_BALLOON_HEIGHT_SHARE * Math.max(0, demand.balloonCount - 1);
+  return (balloonHeight * stacking) / BALLOON_HEIGHT_SHARE;
+}
+
 // --- PanelDemand ---
 
 export interface PanelDemand {
@@ -51,6 +96,10 @@ export interface PanelDemand {
   visualScale: MangaVisualScale;
   /** 可読性の下限(コマ総面積に対する割合)。hard constraint。 */
   minAreaFraction: number;
+  /** このコマで最も長い吹き出しの文字数。縦書きの最小高さ(hard constraint)に使う。 */
+  maxBalloonCharacters: number;
+  /** このコマの吹き出し数。最小高さの積み重ね分に使う。 */
+  balloonCount: number;
   /** 初期実装は常に "any"(監督前でshot情報が無いため。将来の拡張点)。 */
   preferredAspect: "wide" | "tall" | "square" | "any";
   /** 必須条件。明示的な演出指定がある場合のみ。 */
@@ -64,6 +113,8 @@ export function buildPanelDemand(input: {
   visualScale?: MangaVisualScale;
   totalCharacters: number;
   balloonCount: number;
+  /** 最長吹き出しの文字数。省略時は均等割り(呼び出し側が行ごとの長さを持たない旧経路)。 */
+  maxBalloonCharacters?: number;
   requiredRole?: "figure";
 }): PanelDemand {
   const visualScale = input.visualScale ?? "medium";
@@ -73,6 +124,9 @@ export function buildPanelDemand(input: {
       totalCharacters: input.totalCharacters,
       balloonCount: input.balloonCount
     }),
+    maxBalloonCharacters: input.maxBalloonCharacters
+      ?? (input.balloonCount > 0 ? Math.ceil(input.totalCharacters / input.balloonCount) : 0),
+    balloonCount: input.balloonCount,
     preferredAspect: "any",
     ...(input.requiredRole ? { requiredRole: input.requiredRole } : {}),
     // 見せ場は裁ち切りを希望する。商業誌では大ゴマを裁ち切りで抜くのが普通で、
@@ -107,10 +161,19 @@ export interface RankedLayout {
 
 export interface RankLayoutsContext {
   previousLayoutId?: string;
+  /**
+   * 直近ページのレイアウト(新しい順)。`previousLayoutId` の一般化で、両方指定した場合は
+   * `previousLayoutId` を先頭とみなす。直前ほど強く、少し前ほど弱くペナルティを掛けるので、
+   * 同じ構造のページが続いても同じレイアウトが並ばない。
+   */
+  recentLayoutIds?: readonly string[];
   /** 既定は scriptMangaLayoutCandidates(コマ数)。テスト・カタログ差し替え用。 */
   candidateIds?: readonly string[];
   resolveLayout?: ScriptMangaLayoutResolver;
 }
+
+/** 直前ページと同じレイアウトを選んだときのコスト(遡るほど 1/distance で減衰)。 */
+const REPETITION_COST = 2.5;
 
 /** visualScale → 目標面積の重み(V5 D1: small 0.6 / medium 1.0 / large 2.0)。 */
 function scaleTargetWeight(scale: MangaVisualScale): number {
@@ -132,6 +195,12 @@ function rankOne(
   let tight = false;
   demands.forEach((demand, index) => {
     const slot = features.slots[index]!;
+    // hard: 縦書き吹き出しの最小高さ。面積は足りていても横長の帯には縦書きが入らない
+    // (均一段組ばかりが選ばれていた真因)。
+    const minHeight = estimateMinimumPanelHeight(demand, slot.width);
+    if (minHeight > 0 && slot.height + 1e-9 < minHeight) {
+      hardViolations.push(`height:${index}`);
+    }
     if (slot.areaFraction + 1e-9 < demand.minAreaFraction) {
       hardViolations.push(`capacity:${index}`);
     } else if (slot.areaFraction < demand.minAreaFraction * 1.25) {
@@ -178,12 +247,17 @@ function rankOne(
     else roleCost += 2;
   }
 
-  // soft: 前ページとの反復。
+  // soft: 直近ページとの反復。直前ページとの一致が最も重く、遡るほど軽くなる。
+  // 1.5 では面積コストの差(0.4程度)を覆せず、同構造のページが続くと同じレイアウトが並び続けた。
+  const recent = [
+    ...(context.previousLayoutId ? [context.previousLayoutId] : []),
+    ...(context.recentLayoutIds ?? []).filter((id) => id !== context.previousLayoutId)
+  ];
   let repetitionCost = 0;
-  if (context.previousLayoutId) {
-    if (context.previousLayoutId === features.layoutId) repetitionCost += 1.5;
-    else reasons.push({ code: "avoids-previous-layout" });
-  }
+  recent.forEach((layoutId, distance) => {
+    if (layoutId === features.layoutId) repetitionCost += REPETITION_COST / (distance + 1);
+  });
+  if (recent.length > 0 && repetitionCost === 0) reasons.push({ code: "avoids-previous-layout" });
 
   const costs = { area: areaCost, capacity: capacityCost, aspect: aspectCost, role: roleCost, repetition: repetitionCost };
   return {

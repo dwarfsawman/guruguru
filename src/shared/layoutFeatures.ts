@@ -12,6 +12,10 @@ export type SlotPositionBand = "top" | "middle" | "bottom";
 export interface LayoutSlotFeatures {
   /** ページ内コマ総面積に対する割合(pageLayoutAreaProfile と同単位。合計1)。 */
   areaFraction: number;
+  /** 外接矩形の幅(page-width 相対)。縦書き吹き出しの列数見積もりに使う。 */
+  width: number;
+  /** 外接矩形の高さ(page-width 相対。y は [0, page.height] と同単位)。 */
+  height: number;
   aspectClass: SlotAspectClass;
   positionBand: SlotPositionBand;
   /** ページ矩形([0,1]×[0,page.height])からはみ出す = 裁ち切りスロット。 */
@@ -57,6 +61,8 @@ export function extractLayoutFeatures(layoutId: string, layout: PageLayout): Lay
       || x2 > 1 + BLEED_EPSILON || y2 > layout.page.height + BLEED_EPSILON;
     return {
       areaFraction: areas[index] ?? 0,
+      width: Math.max(0, x2 - x1),
+      height: Math.max(0, y2 - y1),
       aspectClass: aspectClassOf(Math.max(0, x2 - x1), Math.max(0, y2 - y1)),
       positionBand: positionBandOf((y1 + y2) / 2, layout.page.height),
       bleed,
