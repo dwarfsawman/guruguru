@@ -2,7 +2,8 @@ import {
   type DialoguePolicy,
   type FrozenDialogueLine,
   type MangaPlanV2,
-  type NormalizedBox
+  type NormalizedBox,
+  type PanelCastPose
 } from "../shared/mangaPlanV2";
 import { normalizeEditedPageLayout, panelBounds, type PageLayout } from "../shared/pageLayout";
 import type { DialogueBalloonStyle, DialogueSemanticKind } from "../shared/apiTypes";
@@ -42,51 +43,105 @@ const SCRIPT_MANGA_MIN_FONT_SIZE = 0.014;
  * 0.45では絵の見える面積が痩せすぎたため0.35へ縮小(2026-07-18)。
  */
 const SCRIPT_MANGA_MAX_BALLOON_COVERAGE = 0.35;
-/** plan の cast bbox から顔領域とみなす高さ比(bbox 上端からこの割合)。auditLettering と共有。 */
+/**
+ * plan の cast bbox から顔領域とみなす高さ比(bbox 上端からこの割合)。
+ * castPoses が無い(旧plan・ポーズ未設計)コマのフォールバックにだけ使う。
+ */
 const CAST_FACE_HEIGHT_RATIO = 0.38;
 
+/** OpenPose-18 の頭部関節(鼻・両目・両耳)。顔ゾーンはここから作る。 */
+const POSE_HEAD_JOINT_INDEXES = [0, 14, 15, 16, 17] as const;
+/** OpenPose-18 の首。鼻との距離を頭部スケールの手がかりにする。 */
+const POSE_NECK_JOINT_INDEX = 1;
 /**
- * plan の cast bbox(コマ内正規化)を page 座標の全身ボックスへ写像する共通ヘルパ。
- * 顔領域(CAST_FACE_HEIGHT_RATIO)への縮小やラベル付与など呼び出し側ごとの差分は
- * project コールバックで表現する(回避領域と lettering 監査の二重実装を一本化)。
+ * 頭部関節の広がりに対する顔ボックス半径の倍率。鼻・目・耳は顔の中央付近にしか
+ * 分布しないため、実際の頭部(髪・輪郭)を覆うには広げる必要がある。
+ */
+const POSE_HEAD_SPREAD_SCALE = 1.8;
+/** 鼻-首距離に対する顔ボックス半径の倍率(横顔などで頭部関節が縮退した時の下支え)。 */
+const POSE_HEAD_NECK_SCALE = 0.85;
+/** cast bbox 幅に対する顔ボックス半径の下限(関節が1点しか見えない時の保険)。 */
+const POSE_HEAD_MIN_RADIUS_RATIO = 0.16;
+
+type FlatBox = { x: number; y: number; width: number; height: number };
+
+/**
+ * ネームポーズレイヤ(panel.castPoses)の頭部関節から、コマローカル正規化座標の顔ボックスを作る。
+ * 頭部関節が1つも可視でない(顔が見切れている・後ろ姿など)場合は null を返し、
+ * 呼び出し側が cast bbox 由来のフォールバックへ落ちる。
+ */
+function poseFaceBoxInPanel(pose: PanelCastPose, castBox: NormalizedBox): FlatBox | null {
+  const head = POSE_HEAD_JOINT_INDEXES
+    .map((index) => pose.joints[index])
+    .filter((joint): joint is NonNullable<typeof joint> => Boolean(joint?.visible));
+  if (head.length === 0) return null;
+  const centerX = head.reduce((sum, joint) => sum + joint.x, 0) / head.length;
+  const centerY = head.reduce((sum, joint) => sum + joint.y, 0) / head.length;
+  let radius = head.reduce(
+    (max, joint) => Math.max(max, Math.abs(joint.x - centerX), Math.abs(joint.y - centerY)),
+    0
+  ) * POSE_HEAD_SPREAD_SCALE;
+  const nose = pose.joints[0];
+  const neck = pose.joints[POSE_NECK_JOINT_INDEX];
+  if (nose?.visible && neck?.visible) {
+    radius = Math.max(radius, Math.hypot(nose.x - neck.x, nose.y - neck.y) * POSE_HEAD_NECK_SCALE);
+  }
+  radius = Math.max(radius, castBox.width * POSE_HEAD_MIN_RADIUS_RATIO);
+  return { x: centerX - radius, y: centerY - radius, width: radius * 2, height: radius * 2 };
+}
+
+/**
+ * plan の cast(コマ内正規化)を page 座標のボックスへ写像する共通ヘルパ。
+ * 既定は顔領域で、castPoses の頭部関節から作る。ポーズが無い/頭部が見えないコマだけ
+ * 従来の bbox 上部 CAST_FACE_HEIGHT_RATIO へフォールバックする(旧plan互換)。
+ * `fullBodyForFigure` を立てると、ぶち抜き立ち絵スロット(layoutPanel.role === "figure")
+ * だけ全身を返す。回避領域は隠したくないので全身、lettering 監査は顔の重なり率という
+ * 指標の意味を保つため顔のまま、と使い分ける。
  */
 function mapPlanCastToPageBoxes<T>(
   pageSpec: MangaPlanV2["pages"][number],
   layoutPanels: PageLayout["panels"],
-  project: (bodyBox: { x: number; y: number; width: number; height: number }, layoutPanel: PageLayout["panels"][number]) => T
+  project: (box: FlatBox, layoutPanel: PageLayout["panels"][number]) => T,
+  options: { fullBodyForFigure?: boolean } = {}
 ): T[] {
   return pageSpec.panels.flatMap((panel, index) => {
     const layoutPanel = layoutPanels[index];
     if (!layoutPanel) return [];
     const [x0, y0, x1, y1] = panelBounds(layoutPanel.shape);
-    return panel.cast.map((member) => project({
-      x: x0 + member.bbox.x * (x1 - x0),
-      y: y0 + member.bbox.y * (y1 - y0),
-      width: member.bbox.width * (x1 - x0),
-      height: member.bbox.height * (y1 - y0)
-    }, layoutPanel));
+    const posesByCharacterId = new Map((panel.castPoses ?? []).map((pose) => [pose.characterId, pose]));
+    const fullBody = options.fullBodyForFigure === true && layoutPanel.role === "figure";
+    return panel.cast.map((member) => {
+      const pose = posesByCharacterId.get(member.characterId);
+      const localBox: FlatBox = fullBody
+        ? { x: member.bbox.x, y: member.bbox.y, width: member.bbox.width, height: member.bbox.height }
+        : (pose ? poseFaceBoxInPanel(pose, member.bbox) : null)
+          ?? {
+            x: member.bbox.x,
+            y: member.bbox.y,
+            width: member.bbox.width,
+            height: member.bbox.height * CAST_FACE_HEIGHT_RATIO
+          };
+      return project({
+        x: x0 + localBox.x * (x1 - x0),
+        y: y0 + localBox.y * (y1 - y0),
+        width: localBox.width * (x1 - x0),
+        height: localBox.height * (y1 - y0)
+      }, layoutPanel);
+    });
   });
 }
 
-/**
- * plan の cast bbox(コマ内正規化)を page 座標へ写像した回避領域を作る。head=true なら顔領域
- * (bbox 上端から CAST_FACE_HEIGHT_RATIO)、false なら全身。ぶち抜き立ち絵スロット
- * (layoutPanel.role === "figure")は吹き出しで隠したくないため全身を返す。
- */
-function planCastAvoidZones(
+/** 自動レタリングへ渡す回避領域(ラベルは人間ゲートUIの表示用)。 */
+export function planCastAvoidZones(
   pageSpec: MangaPlanV2["pages"][number],
   layoutPanels: PageLayout["panels"]
 ): Array<{ x: number; y: number; width: number; height: number; label?: string }> {
-  return mapPlanCastToPageBoxes(pageSpec, layoutPanels, (bodyBox, layoutPanel) => {
-    const fullBody = layoutPanel.role === "figure";
-    return {
-      x: bodyBox.x,
-      y: bodyBox.y,
-      width: bodyBox.width,
-      height: bodyBox.height * (fullBody ? 1 : CAST_FACE_HEIGHT_RATIO),
-      label: fullBody ? "立ち絵" : "顔"
-    };
-  });
+  return mapPlanCastToPageBoxes(
+    pageSpec,
+    layoutPanels,
+    (box, layoutPanel) => ({ ...box, label: layoutPanel.role === "figure" ? "立ち絵" : "顔" }),
+    { fullBodyForFigure: true }
+  );
 }
 
 interface LetteringConstraints {
@@ -337,12 +392,9 @@ export function ensureDialogueLettering(
   requireReadableBalloonText(pageId);
   const pageRow = getRow<{ objects_json: string | null }>("SELECT objects_json FROM pages WHERE id = ?", [pageId]);
   const objects = normalizePageObjects(pageRow?.objects_json ? JSON.parse(pageRow.objects_json) : []);
-  const faceBoxes = mapPlanCastToPageBoxes(pageSpec, layoutPanels, (bodyBox) => ({
-    x: bodyBox.x,
-    y: bodyBox.y,
-    width: bodyBox.width,
-    height: bodyBox.height * CAST_FACE_HEIGHT_RATIO
-  }));
+  // 監査の顔ボックスは回避領域と同一定義(castPoses 由来 → bbox フォールバック)。
+  // ここがずれると「回避したのに overlap が下がらない」という誤った計測になる。
+  const faceBoxes = mapPlanCastToPageBoxes(pageSpec, layoutPanels, (box) => box);
   const letteringReport = auditLettering(pageSpec.layoutSnapshot, objects, faceBoxes);
   const evaluation = parseJson<Record<string, unknown>>(requireRun(run.id).evaluation_json, {});
   runSql("UPDATE script_manga_runs SET evaluation_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [
