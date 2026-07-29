@@ -51,6 +51,41 @@ interface DirectedPanelFields {
   composition?: string;
 }
 
+/** castRef 文字列の比較キー(前後空白と大文字小文字を無視する)。 */
+function castRefKey(value: string): string {
+  return value.trim().toLocaleLowerCase();
+}
+
+/**
+ * `direction.subjects[].castRef` を character id へ解決する。
+ *
+ * castRef は「このコマにこのキャラが写っている」という**明示宣言**として扱う。action 行の
+ * 氏名一致(`visibleCharacterIdsForActionText`)だけに頼ると、固有名を避けて
+ * 「a young woman in paint-stained overalls」のように書いた台詞なしのコマがキャスト空になり、
+ * ポーズ拘束も参照条件付けも一切効かない。action へ固有名を書けばキャストは解決するが、
+ * その氏名がそのままプロンプトへ漏れるので、避けて書くのが正しい。その正しい書き方を
+ * 成立させるための結線が castRef である。
+ *
+ * 解決できない castRef は無視する(呼び出し側が warning として報告する)。
+ */
+function castRefCharacterIds(
+  direction: DirectedPanelFields,
+  story: { characterById: Map<string, { name: string; aliases: string[] }> }
+): string[] {
+  const refs = new Set(
+    (direction.subjects ?? [])
+      .map((subject) => (typeof subject.castRef === "string" ? castRefKey(subject.castRef) : ""))
+      .filter(Boolean)
+  );
+  if (refs.size === 0) return [];
+  const ids: string[] = [];
+  for (const [characterId, character] of story.characterById) {
+    const labels = [character.name, ...(character.aliases ?? [])].map(castRefKey);
+    if (labels.some((label) => label && refs.has(label))) ids.push(characterId);
+  }
+  return ids;
+}
+
 /** 監督出力のアンカー座標を防御的に検証する(0..1クランプ、数値以外は捨てる)。 */
 function anchorPoint(value: unknown): { x: number; y: number } | null {
   if (!value || typeof value !== "object") return null;
@@ -342,8 +377,30 @@ export function buildMangaPlanV2(input: {
         ...visibleDialogueLines.map((line) => line.characterId).filter((id): id is string => Boolean(id)),
         // Dialogue source text contains speaker labels. Resolve silent cast only
         // from action/synopsis elements so off-screen labels cannot become people.
-        ...actionSources.flatMap((source) => story.visibleCharacterIdsForActionText(source.text))
+        ...actionSources.flatMap((source) => story.visibleCharacterIdsForActionText(source.text)),
+        // 監督の castRef による明示宣言。action 行の氏名一致だけに頼ると、
+        // 「a young woman in paint-stained overalls」のように固有名を避けて書いた
+        // 台詞なしのコマがキャスト空になり、ポーズ拘束も参照条件付けも一切効かなくなる
+        // (action へ固有名を書くとプロンプトへ漏れるので、避けて書くのが正しい)。
+        // castRef は非視覚の結線メタデータなので、これを可視宣言として扱う。
+        ...castRefCharacterIds(direction, story)
       ].filter((id, index, all) => all.indexOf(id) === index);
+      // 解決できない castRef は静かにキャストを空にしてしまう(ポーズ拘束と参照条件付けが
+      // 両方消える)。原因が見えないと数時間の生成を無駄にするので warning へ出す。
+      for (const subject of direction.subjects ?? []) {
+        const ref = typeof subject.castRef === "string" ? subject.castRef.trim() : "";
+        if (!ref) continue;
+        const resolved = [...story.characterById.values()].some((character) =>
+          [character.name, ...(character.aliases ?? [])].some((label) => castRefKey(label) === castRefKey(ref))
+        );
+        if (!resolved) {
+          story.graph.warnings.push({
+            code: "unresolved-cast-ref",
+            message: `direction.subjects[].castRef "${ref}" does not match any character name or alias; the panel gets no pose control and no reference conditioning`,
+            sourceElementId: sourceElementIds[0]
+          });
+        }
+      }
       const boxes = castBoxes(Math.max(1, characterIds.length));
       // ネームポーズレイヤ: 監督の castRef(脚本上のキャラ名、非視覚メタデータ)で subject と
       // キャラを結線し、head/torso アンカーと layer 深度ヒントを集める。castRef 一致が

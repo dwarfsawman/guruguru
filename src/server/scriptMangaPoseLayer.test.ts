@@ -292,3 +292,106 @@ test("applyNamePlanEdits: pose 編集(置換/深度/削除)と検証エラー", 
     );
   }
 });
+
+test("buildMangaPlanV2: 台詞なし・action に固有名なしのコマでも castRef でキャストが立つ", () => {
+  initializeDb();
+  // 固有名を出さない action(規約どおりの書き方)+ 台詞なしのコマ。
+  const doc = parseFountain([
+    "INT. BATH HALL - DAWN",
+    "",
+    "A young woman in paint-stained overalls presses her flat palm against the painted wall."
+  ].join("\n")).doc;
+  const legacy = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 8 });
+  const panel = legacy.pages[0]!.panels[0]!;
+  assert.deepEqual(panel.dialogueOrderIndexes, [], "台詞のないコマであること");
+  (panel as DirectablePanel).direction = {
+    shot: "medium",
+    subject: "the young painter",
+    action: "extends an arm and presses her flat palm against the wall",
+    emotion: "focused",
+    composition: "her hand at the center of the frame",
+    subjects: [{
+      ref: "the young painter",
+      position: "middle-center",
+      action: "extends an arm and presses her flat palm against the wall",
+      expression: "focused",
+      castRef: "Alice",
+      head: { x: 0.4, y: 0.2 },
+      torso: { x: 0.4, y: 0.6 },
+      layer: 1
+    }]
+  };
+  legacy.plannerProvenance = { kind: "llm-director", model: "test", batches: [] } as ScriptMangaPlan["plannerProvenance"];
+
+  const plan = buildMangaPlanV2({
+    id: "plan-castref-silent",
+    projectId: "proj",
+    scriptId: "script",
+    scriptRevisionId: "rev",
+    doc,
+    legacyPlan: legacy,
+    characters: CHARACTERS,
+    dialogues: [],
+    providerId: "comfy",
+    globalLoras: [],
+    dialoguePolicy: "preserve",
+    resolveLayoutTemplate,
+    beatAnnotation: null
+  });
+  const built = plan.pages.flatMap((page) => page.panels).find((candidate) => candidate.id === panel.id)!;
+
+  // ここが本題: action に "Alice" と書かず、台詞も無くてもキャストが立つ。
+  // 立たないとポーズ拘束も参照条件付けも静かに消える。
+  assert.deepEqual(built.cast.map((member) => member.characterId), ["char-alice"]);
+  assert.ok(built.castPoses && built.castPoses.length === 1, "castPoses が生成される");
+  assert.equal(built.castPoses![0]!.characterId, "char-alice");
+  // アンカー由来の骨格になっていること(頭部関節が指定した head の近くに来る)。
+  const nose = built.castPoses![0]!.joints[0]!;
+  assert.ok(Math.abs(nose.y - 0.2) < 0.25, `頭部がアンカー付近: ${nose.y}`);
+});
+
+test("buildMangaPlanV2: 解決できない castRef は warning になる(静かに消えない)", () => {
+  initializeDb();
+  const doc = parseFountain([
+    "INT. BATH HALL - DAWN",
+    "",
+    "A young woman in paint-stained overalls opens a paint can on the tiled floor."
+  ].join("\n")).doc;
+  const legacy = planScriptManga(doc, { panelsPerPage: 4, maxElementsPerPanel: 8 });
+  const panel = legacy.pages[0]!.panels[0]!;
+  (panel as DirectablePanel).direction = {
+    shot: "full",
+    subject: "the young painter",
+    action: "crouches and opens a paint can",
+    emotion: "quiet",
+    composition: "low angle across the tiles",
+    // 名前も別名も一致しない(前作の実インシデント: castRef「環ハル」対 キャラ名「ハル」)。
+    subjects: [{
+      ref: "the young painter",
+      position: "middle-center",
+      action: "crouches and opens a paint can",
+      expression: "quiet",
+      castRef: "環ハル"
+    }]
+  };
+  legacy.plannerProvenance = { kind: "llm-director", model: "test", batches: [] } as ScriptMangaPlan["plannerProvenance"];
+
+  const plan = buildMangaPlanV2({
+    id: "plan-castref-unresolved",
+    projectId: "proj",
+    scriptId: "script",
+    scriptRevisionId: "rev",
+    doc,
+    legacyPlan: legacy,
+    characters: CHARACTERS,
+    dialogues: [],
+    providerId: "comfy",
+    globalLoras: [],
+    dialoguePolicy: "preserve",
+    resolveLayoutTemplate,
+    beatAnnotation: null
+  });
+  const warning = plan.narrativeGraph.warnings.find((entry) => entry.code === "unresolved-cast-ref");
+  assert.ok(warning, JSON.stringify(plan.narrativeGraph.warnings));
+  assert.ok(warning!.message.includes("環ハル"));
+});

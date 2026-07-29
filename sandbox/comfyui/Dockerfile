@@ -3,6 +3,10 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 ARG COMFYUI_COMMIT=f3a36e74844893f32f77f22d249d08862805d8f4
 ARG PULID_COMMIT=52dc5068e0fc304e51273cfa5fbdd031e1ddb824
 ARG ANIMA_LLLITE_COMMIT=6701c8d6fc3bf1b2ed966b87c95ce609c52cebea
+# Anima の Reference Set 条件付け(参照画像による人物同一性)は、この in-context ノードパック
+# 経由でしか実装が無い。未導入だと人物が写るコマが全て「Reference preflight failed」で落ちる。
+# 配布は GitHub ではなく HuggingFace リポジトリのサブディレクトリ。
+ARG ANIMA_INCONTEXT_COMMIT=e084c88c02dcaa55806c56b22a43461d4c32be85
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -35,6 +39,15 @@ RUN apt-get update \
 RUN uv pip uninstall --python /opt/venv/bin/python onnxruntime onnxruntime-gpu \
     && uv pip install --python /opt/venv/bin/python "onnxruntime-gpu==1.22.0" \
     && rm -rf /root/.cache
+
+# Anima の in-context 参照(AnimaRefEncode / AnimaRefLatentBatch / AnimaInContextApply)。
+# 上のレイヤーとは分けてあるので、追加してもベースの torch 導入はキャッシュから再利用される。
+# 追加の pip 依存は無い(pure torch + ComfyUI API)。LFS の重みはクローンせず、
+# 重み本体(anima-incontext-character.safetensors)は /models 側から解決する。
+RUN GIT_LFS_SKIP_SMUDGE=1 git clone https://huggingface.co/darask0/Anima-InContext-Character /tmp/anima-incontext \
+    && git -C /tmp/anima-incontext checkout "$ANIMA_INCONTEXT_COMMIT" \
+    && cp -r /tmp/anima-incontext/comfyui-anima-incontext /opt/ComfyUI/custom_nodes/comfyui-anima-incontext \
+    && rm -rf /tmp/anima-incontext /root/.cache
 
 COPY comfyui/extra_model_paths.yaml /opt/sandbox-extra-model-paths.yaml
 COPY comfyui/healthcheck.py /opt/healthcheck.py

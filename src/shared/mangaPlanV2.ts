@@ -297,7 +297,14 @@ export interface NarrativeGraph {
   sceneBibles?: SceneBible[];
   beats: MangaBeat[];
   warnings: Array<{
-    code: "unresolved-mention" | "ambiguous-mention" | "missing-reference" | "state-gap" | "other";
+    code:
+      | "unresolved-mention"
+      | "ambiguous-mention"
+      | "missing-reference"
+      /** direction.subjects[].castRef がどのキャラ名/別名にも一致しない(ポーズ拘束と参照が消える)。 */
+      | "unresolved-cast-ref"
+      | "state-gap"
+      | "other";
     message: string;
     sourceElementId?: string;
   }>;
