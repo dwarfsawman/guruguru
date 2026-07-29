@@ -16,6 +16,7 @@
  * 座標系は PageLayout と同じ width-relative-top-left(x∈[0,1]、y∈[0,page.height])。
  */
 import { orderPanelsByReadingDirection } from "./dialogueAutoLayout";
+import { estimateMinimumPanelHeight } from "./layoutMatcher";
 import { LAYOUT_PAGE_MARGIN, LAYOUT_PANEL_BLEED } from "./layoutPresets";
 import {
   PANEL_BLEED_OVERSHOOT,
@@ -559,29 +560,75 @@ export interface NameLayoutValidationIssue {
     | "invalid-shape"
     | "out-of-bounds"
     | "min-area"
+    | "min-height"
     | "reading-order";
+  /**
+   * `error` は保存を拒否する。`warning` は保存を通す。
+   *
+   * 幾何の不変条件(コマ数・id・order・読み順・裁ち切り上限・潰れ)は破ると下流が壊れるので error。
+   * 縦書きの収容(`min-height`)は**最小可読フォントを仮定した見積もり**でしかなく、実際の
+   * 字詰めやフォント縮小で収まることがある。見積もりで作画意図を却下しないよう warning に留め、
+   * 最終的な可否は実際の配置結果(`applyDialogueLayout` と lettering 監査、ページの目視)で決める。
+   */
+  severity: "error" | "warning";
   message: string;
   panelId?: string;
 }
 
 export interface NameLayoutValidationResult {
+  /** error が1つも無ければ true(warning は保存を妨げない)。 */
   ok: boolean;
   issues: NameLayoutValidationIssue[];
+  errors: NameLayoutValidationIssue[];
+  warnings: NameLayoutValidationIssue[];
+}
+
+/**
+ * コマごとの縦書き台詞量(読み順)。与えると各コマが吹き出しを収容できる高さを持つかも検証する。
+ * 省略時は幾何だけを見る(旧挙動)。
+ */
+export interface NameLayoutDialogueDemand {
+  /** そのコマで最も長い吹き出しの文字数。 */
+  maxBalloonCharacters: number;
+  /** そのコマの吹き出し数。 */
+  balloonCount: number;
 }
 
 /**
  * 編集済みレイアウトの検証。基礎レイアウト(候補の実効レイアウト)と比較し、
  * コマ数・id・order・読み順が保たれ、幾何が健全であることを確かめる。
  * クライアントの保存前チェックとサーバーの set-custom-layout 検証で共用する。
+ *
+ * `demands` を渡すと、縦書き吹き出しの最小高さ(`estimateMinimumPanelHeight`)も検証する。
+ * これが無いと、面積は十分でも縦に潰れたコマを手で描けてしまい、run 作成時に
+ * `applyDialogueLayout` が「一部の行を配置できなかった」で 422 になる。テンプレート選択側は
+ * 同じ式を hard constraint として持っているので、手描き経路だけ素通りするのを塞ぐ。
  */
-export function validateEditedNameLayout(edited: PageLayout, base: PageLayout): NameLayoutValidationResult {
-  const issues: NameLayoutValidationIssue[] = [];
+/** 見積もりに過ぎない `min-height` だけを warning に落とし、残りは error として扱う。 */
+function classifyLayoutIssues(
+  raw: ReadonlyArray<Omit<NameLayoutValidationIssue, "severity">>
+): NameLayoutValidationResult {
+  const issues = raw.map((issue): NameLayoutValidationIssue => ({
+    ...issue,
+    severity: issue.code === "min-height" ? "warning" : "error"
+  }));
+  const errors = issues.filter((issue) => issue.severity === "error");
+  const warnings = issues.filter((issue) => issue.severity === "warning");
+  return { ok: errors.length === 0, issues, errors, warnings };
+}
+
+export function validateEditedNameLayout(
+  edited: PageLayout,
+  base: PageLayout,
+  demands?: readonly NameLayoutDialogueDemand[]
+): NameLayoutValidationResult {
+  const issues: Array<Omit<NameLayoutValidationIssue, "severity">> = [];
   if (edited.panels.length !== base.panels.length) {
     issues.push({
       code: "panel-count",
       message: `コマ数が変わっています(${base.panels.length}→${edited.panels.length})。コマの追加・削除はできません。`
     });
-    return { ok: false, issues };
+    return classifyLayoutIssues(issues);
   }
   for (let index = 0; index < edited.panels.length; index += 1) {
     const editedPanel = edited.panels[index]!;
@@ -642,12 +689,31 @@ export function validateEditedNameLayout(edited: PageLayout, base: PageLayout): 
   // 読み順(reading direction の行検出)が基礎レイアウトと同じ id 列であること。
   // 台詞の自動配置はコマの幾何順に依存するため、順序が入れ替わる編集は拒否する。
   const baseOrder = orderPanelsByReadingDirection(base.panels, base.readingDirection).map((panel) => panel.id);
-  const editedOrder = orderPanelsByReadingDirection(edited.panels, edited.readingDirection).map((panel) => panel.id);
-  if (baseOrder.join(" ") !== editedOrder.join(" ")) {
+  const editedOrderPanels = orderPanelsByReadingDirection(edited.panels, edited.readingDirection);
+  const editedOrder = editedOrderPanels.map((panel) => panel.id);
+  // 縦書き吹き出しの収容(読み順でコマと台詞量を対応させる)。
+  if (demands) {
+    editedOrderPanels.forEach((panel, readingIndex) => {
+      const demand = demands[readingIndex];
+      if (!demand) return;
+      const [px0, py0, px1, py1] = panelBounds(panel.shape);
+      const width = Math.max(0, px1 - px0);
+      const height = Math.max(0, py1 - py0);
+      const required = estimateMinimumPanelHeight(demand, width);
+      if (required > 0 && height + EPS < required) {
+        issues.push({
+          code: "min-height",
+          panelId: panel.id,
+          message: `コマ「${panel.id}」は縦書きの台詞が入りません(高さ ${height.toFixed(2)} < 必要 ${required.toFixed(2)})。コマを縦に広げるか、台詞を別のコマへ分けてください。`
+        });
+      }
+    });
+  }
+  if (baseOrder.join("\0") !== editedOrder.join("\0")) {
     issues.push({
       code: "reading-order",
       message: `編集によりコマの読み順が変わっています(${baseOrder.join("→")} が ${editedOrder.join("→")} になりました)。読み順を保つ範囲で調整してください。`
     });
   }
-  return { ok: issues.length === 0, issues };
+  return classifyLayoutIssues(issues);
 }

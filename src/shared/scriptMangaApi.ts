@@ -160,6 +160,12 @@ export interface SetCandidateCustomLayoutRequest {
 export interface SetCandidateCustomLayoutResponse {
   version: number;
   candidate: ScriptMangaPlanCandidateView;
+  /**
+   * 保存は通ったが注意が要る点(現状は縦書き吹き出しの収容見積もり)。見積もりは最小可読
+   * フォントを仮定したヒューリスティックなので、実際には収まることがある。保存を止めず、
+   * 実際の配置結果とページの目視で判断できるよう、警告としてだけ返す。
+   */
+  layoutWarnings: string[];
 }
 
 // --- 演出ネームの差分編集(V5 D6) ---

@@ -96,7 +96,9 @@ function activeEditCandidate() {
 }
 
 function validateDraft(edit: NameLayoutEditState): void {
-  edit.issues = validateEditedNameLayout(edit.draftLayout, edit.baseLayout).issues.map((issue) => issue.message);
+  // 保存を止めるのは error だけ。warning(縦書きの収容見積もり)はサーバー保存時の
+  // layoutWarnings として返り、トーストで知らせる。
+  edit.issues = validateEditedNameLayout(edit.draftLayout, edit.baseLayout).errors.map((issue) => issue.message);
 }
 
 // --- セッション開始/終了 ---
@@ -198,6 +200,8 @@ async function saveLayoutEdit(): Promise<void> {
     // await 中に cancel→新セッション開始が起きていたら、新しいセッションを破壊しない。
     if (state.nameLayoutEdit === edit) state.nameLayoutEdit = null;
     pushToast("コマ割りの修正を保存しました。「このネームで生成」で検査と採用へ進めます。", "info");
+    // 見積もり上は縦書きが入らないコマ。保存は通っているので、実際のページを見て判断する。
+    for (const warning of response.layoutWarnings ?? []) pushToast(warning, "error");
     requestRender();
   } catch (error) {
     pushToast(error instanceof Error ? error.message : String(error), "error");

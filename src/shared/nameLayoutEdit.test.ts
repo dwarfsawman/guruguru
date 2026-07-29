@@ -244,4 +244,49 @@ test("validateEditedNameLayout rejects panel count change, tiny panels and readi
   const overshootResult = validateEditedNameLayout(overshoot, base);
   assert.equal(overshootResult.ok, false);
   assert.ok(overshootResult.issues.some((issue) => issue.code === "out-of-bounds" || issue.code === "reading-order"));
+  // 幾何の不変条件はすべて error(保存を止める)。
+  for (const result of [tinyResult, swappedResult, overshootResult]) {
+    assert.ok(result.errors.length > 0);
+    assert.equal(result.warnings.length, 0);
+  }
+});
+
+test("validateEditedNameLayout: 縦書きが入らない見積もりは warning で、保存は止めない", () => {
+  const base = toEditableNameLayout(fourGrid());
+
+  // 台詞なし → 収容の指摘は出ない。
+  const noDialogue = validateEditedNameLayout(toEditableNameLayout(fourGrid()), base, [
+    { maxBalloonCharacters: 0, balloonCount: 0 },
+    { maxBalloonCharacters: 0, balloonCount: 0 },
+    { maxBalloonCharacters: 0, balloonCount: 0 },
+    { maxBalloonCharacters: 0, balloonCount: 0 }
+  ]);
+  assert.equal(noDialogue.ok, true);
+  assert.equal(noDialogue.issues.length, 0);
+
+  // 読み順先頭のコマだけを縦に潰し、そこへ長い台詞を割り当てる。
+  const squashed = toEditableNameLayout(fourGrid());
+  const first = squashed.panels[0]!;
+  assert.ok(first.shape.type === "polygon");
+  const [x0, y0, x1] = [
+    Math.min(...first.shape.points.map(([x]) => x)),
+    Math.min(...first.shape.points.map(([, y]) => y)),
+    Math.max(...first.shape.points.map(([x]) => x))
+  ];
+  first.shape.points = [[x0, y0], [x1, y0], [x1, y0 + 0.06], [x0, y0 + 0.06]];
+  const result = validateEditedNameLayout(squashed, base, [
+    { maxBalloonCharacters: 28, balloonCount: 2 },
+    { maxBalloonCharacters: 0, balloonCount: 0 },
+    { maxBalloonCharacters: 0, balloonCount: 0 },
+    { maxBalloonCharacters: 0, balloonCount: 0 }
+  ]);
+  const minHeight = result.issues.filter((issue) => issue.code === "min-height");
+  assert.equal(minHeight.length, 1, JSON.stringify(result.issues));
+  assert.equal(minHeight[0]!.severity, "warning");
+  assert.equal(minHeight[0]!.panelId, first.id);
+  assert.equal(result.errors.length, 0, "見積もりだけでは保存を拒否しない");
+  assert.equal(result.ok, true, "warning は ok を false にしない");
+
+  // demands を渡さなければ従来どおり幾何だけを見る。
+  assert.equal(validateEditedNameLayout(squashed, base).issues.length, 0);
 });

@@ -25,11 +25,16 @@ import {
   normalizeScriptMangaPlanScales,
   scriptMangaPlanStructureSignature,
   stripCustomNameLayouts,
+  type ScriptMangaPagePlan,
   type ScriptMangaPlan,
   type ScriptMangaPlanOptions
 } from "../shared/scriptMangaPlan";
 import { normalizeEditedPageLayout, type PageLayout } from "../shared/pageLayout";
-import { toEditableNameLayout, validateEditedNameLayout } from "../shared/nameLayoutEdit";
+import {
+  type NameLayoutDialogueDemand,
+  toEditableNameLayout,
+  validateEditedNameLayout
+} from "../shared/nameLayoutEdit";
 import { validateProvidedScriptMangaPlan } from "../shared/scriptMangaProvidedPlan";
 import { buildPreLayoutUnits } from "../shared/preLayoutBeat";
 import { createId, getRow, getRows, runSql } from "./db";
@@ -759,6 +764,26 @@ export function setCandidateLayoutOverride(candidateId: string, body: unknown): 
  * (set-layout)より優先される別レイヤーとして pageIndex 毎に持ち、基礎プランは不変のまま。
  * `layout`/`balloonHints` は undefined=変更しない / null=削除 / 値=置き換え の三値。
  */
+/**
+ * ページのコマ(plan 順 = レイアウトの読み順)ごとの縦書き台詞量。
+ * 手描きコマ割りが吹き出しを収容できるかの見積もり入力。
+ */
+function pageDialogueDemands(doc: FountainDoc, page: ScriptMangaPagePlan): NameLayoutDialogueDemand[] {
+  const dialogueTexts: string[] = [];
+  for (const scene of doc.scenes) {
+    for (const element of scene.elements) {
+      if (element.type === "dialogue") dialogueTexts.push(element.text);
+    }
+  }
+  return page.panels.map((panel) => {
+    const lines = panel.dialogueOrderIndexes.map((orderIndex) => dialogueTexts[orderIndex] ?? "");
+    return {
+      balloonCount: lines.length,
+      maxBalloonCharacters: lines.reduce((max, line) => Math.max(max, Array.from(line).length), 0)
+    };
+  });
+}
+
 export function setCandidateCustomLayout(candidateId: string, body: unknown): SetCandidateCustomLayoutResponse {
   const input = objectBody(body) as Partial<SetCandidateCustomLayoutRequest> & Record<string, unknown>;
   const row = requirePlanCandidate(candidateId);
@@ -788,6 +813,7 @@ export function setCandidateCustomLayout(candidateId: string, body: unknown): Se
     throw new HttpError(400, "layout or balloonHints is required");
   }
 
+  let layoutWarnings: string[] = [];
   const customLayouts = parseCandidateCustomLayouts(row);
   if (input.layout !== undefined) {
     if (input.layout === null) {
@@ -802,10 +828,17 @@ export function setCandidateCustomLayout(candidateId: string, body: unknown): Se
       if (baseLayout.panels.length !== page.panels.length) {
         throw new HttpError(422, "Base layout panel count does not match the page");
       }
-      const validation = validateEditedNameLayout(edited, toEditableNameLayout(baseLayout));
+      const validation = validateEditedNameLayout(
+        edited,
+        toEditableNameLayout(baseLayout),
+        pageDialogueDemands(revision.doc, page)
+      );
       if (!validation.ok) {
-        throw new HttpError(422, `編集済みコマ割りが検証に通りません: ${validation.issues.map((issue) => issue.message).join(" / ")}`);
+        throw new HttpError(422, `編集済みコマ割りが検証に通りません: ${validation.errors.map((issue) => issue.message).join(" / ")}`);
       }
+      // warning(縦書きの収容見積もり)は保存を止めない。見積もりで作画意図を却下せず、
+      // 実際に配置してからページを見て判断できるようにするため、注意としてだけ返す。
+      layoutWarnings = validation.warnings.map((issue) => issue.message);
       customLayouts[pageIndex] = edited;
     }
   }
@@ -850,7 +883,7 @@ export function setCandidateCustomLayout(candidateId: string, body: unknown): Se
   if (updated.changes !== 1) {
     throw new HttpError(409, "Plan candidate was updated concurrently");
   }
-  return { version, candidate: candidateView(requirePlanCandidate(row.id)) };
+  return { version, candidate: candidateView(requirePlanCandidate(row.id)), layoutWarnings };
 }
 
 /** adoptScriptMangaPlanCandidate の応答(routeApi がそのまま status/body を返す)。 */
