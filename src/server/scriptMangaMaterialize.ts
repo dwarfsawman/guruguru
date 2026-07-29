@@ -242,6 +242,21 @@ function upsertPreparedTask(input: {
   );
 }
 
+/**
+ * そのコマに「実際に写っている」と根拠づけられるキャラ id。
+ *
+ * 根拠は2つある。
+ *
+ * 1. action/synopsis の本文にキャラ名(別名含む)が出ている。
+ * 2. **そのコマに設計済みのポーズ骨格がある**(`panel.castPoses`)。
+ *
+ * 2 が要るのは、action 行に固有名を書くとそのままプロンプトへ漏れるため、
+ * 「a young woman in paint-stained overalls」のように中立に書くのが正しい書き方であり、
+ * その場合 1 では拾えないから。ポーズを設計したという事実自体が明示的な可視宣言なので、
+ * これを根拠として扱う。これが無いと、台詞のないコマのキャストが materialize で削られ、
+ * ポーズ拘束と参照条件付けが両方消える(buildMangaPlanV2 側で castRef から立てた
+ * キャストがここで剥がされる)。
+ */
 export function sourceGroundedCharacterIds(panel: PanelSpec, graph: MangaPlanV2["narrativeGraph"]): Set<string> {
   const sourceIds = new Set(panel.sourceElementIds);
   const visualSources = graph.sourceElements.filter((source) =>
@@ -249,10 +264,12 @@ export function sourceGroundedCharacterIds(panel: PanelSpec, graph: MangaPlanV2[
     source.sceneIndex === panel.sceneIndex &&
     (source.type === "action" || source.type === "synopsis")
   );
-  return new Set(graph.entities
+  const grounded = new Set(graph.entities
     .filter((entity) => entity.kind === "character" &&
       visualSources.some((source) => actionTextEstablishesVisibleActor(source.text, [entity.name, ...entity.aliases])))
     .map((entity) => entity.id));
+  for (const pose of panel.castPoses ?? []) grounded.add(pose.characterId);
+  return grounded;
 }
 
 export function normalizePanelCast(

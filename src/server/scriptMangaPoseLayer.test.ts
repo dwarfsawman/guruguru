@@ -17,6 +17,7 @@ import { registerProvider } from "./providers/registry.ts";
 import { createScript } from "./scripts.ts";
 import { applyNamePlanEdits, buildPoseControlAttachment, createScriptMangaRun } from "./scriptManga.ts";
 import { buildMangaPlanV2 } from "./scriptMangaPlanV2.ts";
+import { sourceGroundedCharacterIds } from "./scriptMangaMaterialize.ts";
 import type { StoryGraphCharacterInput, StoryGraphDialogueInput } from "./storyGraphBuilder.ts";
 
 registerProvider(fakeProvider);
@@ -394,4 +395,30 @@ test("buildMangaPlanV2: 解決できない castRef は warning になる(静か�
   const warning = plan.narrativeGraph.warnings.find((entry) => entry.code === "unresolved-cast-ref");
   assert.ok(warning, JSON.stringify(plan.narrativeGraph.warnings));
   assert.ok(warning!.message.includes("環ハル"));
+});
+
+test("sourceGroundedCharacterIds: 設計済みポーズを可視根拠として扱う(materializeで剥がされない)", () => {
+  const graph = {
+    sourceElements: [{ id: "scene-0-element-0", sceneIndex: 0, type: "action", text: "A young woman presses her palm against the wall." }],
+    entities: [{ id: "char-alice", kind: "character", name: "Alice", aliases: ["ALICE"] }],
+    worldStates: [],
+    beats: [],
+    warnings: []
+  } as unknown as Parameters<typeof sourceGroundedCharacterIds>[1];
+
+  const base = {
+    id: "panel-x",
+    sceneIndex: 0,
+    sourceElementIds: ["scene-0-element-0"]
+  } as unknown as PanelSpec;
+
+  // action に固有名が無く、ポーズも無ければ根拠なし(従来どおり)。
+  assert.equal(sourceGroundedCharacterIds(base, graph).size, 0);
+
+  // 設計済みポーズがあれば、それ自体が可視宣言。
+  const withPose = {
+    ...base,
+    castPoses: [{ characterId: "char-alice", depth: 0, source: "llm", joints: [] }] as unknown as PanelCastPose[]
+  } as unknown as PanelSpec;
+  assert.deepEqual([...sourceGroundedCharacterIds(withPose, graph)], ["char-alice"]);
 });
