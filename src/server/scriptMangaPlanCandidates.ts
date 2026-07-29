@@ -955,7 +955,12 @@ export async function adoptScriptMangaPlanCandidate(
       generateImages: false,
       candidateSelectionPolicy: "review",
       requireReferenceSets: true,
-      allowReferenceFallback: false
+      // 既定は fallback 禁止(参照なしで人物が崩れた絵を黙って作らせない)。ただし明示的に
+      // true を渡したときだけ許す。Anima の参照条件付けは In-Context ノードパック
+      // (別途導入が要る第三者拡張)経由しか無く、未導入の環境では人物が写るコマが
+      // 全て「Reference preflight failed」で落ちる。ここを無条件 false に固定すると、
+      // 採用経路そのものが使えなくなり、外部プランからの制作が完全に詰む。
+      allowReferenceFallback: input.allowReferenceFallback === true
     });
   } catch (error) {
     const concurrentReplay = adoptedReplay();

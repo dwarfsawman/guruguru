@@ -4,6 +4,7 @@ import { createId, getRow, initializeDb, runSql } from "./db.ts";
 import { createProject } from "./projects.ts";
 import { createScript, addScriptRevision } from "./scripts.ts";
 import {
+  adoptScriptMangaPlanCandidate,
   adoptablePlanCandidate,
   archiveScriptMangaPlanCandidate,
   beginPlanCandidateAdoption,
@@ -646,4 +647,46 @@ test("set-custom-layout: set-layoutフリップは同ページのコマ割り修
   assert.ok(again.candidate.customLayouts?.[0]);
   const cleared = setCandidateCustomLayout(candidate.id, { pageIndex: 0, expectedVersion: 3, layout: null });
   assert.deepEqual(cleared.candidate.customLayouts ?? {}, {});
+});
+
+test("候補採用: allowReferenceFallback は明示 true のときだけ許可される", async () => {
+  resetFakeProvider();
+  const templateId = chromaTemplate();
+
+  async function adoptWith(fallback: boolean | undefined): Promise<Record<string, unknown>> {
+    const project = createProject({ name: `adopt-fallback-${createId("t")}`, mode: "book" })!;
+    const imported = createScript(project.id, { title: "Fallback", fountainSource: SCRIPT });
+    const created = await createScriptMangaPlanCandidates(project.id, { scriptId: imported.script.id, count: 1 });
+    const embedded = created.candidates[0]!;
+    // 採用時に監督LLMを再実行しない provided 候補にする(組み込みLLM不通でも通す)。
+    const external = importScriptMangaPlanCandidate(project.id, {
+      scriptId: imported.script.id,
+      scriptRevisionId: embedded.scriptRevisionId,
+      groupId: embedded.groupId,
+      plan: externallyDirected(embedded.plan),
+      agent: "test",
+      model: "test-model"
+    });
+    const candidate = external.candidate;
+    const result = await adoptScriptMangaPlanCandidate(candidate.id, async () => ({
+      templateId,
+      providerId: "fake",
+      dialoguePolicy: "preserve",
+      auditMode: "manual",
+      ...(fallback === undefined ? {} : { allowReferenceFallback: fallback })
+    }));
+    assert.equal(result.status, 201, JSON.stringify(result.body));
+    const runId = (result.body as { run: { id: string } }).run.id;
+    const row = getRow<{ config_json: string }>("SELECT config_json FROM script_manga_runs WHERE id = ?", [runId])!;
+    return JSON.parse(row.config_json) as Record<string, unknown>;
+  }
+
+  // 既定は禁止のまま。参照なしで人物が崩れた絵を黙って作らせない。
+  assert.equal((await adoptWith(undefined)).allowReferenceFallback, false);
+  assert.equal((await adoptWith(false)).allowReferenceFallback, false);
+  // 明示 true のときだけ許す。Anima の参照条件付けは別途導入が要る In-Context ノードパック
+  // 経由しか無く、無条件 false に固定すると未導入環境では採用経路そのものが使えなくなる。
+  assert.equal((await adoptWith(true)).allowReferenceFallback, true);
+  // requireReferenceSets は採用経路では常に true(preflight を素通りさせない)。
+  assert.equal((await adoptWith(true)).requireReferenceSets, true);
 });
