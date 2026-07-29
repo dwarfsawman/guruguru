@@ -1,10 +1,45 @@
-import { type Json as JsonObject, isJsonObject } from "./json";
+import { type Json, type Json as JsonObject, isJsonObject } from "./json";
+import { detectWorkflowModelFamily } from "./workflowModels";
 
 interface WorkflowNode {
   id: string;
   inputs: JsonObject;
   classType: string;
   title: string;
+}
+
+/**
+ * ポーズ骨格を条件付けへ適用するノードのクラス名。
+ *
+ * 標準の ControlNet は `ControlNetApplyAdvanced`(CONDITIONING を返す)。Anima 系は
+ * ComfyUI-Anima-LLLite の `AnimaLLLiteApply`(MODEL を返す)で、接続先の型は違うが
+ * GURUGURU が触る入力名(image / strength / start_percent / end_percent)は同じなので、
+ * ノード探索さえ共通化すれば同じ patch 経路に載る。
+ *
+ * 新しい apply ノードを足すときはここへ1行足す(クラス名を各所へ直書きしない)。
+ */
+export const CONTROLNET_APPLY_CLASSES = ["ControlNetApplyAdvanced", "AnimaLLLiteApply"] as const;
+
+/** workflow JSON 文字列がポーズ適用ノードを含むか(テンプレの対応判定)。 */
+export function workflowJsonHasControlNetApply(workflowJson: string): boolean {
+  return CONTROLNET_APPLY_CLASSES.some((className) => workflowJson.includes(className));
+}
+
+/**
+ * テンプレートがポーズ骨格の条件付けを受け付けられるか。
+ *
+ * Chroma 系は ControlNet 分岐がテンプレートへ焼かれているので、ノードの有無で判定できる。
+ * Anima 系は `AnimaLLLiteApply` を**生成時に workflowFeatureFragments が注入する**ため
+ * テンプレート JSON には現れない。ノードの有無だけで判定すると Anima のポーズ拘束が
+ * 常に無効になる(骨格は plan に焼かれているのに一度も使われない、という状態になっていた)。
+ */
+export function workflowSupportsPoseControl(workflowJson: string): boolean {
+  if (workflowJsonHasControlNetApply(workflowJson)) return true;
+  try {
+    return detectWorkflowModelFamily(JSON.parse(workflowJson) as Json) === "anima";
+  } catch {
+    return false;
+  }
 }
 
 export function inferRoleMap(workflowJson: unknown): JsonObject {
@@ -41,7 +76,7 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
   // The LoadImage feeding ControlNetApplyAdvanced.inputs.image is a control-image supplier, not a
   // general "parent image" input -- exclude it so load_image_input does not collide with it (it is
   // captured separately below as controlnet_image_node).
-  const controlNetApply = findNode(nodes, ["ControlNetApplyAdvanced"]);
+  const controlNetApply = findNode(nodes, [...CONTROLNET_APPLY_CLASSES]);
   const controlNetImageNodeId = controlNetApply ? traceLoadImageConnection(nodes, controlNetApply, "image") : null;
   // No unrestricted fallback here (unlike findInput's usual behavior): when the only LoadImage node
   // in the workflow is excluded above (e.g. the reference ControlNet workflow, which has just one
@@ -82,9 +117,9 @@ export function inferRoleMap(workflowJson: unknown): JsonObject {
     // Only look for these inputs when a ControlNetApplyAdvanced node actually exists -- otherwise
     // findInput's unrestricted fallback would misinfer an unrelated node's "strength"/etc. input
     // (e.g. IPAdapter) as a controlnet role.
-    addInputPath(roleMap, "controlnet_strength_input", findInput(nodes, ["strength"], ["ControlNetApplyAdvanced"]));
-    addInputPath(roleMap, "controlnet_start_percent_input", findInput(nodes, ["start_percent"], ["ControlNetApplyAdvanced"]));
-    addInputPath(roleMap, "controlnet_end_percent_input", findInput(nodes, ["end_percent"], ["ControlNetApplyAdvanced"]));
+    addInputPath(roleMap, "controlnet_strength_input", findInput(nodes, ["strength"], [...CONTROLNET_APPLY_CLASSES]));
+    addInputPath(roleMap, "controlnet_start_percent_input", findInput(nodes, ["start_percent"], [...CONTROLNET_APPLY_CLASSES]));
+    addInputPath(roleMap, "controlnet_end_percent_input", findInput(nodes, ["end_percent"], [...CONTROLNET_APPLY_CLASSES]));
     if (controlNetImageNodeId) {
       roleMap.controlnet_image_node = controlNetImageNodeId;
     }

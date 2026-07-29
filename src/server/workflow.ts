@@ -4,7 +4,7 @@ import {
   type JsonObject,
   deepClone,
   ensureWorkflowObject,
-  findNodeIdByExactClass,
+  findControlNetApplyNodeId,
   hashJson,
   normalizeRoleMap,
   sanitizeRoleMap,
@@ -132,7 +132,7 @@ export function patchWorkflow(workflowJson: unknown, rawRoleMap: Record<string, 
   // strength 0), making this behave like plain img2img instead of failing or applying a stale pose.
   // generationMode "controlnet" (parent image used directly as the control image) is unaffected.
   if (!request.controlnet && request.generationMode === "img2img") {
-    const applyNodeId = stringRole(roleMap.controlnet_apply_node) ?? findNodeIdByExactClass(workflow, "ControlNetApplyAdvanced");
+    const applyNodeId = findControlNetApplyNodeId(workflow, roleMap);
     if (applyNodeId) {
       setRolePath(workflow, roleMap.controlnet_strength_input, 0);
       setNodeInput(workflow, applyNodeId, ["strength"], 0);

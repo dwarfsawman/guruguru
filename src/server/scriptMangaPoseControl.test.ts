@@ -11,16 +11,23 @@ registerProvider(fakeProvider);
 
 const SCRIPT = ["INT. LAB - NIGHT", "", "@ALICE", "これは……私?"].join("\n");
 
-function template(withControlNet: boolean): string {
+type TemplateKind = "controlnet" | "plain" | "anima";
+
+function template(kind: TemplateKind | boolean): string {
+  const resolved: TemplateKind = typeof kind === "boolean" ? (kind ? "controlnet" : "plain") : kind;
   initializeDb();
   const id = createId("template");
-  const workflow = withControlNet
+  // Anima は AnimaLLLiteApply を生成時に workflowFeatureFragments が注入するので、
+  // テンプレート JSON にはポーズ適用ノードが現れない(モデル系統で判定する必要がある)。
+  const workflow = resolved === "controlnet"
     ? {
         "1": { class_type: "ControlNetLoader", inputs: { control_net_name: "openpose.safetensors" } },
         "2": { class_type: "ControlNetApplyAdvanced", inputs: { image: ["3", 0], strength: 1, start_percent: 0, end_percent: 1 } },
         "3": { class_type: "LoadImage", inputs: { image: "pose.png" } }
       }
-    : {};
+    : resolved === "anima"
+      ? { "1": { class_type: "UNETLoader", inputs: { unet_name: "anima-turbo-v1.0.safetensors", weight_dtype: "default" } } }
+      : {};
   runSql(
     `INSERT INTO workflow_templates (id, name, description, type, version, workflow_json, role_map_json, workflow_hash)
      VALUES (?, 'Pose control fake', '', 'txt2img', 1, ?, '{}', 'hash')`,
@@ -41,9 +48,9 @@ test("parsePoseControlInput: 文字列/オブジェクト/不正値の正規化"
   assert.equal(parsePoseControlInput({ enabled: false, mode: "full" }), undefined);
 });
 
-async function runWithPoseControl(withControlNetTemplate: boolean, poseControl: unknown): Promise<Array<{ request_json: string }>> {
+async function runWithPoseControl(templateKind: TemplateKind | boolean, poseControl: unknown): Promise<Array<{ request_json: string }>> {
   resetFakeProvider();
-  const templateId = template(withControlNetTemplate);
+  const templateId = template(templateKind);
   const project = createProject({ name: `pose-cn-${createId("t")}`, mode: "book" })!;
   const imported = createScript(project.id, { title: "Pose", fountainSource: SCRIPT });
   const run = await createScriptMangaRun(project.id, {
@@ -72,11 +79,19 @@ test("submitTasks: poseControl有効+CNテンプレでrequestへ骨格controlnet
   assert.equal(request.controlnet!.endPercent, 0.6);
 });
 
-test("submitTasks: 既定OFF・テンプレにControlNetApplyAdvancedが無い場合は注入しない", async () => {
-  for (const [withCn, poseControl] of [[true, undefined], [false, "full"]] as const) {
-    const rounds = await runWithPoseControl(withCn, poseControl);
+test("submitTasks: Animaテンプレ(適用ノードは生成時注入)でも骨格controlnetが注入される", async () => {
+  const rounds = await runWithPoseControl("anima", "full");
+  assert.ok(rounds.length > 0);
+  const request = JSON.parse(rounds[0]!.request_json) as { controlnet?: { poseImagePath?: string | null } | null };
+  assert.ok(request.controlnet, "Animaは AnimaLLLiteApply が生成時に注入されるのでポーズ拘束を受け付ける");
+  assert.ok(request.controlnet!.poseImagePath);
+});
+
+test("submitTasks: 既定OFF・ポーズ非対応テンプレの場合は注入しない", async () => {
+  for (const [kind, poseControl] of [["controlnet", undefined], ["plain", "full"]] as const) {
+    const rounds = await runWithPoseControl(kind, poseControl);
     assert.ok(rounds.length > 0);
     const request = JSON.parse(rounds[0]!.request_json) as { controlnet?: unknown };
-    assert.ok(request.controlnet === undefined || request.controlnet === null, `withCn=${withCn} pose=${String(poseControl)}`);
+    assert.ok(request.controlnet === undefined || request.controlnet === null, `kind=${kind} pose=${String(poseControl)}`);
   }
 });

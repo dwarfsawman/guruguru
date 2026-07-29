@@ -12,6 +12,7 @@ import { renderPoseSkeletonSvg } from "../shared/poseSkeletonSvg";
 import type { PosePoint } from "../shared/poseTypes";
 import { visibleJointsForPoseMode } from "../shared/posePresetLibrary";
 import { reconstructPanelPoses, type PoseControlMode } from "./panelPoseReconstructor";
+import { workflowSupportsPoseControl } from "../shared/workflowRoleMap";
 import {
   errorJson,
   frozenReferenceSnapshot,
@@ -221,10 +222,10 @@ export async function buildPanelGenerationRequest(input: {
         : null,
     ...(input.providerId !== undefined ? { providerId: input.providerId } : {})
   };
-  // ネームv4 D4: 棒人間骨格の ControlNet 条件付け(既定OFF)。テンプレに
-  // ControlNetApplyAdvanced が無い場合は黙ってスキップ(prune済み経路と整合)。
+  // ネームv4 D4: 棒人間骨格の ControlNet 条件付け(既定OFF)。テンプレにポーズ適用ノード
+  // (ControlNetApplyAdvanced / AnimaLLLiteApply)が無い場合は黙ってスキップ(prune済み経路と整合)。
   const poseWorkflowJson = input.poseControlWorkflowJson ?? promptProfile.workflowJson;
-  if (config.poseControl?.enabled && poseWorkflowJson.includes("ControlNetApplyAdvanced")) {
+  if (config.poseControl?.enabled && workflowSupportsPoseControl(poseWorkflowJson)) {
     try {
       const attachment = await buildPoseControlAttachment(panel, size.width, size.height, config.poseControl);
       if (attachment) {

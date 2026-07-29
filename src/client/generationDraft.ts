@@ -4,6 +4,7 @@ import {
   requiresFullDenoise
 } from "../shared/generationMode";
 import type { ControlNetOptions, GenerationMode, GenerationRequest, InpaintOptions, ReferenceImageOptions } from "../shared/types";
+import { CONTROLNET_APPLY_CLASSES } from "../shared/workflowRoleMap";
 import type { Asset, ProjectDetail } from "../shared/apiTypes";
 import {
   generationDraftFields,
@@ -182,7 +183,9 @@ export function workflowHasControlNetApply(workflowJson: unknown): boolean {
     return false;
   }
   return Object.values(workflowJson as Record<string, unknown>).some((node) => {
-    return !!node && typeof node === "object" && (node as { class_type?: unknown }).class_type === "ControlNetApplyAdvanced";
+    if (!node || typeof node !== "object") return false;
+    const classType = (node as { class_type?: unknown }).class_type;
+    return typeof classType === "string" && (CONTROLNET_APPLY_CLASSES as readonly string[]).includes(classType);
   });
 }
 

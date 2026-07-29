@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { CONTROLNET_APPLY_CLASSES } from "../shared/workflowRoleMap";
 import { nodeIdFromRolePath } from "../shared/workflowRolePath";
 
 export type JsonObject = Record<string, unknown>;
@@ -104,6 +105,20 @@ export function findNodeIdByClass(workflow: JsonObject, classFragments: string[]
     if (classFragments.some((fragment) => classType.includes(fragment.toLowerCase()))) {
       return nodeId;
     }
+  }
+  return null;
+}
+
+/**
+ * ポーズ適用ノード(ControlNetApplyAdvanced / AnimaLLLiteApply)を roleMap 優先で解決する。
+ * クラス名を各所へ直書きすると、対応モデルを増やすたびに探索漏れが出るので必ずここを通す。
+ */
+export function findControlNetApplyNodeId(workflow: JsonObject, roleMap: Record<string, unknown>): string | null {
+  const fromRole = stringRole(roleMap.controlnet_apply_node);
+  if (fromRole) return fromRole;
+  for (const className of CONTROLNET_APPLY_CLASSES) {
+    const nodeId = findNodeIdByExactClass(workflow, className);
+    if (nodeId) return nodeId;
   }
   return null;
 }
@@ -226,7 +241,7 @@ export function sanitizeRoleMap(workflow: JsonObject, roleMap: Record<string, un
 }
 
 function findControlNetImageNodeId(workflow: JsonObject, roleMap: Record<string, unknown>): string | null {
-  const applyNodeId = stringRole(roleMap.controlnet_apply_node) ?? findNodeIdByExactClass(workflow, "ControlNetApplyAdvanced");
+  const applyNodeId = findControlNetApplyNodeId(workflow, roleMap);
   if (!applyNodeId) {
     return null;
   }

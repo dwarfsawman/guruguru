@@ -1,17 +1,18 @@
 import type { GenerationRequest } from "../shared/types";
 import {
   type JsonObject,
-  findNodeIdByExactClass,
+  findControlNetApplyNodeId,
   getNodeInput,
   isConnection,
   nextNodeId,
   nodeClassIncludes,
   setNodeInput,
-  setRolePath,
-  stringRole
+  setRolePath
 } from "./workflowGraph";
 
-// Patches a template's ControlNetApplyAdvanced node (§5 of Docs/Done/Feature-PoseControlNet.md).
+// Patches a template's pose apply node (§5 of Docs/Done/Feature-PoseControlNet.md).
+// ControlNetApplyAdvanced (CONDITIONING) と AnimaLLLiteApply (MODEL) は接続先の型が違うが、
+// ここで触る入力名は同じなので同じ経路で patch できる。
 // The apply node is located via roleMap.controlnet_apply_node, falling back to an exact
 // class search. The image supplying it is found by following its `inputs.image` connection
 // rather than by class search, because templates commonly contain more than one LoadImage
@@ -29,10 +30,10 @@ export function patchControlNetPath(
     return;
   }
 
-  const applyNodeId = stringRole(roleMap.controlnet_apply_node) ?? findNodeIdByExactClass(workflow, "ControlNetApplyAdvanced");
+  const applyNodeId = findControlNetApplyNodeId(workflow, roleMap);
   if (!applyNodeId) {
-    // ControlNet attachment is optional: templates without a ControlNetApplyAdvanced node
-    // simply do not receive the pose image.
+    // ControlNet attachment is optional: templates without a pose apply node
+    // (ControlNetApplyAdvanced / AnimaLLLiteApply) simply do not receive the pose image.
     return;
   }
 
