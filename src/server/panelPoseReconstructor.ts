@@ -10,7 +10,7 @@ import type { PanelCastPose, PanelSpec } from "../shared/mangaPlanV2";
 import {
   findPosePreset,
   flipPosePresetPoints,
-  matchPosePresetId,
+  matchPosePreset,
   presetToPosePoints,
   visibleJointsForPoseMode,
   visibleJointsForShotSize
@@ -39,6 +39,11 @@ export interface ReconstructCastPosesOptions {
   layers?: ReadonlyMap<string, number>;
   /** パネルの縦横比(高さ/幅)。相似変換の歪み防止に使う。既定 1。 */
   aspect?: number;
+  /**
+   * 記述がどのプリセット規則にも当たらず既定へ落ちたときに呼ばれる。
+   * 呼び出し側が警告を出せるようにするためのもので、骨格自体は既定で作られる。
+   */
+  onPresetFallback?: (info: { characterId: string; text: string }) => void;
 }
 
 /** アンカーの頭・胴距離がパネル短辺のこの比率未満なら退化とみなし bbox フィットへ落とす。 */
@@ -168,7 +173,8 @@ function reconstructMemberPoses(
   widthPx: number,
   heightPx: number,
   mode: PoseControlMode,
-  anchors?: ReadonlyMap<string, PoseAnchor>
+  anchors?: ReadonlyMap<string, PoseAnchor>,
+  onPresetFallback?: (info: { characterId: string; text: string }) => void
 ): MemberPoseResult[] | null {
   if (panel.shot.size === "insert") return null;
   const cast = panel.cast;
@@ -178,8 +184,10 @@ function reconstructMemberPoses(
   const modeVisible = visibleJointsForPoseMode(mode);
   const results: MemberPoseResult[] = [];
   for (const member of cast) {
-    const presetId = matchPosePresetId([member.pose ?? "", member.action ?? ""].join(" "));
-    const preset = findPosePreset(presetId) ?? findPosePreset("standing")!;
+    const poseText = [member.pose ?? "", member.action ?? ""].join(" ");
+    const match = matchPosePreset(poseText);
+    if (!match.matched && poseText.trim()) onPresetFallback?.({ characterId: member.characterId, text: poseText.trim() });
+    const preset = findPosePreset(match.id) ?? findPosePreset("standing")!;
     // プリセットは正面(中立)または左向き基準。右向きが必要なときだけ水平反転する。
     const direction = facingDirection(member, cast, panel);
     const oriented = direction === "right" ? flipPosePresetPoints(preset.points) : preset.points;
@@ -230,7 +238,7 @@ export function reconstructCastPoses(
     : 1;
   const widthPx = 1000;
   const heightPx = 1000 * aspect;
-  const results = reconstructMemberPoses(panel, widthPx, heightPx, "full", options.anchors);
+  const results = reconstructMemberPoses(panel, widthPx, heightPx, "full", options.anchors, options.onPresetFallback);
   if (!results) return null;
   const rankOf = (characterId: string, index: number): number => {
     const layer = options.layers?.get(characterId);

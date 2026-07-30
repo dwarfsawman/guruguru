@@ -5,6 +5,7 @@ import { OPENPOSE_JOINT_NAMES } from "../shared/poseTypes.ts";
 import {
   findPosePreset,
   flipPosePresetPoints,
+  matchPosePreset,
   matchPosePresetId,
   POSE_PRESETS
 } from "../shared/posePresetLibrary.ts";
@@ -280,4 +281,28 @@ test("reconstructCastPoses: close-up でも保存骨格は規格の [-1, 2] に�
     assert.ok(joint.x >= 0.13 && joint.x <= 0.87, `可視関節 x=${joint.x} が bbox の外`);
     assert.ok(joint.y >= 0.17 && joint.y <= 0.97, `可視関節 y=${joint.y} が bbox の外`);
   }
+});
+
+test("語彙がどのプリセットにも当たらないときは既定へ落ちたことを報告する", () => {
+  // 黙って既定の立ち姿が入ると、ControlNet がその誤りを忠実に強制する
+  // (実測: 「両肘を膝、頭を低く」のコマで4候補すべてが同じ誤った姿勢に揃った)。
+  assert.equal(matchPosePreset("stands still").matched, true);
+  assert.equal(matchPosePreset("rests both elbows on her knees").matched, false);
+  assert.equal(matchPosePreset("rests both elbows on her knees").id, "standing", "骨格自体は既定で作る");
+
+  const fallbacks: Array<{ characterId: string; text: string }> = [];
+  reconstructCastPoses(
+    panel({ cast: [{
+      characterId: "char:a", variantId: "char:a:default",
+      bbox: { x: 0.1, y: 0.1, width: 0.5, height: 0.8 },
+      pose: "", expression: "tired", action: "rests both elbows on her knees", speakingLineIds: []
+    }] }),
+    { onPresetFallback: (info) => fallbacks.push(info) }
+  );
+  assert.equal(fallbacks.length, 1, "落ちたことを1度だけ報告する");
+  assert.equal(fallbacks[0]!.characterId, "char:a");
+
+  const matchedOnly: unknown[] = [];
+  reconstructCastPoses(panel(), { onPresetFallback: (info) => matchedOnly.push(info) });
+  assert.equal(matchedOnly.length, 0, "一致したときは報告しない");
 });

@@ -153,15 +153,27 @@ const KEYWORD_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\b(?:stands?|standing|upright|still)\b/u, "standing"]
 ];
 
-export function matchPosePresetId(text: string): string {
+/**
+ * 語彙からプリセットを選ぶ。`matched` は**どの規則にも当たらず既定へ落ちた**かを表す。
+ *
+ * 落ちたことを呼び出し側が知れないと危険で、ControlNet は外れたポーズを忠実に強制する。
+ * 実測では「両肘を膝、頭を低く」と書いたコマで既定の立ち姿が当たり、4候補すべてが
+ * 同じ誤った姿勢に揃った。**黙って外れたプリセットが当たるのは、ポーズ無指定より悪い。**
+ * 呼び出し側はこれを警告として出し、設計者が語彙を選び直せるようにする。
+ */
+export function matchPosePreset(text: string): { id: string; matched: boolean } {
   const normalized = text.toLocaleLowerCase();
   for (const [pattern, id] of MULTI_WORD_RULES) {
-    if (pattern.test(normalized)) return id;
+    if (pattern.test(normalized)) return { id, matched: true };
   }
   for (const [pattern, id] of KEYWORD_RULES) {
-    if (pattern.test(normalized)) return id;
+    if (pattern.test(normalized)) return { id, matched: true };
   }
-  return "standing";
+  return { id: "standing", matched: false };
+}
+
+export function matchPosePresetId(text: string): string {
+  return matchPosePreset(text).id;
 }
 
 /**
