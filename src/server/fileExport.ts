@@ -8,7 +8,7 @@ import { HttpError } from "./http";
 import { isPathInside } from "./paths";
 
 export interface FileExportMetrics {
-  kind: "images" | "openraster" | "pptx";
+  kind: "images" | "openraster" | "pptx" | "pdf";
   format: string;
   renderMs: number;
   zipMs: number;

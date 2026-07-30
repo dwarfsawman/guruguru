@@ -27,6 +27,7 @@ import {
   safeAsciiName
 } from "./openRasterExport";
 import { createPptxExport } from "./pptxExport";
+import { createPdfExport } from "./pdfExport";
 import {
   finalizeFileExport,
   withMeasuredFileExport,
@@ -41,7 +42,7 @@ import { objectBody } from "./validate";
 // (imageExport.test.ts)が `from "./imageExport.ts"` で import しているのでここで re-export する。
 export { computeExportCanvas };
 
-export type ImageExportFormat = "png" | "jpeg" | "pptx";
+export type ImageExportFormat = "png" | "jpeg" | "pptx" | "pdf";
 
 export const DEFAULT_PIXEL_WIDTH = 1280;
 export const MIN_PIXEL_WIDTH = 256;
@@ -57,8 +58,8 @@ export async function withImageExport<T>(
 ): Promise<T> {
   const format = parseImageExportFormat(objectBody(body).format);
   return withMeasuredFileExport(
-    format === "pptx" ? "pptx" : "images",
-    format === "pptx" ? "pptx" : "images",
+    format === "pptx" ? "pptx" : format === "pdf" ? "pdf" : "images",
+    format === "pptx" ? "pptx" : format === "pdf" ? "pdf" : "images",
     format,
     (tempDir, metrics) => createImageExport(projectId, body, tempDir, metrics),
     operation
@@ -89,6 +90,19 @@ async function createImageExport(
     // PPTX は常に単一デッキ(複数ページでも zip 化しない)。OOXML 手組みは pptxExport.ts に分離。
     // 埋め込みは PNG なので quality は不要(jpeg 用の clamp 済み quality はここでは使わない)。
     return createPptxExport(project, pages, pixelWidth, tempDir, metrics);
+  }
+
+  if (format === "pdf") {
+    // PDF は JPEG を再エンコードなしで埋めるので、ページを JPEG で描いてから渡す。
+    const jpegPages: Uint8Array[] = [];
+    const pdfRenderStartedAt = performance.now();
+    for (const page of pages) {
+      const buffer = await renderPageImage(page, "jpeg", quality, pixelWidth);
+      metrics.inputBytes += buffer.byteLength;
+      jpegPages.push(new Uint8Array(buffer));
+    }
+    metrics.renderMs += performance.now() - pdfRenderStartedAt;
+    return createPdfExport(safeAsciiName(project.name, "guruguru-book"), jpegPages, tempDir, metrics);
   }
 
   const extension = format === "jpeg" ? "jpg" : "png";
@@ -163,10 +177,10 @@ function contentTypeFor(format: ImageExportFormat): string {
 
 /** `format` の妥当性検証。png/jpeg/pptx 以外は 400。 */
 export function parseImageExportFormat(value: unknown): ImageExportFormat {
-  if (value === "png" || value === "jpeg" || value === "pptx") {
+  if (value === "png" || value === "jpeg" || value === "pptx" || value === "pdf") {
     return value;
   }
-  throw new HttpError(400, `format must be "png", "jpeg", or "pptx"`);
+  throw new HttpError(400, `format must be "png", "jpeg", "pptx", or "pdf"`);
 }
 
 /** JPEG の quality(1-100 整数)。未指定/不正値は既定 90。 */
