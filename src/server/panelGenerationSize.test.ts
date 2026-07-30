@@ -16,21 +16,24 @@ function layoutWith(bounds: [number, number, number, number]): PageLayout {
   } as unknown as PageLayout;
 }
 
-const CAP = 2;
+const CAP = 1.45;
+// 64px 量子化(roundTo64)で1段ぶん上振れしうるので許容を持たせる。
+// 例: 1024 / 1.45 = 706 → 704 に丸められ、比は 1.4545 になる。
+const QUANTIZATION_TOLERANCE = 0.07;
 
 test("panelGenerationSize: 極端な横長コマでも生成アスペクトは上限までに収める", () => {
   // 0.92 x 0.22 の帯コマ = 4.2:1。従来は 2:1(1024x512)まで許していたが、
   // 実測でその比でも単独人物が2〜4体に複製された。
   const band = panelGenerationSize(layoutWith([0.04, 0.10, 0.96, 0.32]), "p", 1024, "chroma");
   const ratio = band.width / band.height;
-  assert.ok(ratio <= CAP + 1e-6, `band ratio ${ratio}`);
+  assert.ok(ratio <= CAP + QUANTIZATION_TOLERANCE, `band ratio ${ratio}`);
   assert.ok(ratio > 1, "横長であることは保つ");
 });
 
 test("panelGenerationSize: 極端な縦長コマも同じ上限で締める", () => {
   const column = panelGenerationSize(layoutWith([0.04, 0.02, 0.30, 1.38]), "p", 1024, "chroma");
   const ratio = column.height / column.width;
-  assert.ok(ratio <= CAP + 1e-6, `column ratio ${ratio}`);
+  assert.ok(ratio <= CAP + QUANTIZATION_TOLERANCE, `column ratio ${ratio}`);
   assert.ok(ratio > 1, "縦長であることは保つ");
 });
 
