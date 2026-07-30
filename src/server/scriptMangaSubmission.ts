@@ -119,6 +119,12 @@ function roundTo64(value: number): number {
 
 const SDXL_BUCKETS = [[1024, 1024], [1152, 896], [896, 1152], [1216, 832], [832, 1216], [1344, 768], [768, 1344], [1536, 640], [640, 1536]] as const;
 
+/**
+ * 生成キャンバスの縦横比の上限(横長・縦長どちらも)。コマがこれより極端でも、この比までしか
+ * 生成しない。極端なキャンバスは被写体の複製を招くため(詳細は panelGenerationSize のコメント)。
+ */
+const GENERATION_ASPECT_CAP = 1.6;
+
 export function panelGenerationSize(layout: PageLayout, panelId: string, longEdge = 1024, family: "sdxl" | "chroma" = "sdxl"): { width: number; height: number } {
   const edge = Math.max(512, Math.min(1536, roundTo64(longEdge)));
   const panel = layout.panels.find((item) => item.id === panelId);
@@ -134,7 +140,15 @@ export function panelGenerationSize(layout: PageLayout, panelId: string, longEdg
     );
     return { width: bucket[0], height: bucket[1] };
   }
-  const clampedRatio = Math.max(0.5, Math.min(2, ratio));
+  // 生成アスペクトはコマのアスペクトより**保守的に**クランプする。
+  //
+  // 極端な横長・縦長のキャンバスを与えると、拡散モデルは被写体を複製して面を埋めようとする。
+  // 実測(102コマ・各4候補、監査サブエージェント6体): 2:1 のコマで単独人物が2〜4体に複製、
+  // あるいは1枚が2コマのコラージュに分裂する現象が該当コマの 4/4 で再現した。
+  // 1.6:1 まで締めると、コマへ収める際に上下(または左右)が少し切られるだけで済む
+  // ——コマ割りは元々クロップ前提(PanelCrop のパン/ズーム)なので、切られること自体は
+  // 破綻ではない。複製した絵はどう切っても使えない。
+  const clampedRatio = Math.max(1 / GENERATION_ASPECT_CAP, Math.min(GENERATION_ASPECT_CAP, ratio));
   if (clampedRatio >= 1) return { width: edge, height: roundTo64(edge / clampedRatio) };
   return { width: roundTo64(edge * clampedRatio), height: edge };
 }
