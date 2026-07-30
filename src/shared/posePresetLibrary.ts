@@ -115,6 +115,43 @@ const PROFILE_LEFT = pose([
   { x: 0.45, y: 0.08 }, { x: 0.5, y: 0.08, visible: false }, { x: 0.51, y: 0.09 }, { x: 0.55, y: 0.095, visible: false }
 ]);
 
+/**
+ * 腕の形を持つプリセット群。
+ *
+ * プリセットは全身の姿勢を持つが**腕の詳細を持たない**。アンカーは頭と胴の相似変換なので、
+ * 腕は設計から一切影響を受けない。実測では sitting/standing/walking は正しく当たっているのに
+ * 「両肘を膝に」「脚立を脇に抱える」「桶を腰に当てる」の3件とも腕だけが再現されず全滅した。
+ * 腕の配置は姿勢そのものなので、語彙で選べるプリセットとして持たせる。
+ */
+const ELBOWS_ON_KNEES = pose([
+  { x: 0.5, y: 0.16 }, { x: 0.5, y: 0.26 },
+  { x: 0.42, y: 0.27 }, { x: 0.4, y: 0.42 }, { x: 0.43, y: 0.56 },
+  { x: 0.58, y: 0.27 }, { x: 0.6, y: 0.42 }, { x: 0.57, y: 0.56 },
+  { x: 0.45, y: 0.56 }, { x: 0.42, y: 0.66 }, { x: 0.43, y: 0.87 },
+  { x: 0.55, y: 0.56 }, { x: 0.58, y: 0.66 }, { x: 0.57, y: 0.87 },
+  { x: 0.47, y: 0.145 }, { x: 0.53, y: 0.145 }, { x: 0.44, y: 0.155 }, { x: 0.56, y: 0.155 }
+]);
+
+/** 片腕で荷物を脇に抱える。抱えた側(本人の右)の肘を締め、手首を腰の高さへ。 */
+const CARRY_UNDER_ARM = pose([
+  { x: 0.5, y: 0.1 }, { x: 0.5, y: 0.2 },
+  { x: 0.42, y: 0.21 }, { x: 0.38, y: 0.33 }, { x: 0.36, y: 0.44 },
+  { x: 0.58, y: 0.21 }, { x: 0.6, y: 0.34 }, { x: 0.61, y: 0.46 },
+  { x: 0.44, y: 0.5 }, { x: 0.44, y: 0.7 }, { x: 0.44, y: 0.9 },
+  { x: 0.56, y: 0.5 }, { x: 0.56, y: 0.7 }, { x: 0.56, y: 0.9 },
+  { x: 0.47, y: 0.085 }, { x: 0.53, y: 0.085 }, { x: 0.44, y: 0.095 }, { x: 0.56, y: 0.095 }
+]);
+
+/** 腰の高さで荷物を体側へ寄せて持つ。両手首を腰骨の外側へ置く。 */
+const HOLD_AT_HIP = pose([
+  { x: 0.5, y: 0.1 }, { x: 0.5, y: 0.2 },
+  { x: 0.42, y: 0.21 }, { x: 0.38, y: 0.34 }, { x: 0.41, y: 0.48 },
+  { x: 0.58, y: 0.21 }, { x: 0.62, y: 0.34 }, { x: 0.59, y: 0.48 },
+  { x: 0.44, y: 0.5 }, { x: 0.44, y: 0.7 }, { x: 0.44, y: 0.9 },
+  { x: 0.56, y: 0.5 }, { x: 0.56, y: 0.7 }, { x: 0.56, y: 0.9 },
+  { x: 0.47, y: 0.085 }, { x: 0.53, y: 0.085 }, { x: 0.44, y: 0.095 }, { x: 0.56, y: 0.095 }
+]);
+
 export const POSE_PRESETS: readonly PosePreset[] = [
   { id: "standing", points: STANDING },
   { id: "sitting", points: SITTING },
@@ -125,7 +162,10 @@ export const POSE_PRESETS: readonly PosePreset[] = [
   { id: "arms-crossed", points: ARMS_CROSSED },
   { id: "lying", points: LYING },
   { id: "back-view", points: BACK_VIEW },
-  { id: "profile-left", points: PROFILE_LEFT }
+  { id: "profile-left", points: PROFILE_LEFT },
+  { id: "elbows-on-knees", points: ELBOWS_ON_KNEES },
+  { id: "carry-under-arm", points: CARRY_UNDER_ARM },
+  { id: "hold-at-hip", points: HOLD_AT_HIP }
 ];
 
 export function findPosePreset(id: string): PosePreset | null {
@@ -139,7 +179,12 @@ export function findPosePreset(id: string): PosePreset | null {
 const MULTI_WORD_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\b(?:arms?[- ]?crossed|crossed[- ]?arms?|folded[- ]?arms?|folding (?:her |his |their )?arms)\b/u, "arms-crossed"],
   [/\b(?:from behind|turned away|back view|seen from the back|facing away)\b/u, "back-view"],
-  [/\b(?:lying down|lie down|laid out|passed out|collapsed)\b/u, "lying"]
+  [/\b(?:lying down|lie down|laid out|passed out|collapsed)\b/u, "lying"],
+  // 腕の形は全身の姿勢より**先に**判定する。後ろに置くと sits/stands/walks に
+  // 飲み込まれ、腕の指定が丸ごと落ちる(実測でこれが起き、3コマが全滅した)。
+  [/\belbows? on (?:her |his |their )?knees?\b/u, "elbows-on-knees"],
+  [/\b(?:under one arm|under (?:her|his|their) arm|tucked under)\b/u, "carry-under-arm"],
+  [/\bagainst (?:her|his|their) hip\b|\b(?:hand|hands) on (?:her|his|their) hips?\b/u, "hold-at-hip"]
 ];
 
 const KEYWORD_RULES: ReadonlyArray<readonly [RegExp, string]> = [

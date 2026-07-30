@@ -287,15 +287,15 @@ test("語彙がどのプリセットにも当たらないときは既定へ落�
   // 黙って既定の立ち姿が入ると、ControlNet がその誤りを忠実に強制する
   // (実測: 「両肘を膝、頭を低く」のコマで4候補すべてが同じ誤った姿勢に揃った)。
   assert.equal(matchPosePreset("stands still").matched, true);
-  assert.equal(matchPosePreset("rests both elbows on her knees").matched, false);
-  assert.equal(matchPosePreset("rests both elbows on her knees").id, "standing", "骨格自体は既定で作る");
+  assert.equal(matchPosePreset("tilts her head back and looks up at the wall").matched, false);
+  assert.equal(matchPosePreset("tilts her head back and looks up at the wall").id, "standing", "骨格自体は既定で作る");
 
   const fallbacks: Array<{ characterId: string; text: string }> = [];
   reconstructCastPoses(
     panel({ cast: [{
       characterId: "char:a", variantId: "char:a:default",
       bbox: { x: 0.1, y: 0.1, width: 0.5, height: 0.8 },
-      pose: "", expression: "tired", action: "rests both elbows on her knees", speakingLineIds: []
+      pose: "", expression: "tired", action: "tilts her head back and looks up at the wall", speakingLineIds: []
     }] }),
     { onPresetFallback: (info) => fallbacks.push(info) }
   );
@@ -305,4 +305,32 @@ test("語彙がどのプリセットにも当たらないときは既定へ落�
   const matchedOnly: unknown[] = [];
   reconstructCastPoses(panel(), { onPresetFallback: (info) => matchedOnly.push(info) });
   assert.equal(matchedOnly.length, 0, "一致したときは報告しない");
+});
+
+test("腕の形の指定が全身の姿勢に飲み込まれない", () => {
+  // プリセットは全身の姿勢を持つが腕の詳細を持たず、アンカーは頭と胴の相似変換なので
+  // 腕は設計から影響を受けない。実測ではこの3つが sitting/standing/walking に飲み込まれ、
+  // 腕だけが再現されないまま4候補とも全滅した。
+  assert.equal(matchPosePreset("sits on the step with her elbows on her knees").id, "elbows-on-knees");
+  assert.equal(matchPosePreset("stands in the doorway with a stepladder under one arm").id, "carry-under-arm");
+  assert.equal(matchPosePreset("walks holding a bucket against her hip").id, "hold-at-hip");
+
+  // 腕の指定が無いものは従来どおり全身の姿勢で選ぶ
+  assert.equal(matchPosePreset("sits on a bench").id, "sitting");
+  assert.equal(matchPosePreset("stands still").id, "standing");
+  assert.equal(matchPosePreset("walks toward the door").id, "walking");
+
+  // 追加したプリセットも 18 関節の規約を満たす
+  for (const id of ["elbows-on-knees", "carry-under-arm", "hold-at-hip"]) {
+    const preset = findPosePreset(id);
+    assert.ok(preset, `${id} が引ける`);
+    assert.equal(preset!.points.length, OPENPOSE_JOINT_NAMES.length, `${id} は18関節`);
+  }
+
+  // 手首が肩より下、かつ person box に収まっている(腕が破綻していない)
+  const knees = findPosePreset("elbows-on-knees")!.points;
+  for (const [shoulder, wrist] of [[2, 4], [5, 7]] as const) {
+    assert.ok(knees[wrist]!.y > knees[shoulder]!.y, "手首が肩より下にある");
+    assert.ok(knees[wrist]!.x >= 0 && knees[wrist]!.x <= 1, "手首が box の内側");
+  }
 });
