@@ -340,12 +340,21 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
   ]).filter(Boolean);
   const quality = input.qualityTags?.trim() || "masterpiece, best quality, high detail";
   const scene = input.sceneBible ? [input.sceneBible.set, input.sceneBible.lighting, input.sceneBible.palette] : [];
+  // 背景を明示する。人物だけを指定して背景が白紙のままだと、モデルは余白を埋めるために
+  // **被写体をもう1体描く**(実測: 顔・手のクローズアップが続くキャラのコマで 12/12 が
+  // 「同一人物を並べた設定表」になり、背景句を1つ足しただけで単独に戻った)。
+  // 舞台の記述は plan の settingId にあるのに、これまでプロンプトへ展開されていなかった。
+  const settingEntity = entityById.get(input.panel.settingId);
+  const settingDescription = (settingEntity?.attributes.tags || settingEntity?.attributes.description || "").trim();
+  const background = settingDescription && !/[぀-ヿ㐀-鿿]/u.test(settingDescription)
+    ? [`${settingDescription} filling the background`, "no empty background"]
+    : ["detailed background filling the frame", "no empty background"];
   const castCount = input.panel.cast.length === 0 ? "" : input.panel.cast.length === 1 ? "1character" : `${input.panel.cast.length}characters`;
   const positiveParts = input.dialect === "tags"
     ? [quality, castCount, ...approvedAppearances, ...identities,
-        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), ...scene, input.basePrompt]
+        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), ...scene, ...background, input.basePrompt]
         .map((part) => tagSafeVisual(stripClausesContainingCharacterLabels(part ?? "", excludedLabels)))
-    : [naturalRaw, ...approvedAppearances, ...identities, ...scene.map((part) => stripClausesContainingCharacterLabels(part, excludedLabels))];
+    : [naturalRaw, ...approvedAppearances, ...identities, ...background, ...scene.map((part) => stripClausesContainingCharacterLabels(part, excludedLabels))];
   const maxTerms = Math.max(12, input.maxTerms ?? 75);
   const positive = positiveParts.flatMap((part) => part?.split(/\s*,\s*|\.\s+/) ?? []).filter(Boolean).slice(0, maxTerms).join(input.dialect === "tags" ? ", " : ". ");
   const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);

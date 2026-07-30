@@ -202,3 +202,46 @@ describe("compileFigureConditioning (role: figure)", () => {
     expect(result.positive).not.toContain("white background");
   });
 });
+
+describe("background grounding", () => {
+  test("人物だけで背景が白紙にならないよう settingId から背景句を足す", () => {
+    // 人物だけを指定して背景が白紙だと、モデルは余白を埋めるために被写体を複製する
+    // (実測: クローズアップが続くキャラのコマで 12/12 が「同一人物を並べた設定表」になり、
+    //  背景句を1つ足しただけで単独に戻った)。
+    const withSetting = structuredClone(panel);
+    (withSetting as { settingId?: string }).settingId = "setting-bath";
+    const settingEntity = {
+      id: "setting-bath", kind: "setting", name: "bath", aliases: [],
+      attributes: { description: "old japanese public bath, tiled walls, deep rectangular tub" },
+      variants: []
+    } as unknown as NarrativeEntity;
+    const result = compilePanelConditioning({
+      panel: withSetting,
+      basePrompt: "Close on her face",
+      entities: [entity, settingEntity],
+      dialogueById: new Map(),
+      dialect: "tags"
+    });
+    expect(result.positive).toContain("filling the background");
+    expect(result.positive).toContain("tiled walls");
+    expect(result.positive).toContain("no empty background");
+  });
+
+  test("舞台の記述が日本語/未設定なら中立の背景句へ落とす", () => {
+    const withSetting = structuredClone(panel);
+    (withSetting as { settingId?: string }).settingId = "setting-ja";
+    const settingEntity = {
+      id: "setting-ja", kind: "setting", name: "浴室", aliases: [],
+      attributes: { description: "鶴の湯 浴室" }, variants: []
+    } as unknown as NarrativeEntity;
+    const result = compilePanelConditioning({
+      panel: withSetting,
+      basePrompt: "A brass tap drips",
+      entities: [entity, settingEntity],
+      dialogueById: new Map(),
+      dialect: "tags"
+    });
+    // 日本語の記述はタグ方言モデルへ渡さない(既存規約)。中立句で余白だけ潰す。
+    expect(result.positive).toContain("detailed background filling the frame");
+  });
+});
