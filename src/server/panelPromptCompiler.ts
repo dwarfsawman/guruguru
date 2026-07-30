@@ -426,9 +426,17 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
     ? [`${scopedSetting} filling the background`, "no empty background"]
     : ["detailed background filling the frame", "no empty background"];
   const castCount = input.panel.cast.length === 0 ? "" : input.panel.cast.length === 1 ? "1character" : `${input.panel.cast.length}characters`;
+  // 小道具は tags 方言でも出す。自然文方言だけが `prop:` を書いていて、
+  // **タグモデル向けにコマの props を書いても黙って捨てられていた**。
+  // 位置が指定されていればその領域も添える(人物の外見と同じで、置き場所が要る)。
+  const props = input.panel.props.map((prop) => {
+    const state = (prop.state ?? "").trim();
+    if (!state) return "";
+    return prop.bbox ? `${state} in the ${regionName(prop.bbox)}` : state;
+  }).filter(Boolean);
   const positiveParts = input.dialect === "tags"
     ? [quality, castCount, ...approvedAppearances, ...identities,
-        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), ...scene, ...background, input.basePrompt]
+        `${input.panel.shot.size} shot`, input.panel.shot.angle, ...input.panel.cast.flatMap((member) => [member.action, member.expression]), ...props, ...scene, ...background, input.basePrompt]
         .map((part) => tagSafeVisual(stripClausesContainingCharacterLabels(part ?? "", excludedLabels)))
     : [naturalRaw, ...approvedAppearances, ...identities, ...background, ...scene.map((part) => stripClausesContainingCharacterLabels(part, excludedLabels))];
   const maxTerms = Math.max(12, input.maxTerms ?? 75);

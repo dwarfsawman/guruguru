@@ -181,6 +181,22 @@ describe("compilePanelPrompt", () => {
     expect(closeUp).toMatch(/no empty background/);
   });
 
+  test("tags 方言でもコマの小道具を落とさない", () => {
+    // 自然文方言だけが prop: を書いていて、タグモデル向けに props を書いても黙って捨てられていた。
+    const withProps = { ...panel, cast: [], props: [
+      { state: "wide flat bristle brush on a short handle", bbox: { x: 0.6, y: 0.1, width: 0.3, height: 0.3 } },
+      { state: "open paint can" }
+    ] } as unknown as PanelSpec;
+    const result = compilePanelConditioning({
+      panel: withProps, basePrompt: "a bathhouse wall", entities: [],
+      dialogueById: new Map(), dialect: "tags"
+    });
+    expect(result.positive).toMatch(/wide flat bristle brush/);
+    expect(result.positive).toMatch(/open paint can/);
+    // 位置指定のある小道具は領域も添える
+    expect(result.positive).toMatch(/brush on a short handle in the upper-right region/);
+  });
+
   test("monochrome styles neutralize colour-implying material words and add a colour negative", () => {
     // 実測: 脚本の "a brass tap" がそのまま通り、生成では蛇口だけが金色になって
     // 該当コマの全候補が不合格になった。色名を避けるだけでは足りず、素材名も色を含意する。
