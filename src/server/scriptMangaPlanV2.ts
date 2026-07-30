@@ -274,12 +274,18 @@ export function buildMangaPlanV2(input: {
    * orderIndex は story graph 経由で lineId へ解決し、V2 page の balloonCenterHints へ固定する。
    */
   balloonCenterHints?: Record<number, Record<number, { x: number; y: number }>> | null;
+  /**
+   * 舞台の**英語**の見た目記述(scene index → 記述)。プロンプトの背景句になる。
+   * 未指定なら中立の背景句へ落ちる(白紙の余白は被写体の複製を招くので、必ず何かは入れる)。
+   */
+  settingDescriptions?: Record<number, string>;
 }): MangaPlanV2 {
   const story = buildStoryGraph({
     doc: input.doc,
     scriptRevisionId: input.scriptRevisionId,
     characters: input.characters,
-    dialogues: input.dialogues
+    dialogues: input.dialogues,
+    ...(input.settingDescriptions ? { settingDescriptions: input.settingDescriptions } : {})
   });
   const fillUnits = input.dialoguePolicy === "fill"
     ? extractFillUnits(input.doc, (sceneIndex, elementIndex) => fountainSourceElementId(input.scriptRevisionId, sceneIndex, elementIndex))

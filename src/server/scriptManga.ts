@@ -191,6 +191,27 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
     : fallback;
 }
 
+/**
+ * run 設定の `settingDescriptions`(scene index → 英語の場所記述)を正規化する。
+ *
+ * 脚本の見出しは作品言語で書かれるため、それだけではタグ方言モデルへ渡せる背景記述が無い。
+ * 背景の宣言が無いと生成は「人物だけ・背景は白紙」になり、白紙の余白をモデルが
+ * 被写体の複製で埋める(実測)。正本は Character Garage の storyBible.settings[].description。
+ */
+function settingDescriptionsFromInput(value: unknown): Record<number, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const result: Record<number, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const sceneIndex = Number(key);
+    if (!Number.isInteger(sceneIndex) || sceneIndex < 0 || typeof raw !== "string") continue;
+    const text = raw.trim();
+    // タグ方言モデルへ作品言語の文字列を渡さない(既存規約)。英語だけ通す。
+    if (!text || /[぀-ヿ㐀-鿿]/u.test(text)) continue;
+    result[sceneIndex] = text.slice(0, 400);
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 function planningOptionsFromInput(
   input: Record<string, unknown>,
   fallback: ScriptMangaPlanOptions = {}
@@ -224,7 +245,10 @@ export function scriptMangaCandidateDirectionOptionsFromInput(
   return {
     ...options,
     scriptRevisionId,
-    characterBible: stringOr(input.characterBible, "") || undefined
+    characterBible: stringOr(input.characterBible, "") || undefined,
+    ...(settingDescriptionsFromInput(input.settingDescriptions)
+      ? { settingDescriptions: settingDescriptionsFromInput(input.settingDescriptions)! }
+      : {})
   };
 }
 
@@ -554,7 +578,8 @@ async function createScriptMangaRunInternal(
       dialoguePolicy,
       resolveLayoutTemplate,
       beatAnnotation: beatAnnotation ? { units: beatAnnotation.units, beats: beatAnnotation.beats } : null,
-      balloonCenterHints: candidateBalloonHints
+      balloonCenterHints: candidateBalloonHints,
+      ...(planOptions.settingDescriptions ? { settingDescriptions: planOptions.settingDescriptions } : {})
     });
   }
   const validation = validatePlan(plan);

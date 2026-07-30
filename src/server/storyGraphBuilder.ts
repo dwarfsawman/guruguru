@@ -140,6 +140,16 @@ export function buildStoryGraph(input: {
   scriptRevisionId: string;
   characters: StoryGraphCharacterInput[];
   dialogues: StoryGraphDialogueInput[];
+  /**
+   * 舞台の**英語**の見た目記述(scene index → 記述)。プロンプトの背景句になる。
+   *
+   * 脚本の見出しは作品言語(日本語など)で書かれるため、それだけではタグ方言モデルへ
+   * 渡せる背景記述が無く、生成が「人物だけ・背景は白紙」になる。白紙の余白があると
+   * モデルは被写体を複製して埋めるので、背景の宣言先が必要になる
+   * (Character Garage の storyBible.settings[].description が正本で、
+   *  production packet 経由で渡ってくる)。
+   */
+  settingDescriptions?: Record<number, string>;
 }): StoryGraphBuildResult {
   const { doc, scriptRevisionId, characters, dialogues } = input;
   const sourceElements: SourceElementRef[] = [];
@@ -189,7 +199,12 @@ export function buildStoryGraph(input: {
       kind: "setting" as const,
       name: scene.heading || `Scene ${sceneIndex + 1}`,
       aliases: [],
-      attributes: { heading: scene.heading },
+      attributes: {
+        heading: scene.heading,
+        ...(input.settingDescriptions?.[sceneIndex]?.trim()
+          ? { description: input.settingDescriptions[sceneIndex]!.trim() }
+          : {})
+      },
       variants: [{ id: `${id}:default`, label: "default", attributes: {} }]
     };
   });

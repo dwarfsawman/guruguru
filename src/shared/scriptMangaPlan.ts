@@ -202,6 +202,12 @@ export interface ScriptMangaPlanOptions {
   stylePrompt?: string;
   /** LLMネーム監督が全バッチへ再注入する人物固定票。決定的プランナーでは未使用。 */
   characterBible?: string;
+  /**
+   * 舞台の**英語**の見た目記述(scene index → 記述)。プロンプトの背景句になる。
+   * 脚本の見出しは作品言語で書かれるため、それだけではタグ方言モデルへ渡せる背景記述が無く、
+   * 生成が「人物だけ・背景は白紙」になる。白紙の余白はモデルに被写体を複製させる。
+   */
+  settingDescriptions?: Record<number, string>;
   /** 目標ページ数。決定的packerでは1ページ1コマ〜panelsPerPageの範囲でbest-effort配分する。 */
   targetPageCount?: number;
   /** ビート注釈キャッシュ(script_beat_annotations)のキー。未指定はキャッシュ不使用。 */
