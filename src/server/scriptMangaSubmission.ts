@@ -1,4 +1,4 @@
-import type { MangaPlanV2, PanelSpec } from "../shared/mangaPlanV2";
+import type { MangaPlanV2, NarrativeEntity, PanelSpec } from "../shared/mangaPlanV2";
 import { panelBounds, panelBoundsSize, type PageLayout } from "../shared/pageLayout";
 import type { GenerationRequest } from "../shared/types";
 import { compilePanelConditioning } from "./panelPromptCompiler";
@@ -31,6 +31,34 @@ import {
   type ScriptMangaRunConfig,
   type TaskRow
 } from "./scriptMangaRows";
+
+/**
+ * 舞台エンティティの記述を run 設定の `settingDescriptions` で上書きし直す。
+ *
+ * プロンプトは投入のたびに再コンパイルされるのに、**その材料である舞台記述はプラン構築時に
+ * 焼かれたまま**だった。舞台が物語の中で変化する作品（壁画を塗り替える等）で設定を直しても、
+ * 再生成に反映されない。実測では終盤8コマが「新しい壁画が描かれない」で全滅し、
+ * retry しても同じ絵が出続けた。
+ *
+ * 舞台記述は誰も手で編集しない純粋な派生データなので、上書きしても失うものがない。
+ * **ポーズ(`castPoses`)は同じ扱いにしてはいけない** — あちらは `source: "human"` で
+ * スタジオ編集が入り得るため、黙って再計算すると人の作業を壊す。
+ */
+export function refreshedSettingEntities(
+  entities: readonly NarrativeEntity[],
+  settingDescriptions: Record<number, string> | undefined
+): NarrativeEntity[] {
+  if (!settingDescriptions || Object.keys(settingDescriptions).length === 0) return [...entities];
+  return entities.map((entity) => {
+    if (entity.kind !== "setting") return entity;
+    // id は `setting:<scriptRevisionId>:scene-<index>`
+    const matched = /:scene-(\d+)$/.exec(entity.id);
+    if (!matched) return entity;
+    const description = settingDescriptions[Number(matched[1])]?.trim();
+    if (!description || description === entity.attributes.description) return entity;
+    return { ...entity, attributes: { ...entity.attributes, description } };
+  });
+}
 
 /**
  * poseControl 入力の正規化。UI は文字列("off"|"full"|"upper"|"face")、API 直叩きは
@@ -206,7 +234,7 @@ export async function buildPanelGenerationRequest(input: {
   const conditioning = compilePanelConditioning({
     panel,
     basePrompt: panel.promptBase,
-    entities: plan.narrativeGraph.entities,
+    entities: refreshedSettingEntities(plan.narrativeGraph.entities, config.planOptions?.settingDescriptions),
     dialogueById: new Map(),
     narrativeMetadata: "english-directed",
     dialect: promptProfile.dialect,
