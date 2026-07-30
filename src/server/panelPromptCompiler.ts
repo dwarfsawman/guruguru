@@ -19,6 +19,40 @@ const QUALITY_NEGATIVE =
   "multiple views, character sheet, reference sheet, turnaround, split panel, diptych, " +
   "duplicate character, clone, twins, mirrored copy";
 
+/**
+ * モノクロ作品では**素材名も色を含意する**。
+ *
+ * 色名(`orange` 等)は書かないよう気をつけていても、脚本の `a brass tap` のような
+ * 素材の指定が生成では金色の蛇口になる。CFG を上げて negative が効く状態でも素通りした
+ * (実測: 該当コマの 4/4 が着色で不合格)。素材は色ではなく質感で書けば意図は保たれるので、
+ * モノクロ指定の作品に限り、色を含意する語を中立な語へ寄せる。
+ *
+ * **小文字のみに一致させる。** 固有名詞(人物名の Silver、店名の Amber 等)を壊さないため。
+ * プロンプトの形容句は実際には小文字で来る。
+ */
+const COLOR_IMPLYING_TERMS: Array<[RegExp, string]> = [
+  [/\b(?:brass|copper|bronze|gold|golden|silver|chrome|steel-blue)\b/g, "metal"],
+  [/\b(?:rusty|rusted)\b/g, "corroded"],
+  [/\b(?:ivory|jade|emerald|crimson|scarlet|azure|turquoise|amber|sepia)\b/g, ""],
+  [/\b(?:red|orange|yellow|green|blue|purple|violet|pink|brown|beige|teal|magenta|tan)\b/g, ""]
+];
+const MONOCHROME_NEGATIVE = "color, colored, colorful, chromatic, color illustration";
+
+function isMonochromeStyle(...sources: Array<string | undefined>): boolean {
+  return /\b(?:monochrome|greyscale|grayscale|black and white)\b/i.test(sources.filter(Boolean).join(" "));
+}
+
+function neutralizeColorLanguage(text: string): string {
+  let out = text;
+  for (const [pattern, replacement] of COLOR_IMPLYING_TERMS) out = out.replace(pattern, replacement);
+  return out
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+([,.])/g, "$1")
+    .replace(/(?:,\s*){2,}/g, ", ")
+    .replace(/(?:\.\s*){2,}/g, ". ")
+    .replace(/^[,.\s]+|[,\s]+$/g, "");
+}
+
 function tagSafeVisual(text: string): string {
   if (!text.trim()) return "";
   // Never pseudo-translate through a title/genre-specific dictionary. Structured LLM plans
@@ -292,7 +326,7 @@ function compileFigureConditioning(input: PanelConditioningInput): PanelConditio
     "simple background, plain white background"
   ];
   const maxTerms = Math.max(12, input.maxTerms ?? 75);
-  const positive = parts
+  const joined = parts
     .flatMap((part) => {
       const safe = stripClausesContainingCharacterLabels(part ?? "", excludedLabels);
       return (input.dialect === "tags" ? tagSafeVisual(safe) : safe).split(/\s*,\s*|\.\s+/);
@@ -300,10 +334,13 @@ function compileFigureConditioning(input: PanelConditioningInput): PanelConditio
     .filter(Boolean)
     .slice(0, maxTerms)
     .join(input.dialect === "tags" ? ", " : ". ");
+  const monochrome = isMonochromeStyle(input.basePrompt, input.qualityTags);
+  const positive = monochrome ? neutralizeColorLanguage(joined) : joined;
   const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);
   return {
     positive,
     negative: [
+      monochrome ? MONOCHROME_NEGATIVE : "",
       // QUALITY_NEGATIVE は常に含める。テンプレートの negativeBase は**追加**であって置換ではない。
       // 置換にすると、モデル固有の語を足したつもりで extra limbs / bad anatomy 等の
       // 基本語が落ち、人物の複製や解剖の破綻を抑えられなくなる(実測で発生した)。
@@ -356,10 +393,18 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
         .map((part) => tagSafeVisual(stripClausesContainingCharacterLabels(part ?? "", excludedLabels)))
     : [naturalRaw, ...approvedAppearances, ...identities, ...background, ...scene.map((part) => stripClausesContainingCharacterLabels(part, excludedLabels))];
   const maxTerms = Math.max(12, input.maxTerms ?? 75);
-  const positive = positiveParts.flatMap((part) => part?.split(/\s*,\s*|\.\s+/) ?? []).filter(Boolean).slice(0, maxTerms).join(input.dialect === "tags" ? ", " : ". ");
+  const joined = positiveParts.flatMap((part) => part?.split(/\s*,\s*|\.\s+/) ?? []).filter(Boolean).slice(0, maxTerms).join(input.dialect === "tags" ? ", " : ". ");
+  const monochrome = isMonochromeStyle(input.basePrompt, input.qualityTags);
+  const positive = monochrome ? neutralizeColorLanguage(joined) : joined;
   const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);
   return {
     positive,
-    negative: [QUALITY_NEGATIVE, input.negativeBase?.trim() || "", TEXT_NEGATIVE, ...moved].filter(Boolean).join(", ")
+    negative: [
+      QUALITY_NEGATIVE,
+      input.negativeBase?.trim() || "",
+      TEXT_NEGATIVE,
+      monochrome ? MONOCHROME_NEGATIVE : "",
+      ...moved
+    ].filter(Boolean).join(", ")
   };
 }

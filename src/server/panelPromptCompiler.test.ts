@@ -122,6 +122,33 @@ describe("compilePanelPrompt", () => {
     expect(result.negative).toContain("rain");
   });
 
+  test("monochrome styles neutralize colour-implying material words and add a colour negative", () => {
+    // 実測: 脚本の "a brass tap" がそのまま通り、生成では蛇口だけが金色になって
+    // 該当コマの全候補が不合格になった。色名を避けるだけでは足りず、素材名も色を含意する。
+    const result = compilePanelConditioning({
+      panel: { ...panel, cast: [], promptBase: "a brass tap over a rusty blue basin" },
+      basePrompt: "Japanese monochrome manga, ink line art. a brass tap over a rusty blue basin",
+      entities: [], dialogueById: new Map(), dialect: "tags"
+    });
+    expect(result.positive).not.toMatch(/\bbrass\b/);
+    expect(result.positive).not.toMatch(/\bblue\b/);
+    expect(result.positive).not.toMatch(/\brusty\b/);
+    expect(result.positive).toMatch(/metal/);
+    expect(result.positive).toMatch(/corroded/);
+    expect(result.positive).not.toMatch(/(?:,\s*){2,}/);
+    expect(result.negative).toContain("color");
+  });
+
+  test("colour styles keep colour words untouched", () => {
+    const result = compilePanelConditioning({
+      panel: { ...panel, cast: [], promptBase: "a brass tap over a blue basin" },
+      basePrompt: "full color illustration. a brass tap over a blue basin",
+      entities: [], dialogueById: new Map(), dialect: "tags"
+    });
+    expect(result.positive).toMatch(/\bbrass\b/);
+    expect(result.positive).toMatch(/\bblue\b/);
+  });
+
   test("tags dialect preserves untranslated source-language visual facts and does not invent characters for an empty cast", () => {
     const empty = { ...panel, cast: [], promptBase: "漆黒の宇宙。砕けた人工衛星。白い人型機動兵器。" };
     const result = compilePanelConditioning({ panel: empty, basePrompt: empty.promptBase, entities: [], dialogueById: new Map(), dialect: "tags" });
