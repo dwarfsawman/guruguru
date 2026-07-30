@@ -334,3 +334,17 @@ test("腕の形の指定が全身の姿勢に飲み込まれない", () => {
     assert.ok(knees[wrist]!.x >= 0 && knees[wrist]!.x <= 1, "手首が box の内側");
   }
 });
+
+test("腕の指定は語間に修飾が入っても拾う", () => {
+  // 最初に足した規則は名詞と前置詞が隣接する形しか拾えず、**規則を足す動機になった
+  // 当のコマ**(hand pressed flat against her chest)を取りこぼしていた。実測で発覚。
+  // ここは実際にプランへ入っていた文言をそのまま置く。
+  assert.equal(matchPosePreset("stands upright with one hand pressed flat against her own chest").id, "hand-on-chest");
+  assert.equal(matchPosePreset("extends an arm and presses her flat palm against the wall at the height of her own face").id, "palm-on-surface");
+  assert.equal(matchPosePreset("extends an open hand in the air at chest height").id, "open-hand-forward");
+
+  // 隙間を許しても既存の語彙は取り違えない
+  assert.equal(matchPosePreset("points at the wall").id, "pointing");
+  assert.equal(matchPosePreset("stands still").id, "standing");
+  assert.equal(matchPosePreset("arms crossed").id, "arms-crossed");
+});

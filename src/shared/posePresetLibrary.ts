@@ -218,9 +218,12 @@ const MULTI_WORD_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\belbows? on (?:her |his |their )?knees?\b/u, "elbows-on-knees"],
   [/\b(?:under one arm|under (?:her|his|their) arm|tucked under)\b/u, "carry-under-arm"],
   [/\bagainst (?:her|his|their) hip\b|\b(?:hand|hands) on (?:her|his|their) hips?\b/u, "hold-at-hip"],
-  [/\b(?:palm|hand) (?:flat )?(?:against|on|to) (?:her|his|their) (?:own )?chest\b|\bhand over (?:her|his|their) heart\b/u, "hand-on-chest"],
-  [/\b(?:palm|hand)s? (?:flat )?(?:against|on|pressed to) the (?:wall|door|glass|window|surface)\b/u, "palm-on-surface"],
-  [/\b(?:extends?|holds? out|offers?) (?:an? )?open (?:hand|palm)\b/u, "open-hand-forward"]
+  // 語の間に pressed / flat / lightly などが入るので、名詞と前置詞の間に少しの隙間を許す。
+  // 「hand pressed flat against her chest」を拾えない厳密な形にして、
+  // **この規則を足す動機になった当のコマを取りこぼした**(実測で判明)。
+  [/\b(?:palms?|hands?)\b[^.]{0,24}?\b(?:against|on|to|over)\b[^.]{0,12}?\b(?:her|his|their)\s+(?:own\s+)?(?:chest|heart)\b/u, "hand-on-chest"],
+  [/\b(?:palms?|hands?)\b[^.]{0,24}?\b(?:against|on|to)\b[^.]{0,12}?\bthe\s+(?:wall|door|glass|window|surface|mural)\b/u, "palm-on-surface"],
+  [/\b(?:extends?|holds? out|offers?|reaches? out with)\b[^.]{0,16}?\bopen\s+(?:hand|palm)\b/u, "open-hand-forward"]
 ];
 
 const KEYWORD_RULES: ReadonlyArray<readonly [RegExp, string]> = [
