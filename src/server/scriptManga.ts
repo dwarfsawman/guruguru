@@ -874,6 +874,32 @@ export function updateScriptMangaPlan(planId: string, body: unknown): ScriptMang
   return planView(requirePlan(planId));
 }
 
+/**
+ * 既存 run の舞台記述(`planOptions.settingDescriptions`)を差し替える。
+ *
+ * 舞台記述は投入のたびに config から読み直されるようになった(scriptMangaSubmission)。
+ * ところが config は run 作成時に凍結され、**直す手段が無かった**ので、
+ * 「設定を直して作り直す」ことがプラン全体の再構築なしには成立しなかった。
+ * 実測では終盤8コマが古い舞台記述のまま全滅し続けた。
+ *
+ * 変えるのは舞台記述だけ。プラン・コマ割り・ポーズ・採用済みの結果には触らない。
+ * 反映されるのは**これ以降に投入されるコマ**（retry を含む）。
+ */
+export function updateScriptMangaRunSettingDescriptions(runId: string, body: unknown): ScriptMangaRunView {
+  const run = requireRun(runId);
+  if (run.status === "canceled") throw new HttpError(409, "Canceled runs cannot be updated");
+  const input = objectBody(body);
+  const descriptions = settingDescriptionsFromInput(input.settingDescriptions);
+  if (!descriptions) throw new HttpError(400, "settingDescriptions must be a map of scene index to English text");
+  const config = parseConfig(run);
+  const planOptions = { ...(config.planOptions ?? {}), settingDescriptions: descriptions };
+  runSql(
+    "UPDATE script_manga_runs SET config_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    [JSON.stringify({ ...config, planOptions }), run.id]
+  );
+  return getScriptMangaRun(run.id);
+}
+
 export function approveScriptMangaRun(runId: string): ScriptMangaRunView {
   const run = requireRun(runId);
   if (run.status === "canceled") throw new HttpError(409, "Canceled runs cannot be approved");

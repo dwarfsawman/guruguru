@@ -10,6 +10,7 @@ import { addScriptRevision, createScript } from "./scripts.ts";
 import { collectRound } from "./rounds.ts";
 import {
   approveScriptMangaRun,
+  updateScriptMangaRunSettingDescriptions,
   auditScriptMangaTask,
   cancelScriptMangaRun,
   createScriptMangaRun,
@@ -1897,4 +1898,40 @@ test("figure スロット付きレイアウトの採用は切り抜き ImageObje
     2,
     "canceled async figure inheritance removes any newly created media before returning"
   );
+});
+
+test("舞台記述は既存 run に対して差し替えられる（プランを作り直さずに）", async () => {
+  // 舞台記述は投入のたびに config から読み直されるが、config は run 作成時に凍結され、
+  // 直す手段が無かった。実測では終盤8コマが古い舞台記述のまま全滅し続け、
+  // プラン全体の再構築以外に手が無かった。
+  resetFakeProvider();
+  const templateId = chromaTemplate();
+  const project = createProject({ name: `script-manga-setting-${createId("test")}`, mode: "book" });
+  const imported = createScript(project.id, {
+    title: "Setting refresh",
+    fountainSource: ["INT. BATH - DAY", "", "A wall."].join(String.fromCharCode(10))
+  });
+  const prepared = await createScriptMangaRun(project.id, {
+    scriptId: imported.script.id,
+    templateId,
+    providerId: "fake",
+    generateImages: false,
+    settingDescriptions: { 1: "old mural on the far wall" }
+  });
+
+  const before = getRow<{ config_json: string }>("SELECT config_json FROM script_manga_runs WHERE id = ?", [prepared.id]);
+  assert.match(before!.config_json, /old mural on the far wall/);
+
+  updateScriptMangaRunSettingDescriptions(prepared.id, { settingDescriptions: { 1: "blank pale wall" } });
+  const after = getRow<{ config_json: string }>("SELECT config_json FROM script_manga_runs WHERE id = ?", [prepared.id]);
+  assert.match(after!.config_json, /blank pale wall/);
+  assert.doesNotMatch(after!.config_json, /old mural on the far wall/);
+
+  // 舞台記述以外の生成設定は触らない
+  const beforeConfig = JSON.parse(before!.config_json);
+  const afterConfig = JSON.parse(after!.config_json);
+  assert.equal(afterConfig.templateId, beforeConfig.templateId);
+  assert.equal(afterConfig.providerId, beforeConfig.providerId);
+
+  assert.throws(() => updateScriptMangaRunSettingDescriptions(prepared.id, { settingDescriptions: "nope" }));
 });

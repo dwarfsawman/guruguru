@@ -101,6 +101,7 @@ import { allocateDialoguePages, removeDialogueAllocation } from "./dialogueAlloc
 import { applyDialogueLayout, previewDialogueLayout, reflowDialogueLayout, unlockAllDialoguePlacementsForPage } from "./dialogueAutoLayoutApi";
 import {
   approveScriptMangaRun,
+  updateScriptMangaRunSettingDescriptions,
   auditScriptMangaTask,
   cancelScriptMangaRun,
   createScriptMangaRun,
@@ -613,6 +614,9 @@ const apiRoutes: ApiRoute[] = [
   }],
   ["POST", /^\/api\/script-manga-runs\/([^/]+)\/export$/, async (req, res, _url, p) => {
     await withScriptMangaRunExport(p[0]!, await readJson(req), (result) => streamFileExport(res, result));
+  }],
+  ["POST", /^\/api\/script-manga-runs\/([^/]+)\/setting-descriptions$/, async (req, res, _url, p) => {
+    sendJson(res, 200, updateScriptMangaRunSettingDescriptions(p[0]!, await readJson(req)));
   }],
   ["POST", /^\/api\/script-manga-runs\/([^/]+)\/(approve|start|resume|cancel)$/, async (_req, res, _url, p) => {
     const [runId, action] = p;
