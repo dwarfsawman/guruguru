@@ -228,7 +228,12 @@ function planningOptionsFromInput(
     maxElementsPerPanel: boundedInteger(input.maxElementsPerPanel, fallback.maxElementsPerPanel ?? 6, 1, 24),
     targetPageCount,
     maxDialoguesPerPanel: boundedInteger(input.maxDialoguesPerPanel, fallback.maxDialoguesPerPanel ?? DEFAULT_MAX_DIALOGUES_PER_PANEL, 1, 8),
-    stylePrompt: requestedStyle === null ? fallback.stylePrompt : requestedStyle || undefined
+    stylePrompt: requestedStyle === null ? fallback.stylePrompt : requestedStyle || undefined,
+    // 舞台の英語記述。プロンプトの背景句になる(白紙の余白は被写体の複製を招く)。
+    // predecessor 設定からも引き継ぐので successor run でも維持される。
+    ...(settingDescriptionsFromInput(input.settingDescriptions) ?? fallback.settingDescriptions
+      ? { settingDescriptions: settingDescriptionsFromInput(input.settingDescriptions) ?? fallback.settingDescriptions! }
+      : {})
   };
 }
 
