@@ -364,17 +364,47 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
   const excludedLabels = excludedIdentityLabels(input);
   const naturalRaw = stripClausesContainingCharacterLabels(raw, excludedLabels);
   const entityById = new Map(input.entities.map((entity) => [entity.id, entity]));
-  const identities = input.panel.cast.flatMap((member) => {
+  const entityDescriptions = (member: PanelSpec["cast"][number]): string[] => {
     const entity = entityById.get(member.characterId);
     const variant = entity?.variants.find((item) => item.id === member.variantId);
-    const descriptions = [entity?.attributes.tags || entity?.attributes.description, variant?.attributes.tags || variant?.attributes.description]
+    return [entity?.attributes.tags || entity?.attributes.description, variant?.attributes.tags || variant?.attributes.description]
       .filter((value): value is string => Boolean(value?.trim()) && !/[\u3040-\u30ff\u3400-\u9fff]/u.test(value!));
-    return descriptions;
-  });
-  const approvedAppearances = (input.referenceAppearances ?? []).flatMap((reference) => [
+  };
+  const referenceClauses = (reference: ReferenceSetSnapshot): string[] => [
     reference.appearancePromptEn,
     reference.mustNotChange.length > 0 ? `identity invariants: ${reference.mustNotChange.join(", ")}` : ""
-  ]).filter(Boolean);
+  ].filter(Boolean);
+
+  // \u8907\u6570\u4eba\u304c\u5199\u308b\u30b3\u30de\u3067\u306f\u3001\u5916\u898b\u53e5\u3092**\u305d\u306e\u4eba\u7269\u306e\u9818\u57df\u306b\u7d50\u3073\u4ed8\u3051\u308b**\u3002
+  //
+  // \u5e73\u5766\u306b\u9023\u7d50\u3059\u308b\u3068\u3001\u30e2\u30c7\u30eb\u306f\u3069\u306e\u7279\u5fb4\u304c\u8ab0\u306e\u3082\u306e\u304b\u5224\u5225\u3067\u304d\u305a\u5c5e\u6027\u304c\u79fb\u308b
+  // (\u5b9f\u6e2c: \u8001\u4eba\u3068\u82e5\u8005\u304c\u540c\u5c45\u3059\u308b\u30b3\u30de\u306e 4/4 \u3067\u3001\u8001\u4eba\u306e\u4e38\u773c\u93e1\u304c\u82e5\u8005\u306e\u9854\u306b\u4ed8\u304d\u3001
+  // \u3046\u30612\u679a\u3067\u306f\u8001\u4eba\u81ea\u8eab\u304c\u6d88\u3048\u305f)\u3002\u3057\u304b\u3082 positive \u306f\u6700\u5f8c\u306b\u30ab\u30f3\u30de\u3067\u5206\u5272\u3055\u308c\u308b\u306e\u3067\u3001
+  // \u300c\u9818\u57df: \u7279\u5fb4, \u7279\u5fb4\u300d\u3068\u66f8\u3044\u3066\u3082\u5206\u5272\u3067\u7d50\u3073\u4ed8\u304d\u304c\u5207\u308c\u308b\u3002**\u5206\u5272\u3055\u308c\u306a\u30441\u8a9e**\u306b
+  // \u307e\u3068\u3081\u308b\u5fc5\u8981\u304c\u3042\u308b\u305f\u3081\u3001\u30ab\u30f3\u30de\u3092 with \u306b\u7f6e\u304d\u63db\u3048\u3066\u9818\u57df\u540d\u3092\u982d\u306b\u636e\u3048\u308b\u3002
+  const multiCast = input.panel.cast.length >= 2;
+  const bindToRegion = (region: string, clauses: string[]): string => {
+    const terms = clauses.join(", ").split(/\s*,\s*/).map((term) => term.trim()).filter(Boolean);
+    if (terms.length === 0) return "";
+    const [head, ...rest] = terms;
+    return rest.length === 0 ? `${head} in the ${region}` : `${head} in the ${region} with ${rest.join(" with ")}`;
+  };
+  const referencesByCharacter = new Map<string, ReferenceSetSnapshot[]>();
+  for (const reference of input.referenceAppearances ?? []) {
+    const list = referencesByCharacter.get(reference.characterId) ?? [];
+    list.push(reference);
+    referencesByCharacter.set(reference.characterId, list);
+  }
+  const boundAppearances = multiCast
+    ? input.panel.cast.map((member) => bindToRegion(regionName(member.bbox), [
+        ...(referencesByCharacter.get(member.characterId) ?? []).flatMap(referenceClauses),
+        ...entityDescriptions(member)
+      ])).filter(Boolean)
+    : [];
+  const identities = multiCast ? [] : input.panel.cast.flatMap(entityDescriptions);
+  const approvedAppearances = multiCast
+    ? boundAppearances
+    : (input.referenceAppearances ?? []).flatMap(referenceClauses);
   const quality = input.qualityTags?.trim() || "masterpiece, best quality, high detail";
   const scene = input.sceneBible ? [input.sceneBible.set, input.sceneBible.lighting, input.sceneBible.palette] : [];
   // 背景を明示する。人物だけを指定して背景が白紙のままだと、モデルは余白を埋めるために

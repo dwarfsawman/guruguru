@@ -122,6 +122,43 @@ describe("compilePanelPrompt", () => {
     expect(result.negative).toContain("rain");
   });
 
+  test("multi-character panels bind each appearance to that character's region", () => {
+    // 実測: 老人と若者が同居するコマの 4/4 で、老人の丸眼鏡が若者の顔に付いた。
+    // 外見句が平坦に連結され、どの特徴が誰のものか判別できないため。
+    const elder = { id: "character-toyo", kind: "character", name: "Toyo", aliases: [],
+      attributes: { tags: "elderly woman, round glasses, dark bib apron" }, variants: [] } as unknown as NarrativeEntity;
+    const young = { id: "character-haru", kind: "character", name: "Haru", aliases: [],
+      attributes: { tags: "young woman, paint-stained overalls" }, variants: [] } as unknown as NarrativeEntity;
+    const two = { ...panel, cast: [
+      { characterId: young.id, variantId: young.id + ":default", bbox: { x: 0.05, y: 0.1, width: 0.35, height: 0.8 },
+        pose: "standing", expression: "neutral", action: "holding a pail", speakingLineIds: [] },
+      { characterId: elder.id, variantId: elder.id + ":default", bbox: { x: 0.6, y: 0.1, width: 0.35, height: 0.8 },
+        pose: "standing", expression: "neutral", action: "pointing", speakingLineIds: [] }
+    ] } as unknown as PanelSpec;
+    const result = compilePanelConditioning({
+      panel: two, basePrompt: "a bathhouse", entities: [elder, young],
+      dialogueById: new Map(), dialect: "tags"
+    });
+    // 各人物の外見はカンマ分割を跨がない1語にまとまり、領域名を伴う
+    const bound = result.positive.split(/\s*,\s*/).filter((term) => /in the .*region/.test(term));
+    expect(bound.length).toBe(2);
+    const elderTerm = bound.find((term) => /elderly woman/.test(term)) ?? "";
+    const youngTerm = bound.find((term) => /young woman/.test(term)) ?? "";
+    expect(elderTerm).toMatch(/round glasses/);
+    expect(youngTerm).not.toMatch(/round glasses/);
+    expect(youngTerm).toMatch(/paint-stained overalls/);
+    expect(elderTerm).not.toMatch(/paint-stained overalls/);
+    // 左右が取り違えられていない
+    expect(youngTerm).toMatch(/left/);
+    expect(elderTerm).toMatch(/right/);
+  });
+
+  test("single-character panels keep the flat appearance form", () => {
+    const englishEntity = { ...entity, attributes: { tags: "short silver hair, blue eyes" } };
+    const result = compilePanelConditioning({ panel, basePrompt: "cockpit", entities: [englishEntity], dialogueById: new Map(), dialect: "tags" });
+    expect(result.positive).not.toMatch(/in the .*region/);
+  });
+
   test("monochrome styles neutralize colour-implying material words and add a colour negative", () => {
     // 実測: 脚本の "a brass tap" がそのまま通り、生成では蛇口だけが金色になって
     // 該当コマの全候補が不合格になった。色名を避けるだけでは足りず、素材名も色を含意する。
