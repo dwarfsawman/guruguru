@@ -6,7 +6,18 @@ import { getDialoguePresentationMeaning, stripClausesContainingCharacterLabels }
 export type PromptDialect = "natural" | "tags";
 export interface PanelConditioning { positive: string; negative: string }
 const TEXT_NEGATIVE = "text, letters, words, typography, captions, subtitles, speech bubbles, manga sound effects, signage, labels, logos, watermarks, UI overlays";
-const QUALITY_NEGATIVE = "low quality, blurry, deformed, bad anatomy, extra limbs, extra fingers";
+/**
+ * どのテンプレートでも外してはいけない negative。
+ *
+ * 解剖の破綻に加えて**被写体の複製**を抑える語を含む。1コマ漫画の生成では、モデルが
+ * 「同一人物を並べたキャラクター設定表 / ターンアラウンド図」を描いて面を埋めることがあり、
+ * 実測ではトヨ単独コマの 12/12 がこの壊れ方をした(参照画像が全身・正面・白背景の
+ * 設定表風だと特に寄りやすい)。`multiple views` 系の語はこれを直接抑える。
+ */
+const QUALITY_NEGATIVE =
+  "low quality, blurry, deformed, bad anatomy, extra limbs, extra fingers, " +
+  "multiple views, character sheet, reference sheet, turnaround, split panel, diptych, " +
+  "duplicate character, clone, twins, mirrored copy";
 
 function tagSafeVisual(text: string): string {
   if (!text.trim()) return "";
@@ -293,7 +304,11 @@ function compileFigureConditioning(input: PanelConditioningInput): PanelConditio
   return {
     positive,
     negative: [
-      input.negativeBase?.trim() || QUALITY_NEGATIVE,
+      // QUALITY_NEGATIVE は常に含める。テンプレートの negativeBase は**追加**であって置換ではない。
+      // 置換にすると、モデル固有の語を足したつもりで extra limbs / bad anatomy 等の
+      // 基本語が落ち、人物の複製や解剖の破綻を抑えられなくなる(実測で発生した)。
+      QUALITY_NEGATIVE,
+      input.negativeBase?.trim() || "",
       TEXT_NEGATIVE,
       "detailed background, scenery, indoor, outdoor, cropped legs, cropped feet, out of frame",
       ...moved
@@ -336,6 +351,6 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
   const moved = input.panel.mustNotShow.map((item) => item.description).filter(Boolean);
   return {
     positive,
-    negative: [input.negativeBase?.trim() || QUALITY_NEGATIVE, TEXT_NEGATIVE, ...moved].filter(Boolean).join(", ")
+    negative: [QUALITY_NEGATIVE, input.negativeBase?.trim() || "", TEXT_NEGATIVE, ...moved].filter(Boolean).join(", ")
   };
 }
