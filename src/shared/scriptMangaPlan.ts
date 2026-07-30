@@ -208,8 +208,17 @@ export interface ScriptMangaPlanOptions {
   scriptRevisionId?: string;
 }
 
+/**
+ * 既定のスタイル。**否定句を入れてはいけない。**
+ *
+ * 以前は末尾に "no text, no speech bubbles" を付けていた。しかしこれは positive prompt であり、
+ * 蒸留モデル(CFG 1 推奨の Anima Turbo 等)では classifier-free guidance が無効で否定が働かない。
+ * 結果として "text" "speech bubbles" というトークンを positive へ置いているのと同じになり、
+ * モデルが絵の中へ偽文字と偽吹き出しを描き込む(実測で候補の約半数が失格した)。
+ * 文字類の抑制は negative(`TEXT_NEGATIVE`)側だけで行う。
+ */
 export const DEFAULT_SCRIPT_MANGA_STYLE =
-  "Japanese monochrome manga, cinematic composition, expressive characters, detailed ink line art, screentone, no text, no speech bubbles";
+  "Japanese monochrome manga, cinematic composition, expressive characters, detailed ink line art, screentone";
 const DEFAULT_STYLE = DEFAULT_SCRIPT_MANGA_STYLE;
 
 /** 要素の「読める」テキスト(sourceText 用)。ビート層(preLayoutBeat)と共有する。 */

@@ -1306,7 +1306,11 @@ test("createScriptMangaRun assigns directed prompts to the same RTL panels as th
     assert.match(task.prompt, new RegExp(`directed prompt ${index}`));
     assert.match(task.prompt, /(?:extreme-wide|wide|medium|close-up|insert) shot/);
     assert.match(task.prompt, /one coherent moment/);
-    assert.match(task.prompt, /no text\. no letters\. no speech bubbles/);
+    // positive prompt に否定句と文字を指す語を入れない。蒸留モデル(CFG 1)では否定が
+    // 効かず、"text" / "speech bubbles" というトークンがそのまま「文字を描く」指示として
+    // 働いて偽文字・偽吹き出しになる。抑制は negative 側だけで行う。
+    assert.doesNotMatch(task.prompt, /\bno (?:text|letters|speech bubbles|watermark)\b/);
+    assert.doesNotMatch(task.prompt, /\b(?:lettering|speech bubbles?)\b/);
   });
   assert.equal(promptPanels[1]!.panel_id, dialoguePanels[0]!.panel_id);
   assert.equal(promptPanels[2]!.panel_id, dialoguePanels[1]!.panel_id);

@@ -31,11 +31,13 @@ function regionName(box: NormalizedBox): string {
 
 function speechAct(line: StoryGraphDialogueInput): string {
   const meaning = getDialoguePresentationMeaning(line);
+  // 否定句と文字を指す語を positive へ書かない(CFG 1 では否定が効かず、逆に文字を描く指示になる)。
+  // 「口を閉じている」のように**肯定形の視覚的事実**で言い換える。
   if (meaning.visibilityEvidence === "none") {
-    return `${meaning.delivery} delivered separately from the depicted action; do not infer speaking mouth movement; the image contains no rendered text`;
+    return `${meaning.delivery} delivered separately from the depicted action, closed resting mouth`;
   }
   if (line.semanticKind === "monologue") return "quiet internal reaction with closed or resting mouth";
-  if (line.semanticKind === "sfx") return "reacting to a sound; do not render sound-effect letters";
+  if (line.semanticKind === "sfx") return "reacting to a sound, plain background";
   if (/[?？]\s*$/.test(line.text)) return "asking a question while speaking";
   if (/[!！]\s*$/.test(line.text)) return "speaking emphatically";
   return "speaking naturally";
@@ -89,7 +91,7 @@ function compileProvidedVisualFacts(input: {
     const fact = stripDialogueFromVisualFact(item.description, input.dialogueById);
     if (fact) parts.push(`must not show: ${fact}`);
   }
-  parts.push("one coherent moment, single concrete scene, clearly recognizable subjects, consistent character design, no text, no letters, no speech bubbles, no watermark");
+  parts.push("one coherent moment, single concrete scene, clearly recognizable subjects, consistent character design");
   return parts.filter(Boolean).join(". ").replace(/\s+/g, " ").trim();
 }
 
@@ -147,11 +149,16 @@ export function compilePanelPrompt(input: {
       parts.push(`prop: ${prop.state}${prop.bbox ? ` in the ${regionName(prop.bbox)}` : ""}`);
     }
     if (input.panel.textSafeZones.length > 0) {
-      parts.push(`leave ${input.panel.textSafeZones.map(regionName).join(" and ")} visually quiet for later lettering`);
+      // 「lettering」「speech」等の文字を指す語を positive へ書いてはいけない。
+      // 蒸留モデル(CFG 1)は negative が効かないので、文字を指す語がそのまま
+      // 「文字を描く」指示として働き、絵の中に偽文字と偽吹き出しが描き込まれる
+      // (実測: 該当コマの候補 21/44 が偽文字で失格し、発生位置がこの余白指定と一致した)。
+      // 余白の要求は「detail を置かない」という視覚的な言い方だけで表す。
+      parts.push(`keep ${input.panel.textSafeZones.map(regionName).join(" and ")} free of detail, plain and uncluttered`);
     }
     if (input.panel.mustShow.length > 0) parts.push(`must show: ${input.panel.mustShow.map((item) => item.description).join("; ")}`);
     if (input.panel.mustNotShow.length > 0) parts.push(`must not show: ${input.panel.mustNotShow.map((item) => item.description).join("; ")}`);
-    parts.push("one coherent moment, consistent character design, readable silhouettes, no text, no letters, no speech bubbles, no watermark");
+    parts.push("one coherent moment, consistent character design, readable silhouettes");
     return parts.filter(Boolean).join(". ").replace(/\s+/g, " ").trim();
   }
   const entityById = new Map(input.entities.map((entity) => [entity.id, entity]));
@@ -196,7 +203,7 @@ export function compilePanelPrompt(input: {
   }
   if (input.panel.mustShow.length > 0) parts.push(`must show: ${input.panel.mustShow.map((item) => item.description).join("; ")}`);
   if (input.panel.mustNotShow.length > 0) parts.push(`must not show: ${input.panel.mustNotShow.map((item) => item.description).join("; ")}`);
-  parts.push("one coherent moment, consistent character design, readable silhouettes, no text, no letters, no speech bubbles, no watermark");
+  parts.push("one coherent moment, consistent character design, readable silhouettes");
   return parts.filter(Boolean).join(". ").replace(/\s+/g, " ").trim();
 }
 

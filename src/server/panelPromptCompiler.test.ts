@@ -42,7 +42,10 @@ describe("compilePanelPrompt", () => {
     expect(result).toContain("waving a hand");
     expect(result).toContain("smiling expression");
     expect(result).toContain("must not show: rain");
-    expect(result).toContain("leave upper-right region visually quiet");
+    // 余白の要求は「文字を置く場所」ではなく「detail を置かない領域」として言う
+    // (positive に lettering / speech と書くと CFG 1 では偽文字を描かせる)。
+    expect(result).toContain("keep upper-right region free of detail");
+    expect(result).not.toContain("lettering");
     expect(result).not.toMatch(/[\u3040-\u30ff\u3400-\u9fff]/u);
   });
 
