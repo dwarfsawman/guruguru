@@ -159,6 +159,28 @@ describe("compilePanelPrompt", () => {
     expect(result.positive).not.toMatch(/in the .*region/);
   });
 
+  test("background detail scales with shot size so close-ups do not inherit the whole room", () => {
+    // 実測: 壁際で刷毛を止める手のクローズアップに部屋の目録が丸ごと入り、
+    // 4候補とも洗い場の引きの絵になって指定の動作が消えた。
+    const setting = { id: "setting-bath", kind: "setting", name: "bath", aliases: [],
+      attributes: { tags: "tiled floor, row of washing stations with mirrors and taps, deep tub, painted wall mural" },
+      variants: [] } as unknown as NarrativeEntity;
+    const forSize = (size: string) => compilePanelConditioning({
+      panel: { ...panel, cast: [], settingId: setting.id, shot: { ...(panel as any).shot, size } } as unknown as PanelSpec,
+      basePrompt: "a hand at the wall", entities: [setting], dialogueById: new Map(), dialect: "tags"
+    }).positive;
+    const closeUp = forSize("close-up");
+    expect(closeUp).toMatch(/tiled floor/);
+    expect(closeUp).not.toMatch(/washing stations/);
+    expect(closeUp).not.toMatch(/painted wall mural/);
+    expect(forSize("medium")).toMatch(/deep tub/);
+    expect(forSize("medium")).not.toMatch(/painted wall mural/);
+    // 引きのコマは従来どおり舞台の記述を丸ごと使う
+    expect(forSize("wide")).toMatch(/painted wall mural/);
+    // どの寄りでも背景が空になってはいけない(白紙は人物の複製を招く)
+    expect(closeUp).toMatch(/no empty background/);
+  });
+
   test("monochrome styles neutralize colour-implying material words and add a colour negative", () => {
     // 実測: 脚本の "a brass tap" がそのまま通り、生成では蛇口だけが金色になって
     // 該当コマの全候補が不合格になった。色名を避けるだけでは足りず、素材名も色を含意する。

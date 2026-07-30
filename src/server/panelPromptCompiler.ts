@@ -411,10 +411,19 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
   // **被写体をもう1体描く**(実測: 顔・手のクローズアップが続くキャラのコマで 12/12 が
   // 「同一人物を並べた設定表」になり、背景句を1つ足しただけで単独に戻った)。
   // 舞台の記述は plan の settingId にあるのに、これまでプロンプトへ展開されていなかった。
+  //
+  // ただし**寄りのコマに部屋の目録を丸ごと入れてはいけない**。実測: 壁際で刷毛を止める手の
+  // クローズアップに「洗い場の列・鏡・蛇口・浴槽・壁画」まで注入され、4候補とも洗い場の
+  // 引きの絵になって指定の動作が消えた。クローズアップに部屋全体は物理的に入らないので、
+  // 背景の粒度をショットサイズに合わせて削る。
   const settingEntity = entityById.get(input.panel.settingId);
   const settingDescription = (settingEntity?.attributes.tags || settingEntity?.attributes.description || "").trim();
-  const background = settingDescription && !/[぀-ヿ㐀-鿿]/u.test(settingDescription)
-    ? [`${settingDescription} filling the background`, "no empty background"]
+  const settingClauses = settingDescription.split(/\s*,\s*/).map((clause) => clause.trim()).filter(Boolean);
+  const backgroundClauseLimit = ({ "insert": 1, "close-up": 1, "medium": 3 } as Record<string, number>)[input.panel.shot.size]
+    ?? settingClauses.length;
+  const scopedSetting = settingClauses.slice(0, backgroundClauseLimit).join(", ");
+  const background = scopedSetting && !/[぀-ヿ㐀-鿿]/u.test(scopedSetting)
+    ? [`${scopedSetting} filling the background`, "no empty background"]
     : ["detailed background filling the frame", "no empty background"];
   const castCount = input.panel.cast.length === 0 ? "" : input.panel.cast.length === 1 ? "1character" : `${input.panel.cast.length}characters`;
   const positiveParts = input.dialect === "tags"
