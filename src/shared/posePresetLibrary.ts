@@ -152,6 +152,36 @@ const HOLD_AT_HIP = pose([
   { x: 0.47, y: 0.085 }, { x: 0.53, y: 0.085 }, { x: 0.44, y: 0.095 }, { x: 0.56, y: 0.095 }
 ]);
 
+/** 片手の平を自分の胸へ当てる。当てた側(本人の右)の手首を胸骨の高さへ寄せる。 */
+const HAND_ON_CHEST = pose([
+  { x: 0.5, y: 0.1 }, { x: 0.5, y: 0.2 },
+  { x: 0.42, y: 0.21 }, { x: 0.36, y: 0.31 }, { x: 0.47, y: 0.3 },
+  { x: 0.58, y: 0.21 }, { x: 0.6, y: 0.34 }, { x: 0.61, y: 0.46 },
+  { x: 0.44, y: 0.5 }, { x: 0.44, y: 0.7 }, { x: 0.44, y: 0.9 },
+  { x: 0.56, y: 0.5 }, { x: 0.56, y: 0.7 }, { x: 0.56, y: 0.9 },
+  { x: 0.47, y: 0.085 }, { x: 0.53, y: 0.085 }, { x: 0.44, y: 0.095 }, { x: 0.56, y: 0.095 }
+]);
+
+/** 片手の平を正面の面(壁など)へ当てる。腕を前へ伸ばし、手首を肩の高さへ置く。 */
+const PALM_ON_SURFACE = pose([
+  { x: 0.5, y: 0.1 }, { x: 0.5, y: 0.2 },
+  { x: 0.42, y: 0.21 }, { x: 0.33, y: 0.25 }, { x: 0.24, y: 0.22 },
+  { x: 0.58, y: 0.21 }, { x: 0.6, y: 0.34 }, { x: 0.61, y: 0.46 },
+  { x: 0.44, y: 0.5 }, { x: 0.44, y: 0.7 }, { x: 0.44, y: 0.9 },
+  { x: 0.56, y: 0.5 }, { x: 0.56, y: 0.7 }, { x: 0.56, y: 0.9 },
+  { x: 0.47, y: 0.085 }, { x: 0.53, y: 0.085 }, { x: 0.44, y: 0.095 }, { x: 0.56, y: 0.095 }
+]);
+
+/** 胸の高さで開いた手を差し出す(受け渡し・制止)。前腕を水平に、手首を体の前へ。 */
+const OPEN_HAND_FORWARD = pose([
+  { x: 0.5, y: 0.1 }, { x: 0.5, y: 0.2 },
+  { x: 0.42, y: 0.21 }, { x: 0.36, y: 0.32 }, { x: 0.3, y: 0.29 },
+  { x: 0.58, y: 0.21 }, { x: 0.6, y: 0.34 }, { x: 0.61, y: 0.46 },
+  { x: 0.44, y: 0.5 }, { x: 0.44, y: 0.7 }, { x: 0.44, y: 0.9 },
+  { x: 0.56, y: 0.5 }, { x: 0.56, y: 0.7 }, { x: 0.56, y: 0.9 },
+  { x: 0.47, y: 0.085 }, { x: 0.53, y: 0.085 }, { x: 0.44, y: 0.095 }, { x: 0.56, y: 0.095 }
+]);
+
 export const POSE_PRESETS: readonly PosePreset[] = [
   { id: "standing", points: STANDING },
   { id: "sitting", points: SITTING },
@@ -165,7 +195,10 @@ export const POSE_PRESETS: readonly PosePreset[] = [
   { id: "profile-left", points: PROFILE_LEFT },
   { id: "elbows-on-knees", points: ELBOWS_ON_KNEES },
   { id: "carry-under-arm", points: CARRY_UNDER_ARM },
-  { id: "hold-at-hip", points: HOLD_AT_HIP }
+  { id: "hold-at-hip", points: HOLD_AT_HIP },
+  { id: "hand-on-chest", points: HAND_ON_CHEST },
+  { id: "palm-on-surface", points: PALM_ON_SURFACE },
+  { id: "open-hand-forward", points: OPEN_HAND_FORWARD }
 ];
 
 export function findPosePreset(id: string): PosePreset | null {
@@ -184,7 +217,10 @@ const MULTI_WORD_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   // 飲み込まれ、腕の指定が丸ごと落ちる(実測でこれが起き、3コマが全滅した)。
   [/\belbows? on (?:her |his |their )?knees?\b/u, "elbows-on-knees"],
   [/\b(?:under one arm|under (?:her|his|their) arm|tucked under)\b/u, "carry-under-arm"],
-  [/\bagainst (?:her|his|their) hip\b|\b(?:hand|hands) on (?:her|his|their) hips?\b/u, "hold-at-hip"]
+  [/\bagainst (?:her|his|their) hip\b|\b(?:hand|hands) on (?:her|his|their) hips?\b/u, "hold-at-hip"],
+  [/\b(?:palm|hand) (?:flat )?(?:against|on|to) (?:her|his|their) (?:own )?chest\b|\bhand over (?:her|his|their) heart\b/u, "hand-on-chest"],
+  [/\b(?:palm|hand)s? (?:flat )?(?:against|on|pressed to) the (?:wall|door|glass|window|surface)\b/u, "palm-on-surface"],
+  [/\b(?:extends?|holds? out|offers?) (?:an? )?open (?:hand|palm)\b/u, "open-hand-forward"]
 ];
 
 const KEYWORD_RULES: ReadonlyArray<readonly [RegExp, string]> = [
