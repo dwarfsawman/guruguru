@@ -120,10 +120,15 @@ function roundTo64(value: number): number {
 const SDXL_BUCKETS = [[1024, 1024], [1152, 896], [896, 1152], [1216, 832], [832, 1216], [1344, 768], [768, 1344], [1536, 640], [640, 1536]] as const;
 
 /**
- * 生成キャンバスの縦横比の上限(横長・縦長どちらも)。コマがこれより極端でも、この比までしか
- * 生成しない。極端なキャンバスは被写体の複製を招くため(詳細は panelGenerationSize のコメント)。
+ * 生成キャンバスの縦横比の上限(横長・縦長どちらも)。
+ *
+ * 一時 1.6 まで締めたことがある。横長コマで被写体が複製される現象への対処だったが、
+ * これは**誤診**だった。真因は CFG 1(蒸留モデルの推奨値)で classifier-free guidance が
+ * 無効になり、`extra limbs` 等を含む negative prompt が一切効かないことだった。
+ * CFG を上げると同一 seed・同一アスペクトのまま複製が消える(`04_audit/05_cfg_sweep.md`)。
+ * アスペクトを歪める代償を払う理由が無いので 2.0 へ戻した。
  */
-const GENERATION_ASPECT_CAP = 1.6;
+const GENERATION_ASPECT_CAP = 2;
 
 export function panelGenerationSize(layout: PageLayout, panelId: string, longEdge = 1024, family: "sdxl" | "chroma" = "sdxl"): { width: number; height: number } {
   const edge = Math.max(512, Math.min(1536, roundTo64(longEdge)));

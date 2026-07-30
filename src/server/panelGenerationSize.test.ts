@@ -16,7 +16,7 @@ function layoutWith(bounds: [number, number, number, number]): PageLayout {
   } as unknown as PageLayout;
 }
 
-const CAP = 1.6;
+const CAP = 2;
 
 test("panelGenerationSize: 極端な横長コマでも生成アスペクトは上限までに収める", () => {
   // 0.92 x 0.22 の帯コマ = 4.2:1。従来は 2:1(1024x512)まで許していたが、
