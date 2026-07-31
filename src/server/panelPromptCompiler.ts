@@ -416,6 +416,10 @@ export function compilePanelConditioning(input: PanelConditioningInput): PanelCo
   // クローズアップに「洗い場の列・鏡・蛇口・浴槽・壁画」まで注入され、4候補とも洗い場の
   // 引きの絵になって指定の動作が消えた。クローズアップに部屋全体は物理的に入らないので、
   // 背景の粒度をショットサイズに合わせて削る。
+  //
+  // **切り詰めは先頭から採るので、舞台記述は「大事な句を先に」書く契約になる。**
+  // これを知らずに書くと寄りのコマで肝心の要素が落ちる(実測: 壁画の状態が5番目の句に
+  // あり、そこが要のコマ8つ中5つで消えていた)。物語の中で変化する要素ほど前に置くこと。
   const settingEntity = entityById.get(input.panel.settingId);
   const settingDescription = (settingEntity?.attributes.tags || settingEntity?.attributes.description || "").trim();
   const settingClauses = settingDescription.split(/\s*,\s*/).map((clause) => clause.trim()).filter(Boolean);
