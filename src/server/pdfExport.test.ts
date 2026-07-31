@@ -50,3 +50,20 @@ test("複数ページの PDF を組み立て、xref のオフセットが実位�
 test("ページが無い書き出しは失敗する", () => {
   assert.throws(() => buildPdf([]), /at least one page/);
 });
+
+test("モノクロ書き出しは彩度を落とす", async () => {
+  // 生成モデルは広い平坦な淡色面を勝手に色で塗る。色語の中立化と negative への
+  // 色系追加を入れても CFG 4 で壁の着色は 4/4 で残った(実測)。モノクロ作品では
+  // 出力を落とすだけで確実に消える。
+  const colored = await sharp({
+    create: { width: 32, height: 32, channels: 3, background: { r: 220, g: 180, b: 120 } }
+  }).png().toBuffer();
+  const gray = await sharp(colored).grayscale().png().toBuffer();
+  const stats = await sharp(gray).stats();
+  const [r, g, b] = stats.channels.map((channel) => channel.mean);
+  assert.ok(Math.abs(r! - g!) < 1 && Math.abs(g! - b!) < 1, `灰色になっていない: ${r},${g},${b}`);
+
+  const before = await sharp(colored).stats();
+  const [br, , bb] = before.channels.map((channel) => channel.mean);
+  assert.ok(Math.abs(br! - bb!) > 10, "元画像は色が付いている(検査の前提)");
+});

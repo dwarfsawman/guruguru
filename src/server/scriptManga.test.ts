@@ -1907,6 +1907,7 @@ test("舞台記述は既存 run に対して差し替えられる（プランを
   resetFakeProvider();
   const templateId = chromaTemplate();
   const project = createProject({ name: `script-manga-setting-${createId("test")}`, mode: "book" });
+  assert.ok(project);
   const imported = createScript(project.id, {
     title: "Setting refresh",
     fountainSource: ["INT. BATH - DAY", "", "A wall."].join(String.fromCharCode(10))

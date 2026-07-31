@@ -77,6 +77,8 @@ async function createImageExport(
   const format = parseImageExportFormat(input.format);
   const quality = clampJpegQuality(input.quality);
   const pixelWidth = clampPixelWidth(input.pixelWidth);
+  // モノクロ作品はここで確実に灰色へ落とす。プロンプトでは抑え切れなかった(実測)。
+  const monochrome = input.monochrome === true;
   const rawPageIds = input.pageIds;
   const requestedPageIds = Array.isArray(rawPageIds)
     ? rawPageIds.filter((id): id is string => typeof id === "string")
@@ -97,7 +99,7 @@ async function createImageExport(
     const jpegPages: Uint8Array[] = [];
     const pdfRenderStartedAt = performance.now();
     for (const page of pages) {
-      const buffer = await renderPageImage(page, "jpeg", quality, pixelWidth);
+      const buffer = await renderPageImage(page, "jpeg", quality, pixelWidth, monochrome);
       metrics.inputBytes += buffer.byteLength;
       jpegPages.push(new Uint8Array(buffer));
     }
@@ -110,7 +112,7 @@ async function createImageExport(
   const renderStartedAt = performance.now();
   for (const [index, page] of pages.entries()) {
     const filename = `${pageImageFileBase(page.pageIndex)}.${extension}`;
-    const buffer = await renderPageImage(page, format, quality, pixelWidth);
+    const buffer = await renderPageImage(page, format, quality, pixelWidth, monochrome);
     const path = join(tempDir, `image-${String(index + 1).padStart(4, "0")}.${extension}`);
     await writeFile(path, buffer, { flag: "wx" });
     metrics.inputBytes += buffer.byteLength;
@@ -152,11 +154,21 @@ async function createImageExport(
   );
 }
 
+/**
+ * モノクロ作品の書き出しでページを確実にグレースケール化する。
+ *
+ * 生成モデルは、広い平坦な淡色面を勝手に色で塗ることがある。プロンプトで抑えようとして
+ * 色語の中立化と negative への色系追加を入れたが、**CFG 4 でも壁の着色は 4/4 で残った**
+ * (実測)。モノクロ作品では出力を落とすだけで確実に消えるので、モデルと戦わない。
+ *
+ * 非破壊。生成された素材そのものは触らず、書き出したページだけを変換する。
+ */
 async function renderPageImage(
   page: PageRow,
   format: ImageExportFormat,
   quality: number,
-  pixelWidth: number
+  pixelWidth: number,
+  monochrome = false
 ): Promise<Buffer> {
   const layout = page.layout ?? null;
   const pageHeight = resolvePageHeight(page, layout);
@@ -166,9 +178,10 @@ async function renderPageImage(
   // (createPageLayers 側に足す)。ここでの平坦化ロジックはレイヤ枚数に依存しないのでそのまま使える。
   const merged = await renderMergedImage(layers, canvas);
   if (format === "png") {
-    return merged;
+    return monochrome ? sharp(merged).grayscale().png().toBuffer() : merged;
   }
-  return sharp(merged).flatten({ background: JPEG_FLATTEN_BACKGROUND }).jpeg({ quality }).toBuffer();
+  const pipeline = sharp(merged).flatten({ background: JPEG_FLATTEN_BACKGROUND });
+  return (monochrome ? pipeline.grayscale() : pipeline).jpeg({ quality }).toBuffer();
 }
 
 function contentTypeFor(format: ImageExportFormat): string {
